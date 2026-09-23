@@ -1,6 +1,7 @@
 # StashPanda: what is left to build
 
-Status as of 2026-09-18, with the Windows workflow updated on 2026-09-21. Everything not listed
+Status as of 2026-09-18, with the Windows workflow updated on 2026-09-21 and milestone 2 planned
+on 2026-09-23. Everything not listed
 here is done and tested; see the "Implementation
 notes" and "Status against the milestones" sections at the end of [architecture.md](architecture.md)
 for what exists and how it deviates from the original plan.
@@ -10,12 +11,17 @@ Each item names the files it touches so it can be picked up cold.
 
 ## Housekeeping (do first)
 
-- [ ] **First commit.** The repository at `/home/me/code/stashpanda` has no commits; every file is
-      untracked. Commit the scaffold plus the milestone 0 and 1 work as one or a few commits.
-- [ ] **Remove the seeded config** or keep it deliberately. `~/.config/com.bravedigital.stashpanda/settings.json`
-      was hand-written during testing with `/home/me/code/stashpanda` and `/home/me/code/other-project` as
-      library entries (keys `seed-stashpanda` and `seed-other-project`). Repositories added through the
-      UI get a UUID v5 key instead; the two seeded keys are harmless but inconsistent.
+- [x] **First commit** (2026-09-23), pushed to `git@github.com:MichaelPote/stashpanda.git`.
+- [x] **Seeded config removed** (2026-09-23). The Linux build's library in
+      `~/.config/com.bravedigital.stashpanda/settings.json` held two hand-written entries with keys
+      `seed-stashpanda` and `seed-other-project`, which `repo_add` could not match against the UUID v5
+      key it computes, so re-adding either would have created a duplicate. Both entries and their
+      open tabs in `ui-state.json` are gone. The Windows build keeps its own settings in
+      `%APPDATA%\com.bravedigital.stashpanda\` and was already clean.
+- [ ] **Clippy warnings.** Clippy was first installed on 2026-09-23 (`rustup component add clippy`);
+      `cargo clippy --all-targets` reports 22 warnings, all in code written before then (octal-looking
+      `\0` escapes in parser test fixtures, `&PathBuf` parameters, and similar). One small cleanup
+      commit.
 - [x] **Windows toolchain and workflow** (done 2026-09-21). Windows has rustup with the
       `stable-x86_64-pc-windows-msvc` toolchain, Node 24, Visual Studio 18 Community with the
       "Desktop development with C++" workload plus the Windows 11 SDK 10.0.26100 (the SDK was the
@@ -94,8 +100,7 @@ Each item names the files it touches so it can be picked up cold.
       For a repository with no cache the user sees nothing until Git finishes. Stream stdout through
       `Transport::spawn`, parse NUL records as they arrive, emit `graph_progress` every 2,000 records
       and swap a `complete: false` snapshot every 500 ms.
-- [ ] **`fix_safe_directory` command.** When `UnsafeRepository` is returned, offer to run
-      `git config --global --add safe.directory <path>` through the same transport. Plan step 14.
+- **`fix_safe_directory` command:** moved to milestone 2, step 2e.
 - [ ] **`GraphOrder::Topo`.** `graph/order.rs` treats `Topo` the same as `Date`. Implement the
       grouped tie-break (keep a branch's commits contiguous) or drop the setting.
 - [ ] **Text filter on the graph** (`graph_search` command). Planned, not started: return the next
@@ -148,7 +153,7 @@ Each item names the files it touches so it can be picked up cold.
       the open. `sshHostKeyChanged` gets a hard error dialog with no override.
 - [ ] **Password dialog.** On `sshAuthFailed` offer a password field; call
       `sshSetPassword(host, port, user, password)` and retry the open.
-- [ ] **Stash list in the Branches panel.** `getRepoStashes(key)` now exists and returns
+- [ ] **Stash list in the Branches panel** (built in milestone 2, step 3). `getRepoStashes(key)` now exists and returns
       `StashEntry { oid, selector, message, time, index }`; `BranchesPanel.vue` shows only the
       count from `status.stashCount` with a `TODO(backend)` comment.
 - [ ] **Watcher hint.** `watcherStateEvent.detail` (for example "filesystem notifications are not
@@ -168,46 +173,102 @@ Each item names the files it touches so it can be picked up cold.
 - [ ] Smooth scrolling on a 100k-commit clone (for example the `git` or `linux` repository): first
       paint from cache, page fetch latency, SVG repaint cost. Not yet measured on anything larger
       than 370 commits.
-- [ ] Manual check of the rendered UI. Every frontend change so far has been verified only by
-      `vue-tsc` and `npm run build`; the app has been run under WSLg but nobody has looked at it.
-      Compare the graph against another Git GUI on the same repository.
+- [x] Manual check of the rendered UI (2026-09-23): Michael looked at the running app and was
+      happy with it.
 - [ ] Cross-side runs from the Windows build (`npm run win:ux`; see step 14 above) and against a real Brave Digital
       host over SSH (only a private `sshd` on localhost has been tested).
 
 ## Milestone 2: local write operations
 
-All of these go through `GitClient::exec` with `Category::UserAction`, take the repository's
-exclusive lock (`RepoHandle.lock.write()`), and rely on the watcher to refresh afterwards.
+Planned 2026-09-23 as the current phase: finish milestone 2 so the app can stage, commit and stash.
+The rest of milestone 1 (WSL, `inotifywait`, performance) is a separate phase.
 
-- [x] **`git/ops/mod.rs`** started 2026-09-22 with `checkout`, `branch_create`, `branch_delete`,
-      `merge`, `merge_abort`, `tag_create`, `tag_delete` (commands `op_*` in `ipc/ops.rs`, driven by
-      the commit and branch context menus and the Repository menu).
-- [ ] **Remaining operations** in `git/ops/mod.rs`: `stage(paths)` (`add -A -- <paths>`, `add -N` for intent),
-      `unstage(paths)` (`restore --staged -- <paths>` or `reset -q -- <paths>`), `discard(paths)`
-      (`restore -- <paths>`, `clean -f -- <paths>` for untracked, with confirmation),
-      `commit(message, amend, sign_off)` (message via `-F -` on stdin), `stash_save(message, include_untracked)`,
-      `stash_apply(index, pop)`, `stash_drop(index)`, `branch_rename`, `reset(mode, target)`,
-      `cherry_pick`, `revert`.
-- [ ] **Hunk and line staging**: `apply --cached` with a patch built from the diff viewer's hunk
-      (`--unidiff-zero` for line-level).
-- [ ] **`IndexLocked` retry**: on `index.lock` present, retry once after 250 ms, then surface with a
-      "remove stale lock" action that deletes the file through the transport (`rm` / `del`).
-- [ ] **`ipc/ops.rs`** commands for all of the above, plus `start_operation` / `cancel_operation`
-      with `OperationRegistry` for anything that streams progress (needed by milestone 3 but the
-      registry belongs here).
+Every operation goes through `GitClient::exec_allow_failure` with `Category::UserAction`, runs
+inside the `write_op!` macro in `ipc/ops.rs` (exclusive lock, `index.lock` retry, then
+`refresh_if_changed`), and returns `OpResult` with Git's own stdout and stderr. Each new operation
+gets an end-to-end test against a throwaway repository in the `e2e` module of `git/ops/mod.rs`.
+
+- [x] **Operations started** (2026-09-22): `checkout`, `branch_create`, `branch_delete`, `merge`,
+      `merge_abort`, `tag_create`, `tag_delete` (commands `op_*` in `ipc/ops.rs`, driven by the
+      commit and branch context menus and the Repository menu).
 - [x] **Menus** (2026-09-22): native menu bar (File, Edit, View, Repository, Help) forwarding
       `menu_action` ids to the frontend; in-app context menus on commits (checkout, create branch
       here, merge into current, add tag, remove tag, copy SHA and message), on ref pills and on
       branches (checkout, merge, delete).
-- [ ] **Frontend**: enable the toolbar groups (Commit, Stage, Unstage, Discard, Save Stash, Apply
-      Stash), a commit message editor with amend and "commit and push later" state, context menus
-      on files (stage, unstage, discard, open, reveal, copy path), commit menu additions (reset,
-      cherry-pick, revert), a stash list with apply, pop and drop.
+
+### Step 1: shared plumbing (done 2026-09-23)
+
+- [x] **One refresh per write.** `graph/loader.rs::refresh_if_changed` reads refs and status and
+      rebuilds only what differs from the current snapshot; when both match it does not run
+      `git log`, emit `graph_snapshot` or persist. `after_write` in `ipc/ops.rs` and the coalescer
+      both use it, and the coalescer only emits `repo_changed` when something changed. The
+      watcher's follow-up to the app's own write therefore costs one `for-each-ref` and one
+      `status`. `graph_refresh` (the manual refresh) still forces a full rebuild. Not yet watched
+      in the running app's console.
+- [x] **`IndexLocked` retry.** `write_op!` retries once after 250 ms when `ops::index_lock_in`
+      recognises Git's `index.lock` message, then returns `GitError::IndexLocked`. Before this the
+      lock only showed as a generic non-zero exit. `op_remove_stale_lock(key)` deletes
+      `<git dir>/index.lock` through the new `Transport::remove_file` (`tokio::fs` for Local and
+      WSL, `rm -f` over SSH); a missing file counts as success.
+- **Put off to milestone 3:** `OperationRegistry` and `start_operation` / `cancel_operation`.
+  Nothing in milestone 2 streams progress, and fetch, pull and push will show what the registry
+  needs.
+
+### Step 2: backend operations, in the order the UI needs them
+
+- [x] **a. `stage`, `unstage`, `discard`** (2026-09-23; commands `op_stage`, `op_unstage`,
+      `op_discard`). Paths go to Git on stdin with `--pathspec-from-file=- --pathspec-file-nul`
+      and `--literal-pathspecs`, so a long selection never hits the Windows command-line limit and
+      names like `:x`, `*.txt` or `-f` mean exactly that file. `stage` runs `add -A`; `unstage`
+      runs `restore --staged`, or `rm --cached` on an unborn branch; `discard(tracked, untracked,
+      to_head)` runs `restore --worktree` (back to the index) or
+      `restore --source=HEAD --staged --worktree` (back to HEAD, which also deletes a staged file
+      that is not in HEAD), then `clean -f` for untracked paths in chunks of about 16 KB, since
+      `clean` has no stdin form. For a rename, the frontend passes both the new and the original
+      path.
+- [x] **b. `commit(message, amend, sign_off)`** (2026-09-23; command `op_commit`). The message goes
+      through `-F -` on stdin and arrives intact (tested with a leading dash, `#123` and non-ASCII
+      text). Git itself refuses an empty message. `amend` with an empty message uses `--no-edit`;
+      to edit the old message, the frontend loads it with `getCommitBody(key, "HEAD")`. There is no
+      new oid in the result: the frontend reads the new HEAD from the refs it refetches. Timeout
+      10 minutes, for slow commit hooks.
+- [ ] **c. `stash_save(message, include_untracked)`, `stash_apply(index, pop)`, `stash_drop(index)`**.
+      The `getRepoStashes` query already exists.
+- [ ] **d. `branch_rename`, `reset(mode, target)`, `cherry_pick`, `revert`**. Cherry-pick and
+      revert reuse `OpResult.conflicts` and get an abort; full conflict resolution stays in
+      milestone 3.
+- [ ] **e. `fix_safe_directory`** (moved here from milestone 1): on `UnsafeRepository`, run
+      `git config --global --add safe.directory <path>` through the repository's own transport, so
+      the right Git gets the setting.
+- [ ] **f. Hunk and line staging**: `apply --cached` with a patch built in Rust from the diff the
+      viewer already has, `--unidiff-zero` for single lines. Largest and riskiest item, so last.
+      Test against no newline at end of file, CRLF, and a new file.
+
+### Step 3: frontend
+
+- [ ] **Files panel**: context menu (stage, unstage, discard, open, reveal, copy path) and the
+      Stage, Unstage and Discard toolbar groups.
+- [ ] **Commit message editor** with amend (loads the previous message). "Commit and push later"
+      waits for milestone 3, since push does not exist yet.
+- [ ] **Stash list in `BranchesPanel.vue`** replacing the `TODO(backend)` comment, with apply, pop
+      and drop, plus the Save Stash and Apply Stash toolbar buttons.
+- [ ] **Commit context menu additions**: reset (soft, mixed or hard), cherry-pick, revert.
+- [ ] **Stale lock and `safe.directory` prompts** driven by `IndexLocked` and `UnsafeRepository`:
+      confirm, then call `opRemoveStaleLock` or the `fix_safe_directory` command and retry.
+- [ ] **Hunk and line staging buttons** in `DiffViewer.vue`, once step 2f is done.
+
+### Done when
+
+`cargo test`, `cargo clippy --all-targets` and `npm run build` pass, and in the running app on a
+real repository you can stage part of a file, commit, amend, stash and pop, and reset, with one
+refresh per action in the console and the result matching the `git` command line.
+
+### Left for the phase after this one
+
 - [ ] **Menu bar follow-ups**: a real Settings dialog behind `file.settings`, the commit search
       behind `edit.find`, and syncing the Theme check marks with the setting (the native
-      `CheckMenuItem`s are created checked for Dark and never updated).
-- [ ] **Refresh after write**: the coalescer already fires on `.git/index` and refs changes; verify
-      one refresh per operation and no double refresh when both the index and HEAD change.
+      `CheckMenuItem`s are created checked for Dark and never updated). The Settings dialog comes
+      first, since three menu items wait on it.
 
 ## Milestone 3: remote and history operations
 

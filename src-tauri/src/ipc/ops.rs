@@ -51,6 +51,36 @@ macro_rules! write_op {
     }};
 }
 
+/// Stage `paths` (additions, changes and deletions). Pass both paths of a rename.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_stage(app: AppHandle, state: State<'_, AppState>, key: String, paths: Vec<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::stage(c, &paths).await)
+}
+
+/// Unstage `paths`, leaving the working tree as it is. Pass both paths of a staged rename.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_unstage(app: AppHandle, state: State<'_, AppState>, key: String, paths: Vec<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::unstage(c, &paths).await)
+}
+
+/// Throw away changes: `tracked` back to the index (or to HEAD when `toHead`),
+/// `untracked` deleted. Cannot be undone; confirm with the user first.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_discard(app: AppHandle, state: State<'_, AppState>, key: String, tracked: Vec<String>, untracked: Vec<String>, to_head: bool) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::discard(c, &tracked, &untracked, to_head).await)
+}
+
+/// Commit the index. With `amend` and an empty `message` the previous message
+/// is kept; fetch it with `getCommitBody(key, "HEAD")` to edit it instead.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_commit(app: AppHandle, state: State<'_, AppState>, key: String, message: String, amend: bool, sign_off: bool) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::commit(c, &message, amend, sign_off).await)
+}
+
 /// Delete `<git dir>/index.lock` after a Git process crashed or was killed
 /// and left it behind. The frontend confirms with the user first, since
 /// deleting the lock of a Git process that is still running corrupts the

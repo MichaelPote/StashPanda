@@ -80,6 +80,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_merge_abort,
             ipc::ops::op_tag_create,
             ipc::ops::op_tag_delete,
+            ipc::ops::op_stage,
+            ipc::ops::op_unstage,
+            ipc::ops::op_discard,
+            ipc::ops::op_commit,
             ipc::ops::op_remove_stale_lock,
         ])
         .events(collect_events![

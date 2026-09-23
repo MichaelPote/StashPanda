@@ -82,6 +82,27 @@ export const commands = {
 	opMergeAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge_abort", { key })),
 	opTagCreate: (key: string, name: string, target: string, message: string | null, force: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_create", { key, name, target, message, force })),
 	opTagDelete: (key: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_delete", { key, name })),
+	/**  Stage `paths` (additions, changes and deletions). Pass both paths of a rename. */
+	opStage: (key: string, paths: string[]) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_stage", { key, paths })),
+	/**  Unstage `paths`, leaving the working tree as it is. Pass both paths of a staged rename. */
+	opUnstage: (key: string, paths: string[]) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_unstage", { key, paths })),
+	/**
+	 *  Throw away changes: `tracked` back to the index (or to HEAD when `toHead`),
+	 *  `untracked` deleted. Cannot be undone; confirm with the user first.
+	 */
+	opDiscard: (key: string, tracked: string[], untracked: string[], toHead: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_discard", { key, tracked, untracked, toHead })),
+	/**
+	 *  Commit the index. With `amend` and an empty `message` the previous message
+	 *  is kept; fetch it with `getCommitBody(key, "HEAD")` to edit it instead.
+	 */
+	opCommit: (key: string, message: string, amend: boolean, signOff: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_commit", { key, message, amend, signOff })),
+	/**
+	 *  Delete `<git dir>/index.lock` after a Git process crashed or was killed
+	 *  and left it behind. The frontend confirms with the user first, since
+	 *  deleting the lock of a Git process that is still running corrupts the
+	 *  index. A lock that has already gone counts as success.
+	 */
+	opRemoveStaleLock: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("op_remove_stale_lock", { key })),
 };
 
 /** Events */
