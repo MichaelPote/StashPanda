@@ -1,0 +1,390 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn-vue/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Theme: "graphite" skeuomorphic UI from the Stashpanda design canvas.
+ *   - Manrope for body, labels and buttons; Outfit for display headings; JetBrains Mono for
+ *     hashes, paths, refs and diffs.
+ *   - Graphite surfaces: raised chrome bars with a light top edge, inset wells for lists and inputs.
+ *   - Gold is the one primary action colour. Orange / cyan / red / purple mark modified / added /
+ *     deleted / renamed files and colour the branch lanes.
+ */
+
+@theme inline {
+    /* Body text step: 14px at the 15px root. Headings (text-xs), pills and row heights keep
+       their rem sizes, so only the main list and label text changes. */
+    --text-base: calc(14rem / 15);
+    --text-base--line-height: 1.45;
+    --font-sans: 'Manrope', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-heading: 'Outfit', var(--font-sans);
+    --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+
+    /* File-state colours. `-fg` is the text tint on graphite, `-ink` is text on a solid badge. */
+    /* Hover fill for flat (ghost) buttons on the raised chrome bars: a step darker than the bar. */
+    --color-ghost-hover: var(--ghost-hover);
+
+    --color-added: var(--state-added);
+    --color-added-fg: var(--state-added-fg);
+    --color-added-ink: var(--state-added-ink);
+    --color-modified: var(--state-modified);
+    --color-modified-fg: var(--state-modified-fg);
+    --color-modified-ink: var(--state-modified-ink);
+    --color-deleted: var(--state-deleted);
+    --color-deleted-fg: var(--state-deleted-fg);
+    --color-deleted-ink: var(--state-deleted-ink);
+    --color-renamed: var(--state-renamed);
+    --color-renamed-fg: var(--state-renamed-fg);
+    --color-renamed-ink: var(--state-renamed-ink);
+
+    --radius-sm: calc(var(--radius) - 4px);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* Light theme: the design canvas only specifies the dark graphite look, so this is a "bone"
+   derivative of the same palette with the accents darkened for contrast on a light ground. */
+:root {
+    --background: #f4f2ed;
+    --foreground: #25282e;
+    --card: #eeece7;
+    --card-foreground: #25282e;
+    --popover: #faf9f5;
+    --popover-foreground: #25282e;
+    --primary: #b88c3f;
+    --primary-foreground: #2b220f;
+    --secondary: #e4e1da;
+    --secondary-foreground: #25282e;
+    --muted: #e9e6df;
+    --muted-foreground: #6c717c;
+    --accent: #ddd9d0;
+    --accent-foreground: #25282e;
+    --destructive: #c9432f;
+    --border: #d5d1c8;
+    --input: #ffffff;
+    --ring: #b88c3f;
+    --chart-1: #b88c3f;
+    --chart-2: #2ba7b2;
+    --chart-3: #d96f12;
+    --chart-4: #8a63d6;
+    --chart-5: #c9432f;
+    --radius: 0.625rem;
+    --sidebar: #eeece7;
+    --sidebar-foreground: #25282e;
+    --sidebar-primary: #b88c3f;
+    --sidebar-primary-foreground: #2b220f;
+    --sidebar-accent: #ddd9d0;
+    --sidebar-accent-foreground: #25282e;
+    --sidebar-border: #d5d1c8;
+    --sidebar-ring: #b88c3f;
+
+    --state-added: #2ba7b2;
+    --state-added-fg: #1d8c96;
+    --state-added-ink: #0b2a2d;
+    --state-modified: #d96f12;
+    --state-modified-fg: #b85c0c;
+    --state-modified-ink: #2e1602;
+    --state-deleted: #c9432f;
+    --state-deleted-fg: #b03a27;
+    --state-deleted-ink: #2a0d09;
+    --state-renamed: #8a63d6;
+    --state-renamed-fg: #6f4bc0;
+    --state-renamed-ink: #1f1533;
+
+    /* Row and pill heights in rem, so they follow the root font size. paths.ts reads the same
+       values through remToPx() for the virtual lists. */
+    --row-h: 1.6rem;
+    --diff-row-h: 1.4rem;
+    --pill-h: 1.2rem;
+    /* Selected list row: one solid colour, a step lighter than the well but darker than the
+       raised header chrome. */
+    --row-selected: #e4e1da;
+
+    /* Surfaces for the skeuomorphic utilities below. */
+    --ghost-hover: #d9d5cc;
+    --surface-raised-top: #fbfaf7;
+    --surface-raised-bottom: #ebe8e1;
+    --edge-light: rgba(255, 255, 255, 0.85);
+    --edge-dark: rgba(0, 0, 0, 0.08);
+    --btn-top: #ffffff;
+    --btn-bottom: #e9e6df;
+    --btn-top-hover: #ffffff;
+    --btn-bottom-hover: #f1eee8;
+    --btn-border: #c8c3b8;
+    --well-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+
+    /* Commit graph lane colours: gold, cyan, orange, purple, red, ash, then their tints. */
+    --graph-lane-0: #b88c3f;
+    --graph-lane-1: #2ba7b2;
+    --graph-lane-2: #d96f12;
+    --graph-lane-3: #8a63d6;
+    --graph-lane-4: #c9432f;
+    --graph-lane-5: #6c717c;
+    --graph-lane-6: #3fbcc7;
+    --graph-lane-7: #c99a4c;
+    --graph-lane-8: #9a74e6;
+    --graph-lane-9: #e87a1e;
+    --graph-lane-10: #d1503f;
+    --graph-lane-11: #23909a;
+}
+
+/* Dark theme: the graphite palette from the design canvas. */
+.dark {
+    --background: #33363d;          /* Graphite 700: the inset well behind lists, graph and diff */
+    --foreground: #eeece7;          /* Bone */
+    --card: #42464e;
+    --card-foreground: #eeece7;
+    --popover: #42464e;
+    --popover-foreground: #eeece7;
+    --primary: #e2c08a;             /* Gold */
+    --primary-foreground: #2b220f;
+    --secondary: #484c55;           /* Graphite 500 */
+    --secondary-foreground: #eeece7;
+    --muted: #3e424a;
+    --muted-foreground: #a9adb6;    /* Ash */
+    --accent: #4e525b;
+    --accent-foreground: #eeece7;
+    --destructive: #e35d4a;
+    --border: #272a30;
+    --input: #2c2f35;
+    --ring: #e2c08a;
+    --chart-1: #e2c08a;
+    --chart-2: #4fd1dc;
+    --chart-3: #f38a2e;
+    --chart-4: #b08cf5;
+    --chart-5: #e35d4a;
+    --sidebar: #33363d;
+    --sidebar-foreground: #eeece7;
+    --sidebar-primary: #e2c08a;
+    --sidebar-primary-foreground: #2b220f;
+    --sidebar-accent: #4e525b;
+    --sidebar-accent-foreground: #eeece7;
+    --sidebar-border: #272a30;
+    --sidebar-ring: #e2c08a;
+
+    --state-added: #4fd1dc;
+    --state-added-fg: #7fe2ea;
+    --state-added-ink: #0b2a2d;
+    --state-modified: #f38a2e;
+    --state-modified-fg: #ffa95c;
+    --state-modified-ink: #2e1602;
+    --state-deleted: #e35d4a;
+    --state-deleted-fg: #f07a68;
+    --state-deleted-ink: #2a0d09;
+    --state-renamed: #b08cf5;
+    --state-renamed-fg: #c6a9ff;
+    --state-renamed-ink: #1f1533;
+
+    --ghost-hover: #2c2f35;         /* darker than both the chrome bar and the well */
+    --surface-raised-top: #4e525b;
+    --surface-raised-bottom: #42464e;
+    --row-selected: #3d414a;        /* between the #33363d well and the #42464e header bottom */
+    --edge-light: rgba(255, 255, 255, 0.10);
+    --edge-dark: rgba(0, 0, 0, 0.28);
+    --btn-top: #5e626c;
+    --btn-bottom: #484c55;
+    --btn-top-hover: #666a74;
+    --btn-bottom-hover: #4f535c;
+    --btn-border: #262930;
+    --well-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+
+    --graph-lane-0: #e2c08a;
+    --graph-lane-1: #4fd1dc;
+    --graph-lane-2: #f38a2e;
+    --graph-lane-3: #b08cf5;
+    --graph-lane-4: #e35d4a;
+    --graph-lane-5: #a9adb6;
+    --graph-lane-6: #7fe2ea;
+    --graph-lane-7: #f0d5a3;
+    --graph-lane-8: #c6a9ff;
+    --graph-lane-9: #ffa95c;
+    --graph-lane-10: #f07a68;
+    --graph-lane-11: #3fbcc7;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    @apply font-sans;
+    -webkit-font-smoothing: antialiased;
+    }
+}
+
+@layer base {
+  /* One root size drives every rem in the app: text, row heights, pills, paddings. */
+  html {
+    font-size: 14px;
+  }
+  html,
+  body,
+  #app {
+    height: 100%;
+    overflow: hidden;
+  }
+  .font-mono {
+    font-family: var(--font-mono);
+  }
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--foreground) 25%, transparent) transparent;
+}
+
+/* Raised chrome bar (toolbar, panel headers, tab strip, status bar): graphite gradient with a
+   light top edge. */
+@utility chrome {
+  background: linear-gradient(180deg, var(--surface-raised-top), var(--surface-raised-bottom));
+  box-shadow: inset 0 1px 0 var(--edge-light);
+}
+
+/* Selected list row: a flat solid colour, no gradient and no bevel. */
+@utility row-selected {
+  color: var(--accent-foreground);
+  background-color: var(--row-selected);
+}
+
+/* Flat branch and tag markers in the commit graph: solid fill, hairline border, no shadow. */
+@utility pill-flat {
+  height: var(--pill-h);
+  border-width: 1px;
+  border-radius: 9999px;
+  box-shadow: none;
+  text-shadow: none;
+}
+@utility pill-current {
+  background-color: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+@utility pill-local {
+  background-color: color-mix(in oklch, var(--primary) 18%, transparent);
+  border-color: color-mix(in oklch, var(--primary) 55%, transparent);
+  color: var(--primary);
+}
+@utility pill-remote {
+  background-color: var(--secondary);
+  border-color: var(--border);
+  color: var(--muted-foreground);
+}
+@utility pill-tag {
+  background-color: var(--state-modified);
+  border-color: var(--state-modified);
+  color: var(--state-modified-ink);
+}
+
+/* Inset well for text inputs and text areas. */
+@utility well {
+  background-color: var(--input);
+  border-color: var(--border);
+  box-shadow: var(--well-shadow);
+}
+
+/* Bevelled graphite button. */
+@utility bevel {
+  background: linear-gradient(180deg, var(--btn-top), var(--btn-bottom));
+  border-color: var(--btn-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 -1px 0 rgba(0, 0, 0, 0.3), 0 1px 1px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.18);
+  &:hover {
+    background: linear-gradient(180deg, var(--btn-top-hover), var(--btn-bottom-hover));
+  }
+  &:active {
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.55);
+  }
+}
+
+/* Bevelled gold button: the one primary action colour. */
+@utility bevel-gold {
+  color: #2b220f;
+  background: linear-gradient(180deg, #f0d5a3, #d4a960);
+  border-color: #7d5f29;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -1px 0 rgba(0, 0, 0, 0.25), 0 1px 1px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.18);
+  &:hover {
+    background: linear-gradient(180deg, #f6ddb0, #dbb26c);
+  }
+  &:active {
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* Bevelled red button for destructive actions. */
+@utility bevel-red {
+  color: #2a0d09;
+  background: linear-gradient(180deg, #f07a68, #d1503f);
+  border-color: #7a2a20;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 -1px 0 rgba(0, 0, 0, 0.25), 0 1px 1px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.18);
+  &:hover {
+    background: linear-gradient(180deg, #f48c7c, #d95c4b);
+  }
+  &:active {
+    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* Flat file-state badges: one solid colour with dark ink, no gradient and no shadow, for the
+   `M` / `A` / `D` / `R` letters, the Working Tree counts and the ahead/behind counts. */
+@utility badge-added {
+  color: var(--state-added-ink);
+  background-color: var(--state-added);
+}
+@utility badge-modified {
+  color: var(--state-modified-ink);
+  background-color: var(--state-modified);
+}
+@utility badge-deleted {
+  color: var(--state-deleted-ink);
+  background-color: var(--state-deleted);
+}
+@utility badge-renamed {
+  color: var(--state-renamed-ink);
+  background-color: var(--state-renamed);
+}
+@utility badge-gold {
+  color: var(--primary-foreground);
+  background-color: var(--primary);
+}
+@utility badge-graphite {
+  color: var(--secondary-foreground);
+  background-color: var(--accent);
+}

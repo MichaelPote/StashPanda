@@ -1,0 +1,90 @@
+import { ref, shallowRef } from "vue";
+import { defineStore } from "pinia";
+import type { OpResult } from "@/lib/bindings";
+
+export interface CreateBranchPayload {
+  key: string;
+  /** Revision the new branch starts from (an oid, or `HEAD`). */
+  startPoint: string;
+  /** How the dialog names the start point: a branch name or a short sha. */
+  startLabel: string;
+}
+
+export interface CreateTagPayload {
+  key: string;
+  target: string;
+  targetLabel: string;
+}
+
+export interface ConfirmPayload {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  destructive?: boolean;
+}
+
+/** Every dialog the store can open, with what the caller passes in and what the promise resolves to. */
+export interface DialogSpecs {
+  createBranch: { payload: CreateBranchPayload; result: OpResult | null };
+  createTag: { payload: CreateTagPayload; result: OpResult | null };
+  confirm: { payload: ConfirmPayload; result: boolean };
+  about: { payload: null; result: null };
+}
+
+export type DialogKind = keyof DialogSpecs;
+
+/** What each dialog resolves with when it is dismissed without a decision. */
+const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
+  createBranch: null,
+  createTag: null,
+  confirm: false,
+  about: null,
+};
+
+interface ActiveDialog<K extends DialogKind = DialogKind> {
+  kind: K;
+  payload: DialogSpecs[K]["payload"];
+  resolve: (result: DialogSpecs[K]["result"]) => void;
+}
+
+/**
+ * One dialog at a time, opened from anywhere (the native menu bar, a context menu, a panel) and
+ * rendered once in `App.vue`. `open()` resolves when the dialog closes.
+ */
+export const useDialogsStore = defineStore("dialogs", () => {
+  const active = shallowRef<ActiveDialog | null>(null);
+  /** The Add Repository dialog keeps its own flag: it has no result and several openers. */
+  const addRepoOpen = ref(false);
+
+  function open<K extends DialogKind>(kind: K, payload: DialogSpecs[K]["payload"]): Promise<DialogSpecs[K]["result"]> {
+    // A dialog still open when the next one is requested counts as cancelled.
+    cancel();
+    return new Promise<DialogSpecs[K]["result"]>((resolve) => {
+      active.value = { kind, payload, resolve } as ActiveDialog;
+    });
+  }
+
+  /** The payload of the open dialog when it is of `kind`, else null. Dialog components watch this. */
+  function current<K extends DialogKind>(kind: K): DialogSpecs[K]["payload"] | null {
+    const a = active.value;
+    return a && a.kind === kind ? (a.payload as DialogSpecs[K]["payload"]) : null;
+  }
+
+  /** Closes the open dialog of `kind` with a result. Ignored when another dialog is open. */
+  function resolve<K extends DialogKind>(kind: K, result: DialogSpecs[K]["result"]): void {
+    const a = active.value;
+    if (!a || a.kind !== kind) return;
+    active.value = null;
+    (a.resolve as (r: DialogSpecs[K]["result"]) => void)(result);
+  }
+
+  /** Closes whatever dialog is open as if the user had pressed Cancel or Escape. */
+  function cancel(): void {
+    const a = active.value;
+    if (!a) return;
+    active.value = null;
+    (a.resolve as (r: unknown) => void)(CANCEL_RESULTS[a.kind]);
+  }
+
+  return { active, addRepoOpen, open, current, resolve, cancel };
+});

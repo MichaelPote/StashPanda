@@ -1,0 +1,71 @@
+<script setup lang="ts">
+import { PlusIcon } from "@lucide/vue";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import EmptyState from "@/components/shell/EmptyState.vue";
+import LibraryTreeNode from "@/components/shell/LibraryTreeNode.vue";
+import PanelHeader from "@/components/shell/PanelHeader.vue";
+import { errorMessage } from "@/lib/ipc";
+import { useLibraryStore } from "@/stores/library";
+import { useSessionsStore } from "@/stores/sessions";
+
+const emit = defineEmits<{
+  addRepo: [];
+}>();
+
+const library = useLibraryStore();
+const sessions = useSessionsStore();
+
+async function open(key: string): Promise<void> {
+  try {
+    await sessions.openTab(key);
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+async function remove(key: string): Promise<void> {
+  try {
+    if (sessions.sessions.has(key)) await sessions.closeTab(key);
+    await library.removeRepo(key);
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+</script>
+
+<template>
+  <section class="flex h-full min-h-0 flex-col">
+    <PanelHeader title="Repositories">
+      <template #actions>
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <Button variant="ghost" size="icon-xs" class="size-5" @click="emit('addRepo')">
+              <PlusIcon />
+              <span class="sr-only">Add repository</span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Add repository</TooltipContent>
+        </Tooltip>
+      </template>
+    </PanelHeader>
+
+    <EmptyState v-if="library.isEmpty" message="No repositories in the library yet.">
+      <Button variant="outline" size="xs" @click="emit('addRepo')">Add repository…</Button>
+    </EmptyState>
+
+    <ScrollArea v-else class="min-h-0 flex-1">
+      <div class="py-1">
+        <LibraryTreeNode
+          v-for="node in library.tree"
+          :key="node.id"
+          :node="node"
+          :depth="0"
+          @open="open"
+          @remove="remove"
+        />
+      </div>
+    </ScrollArea>
+  </section>
+</template>
