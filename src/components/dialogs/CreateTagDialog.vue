@@ -87,7 +87,7 @@ async function submit(): Promise<void> {
             spellcheck="false"
             :aria-invalid="nameProblem !== null || undefined"
           />
-          <p v-if="nameProblem" class="text-xs text-deleted-fg">{{ nameProblem }}</p>
+          <p v-if="nameProblem" class="text-xs text-destructive">{{ nameProblem }}</p>
         </div>
 
         <div class="grid gap-1.5">
@@ -102,7 +102,7 @@ async function submit(): Promise<void> {
           Replace an existing tag with this name
         </label>
 
-        <p v-if="error" class="rounded-md border border-deleted/40 bg-deleted/10 px-2.5 py-1.5 text-base break-words text-deleted-fg">
+        <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
           {{ error }}
         </p>
       </form>

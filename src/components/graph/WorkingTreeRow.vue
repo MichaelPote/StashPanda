@@ -12,10 +12,10 @@ const badges = computed(() => {
   const wt = props.row.worktree;
   if (!wt) return [];
   const list: { label: string; count: number; classes: string }[] = [
-    { label: "staged", count: wt.staged, classes: "badge-added" },
+    { label: "staged", count: wt.staged, classes: "badge-primary" },
     { label: "unstaged", count: wt.unstaged, classes: "badge-modified" },
-    { label: "untracked", count: wt.untracked, classes: "badge-graphite" },
-    { label: "conflicted", count: wt.conflicted, classes: "badge-deleted" },
+    { label: "untracked", count: wt.untracked, classes: "badge-untracked" },
+    { label: "conflicted", count: wt.conflicted, classes: "badge-conflict" },
   ];
   return list.filter((b) => b.count > 0);
 });
@@ -23,7 +23,7 @@ const badges = computed(() => {
 
 <template>
   <div
-    :class="cn('graph-grid graph-row h-(--row-h) cursor-pointer text-base', selected ? 'row-selected' : 'hover:bg-accent/40')"
+    :class="cn('graph-grid graph-row h-(--row-h) cursor-pointer text-base', selected ? 'row-selected' : 'hover:bg-row-hover')"
     :data-index="row.index"
     role="row"
     :aria-selected="selected"

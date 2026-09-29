@@ -5,11 +5,14 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import RefPill from "@/components/graph/RefPill.vue";
+import { laneVars } from "@/lib/graph/paths";
 
 const props = defineProps<{
   refs: RefLabel[];
   /** The commit these labels sit on; the branch menu needs it as the ref's target. */
   oid: string;
+  /** Lane palette index of the commit's lane; the pills take this lane's colour. */
+  colour: number;
   /** True on HEAD's row when no local branch is current: shows a detached HEAD pill. */
   detachedHead: boolean;
 }>();
@@ -31,7 +34,8 @@ function remoteFor(label: RefLabel): string | null {
 <template>
   <span
     v-if="detachedHead"
-    class="pill-flat pill-local inline-flex shrink-0 items-center px-1 text-[0.7rem] leading-[1.3] font-semibold"
+    class="pill-flat pill-lane-solid inline-flex shrink-0 items-center px-[7px] text-xs leading-none font-semibold"
+    :style="laneVars(colour)"
     title="Detached HEAD"
   >
     HEAD
@@ -46,15 +50,15 @@ function remoteFor(label: RefLabel): string | null {
       :target="oid"
       :is-current="label.isCurrent"
     >
-      <RefPill :label="label" :upstream-remote="remoteFor(label)" />
+      <RefPill :label="label" :colour="colour" :upstream-remote="remoteFor(label)" />
     </RefContextMenu>
-    <RefPill v-else :label="label" :upstream-remote="remoteFor(label)" />
+    <RefPill v-else :label="label" :colour="colour" :upstream-remote="remoteFor(label)" />
   </template>
   <Popover v-if="hidden.length > 0">
     <PopoverTrigger as-child>
       <button
         type="button"
-        class="pill-flat pill-remote inline-flex shrink-0 items-center px-1 text-[0.7rem] leading-[1.3] hover:text-foreground"
+        class="pill-flat pill-remote inline-flex shrink-0 items-center px-[7px] text-xs leading-none font-semibold hover:text-foreground"
         :title="`${hidden.length} more`"
       >
         +{{ hidden.length }}
@@ -72,9 +76,9 @@ function remoteFor(label: RefLabel): string | null {
             :target="oid"
             :is-current="label.isCurrent"
           >
-            <RefPill :label="label" :upstream-remote="remoteFor(label)" />
+            <RefPill :label="label" :colour="colour" :upstream-remote="remoteFor(label)" />
           </RefContextMenu>
-          <RefPill v-else :label="label" :upstream-remote="remoteFor(label)" />
+          <RefPill v-else :label="label" :colour="colour" :upstream-remote="remoteFor(label)" />
         </template>
       </div>
     </PopoverContent>

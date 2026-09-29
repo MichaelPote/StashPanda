@@ -56,6 +56,16 @@ base64 = "0.23.1"
 zeroize = "1.9.0"
 
 
+# Debug builds keep line numbers for our own code (panics and backtraces still
+# name the file and line) but no debugger info for dependencies, which is most
+# of the size of target/debug. Stepping into dependency code in a debugger is
+# not possible with this.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
 codegen-units = 1

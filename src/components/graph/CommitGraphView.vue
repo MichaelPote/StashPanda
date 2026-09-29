@@ -273,7 +273,7 @@ function onScrollTop(top: number): void {
 </script>
 
 <template>
-  <section ref="container" class="flex h-full min-h-0 flex-col outline-none" :style="columnStyle" tabindex="0" @keydown="onKeydown">
+  <section ref="container" class="area flex h-full min-h-0 flex-col outline-none" :style="columnStyle" tabindex="0" @keydown="onKeydown">
     <PanelHeader title="Commits">
       <span class="truncate text-xs text-muted-foreground">{{ session.info.toplevel }}</span>
       <template #actions>

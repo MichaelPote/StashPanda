@@ -89,12 +89,12 @@ async function refresh(): Promise<void> {
 
 <template>
   <TooltipProvider :delay-duration="300">
-    <div class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+    <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
       <AppToolbar @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" />
 
       <div
         v-if="sessions.notice"
-        class="flex shrink-0 items-center gap-2 border-b border-deleted/40 bg-deleted/10 px-3 py-1 text-base text-deleted-fg"
+        class="flex shrink-0 items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-3 py-1 text-base text-destructive"
         role="alert"
       >
         <TriangleAlertIcon class="size-3.5 shrink-0" />
@@ -102,12 +102,12 @@ async function refresh(): Promise<void> {
         <button
           v-if="sessions.noticeAction"
           type="button"
-          class="ml-1 shrink-0 rounded border border-deleted/40 px-1.5 text-xs font-medium hover:bg-deleted/20"
+          class="ml-1 shrink-0 rounded border border-destructive/40 px-1.5 text-xs font-medium hover:bg-destructive/20"
           @click="runNoticeAction"
         >
           {{ sessions.noticeAction.label }}
         </button>
-        <button type="button" class="ml-auto rounded p-0.5 hover:bg-deleted/20" aria-label="Dismiss" @click="sessions.dismissNotice()">
+        <button type="button" class="ml-auto rounded p-0.5 hover:bg-destructive/20" aria-label="Dismiss" @click="sessions.dismissNotice()">
           <XIcon class="size-3.5" />
         </button>
       </div>
@@ -155,6 +155,7 @@ async function refresh(): Promise<void> {
                   <div class="relative min-h-0 flex-1">
                     <EmptyState
                       v-if="sessions.list.length === 0"
+                      class="area"
                       message="Open a repository to get started."
                     >
                       <Button variant="outline" size="sm" @click="dialogs.addRepoOpen = true">
@@ -181,7 +182,7 @@ async function refresh(): Promise<void> {
                 </ResizablePanel>
               </template>
             </ResizablePanelGroup>
-            <div v-if="consoleCollapsed" class="shrink-0 border-t border-border">
+            <div v-if="consoleCollapsed" class="mt-1 shrink-0">
               <ConsolePanel :session="sessions.active" :collapsed="true" />
             </div>
           </div>

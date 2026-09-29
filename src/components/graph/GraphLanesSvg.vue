@@ -53,10 +53,10 @@ const top = computed(() => (props.first - props.blockStart) * props.rowHeight);
           stroke-dasharray="2 2"
         />
         <template v-else-if="d.isHead">
-          <circle :cx="d.cx" :cy="d.cy" r="6.5" fill="none" :stroke="laneColour(d.colour)" stroke-width="1.5" />
-          <circle :cx="d.cx" :cy="d.cy" r="4" :fill="laneColour(d.colour)" stroke="var(--background)" stroke-width="2" />
+          <circle :cx="d.cx" :cy="d.cy" r="5" fill="var(--background)" :stroke="laneColour(d.colour)" stroke-width="2" />
+          <circle :cx="d.cx" :cy="d.cy" r="2" :fill="laneColour(d.colour)" />
         </template>
-        <circle v-else :cx="d.cx" :cy="d.cy" r="4" :fill="laneColour(d.colour)" />
+        <circle v-else :cx="d.cx" :cy="d.cy" r="3.5" :fill="laneColour(d.colour)" />
       </template>
     </g>
   </svg>

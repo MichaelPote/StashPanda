@@ -12,12 +12,12 @@ const props = defineProps<{
   <div
     :class="
       cn(
-        'flex h-7 shrink-0 items-center gap-2 border-b border-border chrome px-2 select-none',
+        'flex h-[24px] shrink-0 items-center gap-2 border-b border-border chrome px-2 select-none',
         props.class,
       )
     "
   >
-    <span class="truncate text-xs font-bold tracking-[0.1em] text-muted-foreground uppercase">
+    <span class="truncate smallcaps">
       {{ title }}
     </span>
     <slot />

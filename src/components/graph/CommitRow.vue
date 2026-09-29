@@ -27,14 +27,14 @@ const dateText = computed(() =>
 
 <template>
   <div
-    :class="cn('graph-grid graph-row h-(--row-h) cursor-pointer text-base', selected ? 'row-selected' : 'hover:bg-accent/40')"
+    :class="cn('graph-grid graph-row h-(--row-h) cursor-pointer text-base', selected ? 'row-selected' : 'hover:bg-row-hover')"
     :data-index="row.index"
     role="row"
     :aria-selected="selected"
   >
     <div />
     <div class="flex min-w-0 items-center gap-1 pr-2 leading-(--row-h)">
-      <RefLabels v-if="row.refs.length > 0 || detachedHead" :refs="row.refs" :oid="row.oid" :detached-head="detachedHead" />
+      <RefLabels v-if="row.refs.length > 0 || detachedHead" :refs="row.refs" :oid="row.oid" :colour="row.colour" :detached-head="detachedHead" />
       <span class="truncate" :title="row.subject">{{ row.subject }}</span>
     </div>
     <div class="flex min-w-0 items-center gap-1.5 px-1.5">

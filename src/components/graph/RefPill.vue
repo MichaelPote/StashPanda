@@ -2,10 +2,13 @@
 import { computed } from "vue";
 import { TagIcon } from "@lucide/vue";
 import type { RefLabel } from "@/lib/bindings";
+import { laneVars } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
 
 const props = defineProps<{
   label: RefLabel;
+  /** Lane palette index of the commit the ref points at; the pill takes this lane's colour. */
+  colour: number;
   /** Remote name of the branch's upstream, for the collapsed `dev ▸ origin` form. */
   upstreamRemote?: string | null;
 }>();
@@ -29,11 +32,11 @@ const classes = computed(() => {
   const { label } = props;
   switch (label.kind.type) {
     case "localBranch":
-      return label.isCurrent ? "pill-current font-semibold" : "pill-local";
+      return label.isCurrent ? "pill-lane-solid" : "pill-lane";
     case "remoteBranch":
-      return "pill-remote";
+      return "pill-lane";
     case "tag":
-      return "pill-tag font-medium";
+      return "pill-lane-solid";
   }
 });
 
@@ -51,10 +54,11 @@ const title = computed(() => {
     type="button"
     :class="
       cn(
-        'pill-flat inline-flex max-w-[12rem] shrink-0 items-center gap-0.5 px-1.5 text-[0.7rem] leading-[1.3] whitespace-nowrap',
+        'pill-flat inline-flex max-w-[12rem] shrink-0 items-center gap-1 px-[7px] text-xs leading-none font-semibold whitespace-nowrap',
         classes,
       )
     "
+    :style="laneVars(colour)"
     :title="title"
   >
     <TagIcon v-if="label.kind.type === 'tag'" class="size-2.5 shrink-0" />

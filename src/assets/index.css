@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 @import "tailwindcss";
 @import "tw-animate-css";
@@ -7,20 +7,23 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Theme: "graphite" skeuomorphic UI from the Stashpanda design canvas.
- *   - Manrope for body, labels and buttons; Outfit for display headings; JetBrains Mono for
+ * Theme: the "Blender pass" from the Stashpanda design canvas, as recorded in the Stashpanda
+ * design system (tokens.json).
+ *   - IBM Plex Sans for body, labels and buttons; Outfit for display headings; JetBrains Mono for
  *     hashes, paths, refs and diffs.
- *   - Graphite surfaces: raised chrome bars with a light top edge, inset wells for lists and inputs.
- *   - Gold is the one primary action colour. Orange / cyan / red / purple mark modified / added /
- *     deleted / renamed files and colour the branch lanes.
+ *   - Editor areas float on a darker window colour with 4px gaps and 4px corners. The panel header
+ *     strip is the only visible gradient; top bars, selections, pills and badges are flat.
+ *   - Cyan is the one action colour. Six hues (violet, cyan, green, yellow, orange, magenta) carry
+ *     Git meaning: graph lanes, ref pills and file states. Each has a solid colour and a dark
+ *     background for chip fills and selection bands.
  */
 
 @theme inline {
-    /* Body text step: 14px at the 15px root. Headings (text-xs), pills and row heights keep
+    /* Body text step: 13px at the 14px root. Headings (text-xs), pills and row heights keep
        their rem sizes, so only the main list and label text changes. */
     --text-base: calc(14rem / 15);
     --text-base--line-height: 1.45;
-    --font-sans: 'Manrope', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
     --font-heading: 'Outfit', var(--font-sans);
     --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', Consolas, monospace;
     --color-sidebar-ring: var(--sidebar-ring);
@@ -55,10 +58,32 @@
     --color-foreground: var(--foreground);
     --color-background: var(--background);
 
-    /* File-state colours. `-fg` is the text tint on graphite, `-ink` is text on a solid badge. */
-    /* Hover fill for flat (ghost) buttons on the raised chrome bars: a step darker than the bar. */
+    /* Surfaces around the editor areas. `background` is the area body itself. */
+    --color-window: var(--window);
+    --color-bar: var(--bar);
+    --color-table-head: var(--table-head);
+    --color-border-soft: var(--border-soft);
+    --color-row-hover: var(--row-hover);
+    /* The directory part of a path on a selected file row. */
+    --color-band-dir: var(--band-dir);
+    --color-neutral: var(--neutral);
+    /* Hover fill for flat (ghost) buttons on the header strips. */
     --color-ghost-hover: var(--ghost-hover);
 
+    /* Text steps below muted-foreground: `dim` for the smallcaps headings, `faint` for column
+       headers. */
+    --color-dim: var(--dim);
+    --color-faint: var(--faint);
+
+    /* The action colour as a solid fill (white text on it) and as text on graphite. */
+    --color-primary-fill: var(--primary-fill);
+    --color-primary-tint: var(--primary-tint);
+
+    /* The six Git hues, for the few places that use a hue directly rather than a role. */
+    --color-violet: var(--violet);
+    --color-cyan: var(--cyan);
+
+    /* File-state colours. `-fg` is the text tint on graphite, `-ink` is text on a solid badge. */
     --color-added: var(--state-added);
     --color-added-fg: var(--state-added-fg);
     --color-added-ink: var(--state-added-ink);
@@ -72,14 +97,29 @@
     --color-renamed-fg: var(--state-renamed-fg);
     --color-renamed-ink: var(--state-renamed-ink);
 
-    --radius-sm: calc(var(--radius) - 4px);
-    --radius-md: calc(var(--radius) - 2px);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) + 4px);
+    /* Diff colours. Removed lines keep a red of their own, so they do not read as the magenta
+       "deleted file" state. */
+    --color-diff-add: var(--diff-add-bg);
+    --color-diff-add-mark: var(--diff-add-mark);
+    --color-diff-add-fg: var(--diff-add-fg);
+    --color-diff-del: var(--diff-del-bg);
+    --color-diff-del-mark: var(--diff-del-mark);
+    --color-diff-del-fg: var(--diff-del-fg);
+    --color-diff-hunk: var(--diff-hunk-bg);
+    --color-diff-hunk-fg: var(--diff-hunk-fg);
+    --color-diff-gutter: var(--diff-gutter);
+    --color-gutter-fg: var(--gutter-fg);
+
+    /* radius-sm: chips, badges, toggles. radius-md: editor areas, fields. radius-lg: keys. */
+    --radius-sm: 3px;
+    --radius-md: 4px;
+    --radius-lg: 5px;
+    --radius-xl: 8px;
 }
 
-/* Light theme: the design canvas only specifies the dark graphite look, so this is a "bone"
-   derivative of the same palette with the accents darkened for contrast on a light ground. */
+/* Light theme: the design canvas only specifies the dark look, so this is a "bone" derivative of
+   the earlier palette. It defines every variable the dark theme does, so the utilities below work
+   in both. */
 :root {
     --background: #f4f2ed;
     --foreground: #25282e;
@@ -114,6 +154,40 @@
     --sidebar-border: #d5d1c8;
     --sidebar-ring: #b88c3f;
 
+    --window: #d9d5cc;
+    --bar: #e9e6df;
+    --area-bottom: #efede7;
+    --area-edge: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    --header-top: #fbfaf7;
+    --header-bottom: #ebe8e1;
+    --header-edge: inset 0 1px 0 rgba(255, 255, 255, 0.85), 0 1px 0 rgba(0, 0, 0, 0.06);
+    --table-head: #e9e6df;
+    --border-soft: #dcd8cf;
+    --row-hover: #e9e6df;
+    --neutral: #d5d1c8;
+    --ghost-hover: #d9d5cc;
+    --dim: #6c717c;
+    --faint: #70757f;
+
+    --primary-fill: #8f6a2a;
+    --primary-fill-foreground: #ffffff;
+    --primary-tint: #7a5a22;
+    --primary-lip: #7d5f29;
+    --primary-edge: #6b5023;
+
+    --key: #ffffff;
+    --key-hover: #f7f5f0;
+    --key-edge: #c8c3b8;
+    --key-lip: #c8c3b8;
+    --key-foreground: #25282e;
+    --danger: #c9432f;
+    --danger-lip: #7a2a20;
+    --danger-edge: #6b2219;
+    --field-inset: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+
+    --violet: #8a63d6;
+    --cyan: #2ba7b2;
+
     --state-added: #2ba7b2;
     --state-added-fg: #1d8c96;
     --state-added-ink: #0b2a2d;
@@ -126,30 +200,41 @@
     --state-renamed: #8a63d6;
     --state-renamed-fg: #6f4bc0;
     --state-renamed-ink: #1f1533;
+    --state-conflict: #c99a1c;
+    --state-conflict-ink: #2a2208;
+    --state-untracked: #d5d1c8;
+    --state-untracked-ink: #25282e;
+
+    /* Selected file rows take a light band of their state colour. */
+    --band-added: color-mix(in oklch, var(--state-added) 16%, var(--background));
+    --band-modified: color-mix(in oklch, var(--state-modified) 16%, var(--background));
+    --band-deleted: color-mix(in oklch, var(--state-deleted) 16%, var(--background));
+    --band-renamed: color-mix(in oklch, var(--state-renamed) 16%, var(--background));
+    --band-conflict: color-mix(in oklch, var(--state-conflict) 18%, var(--background));
+    --band-untracked: #e4e1da;
+    --band-dir: rgba(0, 0, 0, 0.5);
+
+    --diff-add-bg: rgba(43, 167, 178, 0.14);
+    --diff-add-mark: rgba(43, 167, 178, 0.38);
+    --diff-add-fg: #1d8c96;
+    --diff-del-bg: rgba(201, 67, 47, 0.12);
+    --diff-del-mark: rgba(201, 67, 47, 0.34);
+    --diff-del-fg: #b03a27;
+    --diff-hunk-bg: rgba(138, 99, 214, 0.1);
+    --diff-hunk-fg: #6f4bc0;
+    --diff-gutter: #ebe8e1;
+    --gutter-fg: #7d828c;
 
     /* Row and pill heights in rem, so they follow the root font size. paths.ts reads the same
        values through remToPx() for the virtual lists. */
     --row-h: 1.6rem;
     --diff-row-h: 1.4rem;
     --pill-h: 1.2rem;
-    /* Selected list row: one solid colour, a step lighter than the well but darker than the
-       raised header chrome. */
+    /* Selected list row: one solid colour. */
     --row-selected: #e4e1da;
+    --row-selected-text: #25282e;
 
-    /* Surfaces for the skeuomorphic utilities below. */
-    --ghost-hover: #d9d5cc;
-    --surface-raised-top: #fbfaf7;
-    --surface-raised-bottom: #ebe8e1;
-    --edge-light: rgba(255, 255, 255, 0.85);
-    --edge-dark: rgba(0, 0, 0, 0.08);
-    --btn-top: #ffffff;
-    --btn-bottom: #e9e6df;
-    --btn-top-hover: #ffffff;
-    --btn-bottom-hover: #f1eee8;
-    --btn-border: #c8c3b8;
-    --well-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12);
-
-    /* Commit graph lane colours: gold, cyan, orange, purple, red, ash, then their tints. */
+    /* Commit graph lane colours, then the chip fill and solid-pill text for each lane. */
     --graph-lane-0: #b88c3f;
     --graph-lane-1: #2ba7b2;
     --graph-lane-2: #d96f12;
@@ -162,80 +247,177 @@
     --graph-lane-9: #e87a1e;
     --graph-lane-10: #d1503f;
     --graph-lane-11: #23909a;
+    --graph-lane-bg-0: color-mix(in oklch, var(--graph-lane-0) 14%, var(--background));
+    --graph-lane-bg-1: color-mix(in oklch, var(--graph-lane-1) 14%, var(--background));
+    --graph-lane-bg-2: color-mix(in oklch, var(--graph-lane-2) 14%, var(--background));
+    --graph-lane-bg-3: color-mix(in oklch, var(--graph-lane-3) 14%, var(--background));
+    --graph-lane-bg-4: color-mix(in oklch, var(--graph-lane-4) 14%, var(--background));
+    --graph-lane-bg-5: color-mix(in oklch, var(--graph-lane-5) 14%, var(--background));
+    --graph-lane-bg-6: color-mix(in oklch, var(--graph-lane-6) 14%, var(--background));
+    --graph-lane-bg-7: color-mix(in oklch, var(--graph-lane-7) 14%, var(--background));
+    --graph-lane-bg-8: color-mix(in oklch, var(--graph-lane-8) 14%, var(--background));
+    --graph-lane-bg-9: color-mix(in oklch, var(--graph-lane-9) 14%, var(--background));
+    --graph-lane-bg-10: color-mix(in oklch, var(--graph-lane-10) 14%, var(--background));
+    --graph-lane-bg-11: color-mix(in oklch, var(--graph-lane-11) 14%, var(--background));
+    --graph-lane-ink-0: #1c1d20;
+    --graph-lane-ink-1: #1c1d20;
+    --graph-lane-ink-2: #1c1d20;
+    --graph-lane-ink-3: #1c1d20;
+    --graph-lane-ink-4: #1c1d20;
+    --graph-lane-ink-5: #1c1d20;
+    --graph-lane-ink-6: #1c1d20;
+    --graph-lane-ink-7: #1c1d20;
+    --graph-lane-ink-8: #1c1d20;
+    --graph-lane-ink-9: #1c1d20;
+    --graph-lane-ink-10: #1c1d20;
+    --graph-lane-ink-11: #1c1d20;
 }
 
-/* Dark theme: the graphite palette from the design canvas. */
+/* Dark theme: the Blender pass palette (Stashpanda design system, tokens.json). */
 .dark {
-    --background: #33363d;          /* Graphite 700: the inset well behind lists, graph and diff */
-    --foreground: #eeece7;          /* Bone */
-    --card: #42464e;
+    --background: #2b2d32;          /* area: editor area body, top of its gradient */
+    --foreground: #eeece7;          /* ink */
+    --card: #31343a;
     --card-foreground: #eeece7;
-    --popover: #42464e;
+    --popover: #31343a;
     --popover-foreground: #eeece7;
-    --primary: #e2c08a;             /* Gold */
-    --primary-foreground: #2b220f;
-    --secondary: #484c55;           /* Graphite 500 */
+    --primary: #339fcd;             /* cyan: the one action colour */
+    --primary-foreground: #ffffff;
+    --secondary: #3f434b;
     --secondary-foreground: #eeece7;
-    --muted: #3e424a;
-    --muted-foreground: #a9adb6;    /* Ash */
-    --accent: #4e525b;
+    --muted: #2f3237;
+    --muted-foreground: #a9adb6;
+    --accent: #3a3d44;
     --accent-foreground: #eeece7;
-    --destructive: #e35d4a;
-    --border: #272a30;
-    --input: #2c2f35;
-    --ring: #e2c08a;
-    --chart-1: #e2c08a;
-    --chart-2: #4fd1dc;
-    --chart-3: #f38a2e;
-    --chart-4: #b08cf5;
-    --chart-5: #e35d4a;
-    --sidebar: #33363d;
+    --destructive: #e8788a;         /* error text; the Discard key uses --danger */
+    --border: #1e2024;
+    --input: #222429;               /* field */
+    --ring: #339fcd;
+    --chart-1: #7d7aff;
+    --chart-2: #4bc6c7;
+    --chart-3: #7ae77e;
+    --chart-4: #efc226;
+    --chart-5: #ff744d;
+    --sidebar: #2b2d32;
     --sidebar-foreground: #eeece7;
-    --sidebar-primary: #e2c08a;
-    --sidebar-primary-foreground: #2b220f;
-    --sidebar-accent: #4e525b;
+    --sidebar-primary: #339fcd;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: #3a3d44;
     --sidebar-accent-foreground: #eeece7;
-    --sidebar-border: #272a30;
-    --sidebar-ring: #e2c08a;
+    --sidebar-border: #1e2024;
+    --sidebar-ring: #339fcd;
 
-    --state-added: #4fd1dc;
-    --state-added-fg: #7fe2ea;
-    --state-added-ink: #0b2a2d;
-    --state-modified: #f38a2e;
-    --state-modified-fg: #ffa95c;
-    --state-modified-ink: #2e1602;
-    --state-deleted: #e35d4a;
-    --state-deleted-fg: #f07a68;
-    --state-deleted-ink: #2a0d09;
-    --state-renamed: #b08cf5;
-    --state-renamed-fg: #c6a9ff;
-    --state-renamed-ink: #1f1533;
+    --window: #191b1e;              /* window ground and the 4px gaps between areas */
+    --bar: #24262b;                 /* toolbar, repo tab strip, status bar */
+    --area-bottom: #282a2f;
+    --area-edge: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    --header-top: #3a3d44;
+    --header-bottom: #31343a;
+    --header-edge: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 1px 0 rgba(0, 0, 0, 0.25);
+    --table-head: #26282d;          /* column headers and Files section headers */
+    --border-soft: #212429;
+    --row-hover: #33363c;
+    --neutral: #3d4149;
+    --ghost-hover: #4a4e57;
+    --dim: #8b8f97;
+    --faint: #7f838b;
 
-    --ghost-hover: #2c2f35;         /* darker than both the chrome bar and the well */
-    --surface-raised-top: #4e525b;
-    --surface-raised-bottom: #42464e;
-    --row-selected: #3d414a;        /* between the #33363d well and the #42464e header bottom */
-    --edge-light: rgba(255, 255, 255, 0.10);
-    --edge-dark: rgba(0, 0, 0, 0.28);
-    --btn-top: #5e626c;
-    --btn-bottom: #484c55;
-    --btn-top-hover: #666a74;
-    --btn-bottom-hover: #4f535c;
-    --btn-border: #262930;
-    --well-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+    --primary-fill: #2b8db8;
+    --primary-fill-foreground: #ffffff;
+    --primary-tint: #6fc3e6;
+    --primary-lip: #1f6a8a;
+    --primary-edge: #17506a;
 
-    --graph-lane-0: #e2c08a;
-    --graph-lane-1: #4fd1dc;
-    --graph-lane-2: #f38a2e;
-    --graph-lane-3: #b08cf5;
-    --graph-lane-4: #e35d4a;
-    --graph-lane-5: #a9adb6;
-    --graph-lane-6: #7fe2ea;
-    --graph-lane-7: #f0d5a3;
-    --graph-lane-8: #c6a9ff;
-    --graph-lane-9: #ffa95c;
-    --graph-lane-10: #f07a68;
-    --graph-lane-11: #3fbcc7;
+    --key: #3f434b;
+    --key-hover: #474b54;
+    --key-edge: #1a1c20;
+    --key-lip: #24272c;
+    --key-foreground: #e6e4df;
+    --danger: #c23c48;
+    --danger-lip: #7a2430;
+    --danger-edge: #5c1a22;
+    --field-inset: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+
+    --violet: #7d7aff;
+    --cyan: #4bc6c7;
+
+    --state-added: #7ae77e;         /* green */
+    --state-added-fg: #7ae77e;
+    --state-added-ink: #0f2a10;
+    --state-modified: #ff744d;      /* orange */
+    --state-modified-fg: #ff744d;
+    --state-modified-ink: #3a180c;
+    --state-deleted: #dc418d;       /* magenta */
+    --state-deleted-fg: #e86aa8;
+    --state-deleted-ink: #2a0c1f;
+    --state-renamed: #4bc6c7;       /* cyan */
+    --state-renamed-fg: #4bc6c7;
+    --state-renamed-ink: #0a2a2a;
+    --state-conflict: #efc226;      /* yellow */
+    --state-conflict-ink: #2a2208;
+    --state-untracked: #3d4149;     /* neutral */
+    --state-untracked-ink: #dcdad4;
+
+    --band-added: #263427;
+    --band-modified: #382521;
+    --band-deleted: #331f29;
+    --band-renamed: #20302f;
+    --band-conflict: #37301e;
+    --band-untracked: #2f3237;
+    --band-dir: rgba(255, 255, 255, 0.55);
+
+    --diff-add-bg: rgba(122, 231, 126, 0.13);
+    --diff-add-mark: rgba(122, 231, 126, 0.42);
+    --diff-add-fg: #7ae77e;
+    --diff-del-bg: rgba(204, 71, 82, 0.13);
+    --diff-del-mark: rgba(204, 71, 82, 0.4);
+    --diff-del-fg: #e8788a;
+    --diff-hunk-bg: rgba(125, 122, 255, 0.12);
+    --diff-hunk-fg: #a9a7ff;
+    --diff-gutter: #272a30;
+    --gutter-fg: #80848d;
+
+    --row-selected: #22485c;        /* commit and branch rows */
+    --row-selected-text: #e8f4f9;
+
+    /* Six hues, each a lane colour, a chip fill and the text on a solid pill. The backend hands
+       out twelve lane indices, so lanes 6 to 11 repeat lanes 0 to 5. */
+    --graph-lane-0: #7d7aff;
+    --graph-lane-1: #4bc6c7;
+    --graph-lane-2: #7ae77e;
+    --graph-lane-3: #efc226;
+    --graph-lane-4: #ff744d;
+    --graph-lane-5: #dc418d;
+    --graph-lane-6: #7d7aff;
+    --graph-lane-7: #4bc6c7;
+    --graph-lane-8: #7ae77e;
+    --graph-lane-9: #efc226;
+    --graph-lane-10: #ff744d;
+    --graph-lane-11: #dc418d;
+    --graph-lane-bg-0: #26273c;
+    --graph-lane-bg-1: #20302f;
+    --graph-lane-bg-2: #263427;
+    --graph-lane-bg-3: #37301e;
+    --graph-lane-bg-4: #382521;
+    --graph-lane-bg-5: #331f29;
+    --graph-lane-bg-6: #26273c;
+    --graph-lane-bg-7: #20302f;
+    --graph-lane-bg-8: #263427;
+    --graph-lane-bg-9: #37301e;
+    --graph-lane-bg-10: #382521;
+    --graph-lane-bg-11: #331f29;
+    --graph-lane-ink-0: #14143a;
+    --graph-lane-ink-1: #0a2a2a;
+    --graph-lane-ink-2: #0f2a10;
+    --graph-lane-ink-3: #2a2208;
+    --graph-lane-ink-4: #3a180c;
+    --graph-lane-ink-5: #2a0c1f;
+    --graph-lane-ink-6: #14143a;
+    --graph-lane-ink-7: #0a2a2a;
+    --graph-lane-ink-8: #0f2a10;
+    --graph-lane-ink-9: #2a2208;
+    --graph-lane-ink-10: #3a180c;
+    --graph-lane-ink-11: #2a0c1f;
 }
 
 @layer base {
@@ -243,7 +425,7 @@
     @apply border-border outline-ring/50;
     }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-window text-foreground;
     @apply font-sans;
     -webkit-font-smoothing: antialiased;
     }
@@ -270,100 +452,173 @@
   scrollbar-color: color-mix(in oklch, var(--foreground) 25%, transparent) transparent;
 }
 
-/* Raised chrome bar (toolbar, panel headers, tab strip, status bar): graphite gradient with a
-   light top edge. */
-@utility chrome {
-  background: linear-gradient(180deg, var(--surface-raised-top), var(--surface-raised-bottom));
-  box-shadow: inset 0 1px 0 var(--edge-light);
+/* Editor area: a panel floating on the window colour, with a barely graded body. */
+@utility area {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, var(--background), var(--area-bottom));
+  box-shadow: var(--area-edge);
 }
 
-/* Selected list row: a flat solid colour, no gradient and no bevel. */
+/* Panel header strip: the one gradient that stays visible, with a light top edge and a dark
+   line below. */
+@utility chrome {
+  background: linear-gradient(180deg, var(--header-top), var(--header-bottom));
+  box-shadow: var(--header-edge);
+}
+
+/* The one structural heading style: panel titles, sidebar sections and Files section headers. */
+@utility smallcaps {
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--dim);
+}
+
+/* Table column headers, on the table-head strip. */
+@utility column-head {
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+/* Selected commit, branch and repository row: a flat solid colour. */
 @utility row-selected {
-  color: var(--accent-foreground);
+  color: var(--row-selected-text);
   background-color: var(--row-selected);
 }
 
-/* Flat branch and tag markers in the commit graph: solid fill, hairline border, no shadow. */
+/* Selected file row: the band is the file's state chip background. */
+@utility band-added {
+  background-color: var(--band-added);
+}
+@utility band-modified {
+  background-color: var(--band-modified);
+}
+@utility band-deleted {
+  background-color: var(--band-deleted);
+}
+@utility band-renamed {
+  background-color: var(--band-renamed);
+}
+@utility band-conflict {
+  background-color: var(--band-conflict);
+}
+@utility band-untracked {
+  background-color: var(--band-untracked);
+}
+
+/* Ref pills take the colour of the lane they sit on. The element sets `--lane`, `--lane-bg` and
+   `--lane-ink` (see laneVars() in lib/graph/paths.ts). */
 @utility pill-flat {
   height: var(--pill-h);
   border-width: 1px;
-  border-radius: 9999px;
+  border-radius: var(--radius-sm);
   box-shadow: none;
   text-shadow: none;
 }
-@utility pill-current {
-  background-color: var(--primary);
-  border-color: var(--primary);
-  color: var(--primary-foreground);
+/* Branches: an outlined chip in the lane colour. */
+@utility pill-lane {
+  background-color: var(--lane-bg);
+  border-color: var(--lane);
+  color: var(--lane);
 }
-@utility pill-local {
-  background-color: color-mix(in oklch, var(--primary) 18%, transparent);
-  border-color: color-mix(in oklch, var(--primary) 55%, transparent);
-  color: var(--primary);
+/* The current branch, tags and a detached HEAD: solid lane colour with dark ink. */
+@utility pill-lane-solid {
+  background-color: var(--lane);
+  border-color: var(--lane);
+  color: var(--lane-ink);
 }
+/* Refs that are not on a lane, and the "+N more" button. */
 @utility pill-remote {
-  background-color: var(--secondary);
-  border-color: var(--border);
+  background-color: var(--neutral);
+  border-color: var(--border-soft);
   color: var(--muted-foreground);
 }
-@utility pill-tag {
-  background-color: var(--state-modified);
-  border-color: var(--state-modified);
-  color: var(--state-modified-ink);
-}
 
-/* Inset well for text inputs and text areas. */
+/* Inset field for text inputs, text areas and dropdowns. */
 @utility well {
   background-color: var(--input);
   border-color: var(--border);
-  box-shadow: var(--well-shadow);
+  box-shadow: var(--field-inset);
 }
 
-/* Bevelled graphite button. */
-@utility bevel {
-  background: linear-gradient(180deg, var(--btn-top), var(--btn-bottom));
-  border-color: var(--btn-border);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 -1px 0 rgba(0, 0, 0, 0.3), 0 1px 1px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.18);
+/* Toggle pill and segmented-control button. The pressed state follows `aria-pressed`. */
+@utility toggle {
+  border-color: var(--border-soft);
+  background-color: transparent;
+  color: var(--muted-foreground);
   &:hover {
-    background: linear-gradient(180deg, var(--btn-top-hover), var(--btn-bottom-hover));
+    color: var(--foreground);
   }
-  &:active {
-    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.55);
-  }
-}
-
-/* Bevelled gold button: the one primary action colour. */
-@utility bevel-gold {
-  color: #2b220f;
-  background: linear-gradient(180deg, #f0d5a3, #d4a960);
-  border-color: #7d5f29;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.35);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), inset 0 -1px 0 rgba(0, 0, 0, 0.25), 0 1px 1px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.18);
-  &:hover {
-    background: linear-gradient(180deg, #f6ddb0, #dbb26c);
-  }
-  &:active {
-    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45);
+  &[aria-pressed="true"] {
+    background-color: var(--primary-fill);
+    border-color: var(--primary);
+    color: var(--primary-fill-foreground);
   }
 }
 
-/* Bevelled red button for destructive actions. */
-@utility bevel-red {
-  color: #2a0d09;
-  background: linear-gradient(180deg, #f07a68, #d1503f);
-  border-color: #7a2a20;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), inset 0 -1px 0 rgba(0, 0, 0, 0.25), 0 1px 1px rgba(0, 0, 0, 0.35), 0 3px 8px rgba(0, 0, 0, 0.18);
-  &:hover {
-    background: linear-gradient(180deg, #f48c7c, #d95c4b);
+/* Chiclet key: a flat top, a 1px dark edge and a 2px lip underneath, with no gradient and no blur
+   shadow. The lip is the bottom border plus a 1px shadow, then a 1px dark seat. Pressed, the key
+   moves down 2px and the lip disappears. */
+@utility key {
+  color: var(--key-foreground);
+  background: var(--key);
+  border-color: var(--key-edge);
+  border-bottom-color: var(--key-lip);
+  box-shadow: 0 1px 0 var(--key-lip), 0 2px 0 rgba(0, 0, 0, 0.35);
+  &:hover:not(:disabled) {
+    background: var(--key-hover);
   }
-  &:active {
-    box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.45);
+  &:active:not(:disabled) {
+    transform: translateY(2px);
+    border-bottom-color: var(--key-edge);
+    box-shadow: none;
   }
 }
 
-/* Flat file-state badges: one solid colour with dark ink, no gradient and no shadow, for the
-   `M` / `A` / `D` / `R` letters, the Working Tree counts and the ahead/behind counts. */
+/* Primary chiclet key: the one action colour, white text. */
+@utility key-primary {
+  color: var(--primary-fill-foreground);
+  background: var(--primary-fill);
+  border-color: var(--primary-edge);
+  border-bottom-color: var(--primary-lip);
+  box-shadow: 0 1px 0 var(--primary-lip), 0 2px 0 rgba(0, 0, 0, 0.35);
+  &:hover:not(:disabled) {
+    background: color-mix(in oklch, var(--primary-fill) 88%, white);
+  }
+  &:active:not(:disabled) {
+    transform: translateY(2px);
+    border-bottom-color: var(--primary-edge);
+    box-shadow: none;
+  }
+}
+
+/* Destructive chiclet key (Discard, Force push). */
+@utility key-danger {
+  color: #ffffff;
+  background: var(--danger);
+  border-color: var(--danger-edge);
+  border-bottom-color: var(--danger-lip);
+  box-shadow: 0 1px 0 var(--danger-lip), 0 2px 0 rgba(0, 0, 0, 0.35);
+  &:hover:not(:disabled) {
+    background: color-mix(in oklch, var(--danger) 88%, white);
+  }
+  &:active:not(:disabled) {
+    transform: translateY(2px);
+    border-bottom-color: var(--danger-edge);
+    box-shadow: none;
+  }
+}
+
+/* Flat file-state badges and counters: one solid colour with dark ink, for the `M` / `A` / `D` /
+   `R` / `!` / `?` letters, the Working Tree counts and the ahead/behind counts. */
 @utility badge-added {
   color: var(--state-added-ink);
   background-color: var(--state-added);
@@ -380,11 +635,19 @@
   color: var(--state-renamed-ink);
   background-color: var(--state-renamed);
 }
-@utility badge-gold {
-  color: var(--primary-foreground);
-  background-color: var(--primary);
+@utility badge-conflict {
+  color: var(--state-conflict-ink);
+  background-color: var(--state-conflict);
 }
-@utility badge-graphite {
-  color: var(--secondary-foreground);
-  background-color: var(--accent);
+@utility badge-untracked {
+  color: var(--state-untracked-ink);
+  background-color: var(--state-untracked);
+}
+@utility badge-primary {
+  color: var(--primary-fill-foreground);
+  background-color: var(--primary-fill);
+}
+@utility badge-neutral {
+  color: var(--foreground);
+  background-color: var(--neutral);
 }

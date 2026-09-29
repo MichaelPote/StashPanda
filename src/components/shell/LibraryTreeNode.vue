@@ -50,7 +50,7 @@ function toggleGroup(): void {
   <template v-if="node.kind === 'group'">
     <button
       type="button"
-      class="flex h-(--row-h) w-full cursor-pointer items-center gap-1 pr-2 text-left text-base hover:bg-accent/60"
+      class="flex h-(--row-h) w-full cursor-pointer items-center gap-1 pr-2 text-left text-base hover:bg-row-hover"
       :style="indent"
       @click="toggleGroup"
     >
@@ -90,7 +90,7 @@ function toggleGroup(): void {
         type="button"
         :class="
           cn(
-            'flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 text-left text-base hover:bg-accent/60',
+            'flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 text-left text-base hover:bg-row-hover',
             isActive && 'row-selected',
             isOpen && !isActive && 'font-medium',
           )
@@ -109,7 +109,7 @@ function toggleGroup(): void {
         <Badge
           as="span"
           variant="outline"
-          class="ml-auto h-4 shrink-0 px-1.5 text-[0.7rem] font-normal text-muted-foreground"
+          class="ml-auto h-4 shrink-0 rounded-sm border-transparent bg-neutral px-1.5 text-[0.7rem] font-normal text-muted-foreground"
         >
           {{ transportLabel(node.repo.resolvedTransport) }}
         </Badge>

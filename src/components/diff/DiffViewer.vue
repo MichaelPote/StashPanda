@@ -254,9 +254,9 @@ const headerPath = computed(() => {
 function lineClass(kind: DiffLine["kind"] | undefined): string {
   switch (kind) {
     case "add":
-      return "border-l-2 border-added bg-added/15";
+      return "border-l-2 border-transparent bg-diff-add";
     case "del":
-      return "border-l-2 border-deleted bg-deleted/15";
+      return "border-l-2 border-transparent bg-diff-del";
     case "meta":
       return "border-l-2 border-transparent text-muted-foreground italic";
     default:
@@ -284,17 +284,17 @@ function toggleContext(value: string): void {
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 flex-col">
+  <section class="area flex h-full min-h-0 flex-col">
     <PanelHeader title="Diff">
       <span v-if="selected" class="truncate font-mono text-xs text-foreground" :title="headerPath">{{ headerPath }}</span>
       <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
       <template #actions>
         <div v-if="selected" class="flex items-center gap-1 text-[0.7rem]">
-          <div class="inline-flex overflow-hidden rounded-full border border-border">
+          <div class="inline-flex overflow-hidden rounded-md border border-border-soft">
             <button
               type="button"
               :aria-pressed="mode === 'unified'"
-              :class="cn('h-[1.2rem] px-2 leading-none', mode === 'unified' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground')"
+              class="toggle h-[18px] px-2 leading-none font-medium rounded-none border-0"
               @click="mode = 'unified'"
             >
               Unified
@@ -302,7 +302,7 @@ function toggleContext(value: string): void {
             <button
               type="button"
               :aria-pressed="mode === 'side'"
-              :class="cn('h-[1.2rem] border-l border-border px-2 leading-none', mode === 'side' ? 'bg-accent text-accent-foreground' : 'text-muted-foreground hover:text-foreground')"
+              class="toggle h-[18px] px-2 leading-none font-medium rounded-none border-0 border-l border-l-border-soft"
               @click="mode = 'side'"
             >
               Side by side
@@ -311,7 +311,7 @@ function toggleContext(value: string): void {
           <label class="inline-flex items-center gap-1 text-muted-foreground">
             Context
             <select
-              class="h-[1.2rem] rounded border border-border bg-background px-1 text-[0.7rem] text-foreground"
+              class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground"
               :value="String(contextLines)"
               @change="toggleContext(($event.target as HTMLSelectElement).value)"
             >
@@ -321,7 +321,7 @@ function toggleContext(value: string): void {
           <button
             type="button"
             :aria-pressed="ignoreWhitespace"
-            :class="cn('h-[1.2rem] rounded-full border px-2 leading-none', ignoreWhitespace ? 'border-transparent bg-accent text-accent-foreground' : 'border-border text-muted-foreground hover:text-foreground')"
+            class="toggle h-[18px] px-2 leading-none font-medium rounded-sm border"
             title="Ignore whitespace changes (git diff -w)"
             @click="ignoreWhitespace = !ignoreWhitespace"
           >
@@ -330,7 +330,7 @@ function toggleContext(value: string): void {
           <button
             type="button"
             :aria-pressed="ignoreCrAtEol"
-            :class="cn('h-[1.2rem] rounded-full border px-2 leading-none', ignoreCrAtEol ? 'border-transparent bg-accent text-accent-foreground' : 'border-border text-muted-foreground hover:text-foreground')"
+            class="toggle h-[18px] px-2 leading-none font-medium rounded-sm border"
             title="Ignore carriage returns at the end of lines (git diff --ignore-cr-at-eol)"
             @click="ignoreCrAtEol = !ignoreCrAtEol"
           >
@@ -348,7 +348,7 @@ function toggleContext(value: string): void {
     </PanelHeader>
 
     <EmptyState v-if="!selected" message="Select a file to see its changes." />
-    <EmptyState v-else-if="error" :message="error" class="text-deleted-fg" />
+    <EmptyState v-else-if="error" :message="error" class="text-destructive" />
     <EmptyState v-else-if="diff && diff.isBinary" message="Binary file" />
     <EmptyState v-else-if="diff && rowCount === 0 && !loading" message="No differences to show." />
 
@@ -367,16 +367,16 @@ function toggleContext(value: string): void {
             <!-- Unified -->
             <template v-if="mode === 'unified'">
               <template v-for="(row, k) in visibleUnified" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center bg-renamed/10 px-2 whitespace-pre text-renamed-fg">
+                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
                   {{ row.header }}
                 </div>
                 <div v-else :class="cn('flex h-5 whitespace-pre', lineClass(row.line?.kind))">
-                  <span class="w-10 shrink-0 pr-1 text-right text-muted-foreground/70 tabular-nums select-none">{{ row.line?.oldNo ?? "" }}</span>
-                  <span class="w-10 shrink-0 pr-1 text-right text-muted-foreground/70 tabular-nums select-none">{{ row.line?.newNo ?? "" }}</span>
+                  <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.oldNo ?? "" }}</span>
+                  <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.newNo ?? "" }}</span>
                   <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ marker(row.line?.kind) }}</span>
                   <span class="flex-1 pr-2">
                     <template v-for="(seg, i) in segments(row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
-                      <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'rounded-sm bg-deleted/40 text-inherit' : 'rounded-sm bg-added/40 text-inherit'">{{ seg.text }}</mark>
+                      <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'rounded-sm bg-diff-del-mark text-inherit' : 'rounded-sm bg-diff-add-mark text-inherit'">{{ seg.text }}</mark>
                       <template v-else>{{ seg.text }}</template>
                     </template>
                   </span>
@@ -387,7 +387,7 @@ function toggleContext(value: string): void {
             <!-- Side by side -->
             <template v-else>
               <template v-for="(row, k) in visibleSide" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center bg-renamed/10 px-2 whitespace-pre text-renamed-fg">
+                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
                   {{ row.header }}
                 </div>
                 <div v-else-if="row.kind === 'meta'" class="flex h-5 items-center border-l-2 border-transparent px-11 whitespace-pre text-muted-foreground italic">
@@ -395,24 +395,24 @@ function toggleContext(value: string): void {
                 </div>
                 <div v-else class="flex h-5">
                   <div :class="cn('flex min-w-0 flex-1 whitespace-pre', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'border-l-2 border-transparent bg-muted/20')">
-                    <span class="w-10 shrink-0 pr-1 text-right text-muted-foreground/70 tabular-nums select-none">{{ row.left?.oldNo ?? "" }}</span>
+                    <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.left?.oldNo ?? "" }}</span>
                     <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
                     <span class="flex-1 pr-2">
                       <template v-if="row.left">
                         <template v-for="(seg, i) in segments(row.pair, 'old', row.left.text)" :key="i">
-                          <mark v-if="seg.changed" class="rounded-sm bg-deleted/40 text-inherit">{{ seg.text }}</mark>
+                          <mark v-if="seg.changed" class="rounded-sm bg-diff-del-mark text-inherit">{{ seg.text }}</mark>
                           <template v-else>{{ seg.text }}</template>
                         </template>
                       </template>
                     </span>
                   </div>
-                  <div :class="cn('flex min-w-0 flex-1 border-l border-border whitespace-pre', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'border-l-2 border-transparent bg-muted/20')">
-                    <span class="w-10 shrink-0 pr-1 text-right text-muted-foreground/70 tabular-nums select-none">{{ row.right?.newNo ?? "" }}</span>
+                  <div :class="cn('flex min-w-0 flex-1 whitespace-pre', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'border-l-2 border-transparent bg-muted/20', 'border-l-border-soft')">
+                    <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.right?.newNo ?? "" }}</span>
                     <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
                     <span class="flex-1 pr-2">
                       <template v-if="row.right">
                         <template v-for="(seg, i) in segments(row.pair, 'new', row.right.text)" :key="i">
-                          <mark v-if="seg.changed" class="rounded-sm bg-added/40 text-inherit">{{ seg.text }}</mark>
+                          <mark v-if="seg.changed" class="rounded-sm bg-diff-add-mark text-inherit">{{ seg.text }}</mark>
                           <template v-else>{{ seg.text }}</template>
                         </template>
                       </template>

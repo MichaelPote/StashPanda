@@ -220,7 +220,7 @@ const selectClass =
             <LoaderCircleIcon class="size-3.5 animate-spin" />
             Resolving…
           </div>
-          <p v-else-if="resolveError" class="text-deleted-fg">{{ resolveError }}</p>
+          <p v-else-if="resolveError" class="text-destructive">{{ resolveError }}</p>
           <div v-else-if="resolution" class="grid gap-1.5">
             <div class="flex items-center gap-2">
               <Badge variant="secondary" class="h-5 text-xs">
@@ -326,7 +326,7 @@ const selectClass =
           </CollapsibleContent>
         </Collapsible>
 
-        <p v-if="submitError" class="rounded-md border border-deleted/40 bg-deleted/10 px-2.5 py-1.5 text-base text-deleted-fg">
+        <p v-if="submitError" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base text-destructive">
           {{ submitError }}
         </p>
       </form>

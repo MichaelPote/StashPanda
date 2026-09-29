@@ -34,8 +34,8 @@ Each item names the files it touches so it can be picked up cold.
       | Command | What it does |
       |---|---|
       | `npm run win:ux` | Vite runs in WSL; the Windows app loads its frontend from it, so Vue, TypeScript and CSS edits hot reload. Rust changes need Ctrl-C and a re-run. Ctrl-C stops both sides. |
-      | `npm run win:dev` | Runs `tauri dev` entirely on Windows, including its own Vite. |
-      | `npm run win:build` | Runs `tauri build` on Windows: release binary plus NSIS and MSI installers. |
+      | `npm run win:dev` | Runs `tauri dev` entirely on Windows, including its own Vite. Ctrl-C stops the whole Windows process tree; before starting, it refuses to run if a leftover process holds port 1420 on Windows, and names it. |
+      | `npm run win:build` | Runs `tauri build` on Windows, then copies the release binary and the NSIS and MSI installers to `bundle/` in both the WSL checkout (ignored by Git) and `C:\src\stashpanda`. |
       | `npm run win:sync` | Mirrors the source and runs `npm install` on Windows, nothing else. |
 
       The mirror is one-way: edit in WSL, never in `C:\src\stashpanda`. `win:ux` merges

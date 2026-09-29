@@ -17,7 +17,7 @@ function onAuxClick(event: MouseEvent, key: string): void {
 
 <template>
   <div
-    class="flex h-8 shrink-0 items-stretch overflow-x-auto border-b border-border chrome select-none scrollbar-thin"
+    class="flex h-[28px] shrink-0 items-stretch gap-0.5 overflow-x-auto border-b border-border bg-bar px-1 select-none scrollbar-thin"
     role="tablist"
   >
     <div
@@ -28,10 +28,10 @@ function onAuxClick(event: MouseEvent, key: string): void {
       :aria-selected="session.key === sessions.activeKey"
       :class="
         cn(
-          'group relative flex min-w-0 max-w-56 shrink-0 cursor-default items-center gap-1.5 border-r border-border px-2.5 text-base',
+          'group relative flex min-w-0 max-w-56 shrink-0 cursor-default items-center gap-1.5 px-[11px] text-[12.5px]',
           session.key === sessions.activeKey
-            ? 'bg-background text-foreground after:absolute after:inset-x-0 after:top-0 after:h-px after:bg-primary'
-            : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+            ? 'mt-[3px] h-[25px] rounded-t-lg border border-b-0 border-border bg-background text-foreground shadow-[inset_0_-2px_0_var(--primary)]'
+            : 'text-muted-foreground hover:text-foreground',
         )
       "
       :title="`${session.info.nativePath} (${transportLabel(session.info.transport)})`"

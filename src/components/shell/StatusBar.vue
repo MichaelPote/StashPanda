@@ -30,7 +30,7 @@ const watcherText = computed(() => {
 
 <template>
   <footer
-    class="flex h-6 shrink-0 items-center gap-2 border-t border-border chrome px-2 text-xs text-muted-foreground select-none"
+    class="flex h-[21px] shrink-0 items-center gap-2 border-t border-window bg-bar px-2 text-xs text-muted-foreground select-none"
   >
     <span v-if="hostText" class="inline-flex items-center gap-1" :title="'Host operating system'">
       <MonitorIcon class="size-3" />

@@ -48,7 +48,7 @@ function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEve
 
 <template>
   <div
-    class="graph-grid h-6 shrink-0 border-b border-border chrome text-xs font-medium text-muted-foreground select-none"
+    class="graph-grid h-[21px] shrink-0 border-b border-border bg-table-head column-head select-none"
   >
     <div class="relative flex items-center px-1.5">
       <span class="sr-only">Graph</span>

@@ -88,7 +88,7 @@ async function reveal(entry: RefEntry): Promise<void> {
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 flex-col">
+  <section class="area flex h-full min-h-0 flex-col">
     <PanelHeader title="Branches">
       <span v-if="active" class="truncate text-xs text-muted-foreground">
         {{ active.info.displayName }}
@@ -102,11 +102,11 @@ async function reveal(entry: RefEntry): Promise<void> {
     <ScrollArea v-else class="min-h-0 flex-1">
       <div class="py-1 text-base select-none">
         <!-- Local branches -->
-        <button type="button" class="flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 text-xs font-bold tracking-[0.1em] text-muted-foreground uppercase hover:text-foreground" @click="toggle('local')">
+        <button type="button" class="flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('local')">
           <component :is="isOpen('local') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
           <GitBranchIcon class="size-3.5" />
           Local Branches
-          <span class="ml-auto normal-case tabular-nums">{{ locals.length }}</span>
+          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ locals.length }}</span>
         </button>
         <template v-if="isOpen('local')">
           <p v-if="locals.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No local branches</p>
@@ -122,33 +122,33 @@ async function reveal(entry: RefEntry): Promise<void> {
           >
             <button
               type="button"
-              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-7 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-accent/40')"
+              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-7 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
               :title="`${b.fullName}\n${b.target}\n${b.subject}`"
               @click="reveal(b)"
             >
-              <CheckIcon v-if="b.isHead" class="size-3 shrink-0 text-primary" />
+              <CheckIcon v-if="b.isHead" class="size-3 shrink-0 text-primary-tint" />
               <span v-else class="size-3 shrink-0" />
               <span :class="cn('truncate', b.isHead && 'font-semibold')">{{ b.short }}</span>
               <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
                 <span v-if="b.upstreamGone" class="rounded-sm badge-deleted px-1">gone</span>
                 <span v-if="b.ahead" class="rounded-sm badge-modified px-1">↑{{ b.ahead }}</span>
-                <span v-if="b.behind" class="rounded-sm badge-added px-1">↓{{ b.behind }}</span>
+                <span v-if="b.behind" class="rounded-sm badge-primary px-1">↓{{ b.behind }}</span>
               </span>
             </button>
           </RefContextMenu>
         </template>
 
         <!-- Remotes -->
-        <button type="button" class="mt-1 flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 text-xs font-bold tracking-[0.1em] text-muted-foreground uppercase hover:text-foreground" @click="toggle('remotes')">
+        <button type="button" class="mt-1 flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('remotes')">
           <component :is="isOpen('remotes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
           <CloudIcon class="size-3.5" />
           Remotes
-          <span class="ml-auto normal-case tabular-nums">{{ remoteGroups.length }}</span>
+          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ remoteGroups.length }}</span>
         </button>
         <template v-if="isOpen('remotes')">
           <p v-if="remoteGroups.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No remotes</p>
           <template v-for="group in remoteGroups" :key="group.name">
-            <button type="button" class="flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-5 text-left hover:bg-accent/40" @click="toggle(`remote:${group.name}`)">
+            <button type="button" class="flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-5 text-left hover:bg-row-hover" @click="toggle(`remote:${group.name}`)">
               <component :is="isOpen(`remote:${group.name}`) ? ChevronDownIcon : ChevronRightIcon" class="size-3 text-muted-foreground" />
               <span class="truncate font-medium">{{ group.name }}</span>
               <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ group.branches.length }}</span>
@@ -166,7 +166,7 @@ async function reveal(entry: RefEntry): Promise<void> {
               >
                 <button
                   type="button"
-                  :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-10 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-accent/40')"
+                  :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-10 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
                   :title="`${b.fullName}\n${b.target}\n${b.subject}`"
                   @click="reveal(b)"
                 >
@@ -178,11 +178,11 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Tags -->
-        <button type="button" class="mt-1 flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 text-xs font-bold tracking-[0.1em] text-muted-foreground uppercase hover:text-foreground" @click="toggle('tags')">
+        <button type="button" class="mt-1 flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('tags')">
           <component :is="isOpen('tags') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
           <TagIcon class="size-3.5" />
           Tags
-          <span class="ml-auto normal-case tabular-nums">{{ tags.length }}</span>
+          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ tags.length }}</span>
         </button>
         <template v-if="isOpen('tags')">
           <p v-if="tags.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No tags</p>
@@ -198,7 +198,7 @@ async function reveal(entry: RefEntry): Promise<void> {
           >
             <button
               type="button"
-              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-7 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-accent/40')"
+              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-7 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-row-hover')"
               :title="`${t.fullName}\n${t.target}\n${t.subject}`"
               @click="reveal(t)"
             >
@@ -210,11 +210,11 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Stashes -->
-        <div class="mt-1 flex h-(--row-h) items-center gap-1.5 px-2 text-xs font-bold tracking-[0.1em] text-muted-foreground uppercase">
+        <div class="mt-1 flex h-(--row-h) items-center gap-1.5 px-2 smallcaps">
           <span class="size-3" />
           <ArchiveIcon class="size-3.5" />
           Stashes
-          <span class="ml-auto normal-case tabular-nums">{{ stashCount }}</span>
+          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ stashCount }}</span>
         </div>
         <!-- TODO(backend): no `stash list` command exists yet, so only `status.stashCount` is shown. -->
         <p class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">

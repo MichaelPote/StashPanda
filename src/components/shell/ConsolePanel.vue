@@ -95,18 +95,18 @@ watch(
 
 function exitBadgeClass(entry: ConsoleEntry): string {
   if (entry.running) return "border-border text-muted-foreground";
-  if (entry.exitCode === 0) return "border-added/40 bg-added/15 text-added-fg";
-  return "border-deleted/40 bg-deleted/15 text-deleted-fg";
+  if (entry.exitCode === 0) return "border-transparent bg-neutral text-foreground";
+  return "border-destructive/40 bg-destructive/15 text-destructive";
 }
 
 function categoryClass(category: Category): string {
   switch (category) {
     case "userAction":
-      return "bg-added/15 text-added-fg";
+      return "bg-violet/28 text-primary-tint";
     case "internal":
       return "bg-muted text-muted-foreground";
     case "watcher":
-      return "bg-renamed/15 text-renamed-fg";
+      return "bg-cyan/15 text-cyan";
   }
 }
 
@@ -123,11 +123,11 @@ function categoryShort(category: Category): string {
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 flex-col bg-background">
+  <section class="area flex h-full min-h-0 flex-col">
     <div
-      class="flex h-7 shrink-0 items-center gap-2 border-b border-border chrome px-2 select-none"
+      :class="cn('flex shrink-0 items-center gap-2 chrome px-2 select-none', collapsed ? 'h-[26px]' : 'h-[24px] border-b border-border')"
     >
-      <span class="text-xs font-bold tracking-[0.1em] text-muted-foreground uppercase">Console</span>
+      <span class="smallcaps">Console</span>
       <span v-if="session" class="truncate text-xs text-muted-foreground">
         {{ session.info.displayName }}
       </span>
@@ -138,14 +138,7 @@ function categoryShort(category: Category): string {
           :key="c.id"
           type="button"
           :aria-pressed="filters[c.id] !== false"
-          :class="
-            cn(
-              'h-[1.2rem] rounded-full border px-2 text-[0.7rem] leading-none transition-colors',
-              filters[c.id] !== false
-                ? 'border-transparent bg-accent text-accent-foreground'
-                : 'border-border text-muted-foreground hover:text-foreground',
-            )
-          "
+          class="toggle h-[18px] rounded-sm border px-2 text-[0.7rem] leading-none font-medium transition-colors"
           @click="toggleFilter(c.id)"
         >
           {{ c.label }}
@@ -206,7 +199,7 @@ function categoryShort(category: Category): string {
         <div v-for="entry in entries" :key="entry.seq" class="border-b border-border/60">
           <button
             type="button"
-            class="flex h-(--row-h) w-full items-center gap-2 px-2 text-left hover:bg-accent/40"
+            class="flex h-(--row-h) w-full items-center gap-2 px-2 text-left hover:bg-row-hover"
             @click="toggleExpanded(entry.seq)"
           >
             <component
@@ -245,7 +238,7 @@ function categoryShort(category: Category): string {
                 · stdout {{ entry.stdoutBytes }} B · stderr {{ entry.stderrBytes }} B
               </template>
             </p>
-            <p v-if="entry.error" class="font-sans text-xs text-deleted-fg">
+            <p v-if="entry.error" class="font-sans text-xs text-destructive">
               {{ GitErrorMessage(entry.error) }}
             </p>
             <div v-if="entry.stdout.length > 0">

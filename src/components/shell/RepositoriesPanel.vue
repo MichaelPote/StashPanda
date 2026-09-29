@@ -36,7 +36,7 @@ async function remove(key: string): Promise<void> {
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 flex-col">
+  <section class="area flex h-full min-h-0 flex-col">
     <PanelHeader title="Repositories">
       <template #actions>
         <Tooltip>

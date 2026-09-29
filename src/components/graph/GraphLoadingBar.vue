@@ -8,7 +8,7 @@ defineProps<{
 </script>
 
 <template>
-  <div v-if="visible" class="relative h-[1.2rem] shrink-0 overflow-hidden border-b border-border chrome" role="status">
+  <div v-if="visible" class="relative h-[1.2rem] shrink-0 overflow-hidden border-b border-border bg-table-head" role="status">
     <div class="absolute inset-x-0 top-0 h-[2px] overflow-hidden bg-primary/10">
       <div class="graph-loading-sweep h-full w-1/3 bg-primary/70" />
     </div>

@@ -76,7 +76,7 @@ Windows toolchain there through WSL interop. Run these from a WSL shell:
 ```bash
 npm run win:ux       # UX work: Vite runs in WSL, the Windows app loads from it, edits hot reload
 npm run win:dev      # mirror, then run the desktop app entirely on Windows (Vite included)
-npm run win:build    # mirror, then build the Windows release binary and installers
+npm run win:build    # mirror, build the Windows release binary and installers, copy them to bundle/ in both folders
 npm run win:sync     # mirror the source and run npm install on Windows, nothing else
 ```
 

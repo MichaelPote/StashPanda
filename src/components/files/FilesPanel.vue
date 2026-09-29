@@ -22,7 +22,7 @@ interface FileItem {
   path: string;
   oldPath: string | null;
   letter: string;
-  letterClass: string;
+  state: FileState;
   added: number | null;
   deleted: number | null;
   binary: boolean;
@@ -44,24 +44,36 @@ const mode = computed<"none" | "commit" | "worktree">(() => {
 
 // ---- Status letters ------------------------------------------------------------------------
 
-function letterClass(letter: string): string {
+type FileState = "added" | "modified" | "deleted" | "renamed" | "conflict" | "untracked" | "neutral";
+
+/** Badge and selected-row band per file state, written out in full so Tailwind finds them. */
+const STATE_CLASSES: Record<FileState, { badge: string; band: string }> = {
+  added: { badge: "badge-added", band: "band-added" },
+  modified: { badge: "badge-modified", band: "band-modified" },
+  deleted: { badge: "badge-deleted", band: "band-deleted" },
+  renamed: { badge: "badge-renamed", band: "band-renamed" },
+  conflict: { badge: "badge-conflict", band: "band-conflict" },
+  untracked: { badge: "badge-untracked", band: "band-untracked" },
+  neutral: { badge: "badge-neutral", band: "band-untracked" },
+};
+
+function letterState(letter: string): FileState {
   switch (letter.charAt(0)) {
     case "A":
-      return "badge-added";
+      return "added";
     case "M":
-      return "badge-modified";
+      return "modified";
     case "D":
-      return "badge-deleted";
+      return "deleted";
     case "R":
-      return "badge-renamed";
     case "C":
-      return "badge-renamed";
-    case "T":
-      return "badge-graphite";
+      return "renamed";
     case "U":
-      return "badge-deleted";
+      return "conflict";
+    case "?":
+      return "untracked";
     default:
-      return "bg-muted text-muted-foreground";
+      return "neutral";
   }
 }
 
@@ -186,7 +198,7 @@ const commitSections = computed<Section[]>(() => {
       path: c.path,
       oldPath: c.oldPath,
       letter,
-      letterClass: letterClass(letter),
+      state: letterState(letter),
       added: c.added,
       deleted: c.deleted,
       binary: c.binary,
@@ -206,13 +218,19 @@ const dateText = computed(() => {
 
 // ---- Working tree mode ---------------------------------------------------------------------
 
-function worktreeItem(entry: StatusEntry, section: string, letter: string, target: DiffTarget): FileItem {
+function worktreeItem(
+  entry: StatusEntry,
+  section: string,
+  letter: string,
+  target: DiffTarget,
+  state: FileState = letterState(letter),
+): FileItem {
   return {
     id: `${section}:${entry.path}`,
     path: entry.path,
     oldPath: entry.origPath,
     letter,
-    letterClass: letterClass(letter),
+    state,
     added: null,
     deleted: null,
     binary: false,
@@ -229,7 +247,7 @@ const worktreeSections = computed<Section[]>(() => {
   for (const e of entries) {
     if (e.ignored) continue;
     if (e.conflicted) {
-      conflicted.push(worktreeItem(e, "conflicted", `${e.x}${e.y}`.replace(/\./g, ""), { type: "unstaged" }));
+      conflicted.push(worktreeItem(e, "conflicted", `${e.x}${e.y}`.replace(/\./g, ""), { type: "unstaged" }, "conflict"));
       continue;
     }
     if (e.untracked) {
@@ -305,7 +323,7 @@ const totalCount = computed(() => flat.value.length);
 </script>
 
 <template>
-  <section class="flex h-full min-h-0 flex-col outline-none" tabindex="0" @keydown="onKeydown">
+  <section class="area flex h-full min-h-0 flex-col outline-none" tabindex="0" @keydown="onKeydown">
     <PanelHeader title="Files">
       <span v-if="mode === 'worktree'" class="truncate text-xs text-muted-foreground">Working tree</span>
       <span v-else-if="mode === 'commit' && selectedRow" class="truncate font-mono text-xs text-muted-foreground">
@@ -320,7 +338,7 @@ const totalCount = computed(() => flat.value.length);
 
     <template v-else>
       <!-- Commit header -->
-      <div v-if="mode === 'commit' && selectedRow" class="shrink-0 border-b border-border bg-muted/20 px-2 py-1 text-base">
+      <div v-if="mode === 'commit' && selectedRow" class="shrink-0 border-b border-border-soft bg-muted px-2 pt-[5px] pb-1.5 text-base">
         <div class="flex items-center gap-2 text-xs text-muted-foreground">
           <span class="font-mono text-foreground" :title="selectedRow.oid">{{ shortOid(selectedRow.oid) }}</span>
           <span class="truncate" :title="`${selectedRow.authorName} <${selectedRow.authorEmail}>`">{{ selectedRow.authorName }}</span>
@@ -332,7 +350,7 @@ const totalCount = computed(() => flat.value.length);
         </button>
         <div v-if="messageExpanded" class="pl-4 pt-1">
           <p v-if="messageLoading" class="text-xs text-muted-foreground">Loading message…</p>
-          <p v-else-if="messageError" class="text-xs text-deleted-fg">{{ messageError }}</p>
+          <p v-else-if="messageError" class="text-xs text-destructive">{{ messageError }}</p>
           <pre v-else-if="messageBody.length > 0" class="max-h-40 overflow-auto font-sans text-xs whitespace-pre-wrap text-muted-foreground scrollbar-thin">{{ messageBody }}</pre>
           <p v-else class="text-xs text-muted-foreground italic">No further message body.</p>
         </div>
@@ -343,12 +361,7 @@ const totalCount = computed(() => flat.value.length);
             :key="p"
             type="button"
             :aria-pressed="parentIndex === i"
-            :class="
-              cn(
-                'h-[1.2rem] rounded-full border px-2 leading-none transition-colors',
-                parentIndex === i ? 'border-transparent bg-accent text-accent-foreground' : 'border-border hover:text-foreground',
-              )
-            "
+            class="toggle h-[18px] rounded-sm border px-2 leading-none font-medium transition-colors"
             :title="p"
             @click="parentIndex = i"
           >
@@ -361,7 +374,7 @@ const totalCount = computed(() => flat.value.length);
         <div v-if="mode === 'commit' && changesLoading && changes.length === 0" class="flex h-(--row-h) items-center gap-1.5 px-2 text-base text-muted-foreground">
           <LoaderCircleIcon class="size-3 animate-spin" /> Loading changes…
         </div>
-        <p v-else-if="changesError" class="px-2 py-1 text-base text-deleted-fg">{{ changesError }}</p>
+        <p v-else-if="changesError" class="px-2 py-1 text-base text-destructive">{{ changesError }}</p>
         <p v-else-if="flat.length === 0" class="px-2 py-2 text-base text-muted-foreground italic">
           {{ mode === "worktree" ? "The working tree is clean." : "No files changed." }}
         </p>
@@ -370,7 +383,7 @@ const totalCount = computed(() => flat.value.length);
           <template v-if="mode === 'commit' || section.items.length > 0">
             <div
               v-if="mode === 'worktree'"
-              class="sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-b border-border bg-muted/60 px-2 text-xs font-medium text-muted-foreground backdrop-blur-sm select-none"
+              class="sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 smallcaps select-none"
             >
               {{ section.title }}
               <span class="tabular-nums">({{ section.items.length }})</span>
@@ -383,28 +396,28 @@ const totalCount = computed(() => flat.value.length);
               :class="
                 cn(
                   'flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 text-left text-base',
-                  isSelected(item) ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/40',
+                  isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
                 )
               "
               :title="item.oldPath ? `${item.oldPath} → ${item.path}` : item.path"
               @click="select(item)"
             >
               <span
-                :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', item.letterClass)"
+                :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"
               >
                 {{ item.letter }}
               </span>
               <span class="min-w-0 flex-1 truncate">
                 <template v-if="item.oldPath && item.oldPath !== item.path">
-                  <span class="text-muted-foreground">{{ item.oldPath }}</span>
-                  <span class="mx-1 text-muted-foreground">→</span>
+                  <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
+                  <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
                 </template>
-                <span class="text-muted-foreground">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
+                <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
               </span>
               <span v-if="item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
               <span v-else-if="item.added !== null || item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">
-                <span class="text-added-fg">+{{ item.added ?? 0 }}</span>
-                <span class="ml-1 text-deleted-fg">−{{ item.deleted ?? 0 }}</span>
+                <span class="text-diff-add-fg">+{{ item.added ?? 0 }}</span>
+                <span class="ml-1 text-diff-del-fg">−{{ item.deleted ?? 0 }}</span>
               </span>
             </button>
           </template>
