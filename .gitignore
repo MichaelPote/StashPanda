@@ -23,3 +23,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Output of a `tsc -b` or `vue-tsc -b` run (tsconfig.node.json is composite). Vite looks for
+# vite.config.js before vite.config.ts, so a compiled copy would hide edits to the real config.
+*.tsbuildinfo
+/vite.config.js
+/vite.config.d.ts

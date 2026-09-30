@@ -1,9 +1,10 @@
 # StashPanda: what is left to build
 
-Status as of 2026-09-30. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
-milestone 2 planned on 2026-09-23, and the commit dialog and a round of interface and graph work
-added on 2026-09-30 (see "Interface and graph work" below). Everything not listed here is done and
-tested; see the "Implementation notes" and "Status against the milestones" sections at the end of
+Status as of 2026-10-01. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
+milestone 2 planned on 2026-09-23, the commit dialog and a round of interface and graph work
+added on 2026-09-30, and stashes and a second round of interface work added on 2026-10-01 (see
+"Interface, merge and checkout work" below). Everything not listed here is done and tested; see
+the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
 Items are grouped by milestone and ordered within each group by the order they should be built.
@@ -34,7 +35,7 @@ Each item names the files it touches so it can be picked up cold.
 
       | Command | What it does |
       |---|---|
-      | `npm run win:ux` | Vite runs in WSL; the Windows app loads its frontend from it, so Vue, TypeScript and CSS edits hot reload. Rust changes need Ctrl-C and a re-run. Ctrl-C stops both sides. |
+      | `npm run win:ux` | Vite runs in WSL; the Windows app loads its frontend from it, so Vue, TypeScript and CSS edits hot reload. Every 2 seconds it copies `src-tauri/` to the Windows mirror (leaving out `target` and `gen`), so the Windows `tauri dev` rebuilds on Rust changes. Ctrl-C stops both sides. No empty console window opens on Windows. |
       | `npm run win:dev` | Runs `tauri dev` entirely on Windows, including its own Vite. Ctrl-C stops the whole Windows process tree; before starting, it refuses to run if a leftover process holds port 1420 on Windows, and names it. |
       | `npm run win:build` | Runs `tauri build` on Windows, then copies the release binary and the NSIS and MSI installers to `bundle/` in both the WSL checkout (ignored by Git) and `C:\src\stashpanda`. |
       | `npm run win:sync` | Mirrors the source and runs `npm install` on Windows, nothing else. |
@@ -230,9 +231,9 @@ Each item names the files it touches so it can be picked up cold.
       the open. `sshHostKeyChanged` gets a hard error dialog with no override.
 - [ ] **Password dialog.** On `sshAuthFailed` offer a password field; call
       `sshSetPassword(host, port, user, password)` and retry the open.
-- [ ] **Stash list in the Branches panel** (built in milestone 2, step 3). `getRepoStashes(key)` now exists and returns
-      `StashEntry { oid, selector, message, time, index }`; `BranchesPanel.vue` shows only the
-      count from `status.stashCount` with a `TODO(backend)` comment.
+- [x] **Stash list in the Branches panel** (2026-10-01; see milestone 2, step 3). The Stashes
+      heading lists each stash with its message and a relative time, and right-clicking one offers
+      Apply, Pop and Drop.
 - [ ] **Watcher hint.** `watcherStateEvent.detail` (for example "filesystem notifications are not
       available for this connection; polling instead") is stored in the session but only the kind is
       shown in the status bar. Surface the detail as a tooltip or an info strip.
@@ -314,8 +315,11 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       because the message already uses stdin) so those stay staged and out of the commit. An
       empty `paths` with `amend` runs `--amend --only` with no paths, which changes only the
       message.
-- [ ] **c. `stash_save(message, include_untracked)`, `stash_apply(index, pop)`, `stash_drop(index)`**.
-      The `getRepoStashes` query already exists.
+- [x] **c. Stashes** (2026-10-01; commands `op_stash_push`, `op_stash_apply`, `op_stash_pop`,
+      `op_stash_drop`). `op_stash_push` takes an optional message and an include-untracked flag.
+      Before apply, pop or drop, `stash_selector` checks that `stash@{index}` still points at the
+      commit the list showed, and refuses the command when a stash was made elsewhere in the
+      meantime. Test: `stash_push_apply_pop_drop_and_stale_index`.
 - [ ] **d. `branch_rename`, `reset(mode, target)`, `cherry_pick`, `revert`**. Cherry-pick and
       revert reuse `OpResult.conflicts` and get an abort; full conflict resolution stays in
       milestone 3.
@@ -346,8 +350,20 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       ticked) or "Amend Commit" (files ticked). The message draft survives Cancel. "Commit & Push" is
       shown disabled until push exists in milestone 3. The dialog is 48rem wide with large buttons,
       and the overlay behind every dialog (`ui/dialog/DialogOverlay.vue`) is black at 50%.
-- [ ] **Stash list in `BranchesPanel.vue`** replacing the `TODO(backend)` comment, with apply, pop
-      and drop, plus the Save Stash and Apply Stash toolbar buttons.
+- [x] **Stashes in the interface** (2026-10-01). The Branches panel lists the stashes, with
+      Apply, Pop and Drop on right-click (Drop asks first). A "Stash changes" dialog
+      (`StashDialog.vue`) takes an optional message and an "Include untracked files" checkbox; an
+      "Apply stash" dialog (`ApplyStashDialog.vue`) picks one stash and can drop it after applying.
+      They open from the Repository menu, the toolbar's Stash button (saving only: applying means
+      choosing a stash, so it has no toolbar button), and a new right-click menu on the Working
+      Tree row (`WorkingTreeContextMenu.vue`), which greys out an item and gives the reason when it
+      cannot run. A stash that applied with conflicts is reported as conflicts to resolve, not as a
+      failure.
+- [ ] **Apply Stash dialog loses the chosen stash** (flagged 2026-10-01,
+      `src/components/dialogs/ApplyStashDialog.vue:29`). If the stash that is picked disappears
+      while the dialog is open (dropped or popped elsewhere), `picked` quietly falls back to the
+      newest stash. No option then shows as selected, but Apply would apply that newest stash.
+      It should keep nothing picked and disable Apply until the user chooses again.
 - [ ] **Commit context menu additions**: reset (soft, mixed or hard), cherry-pick, revert.
 - [ ] **Stale lock and `safe.directory` prompts** driven by `IndexLocked` and `UnsafeRepository`:
       confirm, then call `opRemoveStaleLock` or the `fix_safe_directory` command and retry.
@@ -382,8 +398,8 @@ frontend test runner.
       detached. `graph_set_hidden_refs` rebuilds from the commits already loaded, with no Git
       command. The list is saved in the UI state as `perRepo[key].hiddenRefs` and read by
       `repo_open`. The cache still saves every commit, from the snapshot's `full_order`.
-      `GraphMeta.refColours` gives each shown ref's lane colour. The checked-out branch is marked
-      with a `ChevronRight` instead of a tick. Test: `hidden_refs_drop_their_commits_and_labels`.
+      `GraphMeta.refColours` gives each shown ref's colour. The checked-out branch is marked
+      with the graph's HEAD dot, in its colour (since 2026-10-01; a `ChevronRight` before that). Test: `hidden_refs_drop_their_commits_and_labels`.
 - [x] **Column dividers** in `GraphHeader.vue`: visible, draggable dividers between every column,
       double-click to reset. Header and rows both reserve the scrollbar's space
       (`scrollbar-gutter: stable`), so the columns line up.
@@ -395,8 +411,9 @@ frontend test runner.
       (140, 150, 76) are read as automatic.
 - [x] **Branch pills never truncate**; the subject truncates, and the cell clips at its edge.
 - [x] **Dots centred on their rows.** Rows were 1.6rem (22.4px) but the graph SVG spaces rows at
-      the rounded 22px, so the text drifted 0.4px a row. `main.ts` now sets `--row-h` to the
-      rounded `ROW_HEIGHT`.
+      the rounded 22px, so the text drifted 0.4px a row. Since 2026-10-01 the row, diff row and
+      pill heights are whole pixels in the stylesheet (`--row-h: 22px`), `ROW_HEIGHT` in
+      `lib/graph/paths.ts` is the same 22, and `main.ts` no longer overrides `--row-h`.
 - [x] **Working Tree row in view on open.** When the list is scrolled to the top it stays there
       across snapshot swaps (`onGraphSnapshot` in `stores/sessions.ts`), instead of following the
       old first row down.
@@ -410,8 +427,8 @@ frontend test runner.
       loop for SSH). Tests cover Local and SSH.
 - [x] **File name and folder as columns** when not grouped by folder: one shared name width, and a
       folder column that truncates from its start. Folder headings keep their case.
-- [x] **Commit header**: regular-weight subject across the width, with a "More" toggle at the
-      right, under the date, for the rest of the message.
+- [x] **Commit header**: regular-weight subject across the width, with a "More" toggle for the
+      rest of the message, since 2026-10-01 in the header's bottom right corner.
 
 ### Diff viewer
 
@@ -433,8 +450,87 @@ frontend test runner.
       accent colour.
 - [x] **Keyboard focus** is a 1px accent outline instead of the browser's white ring
       (`index.css`).
-- [x] **Lucide icons** draw 1px lines at any size, and the toolbar icons are 0.5rem larger.
+- [x] **Lucide icons** draw 1px lines at any size. (The toolbar's own icons are 20px with a
+      1.67px line since 2026-10-01; see below.)
 - [x] **Console** scrolls sideways for long command lines; expanded output stays panel-wide.
+
+## Interface, merge and checkout work (done 2026-10-01)
+
+Requested while using the Windows build. `cargo test` (60 tests), `cargo clippy --all-targets`,
+`vue-tsc` and `vite build` pass for all of it. Layout was checked by rendering the built stylesheet
+in headless Chromium and measuring pixels, and the merge message parsing with scratch Node scripts;
+none of it has been checked in the running app yet.
+
+### Ref pills and lane colours
+
+- [x] **Pill text and size.** Pills are 18px tall, so they centre in the 22px row, with regular
+      400-weight `text-sm` text. The `pill-text` utility trims each text span to its lowercase
+      letters (`text-box: trim-both ex alphabetic`), since IBM Plex Sans's line box put them 0.164em
+      low on Windows and 0.117em low elsewhere; an `@supports` fallback lifts them by 0.117em.
+      Solid pills use the lane's chip fill (`--lane-bg`) for their text.
+- [x] **Notched pills.** A local branch whose upstream is on another commit has a chevron notch on
+      its left (`pill-tail`), and its remote a matching point on its right (`pill-head`), drawn
+      with `clip-path` over a 1px edge layer. A remote pill reads "origin › dev" with a
+      `ChevronRight` icon.
+- [x] **A colour per branch tip.** Several branch tips on one lane used to share its colour. Now
+      the top-most tip keeps the lane's colour and each tip below it gets its own, picked so its
+      hue (`index % 6`, since the dark theme repeats lanes 0 to 5 as 6 to 11) differs from the
+      lane's. The new `appearance.commitLaneColours` setting chooses between `keepLane` (the
+      default: only the pills and Branches panel tags change) and `changeAtEachTip` (the lane's
+      colour switches at each tip too). A remote branch that a shown local branch tracks is not a
+      tip of its own and wears that branch's colour. `GraphOptions` carries the setting and the
+      graph order from the IPC layer to `GraphSnapshot::build`. Each `RefLabel` has its own
+      `colour`.
+- [x] **The branch each row belongs to.** The lane sweep records, for each row, the nearest branch
+      tip above it on its lane (`RowLayout::branch`), following which lane carries on where two
+      join. Test: `each_row_belongs_to_the_nearest_branch_tip_on_its_lane`.
+
+### Commit table
+
+- [x] **Working Tree row always shown**, clean or not (`worktree_summary` returns all-zero counts,
+      and `None` only for a bare repository). On a clean tree it reads "No changes", and the Files
+      panel says "The working tree is clean. Nothing to commit." centred.
+- [x] **Author column collapses** to just the avatars: its minimum is 25px, and the name hides
+      below about 51px through a container query. Avatar initials are centred on their capitals
+      (`text-cap-box`).
+
+### Merges in the Files panel
+
+- [x] **Straight merges.** The new `get_merge_info` command returns the merge commit's own branch
+      and, for each parent, its branch and whether the merge kept its files unchanged (one
+      `git show -s --format="%H %T %P" <merge> <merge>^@`). A merge that kept one parent's files
+      shows "Merged X into Y" with a `GitBranch` icon and compares with the other parent only.
+      Other merges show "Compare with" toggles named after each parent's branch, with a `GitFork`
+      icon. Test: `finds_the_parent_whose_tree_the_merge_kept`.
+- [x] **Branch names from merge messages** (`src/lib/mergeParents.ts`): Git, GitLab, GitHub,
+      Bitbucket, Bitbucket Server, Gitea, Forgejo and Gerrit forms. `git pull`'s "of <url>" is
+      matched to a configured remote, so it reads as `origin/master`. A Git message with no
+      "into" means main or master, since Git leaves the target out only for those. Azure DevOps's
+      "Merged PR 123: Title" names neither branch, so those rely on the graph.
+- [x] **More or Less** sits in the commit header's bottom right corner (`MessageToggle.vue`), inside
+      whichever part comes last: the subject, the expanded body or the Compare with row.
+
+### Toolbar, Branches panel and checkout
+
+- [x] **Flat toolbar buttons** (`AppToolbar.vue`), from the design canvas's "Changes — Blender
+      pass" artboard: 63 × 42px, no gap between them, 20px icons with a 1.67px line, hover and
+      pressed at 6% and 10% ink, disabled at 38%. Dividers use `--key` and are centred in the bar.
+      Commit is a solid primary button with a badge counting the files the Commit dialog would
+      list (`commitFileCount` in `lib/files.ts`).
+- [x] **Branches panel**: the checked-out branch has the graph's HEAD dot, each local branch shows
+      the branch it tracks after its name ("› origin/master") in muted text, and double-clicking a
+      branch checks it out.
+- [x] **One checkout path**, `requestCheckout` in `lib/repoActions.ts`, for the menus and the
+      double-click. A dirty working tree asks first; a remote branch with no local branch of its
+      name asks before `git checkout -b <local> <remote>` creates one that tracks it; a clean local
+      checkout runs straight away. The Checkout menu items are no longer disabled on a dirty tree.
+- [x] **Success notices** (`notifySuccess`) show plainly with a tick and `role="status"`; only
+      failures use the red error style.
+- [x] **Text selection off** everywhere except commit IDs, the Files panel's commit message, the
+      repository path and diff code. Shift-click in the Commits table does not extend a text
+      selection. The pointer cursor is gone from list rows.
+- [x] **Diff highlight**: the dark theme's changed-word highlight in added lines is
+      `rgba(94, 196, 98, 0.36)`, from the design system.
 
 ## Milestone 3: remote and history operations
 
