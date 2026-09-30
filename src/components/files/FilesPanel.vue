@@ -333,16 +333,19 @@ const totalCount = computed(() => flat.value.length);
           <span class="truncate" :title="`${selectedRow.authorName} <${selectedRow.authorEmail}>`">{{ selectedRow.authorName }}</span>
           <span class="ml-auto shrink-0 tabular-nums" :title="isoTime(selectedRow.authorTime)">{{ dateText }}</span>
         </div>
-        <p class="mt-0.5 w-full break-words">{{ selectedRow.subject }}</p>
-        <button
-          type="button"
-          class="mt-0.5 inline-flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
-          :aria-expanded="messageExpanded"
-          @click="toggleMessage"
-        >
-          <component :is="messageExpanded ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0" />
-          {{ messageExpanded ? "Less" : "More" }}
-        </button>
+        <!-- The subject takes the width; the More toggle sits at the right, under the date. -->
+        <div class="mt-0.5 flex items-start gap-2">
+          <p class="min-w-0 flex-1 break-words">{{ selectedRow.subject }}</p>
+          <button
+            type="button"
+            class="mt-px inline-flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
+            :aria-expanded="messageExpanded"
+            @click="toggleMessage"
+          >
+            {{ messageExpanded ? "Less" : "More" }}
+            <component :is="messageExpanded ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0" />
+          </button>
+        </div>
         <div v-if="messageExpanded" class="pt-1">
           <p v-if="messageLoading" class="text-xs text-muted-foreground">Loading message…</p>
           <p v-else-if="messageError" class="text-xs text-destructive">{{ messageError }}</p>
