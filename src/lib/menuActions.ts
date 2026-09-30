@@ -7,9 +7,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { events, type Theme } from "@/lib/bindings";
 import { errorMessage } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
-import { createBranchHere, createTagAt } from "@/lib/repoActions";
+import { createBranchHere, createTagAt, openApplyStashDialog, openStashDialog, removeFromLibrary } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
-import { useLibraryStore } from "@/stores/library";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
@@ -29,27 +28,6 @@ function headOf(session: RepoSession): { oid: string; label: string } | null {
   const oid = session.status?.headOid ?? session.refs?.head ?? session.graph.meta?.head ?? null;
   if (oid === null) return null;
   return { oid, label: session.status?.branch ?? shortSha(oid) };
-}
-
-async function removeActiveRepo(): Promise<void> {
-  const sessions = useSessionsStore();
-  const library = useLibraryStore();
-  const dialogs = useDialogsStore();
-  const session = requireActive();
-  if (!session) return;
-  const confirmed = await dialogs.open("confirm", {
-    title: `Remove ${session.info.displayName} from the library?`,
-    message: "The repository stays on disk. Only the library entry and its tab are removed.",
-    confirmLabel: "Remove",
-    destructive: true,
-  });
-  if (!confirmed) return;
-  try {
-    await sessions.closeTab(session.key);
-    await library.removeRepo(session.key);
-  } catch (e) {
-    sessions.notify(errorMessage(e));
-  }
 }
 
 async function openDocs(): Promise<void> {
@@ -75,7 +53,7 @@ export async function dispatch(id: string): Promise<void> {
       if (sessions.activeKey !== null) await sessions.closeTab(sessions.activeKey);
       return;
     case "file.settings":
-      sessions.notify("Settings dialog is coming.");
+      await dialogs.open("settings", {});
       return;
     case "edit.find":
       sessions.notify("Commit search is coming.");
@@ -123,14 +101,23 @@ export async function dispatch(id: string): Promise<void> {
       await createTagAt(session.key, head.oid, head.label);
       return;
     }
+    case "repo.stash":
+      await openStashDialog(sessions.active);
+      return;
+    case "repo.apply_stash":
+      await openApplyStashDialog(sessions.active);
+      return;
     case "repo.fetch":
     case "repo.pull":
     case "repo.push":
       sessions.notify("Coming in milestone 3.");
       return;
-    case "repo.remove":
-      await removeActiveRepo();
+    case "repo.remove": {
+      // The same removal as the Repositories context menu and the Edit Repository dialog.
+      const session = requireActive();
+      if (session) await removeFromLibrary(session.key);
       return;
+    }
     case "help.docs":
       await openDocs();
       return;

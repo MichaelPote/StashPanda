@@ -14,7 +14,7 @@ use tokio::time::Instant;
 use super::{RepoChangedEvent, WatchEvent, WatcherKind};
 use crate::graph::loader::{refresh_if_changed, Changes};
 use crate::repo::RepoHandle;
-use crate::settings::{CacheSettings, GraphOrder};
+use crate::settings::{CacheSettings, GraphOptions};
 use crate::storage::Db;
 
 const QUIET: Duration = Duration::from_millis(300);
@@ -25,7 +25,7 @@ pub fn spawn(
     db: Arc<Db>,
     handle: Arc<RepoHandle>,
     kind: WatcherKind,
-    order: GraphOrder,
+    options: GraphOptions,
     cache: CacheSettings,
     mut rx: mpsc::UnboundedReceiver<WatchEvent>,
 ) {
@@ -62,7 +62,7 @@ pub fn spawn(
                     if !(do_status || do_refs) { continue; }
                     // A write from the app has usually refreshed already, so
                     // this finds nothing new and emits nothing.
-                    let changes = match refresh_if_changed(Some(&app), Some(&db), &handle, order, &cache, do_refs).await {
+                    let changes = match refresh_if_changed(Some(&app), Some(&db), &handle, options, &cache, do_refs).await {
                         Ok(c) => c,
                         Err(e) => {
                             tracing::warn!("refresh after change failed for {}: {e}", handle.key);

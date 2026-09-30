@@ -168,6 +168,11 @@ export function commitFiles(
   return { files, ticked, fromSelection };
 }
 
+/** How many files the Commit dialog lists when opened: every changed path once, conflicted included. */
+export function commitFileCount(status: StatusSnapshot | null): number {
+  return commitFiles(status, new Set(), "all").files.length;
+}
+
 /**
  * The `paths` argument for `opCommit`. Null when the ticked files are exactly the staged ones,
  * which commits the index as it is, so a partly staged file keeps its unstaged part out of the

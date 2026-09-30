@@ -12,7 +12,7 @@ use super::oid::Oid;
 use super::order::order;
 use super::store::CommitStore;
 use crate::git::queries::refs::{RefKind, RefsSnapshot};
-use crate::settings::GraphOrder;
+use crate::settings::GraphOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -37,8 +37,11 @@ pub struct RefLabel {
     pub short: String,
     pub kind: RefKind,
     pub is_current: bool,
+    /// Palette index of this pill: the row's `ref_colour`, except that a remote branch tracked by
+    /// a local branch shown in the graph takes that local branch's colour.
+    pub colour: u8,
     /// The local branch's upstream points at the same commit, so one pill
-    /// (`dev ▸ origin`) stands for both.
+    /// (`origin | dev`) stands for both.
     pub upstream_at_same_commit: bool,
     pub ahead: Option<u32>,
     pub behind: Option<u32>,
@@ -53,6 +56,9 @@ pub struct GraphRow {
     pub parents: Vec<String>,
     pub lane: u16,
     pub colour: u8,
+    /// Colour of the pills that start a new colour on this row; see `RowLayout::ref_colour`. Each
+    /// `RefLabel` carries its own, which differs for a tracked remote branch.
+    pub ref_colour: u8,
     pub max_lane: u16,
     pub edges: Vec<Edge>,
     pub author_name: String,
@@ -77,8 +83,9 @@ pub struct GraphMeta {
     pub head: Option<String>,
     pub head_ref: Option<String>,
     pub worktree: Option<WorktreeSummary>,
-    /// Lane colour (palette index 0 to 11) at the tip of every ref shown in the graph, keyed by
-    /// full ref name. Hidden refs, and refs whose commit is not in the graph, are absent.
+    /// Pill colour (palette index 0 to 11) of every ref shown in the graph, keyed by full ref
+    /// name; see `RefLabel::colour`. Hidden refs, and refs whose commit is not in the graph,
+    /// are absent.
     pub ref_colours: std::collections::BTreeMap<String, u8>,
     /// The longest distinct author names (by character count, at most 24), so the frontend can
     /// size the Author column to fit every row without measuring the whole history.
@@ -102,6 +109,8 @@ pub struct GraphSnapshot {
     pub refs: Arc<RefsSnapshot>,
     /// Indices into `refs.refs`, grouped by target commit.
     refs_by_target: FxHashMap<Oid, Vec<u32>>,
+    /// Remote branch full name -> index in `refs.refs` of a shown local branch that tracks it.
+    tracked_by: FxHashMap<String, u32>,
     pub head: Option<Oid>,
     pub worktree: Option<WorktreeSummary>,
     pub complete: bool,
@@ -116,13 +125,13 @@ impl GraphSnapshot {
         store: Arc<CommitStore>,
         refs: Arc<RefsSnapshot>,
         worktree: Option<WorktreeSummary>,
-        mode: GraphOrder,
+        options: GraphOptions,
         version: u64,
         complete: bool,
         truncated: bool,
         hidden: &HiddenRefs,
     ) -> GraphSnapshot {
-        let full = order(&store, mode);
+        let full = order(&store, options.order);
         // With refs hidden, show only commits reachable from the refs still shown. HEAD counts
         // as a tip of its own only when detached; on a branch, that branch's switch decides.
         let visible = (!hidden.is_empty()).then(|| {
@@ -144,8 +153,41 @@ impl GraphSnapshot {
         let shown = |oid: &Oid| store.index_of(oid).is_some_and(|i| visible.as_ref().is_none_or(|keep| keep[i as usize]));
         let head = refs.head.as_deref().and_then(Oid::parse_hex).filter(|h| shown(h));
 
+        let mut refs_by_target: FxHashMap<Oid, Vec<u32>> = FxHashMap::default();
+        for (i, r) in refs.refs.iter().enumerate() {
+            if hidden.contains(&r.full_name) {
+                continue;
+            }
+            if let Some(t) = Oid::parse_hex(&r.target) {
+                refs_by_target.entry(t).or_default().push(i as u32);
+            }
+        }
+        let mut tracked_by: FxHashMap<String, u32> = FxHashMap::default();
+        for (i, r) in refs.refs.iter().enumerate() {
+            if let (RefKind::LocalBranch, Some(up)) = (&r.kind, &r.upstream) {
+                if !hidden.contains(&r.full_name) && !hidden.contains(up) && !r.upstream_gone {
+                    tracked_by.entry(up.clone()).or_insert(i as u32);
+                }
+            }
+        }
+        // The branch tip at a commit, as an index into `refs.refs`: the checked-out branch, then
+        // any local branch, then a remote branch. A remote branch that a shown local branch
+        // tracks is not a tip of its own: it wears the local branch's colour, so it neither takes
+        // a new colour nor changes the lane's, and the lane belongs to the local branch.
+        let branch_tip = |oid: &Oid| -> Option<u32> {
+            let rank = |i: u32| {
+                let r = &refs.refs[i as usize];
+                match r.kind {
+                    RefKind::LocalBranch => Some(if r.is_head { 0 } else { 1 }),
+                    RefKind::RemoteBranch { .. } if !tracked_by.contains_key(&r.full_name) => Some(2),
+                    _ => None,
+                }
+            };
+            refs_by_target.get(oid)?.iter().filter_map(|&i| rank(i).map(|k| (k, i))).min().map(|(_, i)| i)
+        };
+
         let extra = usize::from(worktree.is_some());
-        let mut sweep = LaneSweep::new(head, commit_order.len() + extra);
+        let mut sweep = LaneSweep::new(head, commit_order.len() + extra).with_lane_colours(options.lane_colours);
         let mut order_rows: Vec<u32> = Vec::with_capacity(commit_order.len() + extra);
         let mut row_by_oid: FxHashMap<Oid, u32> = FxHashMap::default();
         row_by_oid.reserve(commit_order.len() + extra);
@@ -158,21 +200,11 @@ impl GraphSnapshot {
         }
         for ci in commit_order {
             let c = &store.commits[ci as usize];
-            sweep.push(c.oid, &c.parents);
+            sweep.push_row(c.oid, &c.parents, branch_tip(&c.oid));
             row_by_oid.insert(c.oid, order_rows.len() as u32);
             order_rows.push(ci);
         }
         let open = sweep.finish();
-
-        let mut refs_by_target: FxHashMap<Oid, Vec<u32>> = FxHashMap::default();
-        for (i, r) in refs.refs.iter().enumerate() {
-            if hidden.contains(&r.full_name) {
-                continue;
-            }
-            if let Some(t) = Oid::parse_hex(&r.target) {
-                refs_by_target.entry(t).or_default().push(i as u32);
-            }
-        }
 
         GraphSnapshot {
             version,
@@ -185,6 +217,7 @@ impl GraphSnapshot {
             store,
             refs,
             refs_by_target,
+            tracked_by,
             head,
             worktree,
             complete,
@@ -220,14 +253,36 @@ impl GraphSnapshot {
         names.into_iter().take(24).map(String::from).collect()
     }
 
+    /// Short name of the branch a commit belongs to in the graph: the nearest branch tip above it
+    /// on its lane (`RowLayout::branch`). None when the commit is not shown, or no tip reaches it.
+    pub fn branch_of(&self, oid: &str) -> Option<&str> {
+        let row = Oid::parse_hex(oid).and_then(|o| self.row_by_oid.get(&o).copied())?;
+        let i = self.layout.get(row as usize)?.branch?;
+        Some(self.refs.refs[i as usize].short.as_str())
+    }
+
+    /// Row layout of the commit a ref points at, when that commit is in the graph.
+    fn layout_at(&self, target: &str) -> Option<&RowLayout> {
+        let row = Oid::parse_hex(target).and_then(|t| self.row_by_oid.get(&t).copied())?;
+        self.layout.get(row as usize)
+    }
+
+    /// Pill colour of a shown ref; see `RefLabel::colour`.
+    fn colour_of(&self, r: &crate::git::queries::refs::RefEntry) -> Option<u8> {
+        let local = self.tracked_by.get(&r.full_name).map(|i| &self.refs.refs[*i as usize]);
+        if let Some(layout) = local.and_then(|l| self.layout_at(&l.target)) {
+            return Some(layout.ref_colour);
+        }
+        self.layout_at(&r.target).map(|layout| layout.ref_colour)
+    }
+
     fn ref_colours(&self) -> std::collections::BTreeMap<String, u8> {
         let mut out = std::collections::BTreeMap::new();
         for indices in self.refs_by_target.values() {
             for &i in indices {
                 let r = &self.refs.refs[i as usize];
-                let row = Oid::parse_hex(&r.target).and_then(|t| self.row_by_oid.get(&t).copied());
-                if let Some(layout) = row.and_then(|row| self.layout.get(row as usize)) {
-                    out.insert(r.full_name.clone(), layout.colour);
+                if let Some(colour) = self.colour_of(r) {
+                    out.insert(r.full_name.clone(), colour);
                 }
             }
         }
@@ -264,6 +319,7 @@ impl GraphSnapshot {
                 short: r.short.clone(),
                 kind: r.kind.clone(),
                 is_current: r.is_head,
+                colour: self.colour_of(r).unwrap_or(0),
                 upstream_at_same_commit,
                 ahead: r.ahead,
                 behind: r.behind,
@@ -293,6 +349,7 @@ impl GraphSnapshot {
                 parents: self.head.map(|h| vec![h.to_hex()]).unwrap_or_default(),
                 lane: layout.lane,
                 colour: layout.colour,
+                ref_colour: layout.ref_colour,
                 max_lane: layout.max_lane,
                 edges,
                 author_name: String::new(),
@@ -314,6 +371,7 @@ impl GraphSnapshot {
             parents: c.parents.iter().map(|p| p.to_hex()).collect(),
             lane: layout.lane,
             colour: layout.colour,
+            ref_colour: layout.ref_colour,
             max_lane: layout.max_lane,
             edges,
             author_name: author.name.to_string(),
@@ -388,7 +446,7 @@ mod tests {
             remotes: vec![],
         };
         let wt = WorktreeSummary { staged: 1, unstaged: 2, untracked: 0, conflicted: 0 };
-        let snap = GraphSnapshot::build(Arc::new(store), Arc::new(refs), Some(wt), GraphOrder::Date, 7, true, false, &HiddenRefs::default());
+        let snap = GraphSnapshot::build(Arc::new(store), Arc::new(refs), Some(wt), GraphOptions::default(), 7, true, false, &HiddenRefs::default());
         assert_eq!(snap.total(), 4);
         let rows = snap.rows(0, 10);
         assert_eq!(rows[0].kind, RowKind::WorkingTree);
@@ -427,14 +485,14 @@ mod tests {
         let refs = Arc::new(refs);
         let oid = |x: &str| format!("{x:0>40}");
 
-        let all = GraphSnapshot::build(store.clone(), refs.clone(), None, GraphOrder::Date, 1, true, false, &HiddenRefs::default());
+        let all = GraphSnapshot::build(store.clone(), refs.clone(), None, GraphOptions::default(), 1, true, false, &HiddenRefs::default());
         assert_eq!(all.total(), 4);
         assert!(all.full_order.is_none());
         assert_eq!(all.meta().ref_colours.len(), 3);
 
         // Hiding the branch alone keeps d, because the tag still reaches it.
         let hidden: HiddenRefs = ["refs/heads/feature".to_string()].into_iter().collect();
-        let snap = GraphSnapshot::build(store.clone(), refs.clone(), None, GraphOrder::Date, 2, true, false, &hidden);
+        let snap = GraphSnapshot::build(store.clone(), refs.clone(), None, GraphOptions::default(), 2, true, false, &hidden);
         assert_eq!(snap.total(), 4);
         assert!(!snap.meta().ref_colours.contains_key("refs/heads/feature"));
         let d_row = snap.find(&oid("d")).unwrap();
@@ -442,7 +500,7 @@ mod tests {
 
         // Hiding the tag too drops d; the cache order still has all four commits.
         let hidden: HiddenRefs = ["refs/heads/feature".to_string(), "refs/tags/v2".to_string()].into_iter().collect();
-        let snap = GraphSnapshot::build(store.clone(), refs.clone(), None, GraphOrder::Date, 3, true, false, &hidden);
+        let snap = GraphSnapshot::build(store.clone(), refs.clone(), None, GraphOptions::default(), 3, true, false, &hidden);
         assert_eq!(snap.total(), 3);
         assert_eq!(snap.find(&oid("d")), None);
         assert_eq!(snap.full_order.as_ref().map(Vec::len), Some(4));
@@ -451,9 +509,96 @@ mod tests {
         // Hiding the checked-out branch hides its commits too; HEAD is not a tip of its own.
         let hidden: HiddenRefs = ["refs/heads/main".to_string()].into_iter().collect();
         let wt = WorktreeSummary { staged: 0, unstaged: 1, untracked: 0, conflicted: 0 };
-        let snap = GraphSnapshot::build(store, refs, Some(wt), GraphOrder::Date, 4, true, false, &hidden);
+        let snap = GraphSnapshot::build(store, refs, Some(wt), GraphOptions::default(), 4, true, false, &hidden);
         assert_eq!(snap.find(&oid("c")), None);
         assert_eq!(snap.find(&oid("d")), Some(1), "the working tree row, then d");
         assert!(snap.meta().head.is_none());
+    }
+
+    #[test]
+    fn branches_stacked_on_one_lane_get_distinct_pill_colours() {
+        // feature was started from dev's tip, and dev from base's: one straight line a-b-c-d.
+        let mut store = CommitStore::new();
+        store.insert(&rec("a", &[], 1));
+        store.insert(&rec("b", &["a"], 2));
+        store.insert(&rec("c", &["b"], 3));
+        store.insert(&rec("d", &["c"], 4));
+        let refs = RefsSnapshot {
+            refs: vec![
+                r("refs/heads/feature", "feature", "d", RefKind::LocalBranch, None, true),
+                r("refs/tags/v1", "v1", "c", RefKind::Tag { annotated: false }, None, false),
+                r("refs/heads/dev", "dev", "b", RefKind::LocalBranch, None, false),
+                r("refs/heads/base", "base", "a", RefKind::LocalBranch, None, false),
+            ],
+            head: Some(format!("{:0>40}", "d")),
+            head_ref: Some("refs/heads/feature".into()),
+            detached: false,
+            remotes: vec![],
+        };
+        let (store, refs) = (Arc::new(store), Arc::new(refs));
+
+        let keep = GraphSnapshot::build(store.clone(), refs.clone(), None, GraphOptions::default(), 1, true, false, &HiddenRefs::default());
+        let colours = keep.meta().ref_colours;
+        let rows = keep.rows(0, 4);
+        assert!(rows.iter().all(|r| r.colour == rows[0].colour), "the lane keeps one colour by default");
+        assert_eq!(colours["refs/heads/feature"], rows[0].colour);
+        assert_eq!(colours["refs/tags/v1"], rows[0].colour, "a tag alone does not start a new colour");
+        let hues: Vec<u8> = ["feature", "dev", "base"].iter().map(|b| colours[&format!("refs/heads/{b}")] % 6).collect();
+        assert!(hues[0] != hues[1] && hues[1] != hues[2] && hues[0] != hues[2], "hues {hues:?}");
+
+        let options = GraphOptions { lane_colours: crate::settings::CommitLaneColours::ChangeAtEachTip, ..GraphOptions::default() };
+        let change = GraphSnapshot::build(store, refs, None, options, 2, true, false, &HiddenRefs::default());
+        let rows = change.rows(0, 4);
+        assert_eq!(rows[1].colour, rows[0].colour, "the tag row stays on feature's stretch");
+        assert_ne!(rows[2].colour % 6, rows[0].colour % 6, "the lane changes colour at dev");
+        assert!(rows.iter().all(|r| r.ref_colour == r.colour));
+    }
+
+    /// A line a-b-c-d with `feature` and its upstream at `feature_at` and `remote_at`, and `base` at a.
+    fn tracked_line(feature_at: &str, remote_at: &str, lane_colours: crate::settings::CommitLaneColours) -> GraphSnapshot {
+        let mut store = CommitStore::new();
+        store.insert(&rec("a", &[], 1));
+        store.insert(&rec("b", &["a"], 2));
+        store.insert(&rec("c", &["b"], 3));
+        store.insert(&rec("d", &["c"], 4));
+        let refs = RefsSnapshot {
+            refs: vec![
+                r("refs/heads/feature", "feature", feature_at, RefKind::LocalBranch, Some("refs/remotes/origin/feature"), true),
+                r("refs/remotes/origin/feature", "origin/feature", remote_at, RefKind::RemoteBranch { remote: "origin".into() }, None, false),
+                r("refs/heads/base", "base", "a", RefKind::LocalBranch, None, false),
+            ],
+            head: Some(format!("{feature_at:0>40}")),
+            head_ref: Some("refs/heads/feature".into()),
+            detached: false,
+            remotes: vec![],
+        };
+        let options = GraphOptions { lane_colours, ..GraphOptions::default() };
+        GraphSnapshot::build(Arc::new(store), Arc::new(refs), None, options, 1, true, false, &HiddenRefs::default())
+    }
+
+    #[test]
+    fn a_tracked_remote_shares_its_local_branchs_colour() {
+        use crate::settings::CommitLaneColours::{ChangeAtEachTip, KeepLane};
+        // Local ahead of its remote: the remote below does not count as a tip of its own.
+        let snap = tracked_line("d", "c", KeepLane);
+        let colours = snap.meta().ref_colours;
+        let rows = snap.rows(0, 4);
+        assert_eq!(colours["refs/heads/feature"], rows[0].colour);
+        assert_eq!(colours["refs/remotes/origin/feature"], colours["refs/heads/feature"]);
+        assert_eq!(rows[1].refs[0].colour, colours["refs/heads/feature"], "the pill carries the colour too");
+        assert_ne!(colours["refs/heads/base"] % 6, rows[0].colour % 6, "base is still a lower tip");
+
+        // Remote ahead of its local: the local is now the top-most tip and keeps the lane's colour.
+        let snap = tracked_line("c", "d", KeepLane);
+        let colours = snap.meta().ref_colours;
+        assert_eq!(colours["refs/heads/feature"], snap.rows(0, 1)[0].colour);
+        assert_eq!(colours["refs/remotes/origin/feature"], colours["refs/heads/feature"]);
+
+        // Changing the lane at each tip: the remote's commit does not change the lane's colour.
+        let snap = tracked_line("d", "c", ChangeAtEachTip);
+        let rows = snap.rows(0, 4);
+        assert_eq!(rows[1].colour, rows[0].colour);
+        assert_eq!(rows[1].refs[0].colour, rows[0].colour);
+        assert_ne!(rows[3].colour % 6, rows[0].colour % 6, "the lane still changes at base");
     }
 }

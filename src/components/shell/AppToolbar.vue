@@ -2,7 +2,6 @@
 import type { Component } from "vue";
 import {
   ArchiveIcon,
-  ArchiveRestoreIcon,
   ArrowDownToLineIcon,
   ArrowDownUpIcon,
   ArrowUpFromLineIcon,
@@ -17,27 +16,35 @@ import {
 } from "@lucide/vue";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 const props = defineProps<{
   /** False when no repository tab is open, which disables Commit. */
   hasRepo: boolean;
+  /** Files the Commit dialog would list, badged on the Commit button; hidden at 0. */
+  commitCount: number;
 }>();
 
 const emit = defineEmits<{
   addRepo: [];
   refresh: [];
   commit: [];
+  stashSave: [];
 }>();
+
+type ToolbarEvent = "commit" | "stashSave";
 
 interface ToolbarAction {
   label: string;
-  /** Short caption under the icon; a key is 4.5rem wide, so long labels are cut down. */
+  /** Short caption under the icon; a button is 63px wide, so long labels are cut down. */
   caption: string;
   icon: Component;
   /** Set on buttons that are not built yet: they render disabled with this as the tooltip. */
   coming?: string;
   /** Emitted when a built button is clicked. */
-  event?: "commit";
+  event?: ToolbarEvent;
+  /** The main action: a solid primary button among the flat ones. */
+  primary?: boolean;
 }
 
 const M2 = "Coming in milestone 2";
@@ -48,7 +55,7 @@ const groups: ToolbarAction[][] = [
     { label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, coming: M3 },
     { label: "Sync", caption: "Sync", icon: ArrowDownUpIcon, coming: M3 },
     { label: "Push", caption: "Push", icon: ArrowUpFromLineIcon, coming: M3 },
-    { label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, event: "commit" },
+    { label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, event: "commit", primary: true },
   ],
   [
     { label: "Stage", caption: "Stage", icon: ListPlusIcon, coming: M2 },
@@ -56,8 +63,9 @@ const groups: ToolbarAction[][] = [
     { label: "Discard", caption: "Discard", icon: Undo2Icon, coming: M2 },
   ],
   [
-    { label: "Save Stash", caption: "Save", icon: ArchiveIcon, coming: M2 },
-    { label: "Apply Stash", caption: "Apply", icon: ArchiveRestoreIcon, coming: M2 },
+    // No Apply Stash key: applying means choosing which stash, which the menus and the
+    // Branches panel do. Saving always makes a new stash, so it can be one click.
+    { label: "Stash Changes", caption: "Stash", icon: ArchiveIcon, event: "stashSave" },
   ],
   [
     { label: "Merge", caption: "Merge", icon: GitMergeIcon, coming: M3 },
@@ -67,46 +75,71 @@ const groups: ToolbarAction[][] = [
 
 function run(action: ToolbarAction): void {
   if (action.event === "commit") emit("commit");
+  else if (action.event === "stashSave") emit("stashSave");
 }
 
-/** Chiclet key: icon on top, caption below. The bottom margin leaves room for the 2px lip. */
-const KEY_CLASS =
-  "key relative mb-[2px] inline-flex h-[3rem] w-[4.5rem] shrink-0 flex-col items-center justify-between rounded-lg border px-0.5 pt-[5px] pb-1 text-[10px] leading-none font-medium whitespace-nowrap outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-45 [&_svg]:size-6 [&_svg]:shrink-0";
+/**
+ * Flat toolbar button: icon on top, caption below, no fill or border at rest. Hover and press
+ * lay the ink over the bar at 6% and 10%; disabled drops to 38% opacity. The 20px icons draw a
+ * 1.67px line (Lucide's 2 units at 20px) where the app's other icons draw 1px.
+ */
+const BUTTON_CLASS =
+  "relative inline-flex h-[42px] w-[63px] shrink-0 flex-col items-center justify-between rounded-[4px] px-[2px] pt-[6px] pb-[5px] text-[10px] leading-none font-medium whitespace-nowrap text-foreground/90 transition-colors duration-[120ms] outline-none enabled:hover:bg-foreground/6 enabled:hover:text-foreground enabled:active:bg-foreground/10 focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-38 [&_svg]:size-5 [&_svg]:shrink-0 [&_svg]:[stroke-width:1.67px]";
+/** The primary button: solid primary fill, a step towards the primary colour on hover, darker pressed. */
+const PRIMARY_CLASS =
+  "bg-primary-fill text-primary-fill-foreground enabled:hover:bg-[color-mix(in_srgb,var(--primary-fill)_40%,var(--primary))] enabled:hover:text-primary-fill-foreground enabled:active:bg-[color-mix(in_srgb,var(--primary-fill)_85%,black)]";
+
+function buttonClass(action?: ToolbarAction): string {
+  return cn(BUTTON_CLASS, action?.primary && PRIMARY_CLASS);
+}
+
+/** Count badge in a button's top right corner, in the primary fill. */
+const BADGE_CLASS =
+  "absolute top-[3px] right-[3px] inline-flex h-[15px] items-center rounded-[3px] bg-primary-fill px-[3px] text-[9px] leading-none text-primary-fill-foreground tabular-nums";
+
+/** The Commit button's badge text: the file count, capped at 999+; null for none or other buttons. */
+function badge(action: ToolbarAction): string | null {
+  if (action.event !== "commit" || props.commitCount <= 0) return null;
+  return props.commitCount > 999 ? "999+" : String(props.commitCount);
+}
 const CAPTION_CLASS = "block max-w-[59px] truncate text-[9px] font-medium tracking-[0.04em] uppercase";
 </script>
 
 <template>
   <header
-    class="flex h-[52px] shrink-0 items-center gap-1 border-b border-border bg-bar px-1.5 select-none"
+    class="flex h-[52px] shrink-0 items-center border-b border-border bg-bar px-[6px] select-none"
   >
-    <button type="button" :class="KEY_CLASS" title="Open Repository" @click="emit('addRepo')">
+    <button type="button" :class="buttonClass()" title="Open Repository" @click="emit('addRepo')">
       <FolderOpenIcon />
       <span :class="CAPTION_CLASS">Open</span>
     </button>
-    <button type="button" :class="KEY_CLASS" title="Refresh" @click="emit('refresh')">
+    <button type="button" :class="buttonClass()" title="Refresh" @click="emit('refresh')">
       <RefreshCwIcon />
       <span :class="CAPTION_CLASS">Refresh</span>
     </button>
 
     <template v-for="(group, gi) in groups" :key="gi">
-      <Separator orientation="vertical" class="mx-[5px] h-[32px]" />
+      <!-- data-[orientation=vertical]:self-center replaces the Separator's own self-stretch, which
+           would pin a fixed-height divider to the top of the bar. -->
+      <Separator orientation="vertical" class="mx-[5px] h-[32px] bg-(--key) data-[orientation=vertical]:self-center" />
       <template v-for="action in group" :key="action.label">
         <button
           v-if="!action.coming"
           type="button"
-          :class="KEY_CLASS"
-          :title="action.label"
+          :class="buttonClass(action)"
+          :title="badge(action) ? `${action.label} (${badge(action)} ${props.commitCount === 1 ? 'file' : 'files'})` : action.label"
           :disabled="!props.hasRepo"
           @click="run(action)"
         >
           <component :is="action.icon" />
           <span :class="CAPTION_CLASS">{{ action.caption }}</span>
+          <span v-if="badge(action)" :class="BADGE_CLASS" aria-hidden="true">{{ badge(action) }}</span>
         </button>
         <Tooltip v-else>
           <TooltipTrigger as-child>
             <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->
             <span class="inline-flex">
-              <button type="button" :class="KEY_CLASS" :aria-label="action.label" disabled>
+              <button type="button" :class="buttonClass(action)" :aria-label="action.label" disabled>
                 <component :is="action.icon" />
                 <span :class="CAPTION_CLASS">{{ action.caption }}</span>
               </button>

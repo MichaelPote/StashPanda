@@ -1,10 +1,10 @@
 # StashPanda: what is left to build
 
-Status as of 2026-09-18, with the Windows workflow updated on 2026-09-21 and milestone 2 planned
-on 2026-09-23. Everything not listed
-here is done and tested; see the "Implementation
-notes" and "Status against the milestones" sections at the end of [architecture.md](architecture.md)
-for what exists and how it deviates from the original plan.
+Status as of 2026-09-30. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
+milestone 2 planned on 2026-09-23, and the commit dialog and a round of interface and graph work
+added on 2026-09-30 (see "Interface and graph work" below). Everything not listed here is done and
+tested; see the "Implementation notes" and "Status against the milestones" sections at the end of
+[architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
 Items are grouped by milestone and ordered within each group by the order they should be built.
 Each item names the files it touches so it can be picked up cold.
@@ -43,6 +43,14 @@ Each item names the files it touches so it can be picked up cold.
       `src-tauri/tauri.wsl-dev.conf.json` into the Tauri config to empty `beforeDevCommand`, and
       relies on WSL2 forwarding Windows `localhost:1420` to the Vite server in WSL. Details are in
       the README under "Working on the Windows version from WSL".
+- [x] **`win:dev` and `win:ux` exiting silently** (fixed 2026-09-30). Both stopped right after
+      `npm install`. The port check `win_port_owner` in `scripts/windows.sh` asks PowerShell's
+      `Get-NetTCPConnection` who holds port 1420; when nobody does, `powershell.exe` exits with 1
+      even with `-ErrorAction SilentlyContinue`, and `set -euo pipefail` ended the script. The
+      function now ignores PowerShell's exit code and judges by its output.
+- [x] **`architecture.md` brought up to date** (2026-09-30): new implementation notes for this
+      round, the status against the milestones, the test list (45 tests), the 14 px root and the
+      Windows mirror in place of a separate checkout.
 
 ## Milestone 1 remainder (read-only browsing)
 
@@ -106,7 +114,7 @@ Each item names the files it touches so it can be picked up cold.
       grouped tie-break (keep a branch's commits contiguous) or drop the setting.
 - [ ] **Text filter on the graph** (`graph_search` command). Planned, not started: return the next
       row index whose subject, author or oid matches, in a direction, for the Ctrl+F box.
-- [ ] **`lastSelectedOid` restore.** `ui-state.json` `perRepo[key].lastSelectedOid` is written on
+- [ ] **`lastSelectedOid` restore.** The UI state's `perRepo[key].lastSelectedOid` is written on
       every selection but never read back. Decide whether to select and scroll to it on the first
       snapshot after open, then do it in `stores/sessions.ts`.
 - [ ] **Passphrase storage in the OS keychain.** `keys/secrets.rs::PassphraseCache` is
@@ -128,13 +136,81 @@ Each item names the files it touches so it can be picked up cold.
 
 ### Frontend
 
-- [ ] **Settings dialog** (`src/components/settings/SettingsDialog.vue`, new) with pages General
-      (theme, date format, graph order, show remote branches, show stashes), Git executables
-      (`git.windowsExecutable`, `git.linuxExecutable`, `git.windowsExecutableFromLinux`,
-      `git.wslDefaultDistro`, `git.wslAutomountRoot`), Console (`console.showInternal`,
-      `console.verboseHelpers`, `console.maxLines`), Polling, Cache, Commit (`commit.preselect`). All fields exist in
-      `Settings` (see `bindings.ts`) and save through `settings.update(patch)`. Nothing in the UI
-      edits settings today.
+- [x] **Settings dialog** (2026-09-30, `src/components/settings/SettingsDialog.vue`, opened by
+      File > Settings or Ctrl+,). A list of pages on the left (General, Commit, Diff, Git
+      executables, Console, Polling, Cache) and the selected page's form on the right, with Save
+      Changes and Cancel. The pages and their fields are data in `src/components/settings/sections.ts`;
+      `SettingsField.vue` draws one field as a list, a checkbox, a number box with its unit, or a
+      text box. Save Changes sends a merge patch holding only the changed fields, so a setting
+      changed elsewhere while the dialog is open is kept, and an emptied optional box is sent as
+      `null` (not set). Saving the graph order, lane colours or commits per repository refreshes
+      every open tab, since the backend reads those only when it builds a graph. A page with a
+      value that cannot be saved shows a warning icon in the list; a page with unsaved changes
+      shows a dot. Fields that nothing reads yet are labelled "Not used yet":
+      `appearance.avatarSource`, `console.verboseHelpers`, `polling.statusBackgroundIntervalMs`,
+      `polling.refsIntervalMs`, `polling.autoFetchMinutes` and `cache.maxCachedRepos`. Settings
+      that only show or hide something the window already has a control for are left out of the
+      dialog: `appearance.showRemoteBranches` (each branch's show/hide tag in the Branches
+      panel), `console.showInternal` (the Console header's Internal button, whose state is kept in
+      the UI state) and `appearance.showStashesInGraph` (stashes are not drawn in the
+      graph yet; its control belongs on the Branches panel's Stashes heading). Nothing reads any
+      of the three, so they could be deleted from `settings.rs`. The Git
+      executables page, `console.outputCapBytes` and `polling.statusIntervalMs` apply when a
+      repository is opened. Still to add: the SSH Keys page below, and a way to reach the dialog
+      from the toolbar.
+- [x] **Console Log mode and layout** (2026-10-01, `src/components/shell/ConsolePanel.vue`).
+      Commands are listed newest first, and each has one pill with its duration, green for exit
+      code 0 and red with the code after a dash otherwise. A new first header button, Log (the
+      default mode), switches User, Internal and Watcher off and lists only the user's own commands: each row starts with
+      the git command alone, with no clock time (`ConsoleEvent.command`, from `Cmd.summary`, which `GitClient::build_cmd`
+      sets to the caller's arguments before the common flags and the transport wrapper are
+      added), the full command line follows in grey, there are no category tags, and each row
+      starts expanded to show only its standard output. A category button pressed in Log mode
+      leaves Log mode with just that category on; switching Log off turns all three back on. The
+      buttons are remembered as `console.*` in the UI state (`console.log` is new). A successful
+      internal or watcher command's console event carries no output text, only its byte counts
+      and `outputOmitted` (`kept_output` in `src-tauri/src/git/console.rs`); nothing but the
+      Console read that copy, and it cost up to 128 KiB per entry across 2,000 entries per
+      repository.
+- [x] **Ref pill styles** (2026-09-30, `src/components/graph/RefPill.vue`). Local branches are
+      solid and remote branches outlined; `appearance.solidRemotePills` (Settings, General) swaps
+      them. Tags and a detached HEAD are always solid. A local branch at parity with its upstream
+      is two pills that interlock at a chevron, the remote half (`pill-head`) styled as a remote
+      branch and the branch half (`pill-tail`) as a local one, overlapping by 1px. Since the
+      checked-out branch no longer has its own pill style, its commit is marked by the ringed
+      dot in the lane (`GraphLanesSvg.vue`) and a lighter row tint (`--row-head`) when the row
+      is not selected.
+- [x] **Resizable dialogs** (2026-09-30, `src/components/ui/dialog/DialogContent.vue`). Every
+      dialog can be dragged bigger by its edges and corners and stays centred (the size changes by
+      twice the pointer's movement); it never goes below its natural size, because the size is
+      applied as `min-width` and `min-height`. Double-clicking an edge resets it. Each dialog
+      passes `size-key`, and the size is remembered in the UI state as `dialogSizes.<key>`.
+      While a dialog is bigger than natural (`data-resized`), the rules in `index.css` give the
+      extra height to the parts marked `data-dialog-grow` (the Commit dialog's file list and
+      message, the Apply Stash list, the Create Tag message, the Settings body). The Settings
+      dialog opens at 80% of the window each way. Settings, Commit and Add Repository pass
+      `:close-on-outside-click="false"`, so a click on the background does not close them;
+      Escape and the close button still do.
+- [x] **UI state in the SQLite database** (2026-09-30). `ui-state.json` and the `localStorage`
+      values (Console buttons, Files panel grouping and sorting, diff header choices and divider)
+      moved to the `ui_prefs` and `repo_ui_prefs` tables, one row per value
+      (`src-tauri/src/storage/ui_prefs.rs`, schema version 2). The old file is imported once and
+      renamed to `ui-state.json.imported`; the `localStorage` values are imported once by
+      `uiState.load()` and deleted. Components read and write them through `uiState.pref(...)`.
+      Removing a repository from the library now also deletes its hidden refs and last selected
+      commit, which `ui-state.json` used to keep forever.
+- [x] **Diff settings** (2026-09-30, the Settings dialog's Diff page, `diff` section of
+      `settings.json`): font, font size (default 12px; it was fixed at 10.5px, `text-xs`, before), line height
+      (moved from `appearance.diffLineHeight`; `settings::migrate_settings` moves an existing
+      value when the file loads), tab width (default 8, the old browser default), ligatures (on)
+      and changed-word highlighting (on). The font list offers the bundled JetBrains Mono and IBM
+      Plex Mono (`@fontsource/ibm-plex-mono`) and every monospaced font installed on the machine,
+      from the `fonts_monospace` command (`src-tauri/src/ipc/fonts.rs`, the `fontdb` crate, 74 ms
+      for 7 fonts on this Linux machine). A saved font that is not installed stays in the list,
+      marked "(not installed)". The page shows a live preview (`DiffPreview.vue`) of the unsaved
+      values. `src/lib/diff/font.ts` turns the settings into the styles both the viewer and the
+      preview use; the line-number gutters are now `5.5ch` and the marker `1.7ch`, so 5-digit line
+      numbers fit at any font size. The font applies to the diff rows only.
 - [ ] **SSH Keys page** (`src/components/settings/KeyManagerPage.vue`, `KeyRow.vue`,
       `KeyImportDropzone.vue`, `PassphraseDialog.vue`, new). Commands exist and are typed:
       `keysDefaultDirs`, `keysScan(extraDirs)`, `keysInspect`, `keysUnlock(path, passphrase, remember)`,
@@ -230,7 +306,7 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
 - [x] **b. `commit(message, amend, sign_off)`** (2026-09-23; command `op_commit`). The message goes
       through `-F -` on stdin and arrives intact (tested with a leading dash, `#123` and non-ASCII
       text). Git itself refuses an empty message. `amend` with an empty message uses `--no-edit`;
-      to edit the old message, the frontend loads it with `getCommitBody(key, "HEAD")`. There is no
+      to edit the old message, the frontend loads it with `getCommitMessage(key, "HEAD")`. There is no
       new oid in the result: the frontend reads the new HEAD from the refs it refetches. Timeout
       10 minutes, for slow commit hooks.
       Extended on 2026-09-30 with `paths`: the paths are staged with `add -A`, and when other
@@ -263,13 +339,13 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
 - [x] **Commit dialog** (2026-09-30, `src/components/dialogs/CommitDialog.vue`, opened by the
       toolbar's Commit button). Lists every outstanding file with a checkbox. The files selected
       in the Files panel start ticked; with no selection, the `commit.preselect` setting decides
-      (`all`, the default, or `staged`); it is edited in `settings.json` until the Settings dialog
-      exists. Space
+      (`all`, the default, or `staged`), set on the Settings dialog's Commit page. Space
       flips the ticks of the selected rows. Ticking exactly the staged files commits the index as
       it is; any other set is committed as it is on disk, with a warning for partly staged files.
       Amend loads the previous message, and the buttons change to "Amend Message" (nothing
       ticked) or "Amend Commit" (files ticked). The message draft survives Cancel. "Commit & Push" is
-      shown disabled until push exists in milestone 3.
+      shown disabled until push exists in milestone 3. The dialog is 48rem wide with large buttons,
+      and the overlay behind every dialog (`ui/dialog/DialogOverlay.vue`) is black at 50%.
 - [ ] **Stash list in `BranchesPanel.vue`** replacing the `TODO(backend)` comment, with apply, pop
       and drop, plus the Save Stash and Apply Stash toolbar buttons.
 - [ ] **Commit context menu additions**: reset (soft, mixed or hard), cherry-pick, revert.
@@ -285,10 +361,80 @@ refresh per action in the console and the result matching the `git` command line
 
 ### Left for the phase after this one
 
-- [ ] **Menu bar follow-ups**: a real Settings dialog behind `file.settings`, the commit search
-      behind `edit.find`. The Settings dialog comes first, since two menu items wait on it.
+- [ ] **Menu bar follow-ups**: the commit search behind `edit.find`. (The Settings dialog behind
+      `file.settings` was added 2026-09-30.)
       (The Theme check marks now follow the setting: fixed 2026-09-30 in `menu.rs`,
       `sync_theme`.)
+
+## Interface and graph work (done 2026-09-30)
+
+Requested while using the Windows build, alongside milestone 2. `cargo test` (45 tests),
+`cargo clippy --all-targets` and `npm run build` pass for all of it; the frontend selection,
+grouping and sorting rules were checked with scratch Node scripts, since the project has no
+frontend test runner.
+
+### Commit graph
+
+- [x] **Show and hide branches.** Each local branch, remote branch and tag in `BranchesPanel.vue`
+      has an arrow-shaped tag (`shell/RefToggleTag.vue`) in its lane colour; clicking it switches
+      the ref off. `GraphSnapshot::build` takes the hidden set and lays out only commits reachable
+      from the refs still shown, leaving hidden refs' labels off; HEAD counts as a tip only when
+      detached. `graph_set_hidden_refs` rebuilds from the commits already loaded, with no Git
+      command. The list is saved in the UI state as `perRepo[key].hiddenRefs` and read by
+      `repo_open`. The cache still saves every commit, from the snapshot's `full_order`.
+      `GraphMeta.refColours` gives each shown ref's lane colour. The checked-out branch is marked
+      with a `ChevronRight` instead of a tick. Test: `hidden_refs_drop_their_commits_and_labels`.
+- [x] **Column dividers** in `GraphHeader.vue`: visible, draggable dividers between every column,
+      double-click to reset. Header and rows both reserve the scrollbar's space
+      (`scrollbar-gutter: stable`), so the columns line up.
+- [x] **ID column** with the short commit ID, at the right-hand end.
+- [x] **Columns sized to their contents.** Commit message takes the free space; Author, Date and
+      ID default to their widest possible value, measured with the real fonts in
+      `lib/graph/columnWidths.ts` (Author from the 24 longest names in `GraphMeta.widestAuthors`).
+      A dragged width stays; `GraphColumns` fields are optional, and the old always-saved defaults
+      (140, 150, 76) are read as automatic.
+- [x] **Branch pills never truncate**; the subject truncates, and the cell clips at its edge.
+- [x] **Dots centred on their rows.** Rows were 1.6rem (22.4px) but the graph SVG spaces rows at
+      the rounded 22px, so the text drifted 0.4px a row. `main.ts` now sets `--row-h` to the
+      rounded `ROW_HEIGHT`.
+- [x] **Working Tree row in view on open.** When the list is scrolled to the top it stays there
+      across snapshot swaps (`onGraphSnapshot` in `stores/sessions.ts`), instead of following the
+      old first row down.
+
+### Files panel
+
+- [x] **Group by** Status, Folder or nothing, and **sort by** name, Git status or date modified,
+      in the panel header (`lib/files.ts::arrangeSections`). Date modified is for the working tree
+      only and uses the new `get_modified_times` command, which reads times through each
+      transport's new `Transport::modified_times` (filesystem for Local and WSL, a remote `stat`
+      loop for SSH). Tests cover Local and SSH.
+- [x] **File name and folder as columns** when not grouped by folder: one shared name width, and a
+      folder column that truncates from its start. Folder headings keep their case.
+- [x] **Commit header**: regular-weight subject across the width, with a "More" toggle at the
+      right, under the date, for the rest of the message.
+
+### Diff viewer
+
+- [x] **Side by side** splits the panel 50/50 with a draggable divider (`stashpanda.diff.split` in
+      local storage). Each side scrolls sideways on its own scrollbar, and moving one moves the
+      other to the same fraction of its range.
+- [x] **Line height setting** `appearance.diffLineHeight`, since moved to `diff.lineHeight` (default 1.2 times the font size). The
+      virtual list and the rows now use one whole-pixel height; before, the list spaced rows at
+      1.4rem while they were drawn at 1.25rem, so the text jumped while scrolling.
+      `useVirtualRows` accepts the row height as a getter.
+
+### Shell, fonts and icons
+
+- [x] **Fonts bundled**: IBM Plex Sans, Outfit and JetBrains Mono from their `@fontsource`
+      packages, imported in `main.ts`, instead of a Google Fonts `@import`, so the app looks the
+      same offline.
+- [x] **Theme menu ticks** follow the setting (`menu.rs::sync_theme`).
+- [x] **Active tab** keeps the same box as the others, so it no longer moves, and is lit in the
+      accent colour.
+- [x] **Keyboard focus** is a 1px accent outline instead of the browser's white ring
+      (`index.css`).
+- [x] **Lucide icons** draw 1px lines at any size, and the toolbar icons are 0.5rem larger.
+- [x] **Console** scrolls sideways for long command lines; expanded output stays panel-wide.
 
 ## Milestone 3: remote and history operations
 
@@ -306,9 +452,9 @@ refresh per action in the console and the result matching the `git` command line
       `SshUnsupportedFeature` for ProxyCommand and ProxyJump.
 - [ ] **Native `ProxyJump`** by nesting a `russh` connection over a `direct-tcpip` channel, as an
       alternative to tier 2 for the jump-host case.
-- [ ] **Console preference `console.hideInternal`** wired to the default state of the console
-      filter chips (the setting `console.showInternal` exists; the chips currently persist in
-      `localStorage` only).
+- [x] **Console filter buttons remembered** (2026-09-30). The User, Internal and Watcher buttons
+      are kept in the UI state (`console.*` rows in the database), not in a setting; the unused
+      `console.showInternal` setting is left out of the Settings dialog.
 - [ ] **Blame and file history** views (the toolbar has Blame and Investigate buttons; neither
       is planned in detail yet).
 - [ ] **Auto-fetch** on `polling.autoFetchMinutes`.
@@ -347,3 +493,13 @@ refresh per action in the console and the result matching the `git` command line
 - `keys_convert` writes `<stem>` for OpenSSH output, which for a file named `foo.ppk` produces `foo`
   next to it; for a file with no extension (already OpenSSH) it refuses unless `overwrite` is set.
   Confirm this is the naming Michael wants.
+- The `@fontsource` stylesheets list a `.woff` copy of every `.woff2` file, so about 0.9 MB of the
+  1.7 MB of bundled fonts is never used (WebView2 and WebKitGTK both read `.woff2`). Drop the
+  `.woff` files in a build step if the installer size matters.
+- `perRepo[key].hiddenRefs` keeps the names of branches that were hidden and later deleted.
+  Harmless, since a missing ref hides nothing, but the list is never pruned.
+- The side-by-side diff sizes each horizontal scroll range from a character count (tabs counted as
+  8 columns), so lines with unusually wide or narrow characters can leave it slightly long or
+  short.
+- `get_modified_times` over SSH reports whole seconds; Local and WSL report milliseconds. Files
+  changed within the same second can sort in either order.

@@ -23,6 +23,7 @@ pub struct Settings {
     pub polling: Polling,
     pub cache: CacheSettings,
     pub commit: CommitSettings,
+    pub diff: DiffSettings,
     pub library: RepoLibrary,
 }
 
@@ -36,6 +37,7 @@ impl Default for Settings {
             polling: Polling::default(),
             cache: CacheSettings::default(),
             commit: CommitSettings::default(),
+            diff: DiffSettings::default(),
             library: RepoLibrary::default(),
         }
     }
@@ -73,11 +75,35 @@ pub enum DateFormat {
     Absolute,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum GraphOrder {
+    #[default]
     Date,
     Topo,
+}
+
+/// How the commit graph colours a lane that carries several branch tips, as when one branch was
+/// started from the tip of another.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitLaneColours {
+    /// The lane keeps one colour. Its top-most branch tip shares it; each branch tip further down
+    /// the lane has been built on since, so its pills and its Branches panel tag get a colour of
+    /// their own. In both modes a remote branch that a local branch tracks takes that local
+    /// branch's colour and does not count as a tip.
+    #[default]
+    KeepLane,
+    /// The lane changes colour at each branch tip below the first, so each tip's pills, tag and
+    /// the stretch of lane under it share one colour.
+    ChangeAtEachTip,
+}
+
+/// The appearance settings that change how the graph snapshot is built.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GraphOptions {
+    pub order: GraphOrder,
+    pub lane_colours: CommitLaneColours,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -110,11 +136,13 @@ pub struct Appearance {
     pub theme: Theme,
     pub date_format: DateFormat,
     pub graph_order: GraphOrder,
+    pub commit_lane_colours: CommitLaneColours,
+    /// Swap the ref pill styles in the commit graph: remote branches solid and local branches
+    /// outlined. Off (the default) draws local branches solid and remote branches outlined.
+    pub solid_remote_pills: bool,
     pub show_remote_branches: bool,
     pub show_stashes_in_graph: bool,
     pub avatar_source: AvatarSource,
-    /// Diff row height as a multiple of the diff font size (1.2 = 20% more than the text).
-    pub diff_line_height: f32,
 }
 
 impl Default for Appearance {
@@ -123,10 +151,50 @@ impl Default for Appearance {
             theme: Theme::Dark,
             date_format: DateFormat::Relative,
             graph_order: GraphOrder::Date,
+            commit_lane_colours: CommitLaneColours::KeepLane,
+            solid_remote_pills: false,
             show_remote_branches: true,
             show_stashes_in_graph: false,
             avatar_source: AvatarSource::Initials,
-            diff_line_height: 1.2,
+        }
+    }
+}
+
+impl Appearance {
+    pub fn graph_options(&self) -> GraphOptions {
+        GraphOptions { order: self.graph_order, lane_colours: self.commit_lane_colours }
+    }
+}
+
+/// How the diff viewer draws text. The font applies to the diff only; hashes, paths and refs
+/// elsewhere keep the bundled JetBrains Mono.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DiffSettings {
+    /// CSS font family name: one of the bundled fonts ("JetBrains Mono", "IBM Plex Mono") or a
+    /// monospaced font installed on the machine (see `fonts_monospace`).
+    pub font_family: String,
+    /// Text size in CSS pixels. Before this setting the diff was fixed at 10.5 (0.75rem at a 14px root).
+    pub font_size: f32,
+    /// Row height as a multiple of the font size (1.2 = 20% more than the text).
+    pub line_height: f32,
+    /// Columns a tab advances to.
+    pub tab_width: u32,
+    /// Let fonts that have them join character pairs such as `=>` and `!=` into one glyph.
+    pub ligatures: bool,
+    /// Mark the changed words inside a changed line, not only the whole line.
+    pub word_highlight: bool,
+}
+
+impl Default for DiffSettings {
+    fn default() -> Self {
+        Self {
+            font_family: "JetBrains Mono".into(),
+            font_size: 12.0,
+            line_height: 1.2,
+            tab_width: 8,
+            ligatures: true,
+            word_highlight: true,
         }
     }
 }
@@ -283,11 +351,35 @@ impl RepoLibrary {
 // Loading, saving, patching
 // ---------------------------------------------------------------------------
 
+/// Moves keys that older versions of `settings.json` kept elsewhere, before the file is read into
+/// `Settings`. Unknown keys are otherwise dropped, which would lose the user's value.
+pub fn migrate_settings(json: &mut serde_json::Value) {
+    // `appearance.diffLineHeight` became `diff.lineHeight` on 2026-09-30.
+    let old = json
+        .get_mut("appearance")
+        .and_then(|a| a.as_object_mut())
+        .and_then(|a| a.remove("diffLineHeight"));
+    if let (Some(old), Some(root)) = (old, json.as_object_mut()) {
+        let diff = root.entry("diff").or_insert_with(|| serde_json::Value::Object(Default::default()));
+        if let Some(diff) = diff.as_object_mut() {
+            diff.entry("lineHeight").or_insert(old);
+        }
+    }
+}
+
 /// Read a JSON file into `T`. A missing file yields `T::default()`. A corrupt
 /// file is renamed to `<name>.broken-<unix time>` and `T::default()` is used,
 /// so a bad edit never blocks start-up; the caller reports the rename.
 pub fn load_json_or_default<T: Default + for<'de> Deserialize<'de>>(
     path: &Path,
+) -> (T, Option<String>) {
+    load_json_migrated(path, |_| {})
+}
+
+/// `load_json_or_default`, with `migrate` applied to the parsed JSON before it is read into `T`.
+pub fn load_json_migrated<T: Default + for<'de> Deserialize<'de>>(
+    path: &Path,
+    migrate: impl FnOnce(&mut serde_json::Value),
 ) -> (T, Option<String>) {
     match std::fs::read(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (T::default(), None),
@@ -295,7 +387,10 @@ pub fn load_json_or_default<T: Default + for<'de> Deserialize<'de>>(
             T::default(),
             Some(format!("could not read {}: {e}", path.display())),
         ),
-        Ok(bytes) => match serde_json::from_slice::<T>(&bytes) {
+        Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes).and_then(|mut json| {
+            migrate(&mut json);
+            serde_json::from_value::<T>(json)
+        }) {
             Ok(v) => (v, None),
             Err(e) => {
                 let stamp = std::time::SystemTime::now()
@@ -371,3 +466,26 @@ pub fn apply_patch<T: Serialize + for<'de> Deserialize<'de>>(
 /// Unused for now but keeps a stable, sorted map type available for callers
 /// that want deterministic JSON (per-repo maps in `ui_state.rs`).
 pub type SortedMap<V> = BTreeMap<String, V>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrate_moves_diff_line_height() {
+        let mut json = serde_json::json!({ "appearance": { "theme": "dark", "diffLineHeight": 1.5 } });
+        migrate_settings(&mut json);
+        let settings: Settings = serde_json::from_value(json).unwrap();
+        assert_eq!(settings.diff.line_height, 1.5);
+        assert_eq!(settings.appearance.theme, Theme::Dark);
+        assert_eq!(settings.diff.font_family, "JetBrains Mono");
+    }
+
+    #[test]
+    fn migrate_keeps_a_new_line_height() {
+        let mut json = serde_json::json!({ "appearance": { "diffLineHeight": 1.5 }, "diff": { "lineHeight": 1.3 } });
+        migrate_settings(&mut json);
+        assert_eq!(json["diff"]["lineHeight"], 1.3);
+        assert!(json["appearance"].get("diffLineHeight").is_none());
+    }
+}

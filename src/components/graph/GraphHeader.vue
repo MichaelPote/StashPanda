@@ -17,7 +17,8 @@ const emit = defineEmits<{
 
 const LIMITS: Record<ResizableColumn, { min: number; max: number }> = {
   graph: { min: 28, max: 4000 },
-  author: { min: 48, max: 400 },
+  // At its narrowest the Author column shows only the avatars: 14px plus 5.25px of padding each side.
+  author: { min: 25, max: 400 },
   date: { min: 56, max: 260 },
   id: { min: 40, max: 400 },
 };

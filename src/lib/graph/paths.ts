@@ -11,11 +11,10 @@ export function remToPx(rem: number): number {
   return Math.round(rem * rootFontSizePx());
 }
 /**
- * Commit row height: the `--row-h` rem value from index.css, rounded to whole pixels for the
- * virtual list and the SVG. main.ts sets `--row-h` to this rounded value, so rows match it.
+ * Commit row height in whole pixels, for the virtual list and the SVG. It must equal `--row-h` in
+ * index.css, which the rows are drawn with.
  */
-export const ROW_HEIGHT_REM = 1.6;
-export const ROW_HEIGHT = remToPx(ROW_HEIGHT_REM);
+export const ROW_HEIGHT = 22;
 /** Horizontal distance between two lane centres in pixels. */
 export const LANE_WIDTH = 14;
 /** Number of `--graph-lane-N` CSS variables. */

@@ -14,10 +14,25 @@ export const commands = {
 	uiStateUpdate: (patch: string) => typedError<UiState, GitError>(__TAURI_INVOKE("ui_state_update", { patch })),
 	/**  Problems found while loading config files; the UI calls this once at start. */
 	startupWarnings: () => typedError<string[], GitError>(__TAURI_INVOKE("startup_warnings")),
+	/**
+	 *  Family names of the monospaced fonts installed on this machine, sorted and without repeats.
+	 * 
+	 *  The backend and the WebView run on the same machine, so every name here can be drawn by the
+	 *  frontend. A face counts as monospaced when its `post` table sets `isFixedPitch`, which is
+	 *  what `fontdb` reports. Scanning reads the header of every installed font, so it runs off the
+	 *  async runtime; the frontend asks once per run.
+	 */
+	fontsMonospace: () => typedError<string[], GitError>(__TAURI_INVOKE("fonts_monospace")),
 	/**  Resolve without opening: which transport, which paths, which key. */
 	repoResolve: (path: string, connection: Connection) => typedError<RepoResolution, GitError>(__TAURI_INVOKE("repo_resolve", { path, connection })),
 	/**  Add to the library (or update an existing entry with the same key). */
 	repoAdd: (path: string, connection: Connection, groupId: string | null, displayName: string | null) => typedError<RepoEntry, GitError>(__TAURI_INVOKE("repo_add", { path, connection, groupId, displayName })),
+	/**
+	 *  Change a library entry's path, connection or display name. A new path or connection can give
+	 *  the entry a new key, in which case the entry under the old key is replaced. The group, the git
+	 *  override and the last-opened time carry over. An empty `display_name` clears the name.
+	 */
+	repoUpdate: (key: string, path: string, connection: Connection, displayName: string | null) => typedError<RepoEntry, GitError>(__TAURI_INVOKE("repo_update", { key, path, connection, displayName })),
 	repoRemove: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("repo_remove", { key })),
 	repoOpen: (key: string) => typedError<RepoInfo, GitError>(__TAURI_INVOKE("repo_open", { key })),
 	repoClose: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("repo_close", { key })),
@@ -32,6 +47,8 @@ export const commands = {
 	getRepoRefs: (key: string) => typedError<RefsSnapshot, GitError>(__TAURI_INVOKE("get_repo_refs", { key })),
 	getCommitChanges: (key: string, commit: string, parent: string | null) => typedError<FileChange[], GitError>(__TAURI_INVOKE("get_commit_changes", { key, commit, parent })),
 	getCommitMessage: (key: string, commit: string) => typedError<string, GitError>(__TAURI_INVOKE("get_commit_message", { key, commit })),
+	/**  A merge commit's branch in the graph, and its parents in parent order. */
+	getMergeInfo: (key: string, commit: string) => typedError<MergeInfo, GitError>(__TAURI_INVOKE("get_merge_info", { key, commit })),
 	getFileDiff: (key: string, target: DiffTarget, path: string, oldPath: string | null, options: {
 	context: number,
 	ignoreWhitespace: boolean,
@@ -45,7 +62,7 @@ export const commands = {
 	/**
 	 *  Switch refs (full names) off in the commit graph, or back on by leaving them out, and
 	 *  rebuild the graph from the commits already loaded; no Git command runs. The frontend saves
-	 *  the same list in `ui-state.json` (`perRepo[key].hiddenRefs`), which `repo_open` reads.
+	 *  the same list in the UI state (`perRepo[key].hiddenRefs`, stored in the database), which `repo_open` reads.
 	 */
 	graphSetHiddenRefs: (key: string, hidden: string[]) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_set_hidden_refs", { key, hidden })),
 	getBlobContent: (key: string, spec: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_blob_content", { key, spec })),
@@ -93,6 +110,20 @@ export const commands = {
 	opMergeAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge_abort", { key })),
 	opTagCreate: (key: string, name: string, target: string, message: string | null, force: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_create", { key, name, target, message, force })),
 	opTagDelete: (key: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_delete", { key, name })),
+	/**
+	 *  Save the working tree's changes as a new stash. `message` names it; without one Git names it
+	 *  after the commit it was made on.
+	 */
+	opStashPush: (key: string, message: string | null, includeUntracked: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_stash_push", { key, message, includeUntracked })),
+	/**
+	 *  Apply the stash at `index` and keep it. `oid` is the stash's commit as the list showed it;
+	 *  when the index no longer points at it, nothing runs.
+	 */
+	opStashApply: (key: string, index: number, oid: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_stash_apply", { key, index, oid })),
+	/**  Apply the stash at `index`, then drop it; Git keeps it when applying conflicts. */
+	opStashPop: (key: string, index: number, oid: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_stash_pop", { key, index, oid })),
+	/**  Delete the stash at `index` without applying it. */
+	opStashDrop: (key: string, index: number, oid: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_stash_drop", { key, index, oid })),
 	/**  Stage `paths` (additions, changes and deletions). Pass both paths of a rename. */
 	opStage: (key: string, paths: string[]) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_stage", { key, paths })),
 	/**  Unstage `paths`, leaving the working tree as it is. Pass both paths of a staged rename. */
@@ -142,11 +173,15 @@ export type Appearance = {
 	theme?: Theme,
 	dateFormat?: DateFormat,
 	graphOrder?: GraphOrder,
+	commitLaneColours?: CommitLaneColours,
+	/**
+	 *  Swap the ref pill styles in the commit graph: remote branches solid and local branches
+	 *  outlined. Off (the default) draws local branches solid and remote branches outlined.
+	 */
+	solidRemotePills?: boolean,
 	showRemoteBranches?: boolean,
 	showStashesInGraph?: boolean,
 	avatarSource?: AvatarSource,
-	/**  Diff row height as a multiple of the diff font size (1.2 = 20% more than the text). */
-	diffLineHeight?: number | null,
 };
 
 export type AvatarSource = "initials" | "gravatar";
@@ -169,6 +204,24 @@ export type CacheSettings = {
 export type Category = "userAction" | "internal" | "watcher";
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged" | "unmerged" | "unknown";
+
+/**
+ *  How the commit graph colours a lane that carries several branch tips, as when one branch was
+ *  started from the tip of another.
+ */
+export type CommitLaneColours = 
+/**
+ *  The lane keeps one colour. Its top-most branch tip shares it; each branch tip further down
+ *  the lane has been built on since, so its pills and its Branches panel tag get a colour of
+ *  their own. In both modes a remote branch that a local branch tracks takes that local
+ *  branch's colour and does not count as a tip.
+ */
+"keepLane" | 
+/**
+ *  The lane changes colour at each branch tip below the first, so each tip's pills, tag and
+ *  the stretch of lane under it share one colour.
+ */
+"changeAtEachTip";
 
 /**  Which files the Commit dialog ticks when nothing is selected in the file list. */
 export type CommitPreselect = 
@@ -194,6 +247,11 @@ export type ConsoleEvent = {
 	argv: string[],
 	/**  Shell-quoted single line for display. */
 	display: string,
+	/**
+	 *  Just the git arguments the app asked for, shell-quoted (`checkout master`), without the
+	 *  transport wrapper or the flags every command carries. The console lists this first.
+	 */
+	command: string,
 	startedAtMs: number,
 	durationMs: number | null,
 	exitCode: number | null,
@@ -203,6 +261,11 @@ export type ConsoleEvent = {
 	stderrBytes: number,
 	stdoutTruncated: boolean,
 	stderrTruncated: boolean,
+	/**
+	 *  True when the command wrote output that this event leaves out: a successful internal or
+	 *  watcher command keeps only its byte counts (see `kept_output`).
+	 */
+	outputOmitted: boolean,
 	error: GitError | null,
 };
 
@@ -219,12 +282,59 @@ export type ConsoleSettings = {
 	outputCapBytes?: number,
 };
 
+/**
+ *  The Console header's Log button, which switches the other three off and shows the standard
+ *  output of the user's own commands as plain text, and its User, Internal and Watcher buttons
+ *  (which kinds of command are listed). Log mode is the default.
+ */
+export type ConsoleView = {
+	userAction?: boolean,
+	internal?: boolean,
+	watcher?: boolean,
+	log?: boolean,
+};
+
 export type DateFormat = "relative" | "absolute";
+
+/**
+ *  A dialog's size in CSS pixels after the user dragged its edges. It is applied as a minimum,
+ *  so the dialog never draws smaller than its content needs.
+ */
+export type DialogSize = {
+	width?: number,
+	height?: number,
+};
+
+export type DiffLayout = "unified" | 
+/**  Side by side. */
+"side";
 
 export type DiffOptions = {
 	context: number,
 	ignoreWhitespace: boolean,
 	ignoreCrAtEol: boolean,
+};
+
+/**
+ *  How the diff viewer draws text. The font applies to the diff only; hashes, paths and refs
+ *  elsewhere keep the bundled JetBrains Mono.
+ */
+export type DiffSettings = {
+	/**
+	 *  CSS font family name: one of the bundled fonts ("JetBrains Mono", "IBM Plex Mono") or a
+	 *  monospaced font installed on the machine (see `fonts_monospace`).
+	 */
+	fontFamily?: string,
+	/**  Text size in CSS pixels. Before this setting the diff was fixed at 10.5 (0.75rem at a 14px root). */
+	fontSize?: number | null,
+	/**  Row height as a multiple of the font size (1.2 = 20% more than the text). */
+	lineHeight?: number | null,
+	/**  Columns a tab advances to. */
+	tabWidth?: number,
+	/**  Let fonts that have them join character pairs such as `=>` and `!=` into one glyph. */
+	ligatures?: boolean,
+	/**  Mark the changed words inside a changed line, not only the whole line. */
+	wordHighlight?: boolean,
 };
 
 /**  Which two versions of `path` to compare. */
@@ -245,6 +355,17 @@ export type DiffText = {
 	isBinary: boolean,
 	truncated: boolean,
 	bytes: number,
+};
+
+/**  The diff header's choices and the side-by-side divider. */
+export type DiffView = {
+	layout?: DiffLayout,
+	/**  Lines of context around each change; 99999 shows the whole file. */
+	contextLines?: number,
+	ignoreWhitespace?: boolean,
+	ignoreCrAtEol?: boolean,
+	/**  Share of the side-by-side width given to the old (left) side. */
+	split?: number | null,
 };
 
 export type Edge = {
@@ -283,6 +404,18 @@ export type FileChange = {
 	added: number | null,
 	deleted: number | null,
 	binary: boolean,
+};
+
+export type FilesGroupBy = "status" | "folder" | 
+/**  One flat list. */
+"none";
+
+export type FilesSortBy = "name" | "status" | "modified";
+
+/**  The Files panel's grouping and sorting. */
+export type FilesView = {
+	groupBy?: FilesGroupBy,
+	sortBy?: FilesSortBy,
 };
 
 export type GenerateAlgorithm = "ed25519" | "rsa4096";
@@ -330,8 +463,9 @@ export type GraphMeta = {
 	headRef: string | null,
 	worktree: WorktreeSummary | null,
 	/**
-	 *  Lane colour (palette index 0 to 11) at the tip of every ref shown in the graph, keyed by
-	 *  full ref name. Hidden refs, and refs whose commit is not in the graph, are absent.
+	 *  Pill colour (palette index 0 to 11) of every ref shown in the graph, keyed by full ref
+	 *  name; see `RefLabel::colour`. Hidden refs, and refs whose commit is not in the graph,
+	 *  are absent.
 	 */
 	refColours: { [key in string]: number },
 	/**
@@ -355,6 +489,11 @@ export type GraphRow = {
 	parents: string[],
 	lane: number,
 	colour: number,
+	/**
+	 *  Colour of the pills that start a new colour on this row; see `RowLayout::ref_colour`. Each
+	 *  `RefLabel` carries its own, which differs for a tracked remote branch.
+	 */
+	refColour: number,
 	maxLane: number,
 	edges: Edge[],
 	authorName: string,
@@ -421,6 +560,30 @@ export type MenuActionEvent = {
 	id: string,
 };
 
+/**  A merge commit's branch and parents, for the Files panel's merge summary. */
+export type MergeInfo = {
+	/**
+	 *  The branch the merge commit belongs to in the graph: the nearest branch tip above it on
+	 *  its lane, which is the branch it was merged into. None when no branch tip reaches it, as
+	 *  when that branch has been deleted.
+	 */
+	branch: string | null,
+	/**  In parent order. */
+	parents: MergeParent[],
+};
+
+/**  One parent of a merge commit. */
+export type MergeParent = {
+	oid: string,
+	/**  The merge kept this parent's files as they were, so comparing with it lists no changes. */
+	unchanged: boolean,
+	/**
+	 *  The branch this parent belongs to in the graph: the nearest branch tip above it on its
+	 *  lane. None when no branch tip reaches it, or the commit is not in the graph.
+	 */
+	branch: string | null,
+};
+
 export type OpResult = {
 	ok: boolean,
 	exitCode: number | null,
@@ -479,8 +642,13 @@ export type RefLabel = {
 	kind: RefKind,
 	isCurrent: boolean,
 	/**
+	 *  Palette index of this pill: the row's `ref_colour`, except that a remote branch tracked by
+	 *  a local branch shown in the graph takes that local branch's colour.
+	 */
+	colour: number,
+	/**
 	 *  The local branch's upstream points at the same commit, so one pill
-	 *  (`dev ▸ origin`) stands for both.
+	 *  (`origin | dev`) stands for both.
 	 */
 	upstreamAtSameCommit: boolean,
 	ahead: number | null,
@@ -591,6 +759,7 @@ export type Settings = {
 	polling?: Polling,
 	cache?: CacheSettings,
 	commit?: CommitSettings,
+	diff?: DiffSettings,
 	library?: RepoLibrary,
 };
 
@@ -652,6 +821,11 @@ export type UiState = {
 	panels?: Panels,
 	graphColumns?: GraphColumns,
 	session?: Session,
+	console?: ConsoleView,
+	files?: FilesView,
+	diff?: DiffView,
+	/**  Dialogs the user has dragged bigger, by the name each dialog gives `DialogContent`. */
+	dialogSizes?: { [key in string]: DialogSize },
 	perRepo?: { [key in string]: RepoUiState },
 };
 

@@ -8,11 +8,22 @@ import {
   GitBranchIcon,
   TagIcon,
 } from "@lucide/vue";
-import type { RefEntry } from "@/lib/bindings";
+import type { RefEntry, StashEntry } from "@/lib/bindings";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import RefToggleTag from "@/components/shell/RefToggleTag.vue";
+import { formatRelativeTime } from "@/lib/format";
+import { applyStash, dropStash, popStash, requestCheckout } from "@/lib/repoActions";
+import { stashParts, stashTitle } from "@/lib/stash";
+import { laneColour } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
 import { useSessionsStore } from "@/stores/sessions";
 
@@ -52,7 +63,10 @@ const tags = computed<RefEntry[]>(() =>
     .sort((a, b) => b.committerTime - a.committerTime || byName(a, b)),
 );
 
-const stashCount = computed(() => active.value?.status?.stashCount ?? 0);
+const stashes = computed<StashEntry[]>(() => active.value?.stashes ?? []);
+/** The list's length once loaded; until then the count from status. */
+const stashCount = computed(() => active.value?.stashes?.length ?? active.value?.status?.stashCount ?? 0);
+
 
 /** Collapsed groups, keyed by section or `remote:<name>`. Remotes start collapsed. */
 const collapsed = reactive(new Set<string>());
@@ -75,6 +89,23 @@ function remoteShort(entry: RefEntry): string {
   if (entry.kind.type !== "remoteBranch") return entry.short;
   const prefix = `${entry.kind.remote}/`;
   return entry.short.startsWith(prefix) ? entry.short.slice(prefix.length) : entry.short;
+}
+
+/** The branch a local branch tracks, as it is usually written (`origin/stage`), or null. */
+function upstreamName(entry: RefEntry): string | null {
+  const up = entry.upstream;
+  if (!up) return null;
+  return up.replace(/^refs\/(remotes|heads)\//, "");
+}
+
+/** Double-clicking a branch checks it out, with the same checks as the Checkout menu item. */
+function checkoutOnDoubleClick(entry: RefEntry): void {
+  const session = active.value;
+  if (!session || entry.isHead) return;
+  if (entry.kind.type === "localBranch") void requestCheckout(session.key, { kind: "local", name: entry.short });
+  else if (entry.kind.type === "remoteBranch") {
+    void requestCheckout(session.key, { kind: "remote", remote: entry.short, local: remoteShort(entry) });
+  }
 }
 
 const selectedOid = computed(() => active.value?.selectedRow?.oid ?? null);
@@ -122,7 +153,7 @@ async function reveal(entry: RefEntry): Promise<void> {
     <ScrollArea v-else class="min-h-0 flex-1">
       <div class="py-1 text-base select-none">
         <!-- Local branches -->
-        <button type="button" class="flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('local')">
+        <button type="button" class="flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('local')">
           <component :is="isOpen('local') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
           <GitBranchIcon class="size-3.5" />
           Local Branches
@@ -143,15 +174,36 @@ async function reveal(entry: RefEntry): Promise<void> {
             <div
               role="button"
               tabindex="0"
-              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
+              :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
               :title="`${b.fullName}\n${b.target}\n${b.subject}`"
               @click="reveal(b)"
+              @dblclick="checkoutOnDoubleClick(b)"
               @keydown.enter="reveal(b)"
             >
-              <ChevronRightIcon v-if="b.isHead" class="size-3.5 shrink-0 text-primary-tint" aria-label="Checked out" />
-              <span v-else class="size-3.5 shrink-0" />
+              <!-- The checked-out branch: the graph's HEAD dot (GraphLanesSvg.vue), same size and colour. -->
+              <svg
+                v-if="b.isHead"
+                viewBox="0 0 12 12"
+                class="size-[12px] shrink-0 text-muted-foreground"
+                :style="colourOf(b) !== null ? { color: laneColour(colourOf(b)!) } : undefined"
+                role="img"
+                aria-label="Checked out"
+              >
+                <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="2" />
+                <circle cx="6" cy="6" r="2" fill="currentColor" />
+              </svg>
+              <span v-else class="size-[12px] shrink-0" />
               <RefToggleTag :colour="colourOf(b)" :visible="isShown(b)" :name="b.short" @toggle="toggleShown(b)" />
-              <span :class="cn('truncate', b.isHead && 'font-semibold', !isShown(b) && 'text-muted-foreground')">{{ b.short }}</span>
+              <span :class="cn('min-w-0 truncate', b.isHead && 'font-semibold', !isShown(b) && 'text-muted-foreground')">{{ b.short }}</span>
+              <!-- The tracked branch gives way first when the row is narrow. -->
+              <span
+                v-if="upstreamName(b)"
+                class="flex min-w-0 shrink-[4] items-center gap-0.5 text-muted-foreground"
+                :title="`Tracks ${upstreamName(b)}`"
+              >
+                <ChevronRightIcon class="size-3 shrink-0" aria-hidden="true" />
+                <span class="min-w-0 truncate">{{ upstreamName(b) }}</span>
+              </span>
               <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
                 <span v-if="b.upstreamGone" class="rounded-sm badge-deleted px-1">gone</span>
                 <span v-if="b.ahead" class="rounded-sm badge-modified px-1">↑{{ b.ahead }}</span>
@@ -162,7 +214,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Remotes -->
-        <button type="button" class="mt-1 flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('remotes')">
+        <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('remotes')">
           <component :is="isOpen('remotes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
           <CloudIcon class="size-3.5" />
           Remotes
@@ -171,7 +223,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         <template v-if="isOpen('remotes')">
           <p v-if="remoteGroups.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No remotes</p>
           <template v-for="group in remoteGroups" :key="group.name">
-            <button type="button" class="flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-5 text-left hover:bg-row-hover" @click="toggle(`remote:${group.name}`)">
+            <button type="button" class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-5 text-left hover:bg-row-hover" @click="toggle(`remote:${group.name}`)">
               <component :is="isOpen(`remote:${group.name}`) ? ChevronDownIcon : ChevronRightIcon" class="size-3 text-muted-foreground" />
               <span class="truncate font-medium">{{ group.name }}</span>
               <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ group.branches.length }}</span>
@@ -190,9 +242,10 @@ async function reveal(entry: RefEntry): Promise<void> {
                 <div
                   role="button"
                   tabindex="0"
-                  :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-8 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
+                  :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-8 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
                   :title="`${b.fullName}\n${b.target}\n${b.subject}`"
                   @click="reveal(b)"
+                  @dblclick="checkoutOnDoubleClick(b)"
                   @keydown.enter="reveal(b)"
                 >
                   <RefToggleTag :colour="colourOf(b)" :visible="isShown(b)" :name="b.short" @toggle="toggleShown(b)" />
@@ -204,7 +257,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Tags -->
-        <button type="button" class="mt-1 flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('tags')">
+        <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('tags')">
           <component :is="isOpen('tags') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
           <TagIcon class="size-3.5" />
           Tags
@@ -225,7 +278,7 @@ async function reveal(entry: RefEntry): Promise<void> {
             <div
               role="button"
               tabindex="0"
-              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-row-hover')"
+              :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-row-hover')"
               :title="`${t.fullName}\n${t.target}\n${t.subject}`"
               @click="reveal(t)"
               @keydown.enter="reveal(t)"
@@ -239,16 +292,34 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Stashes -->
-        <div class="mt-1 flex h-(--row-h) items-center gap-1.5 px-2 smallcaps">
-          <span class="size-3" />
+        <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('stashes')">
+          <component :is="isOpen('stashes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
           <ArchiveIcon class="size-3.5" />
           Stashes
           <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ stashCount }}</span>
-        </div>
-        <!-- TODO(backend): no `stash list` command exists yet, so only `status.stashCount` is shown. -->
-        <p class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">
-          {{ stashCount === 0 ? "No stashes" : `${stashCount} ${stashCount === 1 ? "stash" : "stashes"} (list coming later)` }}
-        </p>
+        </button>
+        <template v-if="isOpen('stashes')">
+          <p v-if="stashCount === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No stashes</p>
+          <!-- Stash commits are not in the graph, so a click has nothing to reveal; the actions are
+               in the context menu. -->
+          <ContextMenu v-for="s in stashes" :key="s.oid">
+            <ContextMenuTrigger as-child>
+              <div class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 hover:bg-row-hover" :title="stashTitle(s)">
+                <span class="size-3.5 shrink-0" />
+                <span class="truncate">{{ stashParts(s).text }}</span>
+                <span class="ml-auto shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
+              </div>
+            </ContextMenuTrigger>
+            <ContextMenuContent class="min-w-52">
+              <ContextMenuItem class="text-base" @select="applyStash(activeKey, s)">Apply (keep the stash)</ContextMenuItem>
+              <ContextMenuItem class="text-base" @select="popStash(activeKey, s)">Pop (apply, then drop)</ContextMenuItem>
+              <ContextMenuSeparator />
+              <ContextMenuItem class="text-base" variant="destructive" @select="dropStash(activeKey, s, stashParts(s).text)">
+                Drop…
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+        </template>
       </div>
     </ScrollArea>
   </section>

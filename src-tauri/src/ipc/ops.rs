@@ -20,7 +20,7 @@ const INDEX_LOCK_RETRY: Duration = Duration::from_millis(250);
 async fn after_write(app: &AppHandle, state: &AppState, key: &str) {
     if let Ok(h) = repo(state, key).await {
         let settings = state.settings();
-        if let Err(e) = refresh_if_changed(Some(app), Some(&state.db), &h, settings.appearance.graph_order, &settings.cache, true).await {
+        if let Err(e) = refresh_if_changed(Some(app), Some(&state.db), &h, settings.appearance.graph_options(), &settings.cache, true).await {
             tracing::warn!("refresh after write failed for {key}: {e}");
         }
     }
@@ -134,6 +134,36 @@ pub async fn op_merge_abort(app: AppHandle, state: State<'_, AppState>, key: Str
 #[specta::specta]
 pub async fn op_tag_create(app: AppHandle, state: State<'_, AppState>, key: String, name: String, target: String, message: Option<String>, force: bool) -> Result<OpResult> {
     write_op!(app, state, key, |c| ops::tag_create(c, &name, &target, message.as_deref(), force).await)
+}
+
+/// Save the working tree's changes as a new stash. `message` names it; without one Git names it
+/// after the commit it was made on.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_stash_push(app: AppHandle, state: State<'_, AppState>, key: String, message: Option<String>, include_untracked: bool) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::stash_push(c, message.as_deref(), include_untracked).await)
+}
+
+/// Apply the stash at `index` and keep it. `oid` is the stash's commit as the list showed it;
+/// when the index no longer points at it, nothing runs.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_stash_apply(app: AppHandle, state: State<'_, AppState>, key: String, index: u32, oid: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::stash_apply(c, index, &oid).await)
+}
+
+/// Apply the stash at `index`, then drop it; Git keeps it when applying conflicts.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_stash_pop(app: AppHandle, state: State<'_, AppState>, key: String, index: u32, oid: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::stash_pop(c, index, &oid).await)
+}
+
+/// Delete the stash at `index` without applying it.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_stash_drop(app: AppHandle, state: State<'_, AppState>, key: String, index: u32, oid: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::stash_drop(c, index, &oid).await)
 }
 
 #[tauri::command]

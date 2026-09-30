@@ -2,15 +2,18 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEventListener } from "@vueuse/core";
-import { FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
+import { CircleCheckIcon, FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import AboutDialog from "@/components/dialogs/AboutDialog.vue";
+import ApplyStashDialog from "@/components/dialogs/ApplyStashDialog.vue";
 import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
 import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
+import StashDialog from "@/components/dialogs/StashDialog.vue";
+import SettingsDialog from "@/components/settings/SettingsDialog.vue";
 import AddRepoDialog from "@/components/shell/AddRepoDialog.vue";
 import AppToolbar from "@/components/shell/AppToolbar.vue";
 import BranchesPanel from "@/components/shell/BranchesPanel.vue";
@@ -20,10 +23,11 @@ import RepositoriesPanel from "@/components/shell/RepositoriesPanel.vue";
 import RepoTabStrip from "@/components/shell/RepoTabStrip.vue";
 import RepoWorkspace from "@/components/shell/RepoWorkspace.vue";
 import StatusBar from "@/components/shell/StatusBar.vue";
-import { isEditableTarget, isSelectAllKey } from "@/lib/files";
+import { commitFileCount, isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
-import { openCommitDialog } from "@/lib/repoActions";
+import { openCommitDialog, openStashDialog } from "@/lib/repoActions";
+import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { useSessionsStore } from "@/stores/sessions";
@@ -96,29 +100,54 @@ async function refresh(): Promise<void> {
   if (key === null) return;
   await sessions.refreshSession(key);
 }
+
+/** Files the Commit dialog would list for the active repository, shown on the toolbar's Commit button. */
+const commitCount = computed(() => commitFileCount(sessions.active?.status ?? null));
+
+const success = computed(() => sessions.noticeKind === "success");
 </script>
 
 <template>
   <TooltipProvider :delay-duration="300">
     <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
-      <AppToolbar :has-repo="sessions.active !== null" @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" @commit="openCommitDialog(sessions.active)" />
+      <AppToolbar :has-repo="sessions.active !== null" :commit-count="commitCount" @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" @commit="openCommitDialog(sessions.active)"
+        @stash-save="openStashDialog(sessions.active)"
+      />
 
+      <!-- An error notice is red with a warning icon; a success notice is plain, with a tick. -->
       <div
         v-if="sessions.notice"
-        class="flex shrink-0 items-center gap-2 border-b border-destructive/40 bg-destructive/10 px-3 py-1 text-base text-destructive"
-        role="alert"
+        :class="
+          cn(
+            'flex shrink-0 items-center gap-2 border-b px-3 py-1 text-base',
+            // The diff viewer's added-line green and removed-line red, so the strip stands out.
+            success ? 'border-diff-add-mark bg-diff-add text-foreground' : 'border-diff-del-mark bg-diff-del text-destructive',
+          )
+        "
+        :role="success ? 'status' : 'alert'"
       >
-        <TriangleAlertIcon class="size-3.5 shrink-0" />
+        <CircleCheckIcon v-if="success" class="size-3.5 shrink-0 text-added-fg" />
+        <TriangleAlertIcon v-else class="size-3.5 shrink-0" />
         <span class="truncate">{{ sessions.notice }}</span>
         <button
           v-if="sessions.noticeAction"
           type="button"
-          class="ml-1 shrink-0 rounded border border-destructive/40 px-1.5 text-xs font-medium hover:bg-destructive/20"
+          :class="
+            cn(
+              'ml-1 shrink-0 rounded border px-1.5 text-xs font-medium',
+              success ? 'border-border hover:bg-foreground/10' : 'border-destructive/40 hover:bg-destructive/20',
+            )
+          "
           @click="runNoticeAction"
         >
           {{ sessions.noticeAction.label }}
         </button>
-        <button type="button" class="ml-auto rounded p-0.5 hover:bg-destructive/20" aria-label="Dismiss" @click="sessions.dismissNotice()">
+        <button
+          type="button"
+          :class="cn('ml-auto rounded p-0.5', success ? 'hover:bg-foreground/10' : 'hover:bg-destructive/20')"
+          aria-label="Dismiss"
+          @click="sessions.dismissNotice()"
+        >
           <XIcon class="size-3.5" />
         </button>
       </div>
@@ -207,7 +236,10 @@ async function refresh(): Promise<void> {
     <CreateBranchDialog />
     <CreateTagDialog />
     <CommitDialog />
+    <StashDialog />
+    <ApplyStashDialog />
     <ConfirmDialog />
+    <SettingsDialog />
     <AboutDialog />
   </TooltipProvider>
 </template>

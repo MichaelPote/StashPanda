@@ -8,6 +8,8 @@ export interface GraphContext {
   dateFormat: ComputedRef<DateFormat>;
   /** Local branch full name -> remote name of its upstream (`refs/heads/dev` -> `origin`). */
   upstreamRemotes: ComputedRef<Map<string, string>>;
+  /** Full names of the remote branches that a local branch tracks (`refs/remotes/origin/dev`). */
+  trackedRemotes: ComputedRef<Set<string>>;
 }
 
 export const GRAPH_CONTEXT: InjectionKey<GraphContext> = Symbol("graph-context");

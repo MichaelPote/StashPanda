@@ -23,7 +23,7 @@ const badges = computed(() => {
 
 <template>
   <div
-    :class="cn('graph-grid graph-row h-(--row-h) cursor-pointer text-base', selected ? 'row-selected' : 'hover:bg-row-hover')"
+    :class="cn('graph-grid graph-row h-(--row-h) text-base', selected ? 'row-selected' : 'hover:bg-row-hover')"
     :data-index="row.index"
     role="row"
     :aria-selected="selected"
@@ -39,6 +39,7 @@ const badges = computed(() => {
       >
         {{ b.count }} {{ b.label }}
       </span>
+      <span v-if="row.worktree && badges.length === 0" class="shrink-0 text-muted-foreground">No changes</span>
     </div>
     <div />
     <div />

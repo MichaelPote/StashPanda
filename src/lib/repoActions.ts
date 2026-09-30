@@ -1,13 +1,14 @@
 /**
  * Git write actions shared by the commit context menu, the branch context menu, the Branches
- * panel and the native menu bar. Every function reports through `sessions.notify`, refetches
- * refs and status afterwards, and never throws.
+ * panel and the native menu bar, plus removing a repository from the library. Every function
+ * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
-import { commands, type OpResult } from "@/lib/bindings";
+import { commands, type OpResult, type StashEntry } from "@/lib/bindings";
 import { commitFiles } from "@/lib/files";
 import { errorMessage, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
 import { useDialogsStore } from "@/stores/dialogs";
+import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -29,18 +30,23 @@ export function opFailureText(result: OpResult, what: string): string {
 }
 
 /**
- * Why checkout and merge are blocked right now, or null when the working tree is clean.
- * Untracked files do not block either operation, so they are not counted.
+ * The working tree's uncommitted changes, such as `2 staged, 1 unstaged`, or null when there are
+ * none. Untracked files do not get in the way of a checkout or a merge, so they are not counted.
  */
-export function dirtyTreeReason(session: RepoSession | null | undefined): string | null {
+export function uncommittedSummary(session: RepoSession | null | undefined): string | null {
   const status = session?.status;
   if (!status) return null;
   const parts: string[] = [];
   if (status.conflictedCount > 0) parts.push(`${status.conflictedCount} conflicted`);
   if (status.stagedCount > 0) parts.push(`${status.stagedCount} staged`);
   if (status.unstagedCount > 0) parts.push(`${status.unstagedCount} unstaged`);
-  if (parts.length === 0) return null;
-  return `The working tree has uncommitted changes (${parts.join(", ")}). Commit or stash them first.`;
+  return parts.length === 0 ? null : parts.join(", ");
+}
+
+/** Why a merge is blocked right now, or null when the working tree is clean. */
+export function dirtyTreeReason(session: RepoSession | null | undefined): string | null {
+  const summary = uncommittedSummary(session);
+  return summary === null ? null : `The working tree has uncommitted changes (${summary}). Commit or stash them first.`;
 }
 
 /** Name of the checked-out branch, or null when HEAD is detached or status is not loaded yet. */
@@ -53,13 +59,69 @@ export function isDetached(session: RepoSession | null | undefined): boolean {
   return session?.status?.detached ?? session?.refs?.detached ?? false;
 }
 
-/** Runs `git checkout <target>`; `label` is how the notice names it (a branch or a short sha). */
-export async function checkout(key: string, target: string, label: string = target): Promise<void> {
+/**
+ * What a checkout goes to: a local branch; a remote branch (`origin/stage`), checked out as the
+ * local branch of its name (`stage`); or a commit or tag, which detaches HEAD. `label` is how
+ * messages name a revision: a short sha or the tag.
+ */
+export type CheckoutTarget =
+  | { kind: "local"; name: string }
+  | { kind: "remote"; remote: string; local: string }
+  | { kind: "revision"; revision: string; label: string };
+
+/**
+ * Every checkout goes through here, whether it starts from a menu or a double-click:
+ * 1. a dirty working tree asks first, since the changes come along to the other branch;
+ * 2. a remote branch with no local branch of its name asks first, then creates one that tracks it
+ *    (`git checkout -b <local> <remote>`); with a local branch of that name it checks that out;
+ * 3. otherwise the checkout runs straight away.
+ * When both 1 and 2 apply, one dialog says both.
+ */
+export async function requestCheckout(key: string, target: CheckoutTarget): Promise<void> {
   const sessions = useSessionsStore();
+  const dialogs = useDialogsStore();
+  const session = sessions.sessions.get(key);
+  let plan = target;
+  if (plan.kind === "remote") {
+    const local = plan.local;
+    if ((session?.refs?.refs ?? []).some((r) => r.kind.type === "localBranch" && r.short === local)) plan = { kind: "local", name: local };
+  }
+  const name = plan.kind === "local" ? plan.name : plan.kind === "remote" ? plan.local : plan.label;
+  const uncommitted = uncommittedSummary(session);
+
+  if (uncommitted !== null || plan.kind === "remote") {
+    const sentences: string[] = [];
+    if (plan.kind === "remote") {
+      sentences.push(
+        `Are you sure you want to create a local branch ${plan.local} for ${plan.remote} and check it out? It starts at ${plan.remote} and tracks it.`,
+      );
+    } else {
+      sentences.push(`Are you sure you want to check out ${name}?`);
+    }
+    if (uncommitted !== null) {
+      sentences.push(
+        `The working tree has uncommitted changes (${uncommitted}). They are carried over to ${name}; if checking out would overwrite any of them, Git stops and nothing changes.`,
+      );
+    }
+    const confirmed = await dialogs.open("confirm", {
+      title: plan.kind === "remote" ? `Create branch ${plan.local}?` : `Check out ${name}?`,
+      message: sentences.join(" "),
+      confirmLabel: plan.kind === "remote" ? "Create and check out" : "Check out",
+    });
+    if (!confirmed) return;
+  }
+
   try {
-    const result = await runOp(key, commands.opCheckout(key, target));
-    if (result.ok) sessions.notify(`Checked out ${label}.`);
-    else sessions.notify(opFailureText(result, `Checking out ${label}`));
+    if (plan.kind === "remote") {
+      const result = await runOp(key, commands.opBranchCreate(key, plan.local, plan.remote, true));
+      if (result.ok) sessions.notifySuccess(`Created branch ${plan.local} tracking ${plan.remote}, and checked it out.`);
+      else sessions.notify(opFailureText(result, `Creating branch ${plan.local} from ${plan.remote}`));
+      return;
+    }
+    const revision = plan.kind === "local" ? plan.name : plan.revision;
+    const result = await runOp(key, commands.opCheckout(key, revision));
+    if (result.ok) sessions.notifySuccess(`Checked out ${name}.`);
+    else sessions.notify(opFailureText(result, `Checking out ${name}`));
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
@@ -70,7 +132,7 @@ export async function abortMerge(key: string): Promise<void> {
   const sessions = useSessionsStore();
   try {
     const result = await runOp(key, commands.opMergeAbort(key));
-    if (result.ok) sessions.notify("The merge was aborted.");
+    if (result.ok) sessions.notifySuccess("The merge was aborted.");
     else sessions.notify(opFailureText(result, "Aborting the merge"));
   } catch (e) {
     sessions.notify(errorMessage(e));
@@ -87,7 +149,7 @@ export async function mergeInto(key: string, target: string, label: string = tar
   try {
     const result = await runOp(key, commands.opMerge(key, target, false));
     if (result.ok) {
-      sessions.notify(`Merged ${label} into ${into}.`);
+      sessions.notifySuccess(`Merged ${label} into ${into}.`);
     } else if (result.conflicts) {
       sessions.notify("Merge stopped on conflicts. Resolve them or abort.", {
         label: "Abort merge",
@@ -148,7 +210,7 @@ export async function removeTag(key: string, name: string): Promise<void> {
   if (!confirmed) return;
   try {
     const result = await runOp(key, commands.opTagDelete(key, name));
-    if (result.ok) sessions.notify(`Removed tag ${name}.`);
+    if (result.ok) sessions.notifySuccess(`Removed tag ${name}.`);
     else sessions.notify(opFailureText(result, `Removing tag ${name}`));
   } catch (e) {
     sessions.notify(errorMessage(e));
@@ -181,11 +243,149 @@ export async function deleteBranch(key: string, name: string): Promise<void> {
       if (!force) return;
       result = await runOp(key, commands.opBranchDelete(key, name, true));
     }
-    if (result.ok) sessions.notify(`Deleted branch ${name}.`);
+    if (result.ok) sessions.notifySuccess(`Deleted branch ${name}.`);
     else sessions.notify(opFailureText(result, `Deleting branch ${name}`));
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
+}
+
+/**
+ * Asks for confirmation, then closes the repository's tab and removes it from the library. The
+ * files on disk are not touched. Resolves true once it has been removed.
+ */
+export async function removeFromLibrary(key: string): Promise<boolean> {
+  const dialogs = useDialogsStore();
+  const library = useLibraryStore();
+  const sessions = useSessionsStore();
+  const entry = library.repoByKey.get(key);
+  const name = entry ? repoDisplayName(entry) : "this repository";
+  const confirmed = await dialogs.open("confirm", {
+    title: `Remove ${name} from the library?`,
+    message: "Its tab closes and it leaves the Repositories list. The files on disk are not touched.",
+    confirmLabel: "Remove",
+    destructive: true,
+  });
+  if (!confirmed) return false;
+  try {
+    if (sessions.sessions.has(key)) await sessions.closeTab(key);
+    await library.removeRepo(key);
+    return true;
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+    return false;
+  }
+}
+
+/** Why the working tree cannot be stashed right now, or null when it can. */
+export function stashReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.isBare) return "A bare repository has no working tree to stash.";
+  const status = session.status;
+  if (!status) return "The working tree status is still loading.";
+  if (status.conflictedCount > 0) return "Resolve the conflicted files first: Git cannot stash them.";
+  if (status.stagedCount + status.unstagedCount + status.untrackedCount === 0) return "There are no changes to stash.";
+  return null;
+}
+
+/** Why there is nothing to apply right now, or null when there is at least one stash. */
+export function applyStashReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.isBare) return "A bare repository has no working tree to apply a stash to.";
+  if ((session.stashes?.length ?? session.status?.stashCount ?? 0) === 0) return "There are no stashes to apply.";
+  return null;
+}
+
+/** Opens the Stash Changes dialog, or explains why the working tree cannot be stashed. */
+export async function openStashDialog(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = stashReason(session);
+  if (reason || !session?.status) {
+    sessions.notify(reason ?? "The working tree status is still loading.");
+    return;
+  }
+  const status = session.status;
+  await useDialogsStore().open("stashPush", {
+    key: session.key,
+    branch: currentBranch(session),
+    trackedCount: status.stagedCount + status.unstagedCount,
+    untrackedCount: status.untrackedCount,
+  });
+}
+
+/** Opens the Apply Stash dialog, then applies or pops the stash picked there. */
+export async function openApplyStashDialog(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = applyStashReason(session);
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const choice = await useDialogsStore().open("stashApply", { key: session.key });
+  if (!choice) return;
+  if (choice.drop) await popStash(session.key, choice.stash);
+  else await applyStash(session.key, choice.stash);
+}
+
+/**
+ * Runs one stash operation and reports it. `conflictNote` is the notice when Git applied the
+ * stash but stopped on conflicts, which is not a failure: the conflicted files are in the working
+ * tree for the user to resolve.
+ */
+async function stashOp(
+  key: string,
+  op: Promise<IpcResult<OpResult>>,
+  what: string,
+  done: string,
+  conflictNote: string,
+): Promise<void> {
+  const sessions = useSessionsStore();
+  try {
+    const result = await runOp(key, op);
+    if (result.ok) sessions.notifySuccess(done);
+    else if (result.conflicts) sessions.notify(conflictNote);
+    else sessions.notify(opFailureText(result, what));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Runs `git stash apply`: the stash's changes go into the working tree and the stash is kept. */
+export async function applyStash(key: string, stash: StashEntry): Promise<void> {
+  const name = stash.selector;
+  await stashOp(
+    key,
+    commands.opStashApply(key, stash.index, stash.oid),
+    `Applying ${name}`,
+    `Applied ${name}. The stash is kept.`,
+    `Applied ${name} with conflicts. Resolve them in the working tree; the stash is kept.`,
+  );
+}
+
+/** Runs `git stash pop`: applies the stash, then drops it. Git keeps it when applying conflicts. */
+export async function popStash(key: string, stash: StashEntry): Promise<void> {
+  const name = stash.selector;
+  await stashOp(
+    key,
+    commands.opStashPop(key, stash.index, stash.oid),
+    `Popping ${name}`,
+    `Applied and dropped ${name}.`,
+    `Applying ${name} caused conflicts, so Git kept the stash. Resolve them, then drop it.`,
+  );
+}
+
+/** Asks for confirmation, then runs `git stash drop`. */
+export async function dropStash(key: string, stash: StashEntry, label: string): Promise<void> {
+  const dialogs = useDialogsStore();
+  const name = stash.selector;
+  const confirmed = await dialogs.open("confirm", {
+    title: `Drop ${name}?`,
+    message: `${label}\n\nThe stash is deleted without being applied, and its changes are lost.`,
+    confirmLabel: "Drop stash",
+    destructive: true,
+  });
+  if (!confirmed) return;
+  await stashOp(key, commands.opStashDrop(key, stash.index, stash.oid), `Dropping ${name}`, `Dropped ${name}.`, "");
 }
 
 /** Writes `text` to the clipboard; `what` names it in the failure notice ("the SHA", "the message"). */

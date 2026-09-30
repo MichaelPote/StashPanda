@@ -128,9 +128,50 @@ pub async fn get_commit_body(client: &GitClient, oid: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
 
+/// Each parent of `oid`, in parent order, with whether the commit's tree is that parent's tree, so
+/// that comparing the commit with that parent lists no changes. A merge made with `--no-ff` onto a
+/// branch that had no commits of its own has the same tree as its second parent.
+pub async fn get_unchanged_parents(client: &GitClient, oid: &str) -> Result<Vec<(String, bool)>> {
+    let parents = format!("{oid}^@");
+    let out = client
+        .exec(GitReq::new("show", ["show", "-s", "--format=%H %T %P", oid, parents.as_str()]))
+        .await?;
+    Ok(parse_unchanged_parents(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// One `hash tree parents...` line for the commit, then one for each of its parents.
+fn parse_unchanged_parents(text: &str) -> Vec<(String, bool)> {
+    let mut lines = text.lines();
+    let Some(first) = lines.next() else { return Vec::new() };
+    let mut fields = first.split(' ');
+    let (_, tree) = (fields.next(), fields.next().unwrap_or_default());
+    let parents: Vec<&str> = fields.collect();
+    let trees: Vec<(&str, &str)> = lines
+        .filter_map(|l| {
+            let mut f = l.split(' ');
+            Some((f.next()?, f.next()?))
+        })
+        .collect();
+    parents
+        .iter()
+        .map(|p| (p.to_string(), trees.iter().any(|(h, t)| h == p && *t == tree)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_parent_whose_tree_the_merge_kept() {
+        // Each parent's line lists its own parents too.
+        let text = "m1 t2 p1 p2\np1 t1 g1\np2 t2 g1 g2\n";
+        let flags = |text: &str| parse_unchanged_parents(text).into_iter().map(|(_, u)| u).collect::<Vec<_>>();
+        assert_eq!(parse_unchanged_parents(text), vec![("p1".to_string(), false), ("p2".to_string(), true)]);
+        assert_eq!(flags("m1 t3 p1 p2\np1 t1 g1\np2 t2 g1\n"), vec![false, false]);
+        assert_eq!(flags("m1 t1 p1\np1 t1\n"), vec![true], "a root parent's line has no parents");
+        assert!(parse_unchanged_parents("").is_empty());
+    }
 
     #[test]
     fn parses_merge_and_plain_records() {

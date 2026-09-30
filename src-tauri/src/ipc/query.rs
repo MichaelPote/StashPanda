@@ -2,13 +2,15 @@
 
 use std::sync::Arc;
 
+use serde::Serialize;
+use specta::Type;
 use tauri::State;
 
 use crate::error::{GitError, Result};
 use crate::git::queries::blob::{get_blob, get_worktree_file, BlobContent};
 use crate::git::queries::commit_files::{get_commit_files, FileChange};
 use crate::git::queries::diff::{get_diff, join_repo_path, DiffOptions, DiffTarget, DiffText};
-use crate::git::queries::log::{get_commit_body, get_stashes, StashEntry};
+use crate::git::queries::log::{get_commit_body, get_stashes, get_unchanged_parents as unchanged_parents, StashEntry};
 use crate::git::queries::refs::{get_refs, RefsSnapshot};
 use crate::git::queries::status::{get_status, StatusSnapshot};
 use crate::repo::RepoHandle;
@@ -78,6 +80,47 @@ pub async fn get_commit_changes(
 pub async fn get_commit_message(state: State<'_, AppState>, key: String, commit: String) -> Result<String> {
     let h = repo(&state, &key).await?;
     with_read_slot!(h, get_commit_body(&h.client, &commit).await)
+}
+
+/// A merge commit's branch and parents, for the Files panel's merge summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeInfo {
+    /// The branch the merge commit belongs to in the graph: the nearest branch tip above it on
+    /// its lane, which is the branch it was merged into. None when no branch tip reaches it, as
+    /// when that branch has been deleted.
+    pub branch: Option<String>,
+    /// In parent order.
+    pub parents: Vec<MergeParent>,
+}
+
+/// One parent of a merge commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeParent {
+    pub oid: String,
+    /// The merge kept this parent's files as they were, so comparing with it lists no changes.
+    pub unchanged: bool,
+    /// The branch this parent belongs to in the graph: the nearest branch tip above it on its
+    /// lane. None when no branch tip reaches it, or the commit is not in the graph.
+    pub branch: Option<String>,
+}
+
+/// A merge commit's branch in the graph, and its parents in parent order.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_merge_info(state: State<'_, AppState>, key: String, commit: String) -> Result<MergeInfo> {
+    let h = repo(&state, &key).await?;
+    let parents = with_read_slot!(h, unchanged_parents(&h.client, &commit).await)?;
+    let graph = h.graph.load_full();
+    let branch_of = |oid: &str| graph.as_ref().and_then(|g| g.branch_of(oid)).map(String::from);
+    Ok(MergeInfo {
+        branch: branch_of(&commit),
+        parents: parents
+            .into_iter()
+            .map(|(oid, unchanged)| MergeParent { branch: branch_of(&oid), oid, unchanged })
+            .collect(),
+    })
 }
 
 #[tauri::command]

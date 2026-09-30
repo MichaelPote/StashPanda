@@ -94,7 +94,7 @@ pub fn start(app: &AppHandle, db: &Arc<Db>, handle: &Arc<RepoHandle>, settings: 
         db.clone(),
         handle.clone(),
         kind,
-        settings.appearance.graph_order,
+        settings.appearance.graph_options(),
         settings.cache.clone(),
         rx,
     );

@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { OpResult } from "@/lib/bindings";
+import type { OpResult, StashEntry } from "@/lib/bindings";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -31,6 +31,30 @@ export interface CommitPayload {
   hasHead: boolean;
 }
 
+export interface StashPushPayload {
+  key: string;
+  /** Checked-out branch, or null when HEAD is detached. */
+  branch: string | null;
+  /** Staged and unstaged tracked files; a plain `git stash push` saves only these. */
+  trackedCount: number;
+  untrackedCount: number;
+}
+
+export interface StashApplyPayload {
+  key: string;
+}
+
+/** The stash picked in the Apply Stash dialog, and whether to drop it afterwards (a pop). */
+export interface StashApplyChoice {
+  stash: StashEntry;
+  drop: boolean;
+}
+
+export interface SettingsPayload {
+  /** The page to show first (a section `id` from `components/settings/sections.ts`); General when absent. */
+  section?: string;
+}
+
 export interface ConfirmPayload {
   title: string;
   message: string;
@@ -43,7 +67,11 @@ export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
   commit: { payload: CommitPayload; result: OpResult | null };
+  stashPush: { payload: StashPushPayload; result: OpResult | null };
+  stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
   confirm: { payload: ConfirmPayload; result: boolean };
+  /** Resolves true when the changes were saved. */
+  settings: { payload: SettingsPayload; result: boolean };
   about: { payload: null; result: null };
 }
 
@@ -54,7 +82,10 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createBranch: null,
   createTag: null,
   commit: null,
+  stashPush: null,
+  stashApply: null,
   confirm: false,
+  settings: false,
   about: null,
 };
 
@@ -72,6 +103,13 @@ export const useDialogsStore = defineStore("dialogs", () => {
   const active = shallowRef<ActiveDialog | null>(null);
   /** The Add Repository dialog keeps its own flag: it has no result and several openers. */
   const addRepoOpen = ref(false);
+  /** Set while the same dialog edits an existing library entry rather than adding one. */
+  const editRepoKey = ref<string | null>(null);
+
+  function editRepo(key: string): void {
+    editRepoKey.value = key;
+    addRepoOpen.value = true;
+  }
 
   function open<K extends DialogKind>(kind: K, payload: DialogSpecs[K]["payload"]): Promise<DialogSpecs[K]["result"]> {
     // A dialog still open when the next one is requested counts as cancelled.
@@ -103,5 +141,5 @@ export const useDialogsStore = defineStore("dialogs", () => {
     (a.resolve as (r: unknown) => void)(CANCEL_RESULTS[a.kind]);
   }
 
-  return { active, addRepoOpen, open, current, resolve, cancel };
+  return { active, addRepoOpen, editRepoKey, editRepo, open, current, resolve, cancel };
 });

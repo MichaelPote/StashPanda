@@ -13,7 +13,7 @@ use super::store::CommitStore;
 use crate::error::Result;
 use crate::git::queries::{log, refs, status};
 use crate::repo::RepoHandle;
-use crate::settings::{CacheSettings, GraphOrder};
+use crate::settings::{CacheSettings, GraphOptions};
 use crate::storage::repo_cache;
 use crate::storage::Db;
 
@@ -70,8 +70,10 @@ pub struct GraphProgressEvent {
     pub loaded: u32,
 }
 
-pub fn worktree_summary(s: &status::StatusSnapshot) -> Option<WorktreeSummary> {
-    if !s.is_dirty() {
+/// The Working Tree row's counts. Every repository with a working tree gets the row, clean or not
+/// (all counts zero), so it can always be selected; a bare repository has none.
+pub fn worktree_summary(handle: &RepoHandle, s: &status::StatusSnapshot) -> Option<WorktreeSummary> {
+    if handle.info.is_bare {
         return None;
     }
     Some(WorktreeSummary {
@@ -87,7 +89,7 @@ pub async fn refresh_full(
     app: Option<&AppHandle>,
     db: Option<&Arc<Db>>,
     handle: &Arc<RepoHandle>,
-    order: GraphOrder,
+    options: GraphOptions,
     cache: &CacheSettings,
     reason: SnapshotReason,
 ) -> Result<Arc<GraphSnapshot>> {
@@ -95,7 +97,7 @@ pub async fn refresh_full(
     let _shared = handle.lock.read().await;
 
     let (refs_res, status_res) = tokio::join!(refs::get_refs(client), status::get_status(client));
-    rebuild(app, db, handle, order, cache, reason, refs_res?, status_res?).await
+    rebuild(app, db, handle, options, cache, reason, refs_res?, status_res?).await
 }
 
 /// What a change-driven refresh found different from the current snapshot.
@@ -121,7 +123,7 @@ pub async fn refresh_if_changed(
     app: Option<&AppHandle>,
     db: Option<&Arc<Db>>,
     handle: &Arc<RepoHandle>,
-    order: GraphOrder,
+    options: GraphOptions,
     cache: &CacheSettings,
     check_refs: bool,
 ) -> Result<Changes> {
@@ -151,12 +153,12 @@ pub async fn refresh_if_changed(
             Some(r) => r,
             None => refs::get_refs(client).await?,
         };
-        rebuild(app, db, handle, order, cache, SnapshotReason::Refresh, refs_snap, status_snap).await?;
+        rebuild(app, db, handle, options, cache, SnapshotReason::Refresh, refs_snap, status_snap).await?;
         return Ok(Changes { status: status_changed, refs: true });
     }
     if status_changed {
         if let Some(c) = &current {
-            apply_status(app, handle, c, status_snap, order).await;
+            apply_status(app, handle, c, status_snap, options).await;
         }
     }
     Ok(Changes { status: status_changed, refs: false })
@@ -168,7 +170,7 @@ async fn rebuild(
     app: Option<&AppHandle>,
     db: Option<&Arc<Db>>,
     handle: &Arc<RepoHandle>,
-    order: GraphOrder,
+    options: GraphOptions,
     cache: &CacheSettings,
     reason: SnapshotReason,
     refs_snap: refs::RefsSnapshot,
@@ -192,8 +194,8 @@ async fn rebuild(
     let snap = Arc::new(GraphSnapshot::build(
         Arc::new(store),
         Arc::new(refs_snap),
-        worktree_summary(&status_snap),
-        order,
+        worktree_summary(handle, &status_snap),
+        options,
         version,
         true,
         truncated,
@@ -223,7 +225,7 @@ pub async fn load_from_cache(
     app: Option<&AppHandle>,
     db: &Arc<Db>,
     handle: &Arc<RepoHandle>,
-    order: GraphOrder,
+    options: GraphOptions,
 ) -> Result<Option<Arc<GraphSnapshot>>> {
     let key = handle.key.clone();
     let started = std::time::Instant::now();
@@ -235,7 +237,7 @@ pub async fn load_from_cache(
         Arc::new(cached.store),
         Arc::new(cached.refs),
         None,
-        order,
+        options,
         version,
         true,
         cached.truncated,
@@ -258,13 +260,13 @@ pub async fn open_pipeline(
     app: &AppHandle,
     db: &Arc<Db>,
     handle: &Arc<RepoHandle>,
-    order: GraphOrder,
+    options: GraphOptions,
     cache: &CacheSettings,
 ) {
-    if let Err(e) = load_from_cache(Some(app), db, handle, order).await {
+    if let Err(e) = load_from_cache(Some(app), db, handle, options).await {
         tracing::warn!("cache load for {} failed: {e}", handle.key);
     }
-    if let Err(e) = refresh_full(Some(app), Some(db), handle, order, cache, SnapshotReason::Live).await {
+    if let Err(e) = refresh_full(Some(app), Some(db), handle, options, cache, SnapshotReason::Live).await {
         tracing::warn!("live graph load for {} failed: {e}", handle.key);
     }
 }
@@ -275,11 +277,11 @@ pub async fn open_pipeline(
 pub async fn refresh_status_only(
     app: Option<&AppHandle>,
     handle: &Arc<RepoHandle>,
-    order: GraphOrder,
+    options: GraphOptions,
     cache: &CacheSettings,
 ) -> Result<Arc<GraphSnapshot>> {
     let Some(current) = handle.graph.load_full() else {
-        return refresh_full(app, None, handle, order, cache, SnapshotReason::Status).await;
+        return refresh_full(app, None, handle, options, cache, SnapshotReason::Status).await;
     };
     let status_snap = {
         let _shared = handle.lock.read().await;
@@ -287,22 +289,22 @@ pub async fn refresh_status_only(
     };
     if status_snap.head_oid.as_deref() != current.refs.head.as_deref() {
         // HEAD moved: refs are stale too.
-        return refresh_full(app, None, handle, order, cache, SnapshotReason::Refresh).await;
+        return refresh_full(app, None, handle, options, cache, SnapshotReason::Refresh).await;
     }
-    Ok(apply_status(app, handle, &current, status_snap, order).await)
+    Ok(apply_status(app, handle, &current, status_snap, options).await)
 }
 
 /// Rebuild the current snapshot with the handle's hidden refs, from the commits already loaded:
 /// no Git command runs and nothing is persisted. None when there is no snapshot yet; the first
 /// load then uses the hidden refs by itself.
-pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, order: GraphOrder) -> Option<Arc<GraphSnapshot>> {
+pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, options: GraphOptions) -> Option<Arc<GraphSnapshot>> {
     let current = handle.graph.load_full()?;
     let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
     let snap = Arc::new(GraphSnapshot::build(
         current.store.clone(),
         current.refs.clone(),
         current.worktree,
-        order,
+        options,
         version,
         current.complete,
         current.truncated,
@@ -315,16 +317,16 @@ pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, order
     Some(snap)
 }
 
-/// Store the new status, and swap in a snapshot with or without the Working
-/// Tree row when its summary changed.
+/// Store the new status, and swap in a snapshot when the Working Tree row's
+/// counts changed.
 async fn apply_status(
     app: Option<&AppHandle>,
     handle: &Arc<RepoHandle>,
     current: &Arc<GraphSnapshot>,
     status_snap: status::StatusSnapshot,
-    order: GraphOrder,
+    options: GraphOptions,
 ) -> Arc<GraphSnapshot> {
-    let wt = worktree_summary(&status_snap);
+    let wt = worktree_summary(handle, &status_snap);
     if wt == current.worktree {
         *handle.last_status.write().await = Some(status_snap);
         return current.clone();
@@ -334,7 +336,7 @@ async fn apply_status(
         current.store.clone(),
         current.refs.clone(),
         wt,
-        order,
+        options,
         version,
         current.complete,
         current.truncated,
@@ -404,7 +406,7 @@ mod e2e {
         assert!(handle.info.toplevel.ends_with(dir.file_name().unwrap().to_str().unwrap()));
 
         let db = Db::open_in_memory().unwrap();
-        let snap = refresh_full(None, Some(&db), &handle, GraphOrder::Date, &settings.cache, SnapshotReason::Live).await.expect("refresh");
+        let snap = refresh_full(None, Some(&db), &handle, GraphOptions::default(), &settings.cache, SnapshotReason::Live).await.expect("refresh");
         // 6 commits + the Working Tree row for the untracked file.
         assert_eq!(snap.total(), 7);
         let rows = snap.rows(0, 10);
@@ -419,36 +421,38 @@ mod e2e {
 
         // Cache round trip: a fresh handle paints from the cache with the same rows.
         let handle2 = open_repo(None, &entry, &settings, &host, None).await.expect("open again");
-        let cached = load_from_cache(None, &db, &handle2, GraphOrder::Date).await.expect("cache").expect("present");
+        let cached = load_from_cache(None, &db, &handle2, GraphOptions::default()).await.expect("cache").expect("present");
         let live: Vec<String> = snap.rows(1, 10).into_iter().map(|r| r.oid).collect();
         let from_cache: Vec<String> = cached.rows(0, 10).into_iter().map(|r| r.oid).collect();
         assert_eq!(live, from_cache, "cache order equals live order (minus the working tree row)");
 
-        // Status-only refresh after cleaning the tree drops the Working Tree row.
+        // Status-only refresh after cleaning the tree keeps the Working Tree row, now all zeros.
         std::fs::remove_file(dir.join("dirty.txt")).unwrap();
-        let snap2 = refresh_status_only(None, &handle, GraphOrder::Date, &settings.cache).await.expect("status refresh");
-        assert_eq!(snap2.total(), 6);
-        assert!(snap2.version > snap.version);
+        let snap2 = refresh_status_only(None, &handle, GraphOptions::default(), &settings.cache).await.expect("status refresh");
+        assert_eq!(snap2.total(), 7);
+        assert_eq!(snap2.rows(0, 1)[0].worktree, Some(WorktreeSummary { staged: 0, unstaged: 0, untracked: 0, conflicted: 0 }));
+        assert!(snap2.version > snap.version, "the counts changed, so the snapshot was rebuilt");
 
         // Nothing changed since the last refresh: no rebuild, same version.
-        let none = refresh_if_changed(None, Some(&db), &handle, GraphOrder::Date, &settings.cache, true).await.expect("no-op refresh");
+        let none = refresh_if_changed(None, Some(&db), &handle, GraphOptions::default(), &settings.cache, true).await.expect("no-op refresh");
         assert_eq!(none, Changes::default());
         assert_eq!(handle.graph.load_full().unwrap().version, snap2.version);
 
         // A new untracked file: status changed, refs did not.
         std::fs::write(dir.join("new.txt"), "n\n").unwrap();
-        let st = refresh_if_changed(None, Some(&db), &handle, GraphOrder::Date, &settings.cache, true).await.expect("status refresh");
+        let st = refresh_if_changed(None, Some(&db), &handle, GraphOptions::default(), &settings.cache, true).await.expect("status refresh");
         assert_eq!(st, Changes { status: true, refs: false });
         let snap3 = handle.graph.load_full().unwrap();
-        assert_eq!(snap3.total(), 7, "Working Tree row is back");
+        assert_eq!(snap3.total(), 7);
+        assert_eq!(snap3.rows(0, 1)[0].worktree.map(|w| w.untracked), Some(1));
 
         // A commit moves HEAD: full rebuild, even when only status was asked for.
         git(&dir, &["add", "-A"]);
         git_at(&dir, 1_700_001_000, &["commit", "-qm", "c5"]);
-        let full = refresh_if_changed(None, Some(&db), &handle, GraphOrder::Date, &settings.cache, false).await.expect("full refresh");
+        let full = refresh_if_changed(None, Some(&db), &handle, GraphOptions::default(), &settings.cache, false).await.expect("full refresh");
         assert!(full.refs && full.status, "{full:?}");
         let snap4 = handle.graph.load_full().unwrap();
-        assert_eq!(snap4.total(), 7, "7 commits, clean tree");
+        assert_eq!(snap4.total(), 8, "7 commits and the clean Working Tree row");
         assert!(snap4.version > snap3.version);
 
         handle.close().await;

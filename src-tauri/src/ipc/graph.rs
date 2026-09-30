@@ -28,14 +28,14 @@ fn empty_meta() -> GraphMeta {
 
 /// Switch refs (full names) off in the commit graph, or back on by leaving them out, and
 /// rebuild the graph from the commits already loaded; no Git command runs. The frontend saves
-/// the same list in `ui-state.json` (`perRepo[key].hiddenRefs`), which `repo_open` reads.
+/// the same list in the UI state (`perRepo[key].hiddenRefs`, stored in the database), which `repo_open` reads.
 #[tauri::command]
 #[specta::specta]
 pub async fn graph_set_hidden_refs(app: AppHandle, state: State<'_, AppState>, key: String, hidden: Vec<String>) -> Result<GraphMeta> {
     let h = repo(&state, &key).await?;
     *h.hidden.write().expect("hidden refs lock") = Arc::new(hidden.into_iter().collect());
-    let order = state.settings().appearance.graph_order;
-    Ok(rebuild_filtered(Some(&app), &h, order).map(|s| s.meta()).unwrap_or_else(empty_meta))
+    let options = state.settings().appearance.graph_options();
+    Ok(rebuild_filtered(Some(&app), &h, options).map(|s| s.meta()).unwrap_or_else(empty_meta))
 }
 
 /// Current snapshot metadata. When none exists yet a live load starts in the
@@ -52,7 +52,7 @@ pub async fn graph_open(app: AppHandle, state: State<'_, AppState>, key: String)
     let app2 = app.clone();
     let db = state.db.clone();
     tauri::async_runtime::spawn(async move {
-        open_pipeline(&app2, &db, &handle, settings.appearance.graph_order, &settings.cache).await;
+        open_pipeline(&app2, &db, &handle, settings.appearance.graph_options(), &settings.cache).await;
     });
     Ok(empty_meta())
 }
@@ -104,9 +104,9 @@ pub async fn graph_refresh(app: AppHandle, state: State<'_, AppState>, key: Stri
     let h = repo(&state, &key).await?;
     let settings = state.settings();
     let snap = if full {
-        refresh_full(Some(&app), Some(&state.db), &h, settings.appearance.graph_order, &settings.cache, SnapshotReason::Refresh).await?
+        refresh_full(Some(&app), Some(&state.db), &h, settings.appearance.graph_options(), &settings.cache, SnapshotReason::Refresh).await?
     } else {
-        refresh_status_only(Some(&app), &h, settings.appearance.graph_order, &settings.cache).await?
+        refresh_status_only(Some(&app), &h, settings.appearance.graph_options(), &settings.cache).await?
     };
     Ok(snap.meta())
 }

@@ -3,9 +3,9 @@
 //! Module map (see docs/architecture.md):
 //! - `error`      the single error enum every command returns
 //! - `settings`   settings.json model, load/save, merge patch
-//! - `ui_state`   ui-state.json model
-//! - `persist`    debounced writer for both JSON files
-//! - `storage`    SQLite commit and ref cache
+//! - `ui_state`   remembered UI state model (stored in the database)
+//! - `persist`    debounced writer for settings.json and the UI state rows
+//! - `storage`    SQLite database: commit and ref cache, remembered UI state
 //! - `state`      AppState managed by Tauri
 //! - `ipc`        Tauri commands and typed events
 
@@ -38,8 +38,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::settings::ui_state_get,
             ipc::settings::ui_state_update,
             ipc::settings::startup_warnings,
+            ipc::fonts::fonts_monospace,
             ipc::repos::repo_resolve,
             ipc::repos::repo_add,
+            ipc::repos::repo_update,
             ipc::repos::repo_remove,
             ipc::repos::repo_open,
             ipc::repos::repo_close,
@@ -52,6 +54,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::query::get_repo_refs,
             ipc::query::get_commit_changes,
             ipc::query::get_commit_message,
+            ipc::query::get_merge_info,
             ipc::query::get_file_diff,
             ipc::query::get_modified_times,
             ipc::graph::graph_set_hidden_refs,
@@ -82,6 +85,10 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_merge_abort,
             ipc::ops::op_tag_create,
             ipc::ops::op_tag_delete,
+            ipc::ops::op_stash_push,
+            ipc::ops::op_stash_apply,
+            ipc::ops::op_stash_pop,
+            ipc::ops::op_stash_drop,
             ipc::ops::op_stage,
             ipc::ops::op_unstage,
             ipc::ops::op_discard,

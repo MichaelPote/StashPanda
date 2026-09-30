@@ -8,8 +8,9 @@
  * Theme: the "Blender pass" from the Stashpanda design canvas, as recorded in the Stashpanda
  * design system (tokens.json).
  *   - IBM Plex Sans for body, labels and buttons; Outfit for display headings; JetBrains Mono for
- *     hashes, paths, refs and diffs. All three are bundled from their @fontsource packages,
- *     imported in main.ts.
+ *     hashes, paths, refs and, by default, diffs. The diff font is a setting (`diff.fontFamily`):
+ *     IBM Plex Mono is bundled as the second choice, or any installed monospaced font. All four
+ *     are bundled from their @fontsource packages, imported in main.ts.
  *   - Editor areas float on a darker window colour with 4px gaps and 4px corners. The panel header
  *     strip is the only visible gradient; top bars, selections, pills and badges are flat.
  *   - Cyan is the one action colour. Six hues (violet, cyan, green, yellow, orange, magenta) carry
@@ -45,6 +46,8 @@
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
     --color-muted-foreground: var(--muted-foreground);
+    /* Secondary text, a step dimmer than --foreground and brighter than --muted-foreground. */
+    --color-text-2: var(--text-2);
     --color-muted: var(--muted);
     --color-secondary-foreground: var(--secondary-foreground);
     --color-secondary: var(--secondary);
@@ -63,6 +66,9 @@
     --color-table-head: var(--table-head);
     --color-border-soft: var(--border-soft);
     --color-row-hover: var(--row-hover);
+    /* The checked-out commit's row in the graph, when it is not selected, and under the pointer. */
+    --color-row-head: var(--row-head);
+    --color-row-head-hover: var(--row-head-hover);
     /* The directory part of a path on a selected file row. */
     --color-band-dir: var(--band-dir);
     --color-neutral: var(--neutral);
@@ -122,6 +128,7 @@
 :root {
     --background: #f4f2ed;
     --foreground: #25282e;
+    --text-2: #3e4249;              /* secondary text; the design system has no light theme yet, so a third of the way to --muted-foreground */
     --card: #eeece7;
     --card-foreground: #25282e;
     --popover: #faf9f5;
@@ -163,6 +170,8 @@
     --table-head: #e9e6df;
     --border-soft: #dcd8cf;
     --row-hover: #e9e6df;
+    --row-head: #e6e2da;            /* checked-out commit row: a step past the hover tint */
+    --row-head-hover: #dedad1;
     --neutral: #d5d1c8;
     --ghost-hover: #d9d5cc;
     --dim: #6c717c;
@@ -183,6 +192,7 @@
     --danger-lip: #7a2a20;
     --danger-edge: #6b2219;
     --field-inset: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+    --dialog-well: #e9e6df;         /* dialog footer strip, a step darker than the dialog body */
 
     --violet: #8a63d6;
     --cyan: #2ba7b2;
@@ -224,11 +234,16 @@
     --diff-gutter: #ebe8e1;
     --gutter-fg: #7d828c;
 
-    /* Row and pill heights in rem, so they follow the root font size. paths.ts reads the same
-       values through remToPx() for the virtual lists. */
-    --row-h: 1.6rem;
-    --diff-row-h: 1.4rem;
-    --pill-h: 1.2rem;
+    /* Row and pill heights in whole pixels, never fractions: a fractional row height leaves each
+       row's text, pills and graph dots rounded a different way from the row above. ROW_HEIGHT in
+       lib/graph/paths.ts must equal --row-h; DiffViewer sets --diff-row-h itself from the diff
+       line height setting, and this value is only its fallback. */
+    --row-h: 22px;
+    --diff-row-h: 20px;
+    --pill-h: 18px;
+    /* How far a branch pill's chevron cuts in or sticks out. The inner offsets in pill-tail and
+       pill-head assume this ratio to --pill-h, which keeps the chevron's edge 1px thick. */
+    --pill-notch: calc(var(--pill-h) * 0.26);
     /* Selected list row: one solid colour. */
     --row-selected: #e4e1da;
     --row-selected-text: #25282e;
@@ -276,6 +291,7 @@
 .dark {
     --background: #2b2d32;          /* area: editor area body, top of its gradient */
     --foreground: #eeece7;          /* ink */
+    --text-2: #dcdad4;              /* design system `text-2`: secondary text, code lines */
     --card: #31343a;
     --card-foreground: #eeece7;
     --popover: #31343a;
@@ -316,6 +332,8 @@
     --table-head: #26282d;          /* column headers and Files section headers */
     --border-soft: #212429;
     --row-hover: #33363c;
+    --row-head: #373a41;            /* checked-out commit row: a step past the hover tint */
+    --row-head-hover: #3d4048;
     --neutral: #3d4149;
     --ghost-hover: #4a4e57;
     --dim: #8b8f97;
@@ -336,6 +354,7 @@
     --danger-lip: #7a2430;
     --danger-edge: #5c1a22;
     --field-inset: inset 0 1px 3px rgba(0, 0, 0, 0.45);
+    --dialog-well: #26282d;         /* dialog footer strip, a step darker than the dialog body */
 
     --violet: #7d7aff;
     --cyan: #4bc6c7;
@@ -366,7 +385,7 @@
     --band-dir: rgba(255, 255, 255, 0.55);
 
     --diff-add-bg: rgba(122, 231, 126, 0.13);
-    --diff-add-mark: rgba(122, 231, 126, 0.42);
+    --diff-add-mark: rgba(94, 196, 98, 0.36);
     --diff-add-fg: #7ae77e;
     --diff-del-bg: rgba(204, 71, 82, 0.13);
     --diff-del-mark: rgba(204, 71, 82, 0.4);
@@ -443,7 +462,17 @@
     @apply bg-window text-foreground;
     @apply font-sans;
     -webkit-font-smoothing: antialiased;
+    /* A desktop app: text is not selectable, except where it is worth copying. Commit IDs, the
+       commit message in the Files panel, the repository path and diff code opt back in with
+       select-text. */
+    user-select: none;
     }
+  /* WebKit would otherwise stop selection inside text fields too. */
+  input,
+  textarea,
+  [contenteditable="true"] {
+    user-select: text;
+  }
 }
 
 @layer base {
@@ -530,31 +559,135 @@
 }
 
 /* Ref pills take the colour of the lane they sit on. The element sets `--lane`, `--lane-bg` and
-   `--lane-ink` (see laneVars() in lib/graph/paths.ts). */
+   `--lane-ink` (see laneVars() in lib/graph/paths.ts). A colour utility (pill-lane, pill-lane-solid,
+   pill-remote) picks the fill, edge and text colours; a shape utility (pill-flat, pill-tail,
+   pill-head) paints them. */
 @utility pill-flat {
   height: var(--pill-h);
   border-width: 1px;
   border-radius: var(--radius-sm);
+  background-color: var(--pill-fill);
+  border-color: var(--pill-edge);
   box-shadow: none;
   text-shadow: none;
 }
-/* Branches: an outlined chip in the lane colour. */
+/* A local branch whose upstream is on another commit: a chevron cut into the left side. The
+   element is painted in the edge colour and clipped to the outline; ::before is the fill, inset
+   1px and clipped to a chevron moved 1px inwards, so the edge shows as a 1px border. */
+@utility pill-tail {
+  position: relative;
+  isolation: isolate;
+  height: var(--pill-h);
+  padding-inline: calc(var(--pill-notch) + 0.3rem) 0.375rem;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background-color: var(--pill-edge);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%, var(--pill-notch) 50%);
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    z-index: -1;
+    border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0;
+    background-color: var(--pill-fill);
+    clip-path: polygon(0.65px 0, 100% 0, 100% 100%, 0.65px 100%, calc(var(--pill-notch) + 0.13px) 50%);
+  }
+}
+/* A remote branch that a local branch on another commit tracks: a chevron point on the right
+   side, the shape that fits into pill-tail's notch. Painted the same way as pill-tail. */
+@utility pill-head {
+  position: relative;
+  isolation: isolate;
+  height: var(--pill-h);
+  padding-inline: 0.375rem calc(var(--pill-notch) + 0.25rem);
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background-color: var(--pill-edge);
+  clip-path: polygon(0 0, calc(100% - var(--pill-notch)) 0, 100% 50%, calc(100% - var(--pill-notch)) 100%, 0 100%);
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 1px;
+    z-index: -1;
+    border-radius: calc(var(--radius-sm) - 1px) 0 0 calc(var(--radius-sm) - 1px);
+    background-color: var(--pill-fill);
+    clip-path: polygon(
+      0 0,
+      calc(100% - var(--pill-notch) + 0.4px) 0,
+      calc(100% - 0.13px) 50%,
+      calc(100% - var(--pill-notch) + 0.4px) 100%,
+      0 100%
+    );
+  }
+}
+/* Text inside a ref pill, trimmed to the lowercase letters so that the pill's items-center
+   centres them. Without the trim the flex item is the font's ascent-and-descent box, and IBM Plex
+   Sans has far more room above the baseline than below it: the letters sat 0.164em low on
+   Windows (its win metrics) and 0.117em low elsewhere (its hhea metrics). The fallback lifts the
+   text by the hhea figure. */
+@utility pill-text {
+  text-box: trim-both ex alphabetic;
+  @supports not (text-box: trim-both ex alphabetic) {
+    position: relative;
+    top: -0.117em;
+  }
+}
+/* Capitals only, such as avatar initials: trimmed to the capital height and the baseline, so
+   items-center centres the letters themselves rather than IBM Plex Sans's lopsided line box. */
+@utility text-cap-box {
+  text-box: trim-both cap alphabetic;
+}
+/* An outlined chip in the lane colour: remote branches (and the remote half of a local branch at
+   parity), or local branches when `appearance.solidRemotePills` swaps the two. */
 @utility pill-lane {
-  background-color: var(--lane-bg);
-  border-color: var(--lane);
+  --pill-fill: var(--lane-bg);
+  --pill-edge: var(--lane);
   color: var(--lane);
 }
-/* The current branch, tags and a detached HEAD: solid lane colour with dark ink. */
+/* Solid lane colour, with text in the lane's own chip fill colour: local branches (or remote ones
+   when `appearance.solidRemotePills` is on), tags and a detached HEAD. */
 @utility pill-lane-solid {
-  background-color: var(--lane);
-  border-color: var(--lane);
-  color: var(--lane-ink);
+  --pill-fill: var(--lane);
+  --pill-edge: var(--lane);
+  color: var(--lane-bg);
 }
 /* Refs that are not on a lane, and the "+N more" button. */
 @utility pill-remote {
-  background-color: var(--neutral);
-  border-color: var(--border-soft);
+  --pill-fill: var(--neutral);
+  --pill-edge: var(--border-soft);
   color: var(--muted-foreground);
+}
+
+/* Recessed strip along the bottom of a dialog that holds its action buttons. */
+@utility dialog-well {
+  background-color: var(--dialog-well);
+  border-color: var(--border);
+  box-shadow: var(--field-inset);
+}
+
+/*
+ * A dialog dragged bigger than its natural size (`DialogContent.vue` sets data-resized). It
+ * becomes a column whose extra height goes to the parts marked `data-dialog-grow`, each starting
+ * from `--grow-basis` (its usual height) when it sets one, with the footer kept at the bottom.
+ * A marked part that holds another marked part becomes a column too, so the height reaches it.
+ * Dialogs without a marked part keep their layout and gain space above the footer.
+ */
+[data-slot="dialog-content"][data-resized] {
+  display: flex;
+  flex-direction: column;
+  /* `duration-100` (for the open and close animations) would otherwise animate every size change
+     while dragging, so the dialog lagged the pointer and the saved size was caught mid-way. */
+  transition: none;
+}
+[data-slot="dialog-content"][data-resized] > [data-slot="dialog-footer"] {
+  margin-top: auto;
+}
+[data-slot="dialog-content"][data-resized] [data-dialog-grow] {
+  flex: 1 1 var(--grow-basis, auto);
+  min-height: 0;
+  max-height: none;
+}
+[data-slot="dialog-content"][data-resized] [data-dialog-grow]:has([data-dialog-grow]) {
+  display: flex;
+  flex-direction: column;
 }
 
 /* Inset field for text inputs, text areas and dropdowns. */

@@ -278,7 +278,7 @@ pub fn evict(conn: &Connection, library_keys: &[String], max_repos: u32) -> rusq
 mod tests {
     use super::*;
     use crate::git::queries::log::CommitRecord;
-    use crate::settings::GraphOrder;
+    use crate::settings::GraphOptions;
     use crate::storage::Db;
 
     fn rec(oid: &str, parents: &[&str], t: i64) -> CommitRecord {
@@ -320,7 +320,7 @@ mod tests {
             detached: false,
             remotes: vec![],
         };
-        Arc::new(GraphSnapshot::build(Arc::new(store), Arc::new(refs), None, GraphOrder::Date, version, true, false, &Default::default()))
+        Arc::new(GraphSnapshot::build(Arc::new(store), Arc::new(refs), None, GraphOptions::default(), version, true, false, &Default::default()))
     }
 
     #[test]
@@ -337,7 +337,7 @@ mod tests {
         let b = loaded.store.index_of(&Oid::parse_hex(&format!("{:0>40}", "b")).unwrap()).unwrap();
         assert_eq!(loaded.store.commits[b as usize].parents.len(), 1);
         // Rebuilding a snapshot from the cache gives the same order as the live one.
-        let rebuilt = GraphSnapshot::build(Arc::new(loaded.store), Arc::new(loaded.refs), None, GraphOrder::Date, 2, true, false, &Default::default());
+        let rebuilt = GraphSnapshot::build(Arc::new(loaded.store), Arc::new(loaded.refs), None, GraphOptions::default(), 2, true, false, &Default::default());
         let live: Vec<String> = snap1.rows(0, 10).into_iter().map(|r| r.oid).collect();
         let cached: Vec<String> = rebuilt.rows(0, 10).into_iter().map(|r| r.oid).collect();
         assert_eq!(live, cached);

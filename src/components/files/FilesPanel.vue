@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useEventListener, useLocalStorage, useResizeObserver } from "@vueuse/core";
-import { ChevronDownIcon, ChevronRightIcon, LoaderCircleIcon } from "@lucide/vue";
-import { commands, type DiffTarget, type FileChange } from "@/lib/bindings";
+import { useEventListener, useResizeObserver } from "@vueuse/core";
+import { GitBranchIcon, GitForkIcon, LoaderCircleIcon } from "@lucide/vue";
+import { commands, type DiffTarget, type FileChange, type MergeInfo } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
+import MessageToggle from "@/components/files/MessageToggle.vue";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import {
@@ -24,10 +25,12 @@ import {
 import { fontsVersion, rowTextWidth } from "@/lib/graph/columnWidths";
 import { remToPx } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
+import { mergeParentLabels, mergeParentNames, mergeSummary, type RepoNames } from "@/lib/mergeParents";
 import { useListSelection } from "@/composables/useListSelection";
 import { useDialogsStore } from "@/stores/dialogs";
 import { emptyFileSelection, useSessionsStore, type RepoSession, type SelectedFile } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
+import { useUiStateStore } from "@/stores/uiState";
 
 const props = defineProps<{
   session: RepoSession;
@@ -36,6 +39,7 @@ const props = defineProps<{
 const settings = useSettingsStore();
 const sessions = useSessionsStore();
 const dialogs = useDialogsStore();
+const uiState = useUiStateStore();
 
 const selectedRow = computed(() => props.session.selectedRow);
 const mode = computed<"none" | "commit" | "worktree">(() => {
@@ -49,10 +53,61 @@ const mode = computed<"none" | "commit" | "worktree">(() => {
 const parentIndex = ref(0);
 const commitParents = computed(() => (mode.value === "commit" ? (selectedRow.value?.parents ?? []) : []));
 const isMerge = computed(() => commitParents.value.length > 1);
-/** Parent passed to the backend: only set explicitly for merges, `null` means "first parent". */
-const parentOid = computed<string | null>(() =>
-  isMerge.value ? (commitParents.value[parentIndex.value] ?? commitParents.value[0] ?? null) : null,
+/** Branch names for the merge's parents, for the Compare with toggles. */
+const parentLabels = computed(() => mergeParentLabels(selectedRow.value?.subject ?? "", graphBranches.value, repoNames.value));
+
+/** For a merge: its graph branch, and each parent's branch and whether the merge kept its files. */
+const mergeInfo = ref<MergeInfo | null>(null);
+let mergeInfoRequest = 0;
+
+async function loadMergeInfo(): Promise<void> {
+  const row = selectedRow.value;
+  const request = (mergeInfoRequest += 1);
+  mergeInfo.value = null;
+  if (!row || row.kind !== "commit" || row.parents.length < 2) return;
+  try {
+    const info = await unwrap(commands.getMergeInfo(props.session.key, row.oid));
+    if (request === mergeInfoRequest) mergeInfo.value = info;
+  } catch {
+    // Without the answer, treat it as an ordinary merge and offer both parents.
+    if (request === mergeInfoRequest) {
+      mergeInfo.value = { branch: null, parents: row.parents.map((oid) => ({ oid, unchanged: false, branch: null })) };
+    }
+  }
+}
+const unchangedParents = computed(() => mergeInfo.value?.parents.map((p) => p.unchanged) ?? null);
+/** The graph's branch for each parent: the merge commit's own for the first, since it was merged into that one. */
+const graphBranches = computed(() =>
+  commitParents.value.map((oid, i) =>
+    i === 0 ? (mergeInfo.value?.branch ?? null) : (mergeInfo.value?.parents.find((p) => p.oid === oid)?.branch ?? null),
+  ),
 );
+/** The repository's branches and remotes, for naming merge parents. */
+const repoNames = computed<RepoNames>(() => ({
+  branches: (props.session.refs?.refs ?? []).filter((r) => r.kind.type === "localBranch" || r.kind.type === "remoteBranch").map((r) => r.short),
+  remotes: props.session.refs?.remotes ?? [],
+}));
+
+/**
+ * A straight merge kept one parent's files unchanged, as `git merge --no-ff` does onto a branch
+ * with no commits of its own, so comparing with that parent lists nothing. This is the index of
+ * the other parent, the only one worth comparing with; null for any other commit.
+ */
+const straightMergeParent = computed<number | null>(() => {
+  const unchanged = unchangedParents.value;
+  if (!unchanged || unchanged.length !== 2 || unchanged[0] === unchanged[1]) return null;
+  return unchanged[0] ? 1 : 0;
+});
+const straightMergeText = computed(() =>
+  mergeSummary(mergeParentNames(selectedRow.value?.subject ?? "", graphBranches.value, repoNames.value)),
+);
+
+/** Parent passed to the backend: only set explicitly for merges, `null` means "first parent". */
+const parentOid = computed<string | null>(() => {
+  if (!isMerge.value) return null;
+  const index = straightMergeParent.value ?? parentIndex.value;
+  return commitParents.value[index] ?? commitParents.value[0] ?? null;
+});
 
 const changes = ref<FileChange[]>([]);
 const changesLoading = ref(false);
@@ -68,6 +123,11 @@ async function loadChanges(): Promise<void> {
   const request = (changesRequest += 1);
   changesLoading.value = true;
   changesError.value = null;
+  // A merge waits to learn whether it is a straight merge, which decides the parent to compare with.
+  if (isMerge.value && unchangedParents.value === null) {
+    changes.value = [];
+    return;
+  }
   try {
     const list = await unwrap(commands.getCommitChanges(props.session.key, row.oid, parentOid.value));
     if (request !== changesRequest) return;
@@ -98,7 +158,15 @@ watch(
 );
 
 watch(
-  () => [selectedRow.value?.oid, parentOid.value, mode.value] as const,
+  () => selectedRow.value?.oid,
+  () => {
+    void loadMergeInfo();
+  },
+  { immediate: true },
+);
+
+watch(
+  () => [selectedRow.value?.oid, parentOid.value, mode.value, unchangedParents.value] as const,
   () => {
     void loadChanges();
   },
@@ -171,8 +239,8 @@ const worktreeSections = computed<FileSection[]>(() => buildWorktreeSections(pro
 
 // ---- Grouping and sorting ------------------------------------------------------------------
 
-const groupBy = useLocalStorage<GroupBy>("stashpanda.files.groupBy", "status");
-const sortBy = useLocalStorage<SortBy>("stashpanda.files.sortBy", "name");
+const groupBy = uiState.pref<GroupBy>((s) => s.files?.groupBy, "status", (groupBy) => ({ files: { groupBy } }));
+const sortBy = uiState.pref<SortBy>((s) => s.files?.sortBy, "name", (sortBy) => ({ files: { sortBy } }));
 
 /** Sorting by date needs the working tree; a commit's files all share one date. */
 const sortingByDate = computed(() => sortBy.value === "modified" && mode.value === "worktree");
@@ -326,7 +394,7 @@ function pathText(item: FileItem): string {
   <section class="area flex h-full min-h-0 flex-col outline-none" tabindex="0" @keydown="onKeydown">
     <PanelHeader title="Files">
       <span v-if="mode === 'worktree'" class="truncate text-xs text-muted-foreground">Working tree</span>
-      <span v-else-if="mode === 'commit' && selectedRow" class="truncate font-mono text-xs text-muted-foreground">
+      <span v-else-if="mode === 'commit' && selectedRow" class="truncate font-mono text-xs text-muted-foreground select-text">
         {{ shortOid(selectedRow.oid) }}
       </span>
       <template #actions>
@@ -358,42 +426,48 @@ function pathText(item: FileItem): string {
       <!-- Commit header -->
       <div v-if="mode === 'commit' && selectedRow" class="shrink-0 border-b border-border-soft bg-muted px-2 pt-[5px] pb-1.5 text-base">
         <div class="flex items-center gap-2 text-xs text-muted-foreground">
-          <span class="font-mono text-foreground" :title="selectedRow.oid">{{ shortOid(selectedRow.oid) }}</span>
+          <span class="font-mono text-foreground select-text" :title="selectedRow.oid">{{ shortOid(selectedRow.oid) }}</span>
           <span class="truncate" :title="`${selectedRow.authorName} <${selectedRow.authorEmail}>`">{{ selectedRow.authorName }}</span>
           <span class="ml-auto shrink-0 tabular-nums" :title="isoTime(selectedRow.authorTime)">{{ dateText }}</span>
         </div>
-        <!-- The subject takes the width; the More toggle sits at the right, under the date. -->
-        <div class="mt-0.5 flex items-start gap-2">
-          <p class="min-w-0 flex-1 break-words">{{ selectedRow.subject }}</p>
-          <button
-            type="button"
-            class="mt-px inline-flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
-            :aria-expanded="messageExpanded"
-            @click="toggleMessage"
-          >
-            {{ messageExpanded ? "Less" : "More" }}
-            <component :is="messageExpanded ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0" />
-          </button>
+        <!-- The More toggle sits in the block's bottom right corner, inside whichever part comes
+             last: floated at the end of the subject, beside the message body, or at the end of
+             the Compare with row. -->
+        <p class="mt-0.5 flow-root break-words select-text">
+          {{ selectedRow.subject }}
+          <MessageToggle v-if="!messageExpanded && !isMerge" class="float-right ml-2" :expanded="false" @toggle="toggleMessage" />
+        </p>
+        <div v-if="messageExpanded" class="flex items-end gap-2 pt-1">
+          <div class="min-w-0 flex-1">
+            <p v-if="messageLoading" class="text-xs text-muted-foreground">Loading message…</p>
+            <p v-else-if="messageError" class="text-xs text-destructive">{{ messageError }}</p>
+            <pre v-else-if="messageBody.length > 0" class="max-h-40 overflow-auto font-sans text-xs whitespace-pre-wrap text-muted-foreground select-text scrollbar-thin">{{ messageBody }}</pre>
+            <p v-else class="text-xs text-muted-foreground italic">No further message body.</p>
+          </div>
+          <MessageToggle v-if="!isMerge" :expanded="true" @toggle="toggleMessage" />
         </div>
-        <div v-if="messageExpanded" class="pt-1">
-          <p v-if="messageLoading" class="text-xs text-muted-foreground">Loading message…</p>
-          <p v-else-if="messageError" class="text-xs text-destructive">{{ messageError }}</p>
-          <pre v-else-if="messageBody.length > 0" class="max-h-40 overflow-auto font-sans text-xs whitespace-pre-wrap text-muted-foreground scrollbar-thin">{{ messageBody }}</pre>
-          <p v-else class="text-xs text-muted-foreground italic">No further message body.</p>
-        </div>
-        <div v-if="isMerge" class="mt-1 flex items-center gap-1 text-[0.7rem] text-muted-foreground">
-          <span>Compare with</span>
-          <button
-            v-for="(p, i) in commitParents"
-            :key="p"
-            type="button"
-            :aria-pressed="parentIndex === i"
-            class="toggle h-[18px] rounded-sm border px-2 leading-none font-medium transition-colors"
-            :title="p"
-            @click="parentIndex = i"
-          >
-            parent {{ i + 1 }}
-          </button>
+        <div v-if="isMerge" class="mt-1 flex min-w-0 items-center gap-1 text-[0.7rem] text-muted-foreground">
+          <template v-if="unchangedParents === null" />
+          <template v-else-if="straightMergeParent !== null">
+            <GitBranchIcon class="size-3 shrink-0" aria-hidden="true" />
+            <span class="min-w-0 truncate" :title="straightMergeText">{{ straightMergeText }}</span>
+          </template>
+          <template v-else>
+            <GitForkIcon class="size-3 shrink-0" aria-hidden="true" />
+            <span class="shrink-0">Compare with</span>
+            <button
+              v-for="(p, i) in commitParents"
+              :key="p"
+              type="button"
+              :aria-pressed="parentIndex === i"
+              class="toggle h-[18px] min-w-0 truncate rounded-sm border px-2 leading-none font-medium transition-colors"
+              :title="`${parentLabels[i]} (parent ${i + 1})\n${p}`"
+              @click="parentIndex = i"
+            >
+              {{ parentLabels[i] }}
+            </button>
+          </template>
+          <MessageToggle class="ml-auto pl-2" :expanded="messageExpanded" @toggle="toggleMessage" />
         </div>
       </div>
 
@@ -402,9 +476,8 @@ function pathText(item: FileItem): string {
           <LoaderCircleIcon class="size-3 animate-spin" /> Loading changes…
         </div>
         <p v-else-if="changesError" class="px-2 py-1 text-base text-destructive">{{ changesError }}</p>
-        <p v-else-if="flat.length === 0" class="px-2 py-2 text-base text-muted-foreground italic">
-          {{ mode === "worktree" ? "The working tree is clean." : "No files changed." }}
-        </p>
+        <EmptyState v-else-if="flat.length === 0 && mode === 'worktree'" message="The working tree is clean. Nothing to commit." />
+        <p v-else-if="flat.length === 0" class="px-2 py-2 text-base text-muted-foreground italic">No files changed.</p>
 
         <template v-for="section in sections" :key="section.key">
           <template v-if="section.items.length > 0">
@@ -428,7 +501,7 @@ function pathText(item: FileItem): string {
               type="button"
               :class="
                 cn(
-                  'flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 text-left text-base outline-none',
+                  'flex h-(--row-h) w-full items-center gap-1.5 px-2 text-left text-base outline-none',
                   isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
                   multiple && isFocus(item) && 'shadow-[inset_2px_0_0_var(--ring)]',
                 )

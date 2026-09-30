@@ -24,12 +24,13 @@ const title = computed(() =>
   <!-- An arrow-shaped tag in the ref's lane colour: filled while shown, an outline while hidden. -->
   <button
     type="button"
-    class="inline-flex h-3 w-[15px] shrink-0 cursor-pointer items-center justify-center rounded-[2px]"
+    class="inline-flex h-3 w-[15px] shrink-0 items-center justify-center rounded-[2px]"
     :style="style"
     :title="title"
     :aria-label="title"
     :aria-pressed="visible"
     @click.stop="emit('toggle')"
+    @dblclick.stop
     @mousedown.stop
   >
     <svg viewBox="0 0 15 12" class="h-3 w-[15px]" aria-hidden="true">

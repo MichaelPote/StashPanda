@@ -5,7 +5,6 @@ import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigg
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { shortSha } from "@/lib/refNames";
 import {
-  checkout,
   copyText,
   createBranchHere,
   currentBranch,
@@ -14,6 +13,7 @@ import {
   isDetached,
   mergeInto,
   removeTag,
+  requestCheckout,
   stripRemote,
 } from "@/lib/repoActions";
 import { useSessionsStore } from "@/stores/sessions";
@@ -47,14 +47,28 @@ const branch = computed(() => currentBranch(session.value));
  * `dev` exists, whereas `git checkout origin/dev` would only detach HEAD at that commit.
  */
 const checkoutTarget = computed(() => (props.kind.type === "remoteBranch" ? stripRemote(props.short, props.kind.remote) : props.short));
+/** A remote branch with no local branch of its name: checking it out creates one, after a confirm. */
+const createsLocal = computed(
+  () =>
+    props.kind.type === "remoteBranch" &&
+    !(session.value?.refs?.refs ?? []).some((r) => r.kind.type === "localBranch" && r.short === checkoutTarget.value),
+);
 const checkoutText = computed(() => {
-  if (props.kind.type === "remoteBranch") return `Checkout ${checkoutTarget.value} (tracking ${props.short})`;
-  return `Checkout ${props.short}`;
+  if (createsLocal.value) return `Checkout ${checkoutTarget.value} (tracking ${props.short})…`;
+  return `Checkout ${checkoutTarget.value}`;
 });
-const checkoutReason = computed(() => {
-  if (props.isCurrent) return `${props.short} is already checked out.`;
-  return dirty.value;
-});
+
+function runCheckout(): void {
+  if (props.kind.type === "remoteBranch") {
+    void requestCheckout(props.sessionKey, { kind: "remote", remote: props.short, local: checkoutTarget.value });
+  } else if (props.kind.type === "localBranch") {
+    void requestCheckout(props.sessionKey, { kind: "local", name: props.short });
+  } else {
+    void requestCheckout(props.sessionKey, { kind: "revision", revision: props.short, label: props.short });
+  }
+}
+// A dirty working tree does not block a checkout: requestCheckout asks first.
+const checkoutReason = computed(() => (props.isCurrent ? `${props.short} is already checked out.` : null));
 
 const mergeReason = computed(() => {
   if (props.isCurrent) return `${props.short} is the current branch.`;
@@ -72,7 +86,7 @@ const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch c
       <slot />
     </ContextMenuTrigger>
     <ContextMenuContent class="min-w-52">
-      <ActionMenuItem :reason="checkoutReason" @select="checkout(sessionKey, checkoutTarget, checkoutTarget)">
+      <ActionMenuItem :reason="checkoutReason" @select="runCheckout">
         {{ checkoutText }}
       </ActionMenuItem>
       <ActionMenuItem v-if="kind.type !== 'tag'" :reason="mergeReason" @select="mergeInto(sessionKey, short)">

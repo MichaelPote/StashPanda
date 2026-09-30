@@ -339,8 +339,9 @@ Lane sweep rules:
 - A synthetic **Working Tree** row is pushed first, with HEAD as its parent, when status is dirty; it lands in lane 0 directly above HEAD with a straight edge.
 - Lanes still waiting at the end become `Dangling` edges drawn as a short fading stub.
 - Edge kinds: `Pass`, `Parent`, `MergeInto`, `Dangling`. Colour is a palette index 0 to 11; an edge wears the colour of the slot at its `to_lane`.
+- Branch tips stacked on one lane (a branch started from the tip of another) are told apart by the `appearance.commitLaneColours` setting. The top-most local or remote branch tip on a lane shares the lane's colour; each tip below it gets a new one, picked so that its hue (`index % 6`, since the dark theme repeats lanes 0 to 5 as 6 to 11) differs from the lane's and, while a hue is free, from every open lane's. With `keepLane` (the default) only that row's pills and Branches panel tags take the new colour (`RowLayout::ref_colour`) and the lane is untouched. With `changeAtEachTip` the lane itself switches to the new colour from that tip's dot down. Tags do not count as tips, and neither does a remote branch that a shown local branch tracks: its pill and tag take the local branch's colour (`RefLabel::colour`), in both modes.
 
-IPC payload per row (`GraphRow`, camelCase via serde, generated into TypeScript by specta): index, kind (`commit` | `workingTree`), oid, parents, lane, colour, maxLane, edges, author name and email, author and commit time, subject, `refs: RefLabel[]` (full name, short, kind, isCurrent, upstreamAtSameCommit), isHead, optional worktree summary (staged, unstaged, untracked, conflicted counts).
+IPC payload per row (`GraphRow`, camelCase via serde, generated into TypeScript by specta): index, kind (`commit` | `workingTree`), oid, parents, lane, colour, refColour (the colour of the row's pills), maxLane, edges, author name and email, author and commit time, subject, `refs: RefLabel[]` (full name, short, kind, isCurrent, colour, upstreamAtSameCommit), isHead, optional worktree summary (staged, unstaged, untracked, conflicted counts).
 
 ### Loading and reconciliation
 
@@ -361,20 +362,34 @@ For a repo with no cache, partial snapshots (`complete: false`) are swapped in e
 - **One SVG for the visible window**, absolutely positioned inside the same translated block as the row divs, so it scrolls on the compositor with them and the dot for row i is at exactly the same `y` as its text. Edges cross row boundaries, so one SVG draws each curve once. Vertical pass-through runs of the same lane and colour collapse into one `<path d="M x y V y2 ...">`, giving at most about 12 run paths, 12 curve paths and N circles per window. The SVG has `pointer-events: none`; the row `<div>` beneath handles click, double click, context menu and hover.
 - Curves are cubic Beziers between row centres; straight lines otherwise; stroke 2 px, round caps. Lane width 14 px; graph column width defaults to `clamp(maxLanes + 1, 3, 12) * 14px` and is user-resizable; lanes beyond the column are clipped.
 - Palette: 12 CSS variables `--graph-lane-0` to `--graph-lane-11` (starting values `#5b9cff #45d483 #ff9a4d #b48cff #ff7eb6 #f5d34a #3fd3e8 #ff6b6b #a6e34d #2fc4a8 #7f8cff #e0a94a`), checked for contrast against the real dark and light backgrounds during M1.
-- Row grid shared by header and rows: `var(--col-graph) minmax(0,1fr) var(--col-author) var(--col-date)`. Ref pills before the subject: local branch (bold and filled when current), remote as `origin ▸ dev`, tags with the lucide Tag icon, detached HEAD pill. A local branch and its upstream on the same commit collapse into one pill `dev ▸ origin`. More than three pills show three plus a `+N` popover. Author cell shows initials coloured by a hash of the email; Gravatar is an opt-in later. Date is relative or absolute by setting.
+- Row grid shared by header and rows: `var(--col-graph) minmax(0,1fr) var(--col-author) var(--col-date)`. Ref pills before the subject: local branch (bold and filled when current), remote as `origin`, a Lucide ChevronRight icon, then `dev`, tags with the lucide Tag icon, detached HEAD pill. A local branch and its upstream on the same commit collapse into one pill `origin | dev`, with a chevron seam after the remote so the two halves look interlocked; when they are on different commits the local pill has a chevron notch on its left and the remote pill a matching point on its right. More than three pills show three plus a `+N` popover. Author cell shows initials coloured by a hash of the email; Gravatar is an opt-in later. Date is relative or absolute by setting.
 - Selection is by oid (stable across versions), with Ctrl and Shift multi-select; keyboard Up, Down, PageUp, PageDown, Home, End, Enter, Ctrl+C copies the oid; `ensureVisible` scrolls minimally.
 
 Components: `CommitGraphView.vue` (owner: repo binding, selection, keyboard, context menu, column widths), `GraphHeader.vue` with `ColumnResizer.vue`, `VirtualRowList.vue`, `GraphLanesSvg.vue`, `CommitRow.vue` (v-memo on row, selected, widths), `WorkingTreeRow.vue`, `RowSkeleton.vue`, `RefLabels.vue`, `RefPill.vue`, `AuthorCell.vue`, `DateCell.vue`, `GraphLoadingBar.vue`. Composables: `useVirtualRows.ts`, `useGraphPages.ts`, `useRowSelection.ts`. Pure helpers: `src/lib/graph/paths.ts`, `palette.ts`.
 
-### Persistent storage: SQLite for the cache, two JSON files for settings
+### Persistent storage: a JSON file for settings, SQLite for the cache and the UI state
 
 | File | Location | Holds |
 |---|---|---|
 | `settings.json` | `app_config_dir()` | preferences and the repository library: things a person might hand-edit or copy to another machine |
-| `ui-state.json` | `app_config_dir()` | window geometry, panel sizes, column widths, open tabs, active tab, last selected commit per repo. Written on every drag; safe to delete |
-| `stashpanda.sqlite` | `app_data_dir()` | commit and ref cache. `rusqlite` with `bundled`, WAL mode, `synchronous=NORMAL`, one connection behind a Mutex used through `spawn_blocking` |
+| `stashpanda.sqlite` | `app_data_dir()` | commit and ref cache, and the remembered UI state. `rusqlite` with `bundled`, WAL mode, `synchronous=NORMAL`, one connection behind a Mutex used through `spawn_blocking` |
 
-Both JSON files are written atomically (write `*.tmp`, rename) by one persist task: settings debounced 500 ms, ui-state 1 s, flushed synchronously on `RunEvent::ExitRequested`. Rust is the single source of truth: `settings_update(patch)` applies an RFC 7396 merge patch, validates by deserialising, bumps a revision and emits `settings_changed` with the full object; the frontend store replaces its copy from the event. A corrupt file is renamed to `*.broken-<timestamp>` and defaults are used.
+The remembered UI state (`ui_state::UiState`) is what the window returns to, as opposed to settings:
+splitter sizes, graph column widths, open tabs and the active tab, the Console's User, Internal and
+Watcher buttons, the Files panel's grouping and sorting, the diff header's layout, context and
+whitespace choices and its side-by-side divider, the size of each dialog dragged bigger
+(`dialogSizes`), and for each repository the refs hidden from the
+graph and the last selected commit. It is stored one row per value (schema version 2,
+`storage/schema_v2.sql`): `ui_prefs(key, value)` for the app, with dotted keys such as
+`panels.leftWidth`, and `repo_ui_prefs(repo_key, key, value)` for each repository, keyed by
+`RepoEntry.key`. Values are JSON. `repo_ui_prefs` does not reference the `repos` cache table, whose
+rows are evicted. Window geometry stays with `tauri-plugin-window-state`. Until 2026-09-30 the UI
+state was `ui-state.json` in `app_config_dir()`, plus `localStorage` for the Console, Files panel
+and diff header; on first start `AppState::init` imports the file and renames it to
+`ui-state.json.imported`, and the frontend's `uiState.load()` moves the `localStorage` values across
+and deletes them. Removing a repository from the library deletes its rows.
+
+One persist task writes both: `settings.json` atomically (write `*.tmp`, rename) debounced 500 ms, the UI state rows in one transaction debounced 1 s, both flushed synchronously on `RunEvent::ExitRequested`. Rust is the single source of truth: `settings_update(patch)` applies an RFC 7396 merge patch, validates by deserialising, bumps a revision and emits `settings_changed` with the full object; the frontend store replaces its copy from the event. A corrupt file is renamed to `*.broken-<timestamp>` and defaults are used.
 
 Schema (`storage/schema.sql`, versioned with `PRAGMA user_version`):
 
@@ -504,7 +519,7 @@ Add `pinia` (4.x). Stores in `src/stores/`: `settings.ts` and `uiState.ts` (mirr
 - **SSH**: with `sshd` running in WSL and `ssh localhost` working, add `brave@localhost:/home/me/code/stashpanda` as an SSH repo; confirm one connection is authenticated (agent first, then key file), each query is one channel with its own exit code and stderr in the console, blob reads come through the pinned cat-file channel, restarting `sshd` produces `transport_state: Disconnected` then a reconnect, an unknown host raises the fingerprint dialog, and pointing a repo at a `.ppk` identity, an encrypted PEM and an OpenSSH key each authenticates after at most one passphrase prompt.
 - **Key manager**: the SSH Keys screen lists every file in the Windows and WSL `.ssh` folders with the right format badge; converting a PPK v2, a PPK v3 and an encrypted PEM to OpenSSH produces files that `ssh-keygen -y -f <file>` accepts and whose public key matches the original; Add to agent makes the key appear in `ssh-add -l`; Generate produces an ed25519 key that `sshd` on localhost accepts.
 - **Watcher fallbacks**: with `inotifywait` absent the console and `watcher_state` should say polling is in use; installing `inotify-tools` and reopening should switch to `RemoteInotify`.
-- **Persistence**: close and reopen the app; tabs, active tab, panel sizes, column widths and window geometry return; `settings.json` stays diff-friendly while `ui-state.json` churns.
+- **Persistence**: close and reopen the app; tabs, active tab, panel sizes, column widths and window geometry return; `settings.json` stays diff-friendly while the UI state rows in the database churn.
 
 ## Implementation notes (2026-09-18, after the first build)
 
@@ -556,11 +571,14 @@ section is the delta.
   `git ls-files --others --ignored --exclude-standard --directory` (refreshed every minute) are
   filtered out so build output and caches inside the worktree do not count either. After the fix
   a two-minute run with one touched file and one `git add` produced exactly those two events.
-- **Type scale is rem-based with a 15 px root** (2026-09-22). `html { font-size: 15px }` in
-  `index.css`; UI text uses `text-base`, headers `text-xs`, pills `text-[0.7rem]`; row heights are
-  the CSS variables `--row-h` (1.6rem), `--diff-row-h` (1.4rem) and `--pill-h` (1.2rem), and the
-  virtual lists read the same values through `remToPx()` in `src/lib/graph/paths.ts`, so changing
-  the root size rescales everything consistently. Branch and tag pills use the flat `pill-*`
+- **Type scale is rem-based** (2026-09-22; the root became 14 px with the design system in
+  `27897ec`). `html { font-size: 14px }` in `index.css`; UI text uses `text-base`, headers
+  `text-xs`, pills `text-[0.7rem]`; `--pill-h` is 1.2rem. Row heights are whole pixels, because the
+  virtual lists and the graph SVG position rows by pixel counts: `ROW_HEIGHT` in
+  `src/lib/graph/paths.ts` is 1.6rem rounded (22 px), and `main.ts` sets `--row-h` to it at startup
+  (2026-09-30; with the unrounded 22.4 px the rows drifted 0.4 px a row away from the graph dots).
+  Diff rows are sized from a setting, see the 2026-09-30 notes below. Changing the root size still
+  rescales everything consistently. Branch and tag pills use the flat `pill-*`
   utilities (solid fill, hairline border, no shadow); the selected row is the single solid colour
   `--row-selected`, a step lighter than the well and darker than the header chrome.
 - **The graph column sizes itself to the snapshot's lane count.** `GraphColumns.graph` is
@@ -585,25 +603,96 @@ section is the delta.
   that is a few hundred milliseconds from SQLite and one sort and sweep; the 500-row fast path in
   the plan is deferred until a repository shows it is needed.
 
+## Implementation notes (2026-09-30, the commit dialog and a round of interface work)
+
+What changed from the plan in this round. [next-steps.md](next-steps.md) lists each change with its
+files; this is what a reader of the plan above needs to know.
+
+- **The Windows build runs from a mirror, not a separate checkout** (2026-09-21).
+  `scripts/windows.sh` copies `/home/me/code/stashpanda` to `C:\src\stashpanda` with `rsync` and runs
+  the Windows toolchain there through WSL interop (`npm run win:ux`, `win:dev`, `win:build`,
+  `win:sync`), instead of the separate `C:\src\stashpanda` checkout in "Build story". Its check
+  for a leftover process on port 1420 must ignore `powershell.exe`'s exit code: `Get-NetTCPConnection`
+  on a free port exits 1 even with `-ErrorAction SilentlyContinue`, which `set -euo pipefail`
+  turned into a silent exit of the whole script.
+- **Committing takes paths.** `op_commit(message, paths, amend, sign_off)`: with `paths`, they are
+  staged (`add -A`) and, when other files are staged too, the commit adds `--only` so those stay
+  staged and out of it. The paths go on the command line (at most 24 KB), because the message
+  already uses stdin. An empty `paths` with `amend` runs `--amend --only`, which changes only the
+  message.
+- **The plan's commit message editor is a Commit dialog** (`dialogs/CommitDialog.vue`, from the
+  toolbar's Commit button). It lists every outstanding file with a checkbox; the Files panel
+  selection starts ticked, otherwise the new `commit.preselect` setting (`all` or `staged`).
+  Ticking exactly the staged files commits the index as it is (no paths), so a partly staged file
+  keeps its unstaged part out; any other set is committed as it is on disk.
+- **List selection is hand-written** (`composables/useListSelection.ts`, shared by the Files panel
+  and the Commit dialog), after reka-ui's `Listbox` turned out to ignore Shift and Ctrl on mouse
+  clicks. Ctrl+A outside a text field never selects page text (`App.vue`); it selects every file.
+- **Refs can be hidden in the graph**, which the plan does not have. `GraphSnapshot::build` takes
+  the hidden set (`RepoHandle::hidden`, loaded by `repo_open` from `perRepo[key].hiddenRefs` in
+  the UI state) and lays out only commits reachable from the refs still shown; HEAD is a tip of
+  its own only when detached. `graph_set_hidden_refs` rebuilds from the store already in memory,
+  with no `git log`. The store stays whole, and the snapshot keeps the unfiltered order in
+  `full_order` so the cache's `seq` still covers every commit.
+- **`GraphMeta` carries two more fields:** `refColours` (each shown ref's pill colour, the same as `RefLabel::colour`, for
+  the Branches panel's show and hide tags) and `widestAuthors` (the 24 longest distinct author
+  names, for sizing the Author column).
+- **The row grid has an ID column:** `var(--col-graph) minmax(0, 1fr) var(--col-author)
+  var(--col-date) var(--col-id)`. Author, Date and ID size themselves to their widest possible
+  value (`lib/graph/columnWidths.ts`, measured with the real fonts) until a divider is dragged;
+  `GraphColumns.author`, `date` and `id` are optional, and the old always-saved defaults 140, 150
+  and 76 are read as automatic. Header and rows reserve the same scrollbar space.
+- **A snapshot swap keeps the list at the top** when it is at the top, instead of keeping the old
+  first row in place, so rows that appear above it (the Working Tree row after the cached paint,
+  new commits) are in view.
+- **The side-by-side diff is two panes in one vertical scroll.** The split starts at 50% and has a
+  draggable divider; each side clips its text and scrolls sideways on its own scrollbar, and
+  moving one moves the other to the same fraction of its range. Diff rows are `diff.lineHeight`
+  (default 1.2) times `diff.fontSize`, in whole pixels, and the virtual list uses the same number;
+  `useVirtualRows` accepts the row height as a getter. The font, size, tab width and ligatures
+  come from the `diff` section of settings through `src/lib/diff/font.ts`.
+- **The Transport trait gains `modified_times`** (filesystem for Local and WSL, one remote `stat`
+  loop that works with GNU and BSD `stat` for SSH), behind the `get_modified_times` command, for
+  sorting the Files panel by date modified. The Files panel also groups by status, folder or
+  nothing, and sorts by name, Git status or date.
+- **Fonts are bundled.** IBM Plex Sans, Outfit and JetBrains Mono come from their `@fontsource`
+  packages, imported in `main.ts`, instead of a Google Fonts `@import`, so the app looks the same
+  offline.
+- **The native Theme menu follows the setting:** `menu.rs` keeps the three check items and
+  `sync_theme` ticks one, at startup, after a click and in `settings_update`.
+- **Settings and UI state gained** `commit.preselect`, `appearance.diffLineHeight` (now
+  `diff.lineHeight`), `GraphColumns.id` and `perRepo[key].hiddenRefs`. Settings are edited in the
+  Settings dialog (File > Settings) or by hand in `settings.json`.
+
 ### Status against the milestones
 
 Done: M0 entirely; M1 steps 8 to 13 (queries, graph, frontend panels, cache, native and polling
 watchers), 15b (key manager) and 16 (SSH transport over `russh`, tested against a private `sshd`
-started by the test on a free port with throwaway keys).
+started by the test on a free port with throwaway keys). M2: checkout, branch and tag create and
+delete, merge and merge abort, stage, unstage, discard and commit in the backend; the
+one-refresh-per-write plumbing and the `IndexLocked` retry; in the frontend, the Commit dialog and
+multi-select in the Files panel. Plus the interface work in the 2026-09-30 notes above.
 
-Not done yet: step 14 (WSL transport is written but can only be exercised from the Windows build,
-which needs a Rust toolchain on Windows), step 15 (`inotifywait` over SSH; SSH and WSL repositories
-poll every 3 s), step 17 (`run_batch`), the pinned `cat-file --batch-command` helper (blob reads
-spawn `cat-file blob` per request), the Settings › SSH Keys screen in the frontend (the thirteen
-`keys_*` commands exist and are typed in `bindings.ts`), and the UI for the host-key trust and
-password prompts.
+Not done yet: step 14 (the WSL transport is written but has not been exercised from the Windows
+build; the Windows toolchain it waited for has been installed since 2026-09-21), step 15
+(`inotifywait` over SSH; SSH and WSL repositories poll every 3 s), step 17 (`run_batch`), the
+pinned `cat-file --batch-command` helper (blob reads spawn `cat-file blob` per request), the
+Settings dialog's SSH Keys page (the thirteen `keys_*` commands exist and are typed in
+`bindings.ts`), and the UI for the host-key trust and password prompts. In M2: stash, reset,
+cherry-pick, revert, branch rename, `fix_safe_directory`, hunk and line staging, and the Files
+panel's context menu and Stage, Unstage and Discard buttons. Push, and so "Commit & Push", waits
+for M3.
 
 ### Tests
 
-`cd src-tauri && cargo test` runs 36 tests: path mapper table, every parser on captured bytes,
-ordering and lane sweep fixtures, snapshot and cache round trips, an end-to-end run of every query
-against a throwaway repository, an end-to-end open, graph build, persist and cache reload, and the
-SSH transport against a private `sshd`. Two ignored tests need this machine:
+`cd src-tauri && cargo test` runs 45 tests: path mapper table, every parser on captured bytes,
+ordering and lane sweep fixtures, snapshot and cache round trips, the graph with hidden refs, an
+end-to-end run of every query against a throwaway repository, modification times through the
+local transport, an end-to-end open, graph build, persist and cache reload, every write operation
+against a throwaway repository (checkout, branches, tags, merge, stage, unstage, discard, commit,
+commit with paths, amend, the unborn-branch unstage and the `index.lock` retry), reading old saved
+column widths, the TypeScript bindings export, and the SSH transport against a private `sshd`
+(including remote modification times). Two ignored tests need this machine:
 `cargo test -- --ignored agrees_with_wslpath` (cross-checks the path mapper with `wslpath`) and
 `cargo test -- --ignored probe_real_keys --nocapture` (lists every key in the Windows and WSL
 `.ssh` folders with format, algorithm and fingerprint, read-only).

@@ -13,7 +13,6 @@ import {
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { shortSha } from "@/lib/refNames";
 import {
-  checkout,
   copyCommitMessage,
   copyText,
   createBranchHere,
@@ -23,6 +22,7 @@ import {
   isDetached,
   mergeInto,
   removeTag,
+  requestCheckout,
 } from "@/lib/repoActions";
 import type { RepoSession } from "@/stores/sessions";
 
@@ -42,9 +42,9 @@ const singleTag = computed<RefLabel | null>(() => (tags.value.length === 1 ? (ta
 const dirty = computed(() => dirtyTreeReason(props.session));
 const branch = computed(() => currentBranch(props.session));
 
+// A dirty working tree does not block a checkout: requestCheckout asks first.
 function checkoutReason(label: RefLabel): string | null {
-  if (label.isCurrent) return `${label.short} is already checked out.`;
-  return dirty.value;
+  return label.isCurrent ? `${label.short} is already checked out.` : null;
 }
 
 /** Merge by branch name when the row has one, else by oid. */
@@ -63,16 +63,16 @@ const mergeReason = computed(() => {
       <slot />
     </ContextMenuTrigger>
     <ContextMenuContent class="min-w-56">
-      <ActionMenuItem v-if="localBranches.length === 0" :reason="dirty" @select="checkout(session.key, row.oid, sha)">
+      <ActionMenuItem v-if="localBranches.length === 0" :reason="null" @select="requestCheckout(session.key, { kind: 'revision', revision: row.oid, label: sha })">
         Checkout {{ sha }}
       </ActionMenuItem>
-      <ActionMenuItem v-else-if="singleBranch" :reason="checkoutReason(singleBranch)" @select="checkout(session.key, singleBranch.short)">
+      <ActionMenuItem v-else-if="singleBranch" :reason="checkoutReason(singleBranch)" @select="requestCheckout(session.key, { kind: 'local', name: singleBranch.short })">
         Checkout {{ singleBranch.short }}
       </ActionMenuItem>
       <ContextMenuSub v-else>
         <ContextMenuSubTrigger class="text-base">Checkout</ContextMenuSubTrigger>
         <ContextMenuSubContent>
-          <ActionMenuItem v-for="b in localBranches" :key="b.fullName" :reason="checkoutReason(b)" @select="checkout(session.key, b.short)">
+          <ActionMenuItem v-for="b in localBranches" :key="b.fullName" :reason="checkoutReason(b)" @select="requestCheckout(session.key, { kind: 'local', name: b.short })">
             {{ b.short }}
           </ActionMenuItem>
         </ContextMenuSubContent>

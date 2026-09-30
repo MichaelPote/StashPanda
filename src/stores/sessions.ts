@@ -14,6 +14,7 @@ import {
   type RefsSnapshot,
   type RepoChangedEvent,
   type RepoInfo,
+  type StashEntry,
   type StatusSnapshot,
   type WatcherKind,
   type WatcherStateEvent,
@@ -31,6 +32,8 @@ export interface ConsoleEntry {
   label: string;
   argv: string[];
   display: string;
+  /** Just the git arguments the app asked for (`checkout master`), without the wrapper. */
+  command: string;
   startedAtMs: number;
   durationMs: number | null;
   exitCode: number | null;
@@ -41,6 +44,8 @@ export interface ConsoleEntry {
   stderrBytes: number;
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
+  /** A successful internal or watcher command: the backend sent its byte counts but not its text. */
+  outputOmitted: boolean;
   error: GitError | null;
 }
 
@@ -65,6 +70,9 @@ export interface Selection {
   /** Start of a Shift-range, and the row the keyboard moves from. */
   anchorOid: string | null;
 }
+
+/** A notice reports a failure (red, with a warning icon) unless it says an action worked. */
+export type NoticeKind = "error" | "success";
 
 /** A button rendered next to a notice; `run` is called when it is clicked and the notice is dismissed. */
 export interface NoticeAction {
@@ -97,6 +105,8 @@ export interface RepoSession {
   graph: GraphState;
   status: StatusSnapshot | null;
   refs: RefsSnapshot | null;
+  /** `git stash list`, newest first. Null until the first load. */
+  stashes: StashEntry[] | null;
   selection: Selection;
   /** The row that drives the Files panel: the most recently selected commit or the Working Tree row. */
   selectedRow: GraphRow | null;
@@ -121,6 +131,7 @@ function toEntry(ev: ConsoleEvent): ConsoleEntry {
     label: ev.label,
     argv: ev.argv,
     display: ev.display,
+    command: ev.command,
     startedAtMs: ev.startedAtMs,
     durationMs: ev.durationMs,
     exitCode: ev.exitCode,
@@ -131,6 +142,7 @@ function toEntry(ev: ConsoleEvent): ConsoleEntry {
     stderrBytes: ev.stderrBytes,
     stdoutTruncated: ev.stdoutTruncated,
     stderrTruncated: ev.stderrTruncated,
+    outputOmitted: ev.outputOmitted,
     error: ev.error,
   };
 }
@@ -165,6 +177,7 @@ export const useSessionsStore = defineStore("sessions", () => {
   const notice = ref<string | null>(null);
   /** Optional button shown next to the notice (for example "Abort merge" after a conflicted merge). */
   const noticeAction = ref<NoticeAction | null>(null);
+  const noticeKind = ref<NoticeKind>("error");
 
   /**
    * Console buffers keyed by repoId. Probe commands are emitted during `repoOpen`, before the
@@ -316,10 +329,21 @@ export const useSessionsStore = defineStore("sessions", () => {
 
   async function loadStatus(session: RepoSession): Promise<void> {
     session.status = await unwrap(commands.getRepoStatus(session.key));
+    // A stash push or pop changes the count in status; a watcher event may not report it as a
+    // refs change, so a count that no longer matches the list reloads the list too.
+    if (session.stashes !== null && session.stashes.length !== session.status.stashCount) await loadStashes(session);
   }
 
+  /** Refs and the stash list load together: every stash is an entry in the `refs/stash` reflog. */
   async function loadRefs(session: RepoSession): Promise<void> {
-    session.refs = await unwrap(commands.getRepoRefs(session.key));
+    await Promise.all([
+      unwrap(commands.getRepoRefs(session.key)).then((refs) => (session.refs = refs)),
+      loadStashes(session),
+    ]);
+  }
+
+  async function loadStashes(session: RepoSession): Promise<void> {
+    session.stashes = await unwrap(commands.getRepoStashes(session.key));
   }
 
   function onRepoChanged(ev: RepoChangedEvent): void {
@@ -388,6 +412,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         graph: createGraphState(),
         status: null,
         refs: null,
+        stashes: null,
         selection: { oids: new Set<string>(), anchorOid: null },
         selectedRow: null,
         selectedFile: null,
@@ -508,9 +533,15 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
-  function notify(message: string, action: NoticeAction | null = null): void {
+  function notify(message: string, action: NoticeAction | null = null, kind: NoticeKind = "error"): void {
     notice.value = message;
     noticeAction.value = action;
+    noticeKind.value = kind;
+  }
+
+  /** A notice that an action worked: shown plainly, not as an error. */
+  function notifySuccess(message: string): void {
+    notify(message, null, "success");
   }
 
   function dismissNotice(): void {
@@ -565,6 +596,8 @@ export const useSessionsStore = defineStore("sessions", () => {
     active,
     opening,
     notice,
+    noticeKind,
+    notifySuccess,
     noticeAction,
     init,
     openTab,

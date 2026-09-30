@@ -10,6 +10,7 @@ import GraphLanesSvg from "@/components/graph/GraphLanesSvg.vue";
 import GraphLoadingBar from "@/components/graph/GraphLoadingBar.vue";
 import RowSkeleton from "@/components/graph/RowSkeleton.vue";
 import VirtualRowList from "@/components/graph/VirtualRowList.vue";
+import WorkingTreeContextMenu from "@/components/graph/WorkingTreeContextMenu.vue";
 import WorkingTreeRow from "@/components/graph/WorkingTreeRow.vue";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { useGraphPages } from "@/composables/useGraphPages";
@@ -37,14 +38,21 @@ const dateFormat = computed<DateFormat>(() => settings.settings?.appearance?.dat
 const upstreamRemotes = computed(() => {
   const map = new Map<string, string>();
   for (const entry of props.session.refs?.refs ?? []) {
-    if (entry.kind.type !== "localBranch" || !entry.upstream) continue;
+    if (entry.kind.type !== "localBranch" || !entry.upstream || entry.upstreamGone) continue;
     const rest = entry.upstream.startsWith("refs/remotes/") ? entry.upstream.slice("refs/remotes/".length) : entry.upstream;
     const slash = rest.indexOf("/");
     map.set(entry.fullName, slash > 0 ? rest.slice(0, slash) : rest);
   }
   return map;
 });
-provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes });
+const trackedRemotes = computed(() => {
+  const set = new Set<string>();
+  for (const entry of props.session.refs?.refs ?? []) {
+    if (entry.kind.type === "localBranch" && entry.upstream && !entry.upstreamGone) set.add(entry.upstream);
+  }
+  return set;
+});
+provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes });
 
 // ---- Columns -------------------------------------------------------------------------------
 
@@ -182,6 +190,11 @@ async function selectRangeTo(index: number): Promise<void> {
   cursorIndex.value = index;
 }
 
+/** Shift+click selects a range of rows, so it must not also extend a text selection. */
+function onMouseDown(event: MouseEvent): void {
+  if (event.shiftKey) event.preventDefault();
+}
+
 function onClick(event: MouseEvent): void {
   const target = event.target as HTMLElement | null;
   const rowEl = target?.closest<HTMLElement>("[data-index]");
@@ -289,7 +302,7 @@ function onScrollTop(top: number): void {
 <template>
   <section ref="container" class="area flex h-full min-h-0 flex-col outline-none" :style="columnStyle" tabindex="0" @keydown="onKeydown">
     <PanelHeader title="Commits">
-      <span class="truncate text-xs text-muted-foreground">{{ session.info.toplevel }}</span>
+      <span class="truncate text-xs text-muted-foreground select-text">{{ session.info.toplevel }}</span>
       <template #actions>
         <span v-if="meta && meta.total > 0" class="text-[0.7rem] text-muted-foreground tabular-nums">
           {{ meta.total.toLocaleString() }} rows<template v-if="meta.truncated"> (truncated)</template>
@@ -301,7 +314,7 @@ function onScrollTop(top: number): void {
 
     <EmptyState v-if="meta && meta.version > 0 && meta.total === 0 && !session.graph.loading" message="This repository has no commits yet." />
 
-    <div v-else class="relative min-h-0 flex-1" @click="onClick" @contextmenu="onContextMenu">
+    <div v-else class="relative min-h-0 flex-1" @mousedown="onMouseDown" @click="onClick" @contextmenu="onContextMenu">
       <VirtualRowList
         ref="list"
         :total="total"
@@ -314,11 +327,9 @@ function onScrollTop(top: number): void {
             <GraphLanesSvg :rows="svgRows" :first="svgFirst" :block-start="s" :row-height="ROW_HEIGHT" :width="graphWidth" />
           </div>
           <template v-for="(row, k) in visibleRows" :key="s + k">
-            <WorkingTreeRow
-              v-if="row && row.kind === 'workingTree'"
-              :row="row"
-              :selected="selection.oids.has(row.oid)"
-            />
+            <WorkingTreeContextMenu v-if="row && row.kind === 'workingTree'" :session="session">
+              <WorkingTreeRow :row="row" :selected="selection.oids.has(row.oid)" />
+            </WorkingTreeContextMenu>
             <CommitContextMenu v-else-if="row" :row="row" :session="session">
               <CommitRow :row="row" :selected="selection.oids.has(row.oid)" />
             </CommitContextMenu>
