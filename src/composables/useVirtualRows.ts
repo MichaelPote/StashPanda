@@ -2,7 +2,8 @@ import { onBeforeUnmount, shallowRef, watch, type Ref } from "vue";
 import { useResizeObserver, useScroll } from "@vueuse/core";
 
 export interface VirtualRowsOptions {
-  rowHeight: number;
+  /** Row height in pixels, or a getter when it can change (read on every recompute). */
+  rowHeight: number | (() => number);
   /** Number of rows; read on every recompute. */
   total: () => number;
   /** Rows rendered above and below the viewport. */
@@ -16,7 +17,8 @@ export interface VirtualRowsOptions {
  */
 export function useVirtualRows(container: Ref<HTMLElement | null>, options: VirtualRowsOptions) {
   const overscan = options.overscan ?? 10;
-  const H = options.rowHeight;
+  const rowHeight = options.rowHeight;
+  const height = (): number => Math.max(1, typeof rowHeight === "function" ? rowHeight() : rowHeight);
 
   const start = shallowRef(0);
   const end = shallowRef(0);
@@ -27,6 +29,7 @@ export function useVirtualRows(container: Ref<HTMLElement | null>, options: Virt
   function recompute(): void {
     const total = options.total();
     const top = scrollTop.value;
+    const H = height();
     const s = Math.max(0, Math.floor(top / H) - overscan);
     const e = Math.min(total, Math.ceil((top + viewportHeight.value) / H) + overscan);
     start.value = Math.min(s, Math.max(0, total));
@@ -55,7 +58,7 @@ export function useVirtualRows(container: Ref<HTMLElement | null>, options: Virt
   });
 
   watch(
-    () => options.total(),
+    () => [options.total(), height()] as const,
     () => {
       // Read the real offset: a shrinking spacer may have clamped it.
       const el = container.value;
@@ -87,6 +90,7 @@ export function useVirtualRows(container: Ref<HTMLElement | null>, options: Virt
   function ensureVisible(index: number): void {
     const el = container.value;
     if (!el) return;
+    const H = height();
     const top = index * H;
     const bottom = top + H;
     const viewTop = el.scrollTop;
@@ -97,7 +101,7 @@ export function useVirtualRows(container: Ref<HTMLElement | null>, options: Virt
 
   /** Rows that fit in the viewport, at least one; used for PageUp/PageDown. */
   function rowsPerPage(): number {
-    return Math.max(1, Math.floor(viewportHeight.value / H));
+    return Math.max(1, Math.floor(viewportHeight.value / height()));
   }
 
   return { start, end, scrollTop, viewportHeight, scrollTo, ensureVisible, rowsPerPage, recompute: schedule };

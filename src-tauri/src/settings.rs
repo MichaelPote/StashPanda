@@ -113,6 +113,8 @@ pub struct Appearance {
     pub show_remote_branches: bool,
     pub show_stashes_in_graph: bool,
     pub avatar_source: AvatarSource,
+    /// Diff row height as a multiple of the diff font size (1.2 = 20% more than the text).
+    pub diff_line_height: f32,
 }
 
 impl Default for Appearance {
@@ -124,6 +126,7 @@ impl Default for Appearance {
             show_remote_branches: true,
             show_stashes_in_graph: false,
             avatar_source: AvatarSource::Initials,
+            diff_line_height: 1.2,
         }
     }
 }

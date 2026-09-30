@@ -12,13 +12,26 @@ import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/
 import { errorMessage, unwrap } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import type { RepoSession } from "@/stores/sessions";
+import { useSettingsStore } from "@/stores/settings";
 
 const props = defineProps<{
   session: RepoSession;
 }>();
 
-/** Diff row height: the `--diff-row-h` rem value from index.css, as pixels for the virtual list. */
-const ROW_H = remToPx(1.4);
+const settings = useSettingsStore();
+
+/** Diff text size (Tailwind `text-xs`) in pixels. */
+const FONT_PX = remToPx(0.75);
+/**
+ * Row height in whole pixels: the diff font size times `appearance.diffLineHeight` from
+ * settings.json. The virtual list and the rows both use this one number, so rows never drift from
+ * where the list expects them.
+ */
+const rowPx = computed(() => {
+  const factor = settings.settings?.appearance?.diffLineHeight ?? 1.2;
+  const clamped = Number.isFinite(factor) ? Math.min(3, Math.max(1, factor)) : 1.2;
+  return Math.max(1, Math.round(FONT_PX * clamped));
+});
 const ALL_CONTEXT = 99999;
 
 type Mode = "unified" | "side";
@@ -222,7 +235,7 @@ function segments(pair: number | undefined, sideOf: "old" | "new", fallback: str
 // ---- Virtualisation ------------------------------------------------------------------------
 
 const scroller = ref<HTMLDivElement | null>(null);
-const virtual = useVirtualRows(scroller, { rowHeight: ROW_H, total: () => rowCount.value, overscan: 10 });
+const virtual = useVirtualRows(scroller, { rowHeight: () => rowPx.value, total: () => rowCount.value, overscan: 10 });
 
 const visibleUnified = computed(() => built.value.unified.slice(virtual.start.value, virtual.end.value));
 const visibleSide = computed(() => built.value.side.slice(virtual.start.value, virtual.end.value));
@@ -348,20 +361,20 @@ const hunkRows = computed<number[]>(() => {
 });
 
 function firstVisibleRow(): number {
-  return Math.floor(virtual.scrollTop.value / ROW_H);
+  return Math.floor(virtual.scrollTop.value / rowPx.value);
 }
 
 function nextHunk(): void {
   const cur = firstVisibleRow();
   const target = hunkRows.value.find((i) => i > cur + 1);
-  if (target !== undefined) virtual.scrollTo(target * ROW_H);
+  if (target !== undefined) virtual.scrollTo(target * rowPx.value);
 }
 
 function prevHunk(): void {
   const cur = firstVisibleRow();
   const before = hunkRows.value.filter((i) => i < cur - 1);
   const target = before[before.length - 1];
-  virtual.scrollTo((target ?? 0) * ROW_H);
+  virtual.scrollTo((target ?? 0) * rowPx.value);
 }
 
 // ---- Presentation --------------------------------------------------------------------------
@@ -406,7 +419,7 @@ function toggleContext(value: string): void {
 </script>
 
 <template>
-  <section class="area flex h-full min-h-0 flex-col">
+  <section class="area flex h-full min-h-0 flex-col" :style="{ '--diff-row-h': `${rowPx}px` }">
     <PanelHeader title="Diff">
       <span v-if="selected" class="truncate font-mono text-xs text-foreground" :title="headerPath">{{ headerPath }}</span>
       <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
@@ -489,15 +502,15 @@ function toggleContext(value: string): void {
         :class="cn('relative min-h-0 flex-1 font-mono text-xs leading-(--diff-row-h) scrollbar-thin', mode === 'side' ? 'overflow-x-hidden overflow-y-auto' : 'overflow-auto')"
         @wheel="mode === 'side' ? onSideWheel($event) : undefined"
       >
-        <div class="relative" :style="mode === 'side' ? { height: `${rowCount * ROW_H}px` } : { height: `${rowCount * ROW_H}px`, minWidth: contentMinWidth }">
-          <div class="absolute inset-x-0 top-0 will-change-transform" :style="{ transform: `translateY(${virtual.start.value * ROW_H}px)` }">
+        <div class="relative" :style="mode === 'side' ? { height: `${rowCount * rowPx}px` } : { height: `${rowCount * rowPx}px`, minWidth: contentMinWidth }">
+          <div class="absolute inset-x-0 top-0 will-change-transform" :style="{ transform: `translateY(${virtual.start.value * rowPx}px)` }">
             <!-- Unified -->
             <template v-if="mode === 'unified'">
               <template v-for="(row, k) in visibleUnified" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
+                <div v-if="row.kind === 'hunk'" class="flex h-(--diff-row-h) items-center bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
                   {{ row.header }}
                 </div>
-                <div v-else :class="cn('flex h-5 whitespace-pre', lineClass(row.line?.kind))">
+                <div v-else :class="cn('flex h-(--diff-row-h) whitespace-pre', lineClass(row.line?.kind))">
                   <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.oldNo ?? "" }}</span>
                   <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.newNo ?? "" }}</span>
                   <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ marker(row.line?.kind) }}</span>
@@ -514,13 +527,13 @@ function toggleContext(value: string): void {
             <!-- Side by side -->
             <template v-else>
               <template v-for="(row, k) in visibleSide" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center overflow-hidden bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
+                <div v-if="row.kind === 'hunk'" class="flex h-(--diff-row-h) items-center overflow-hidden bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
                   {{ row.header }}
                 </div>
-                <div v-else-if="row.kind === 'meta'" class="flex h-5 items-center overflow-hidden border-l-2 border-transparent px-11 whitespace-pre text-muted-foreground italic">
+                <div v-else-if="row.kind === 'meta'" class="flex h-(--diff-row-h) items-center overflow-hidden border-l-2 border-transparent px-11 whitespace-pre text-muted-foreground italic">
                   \ {{ row.text }}
                 </div>
-                <div v-else class="diff-side-row h-5">
+                <div v-else class="diff-side-row h-(--diff-row-h)">
                   <div :class="cn('flex min-w-0 overflow-hidden whitespace-pre', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'border-l-2 border-transparent bg-muted/20')">
                     <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.left?.oldNo ?? "" }}</span>
                     <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>

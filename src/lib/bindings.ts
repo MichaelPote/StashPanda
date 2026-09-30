@@ -145,6 +145,8 @@ export type Appearance = {
 	showRemoteBranches?: boolean,
 	showStashesInGraph?: boolean,
 	avatarSource?: AvatarSource,
+	/**  Diff row height as a multiple of the diff font size (1.2 = 20% more than the text). */
+	diffLineHeight?: number | null,
 };
 
 export type AvatarSource = "initials" | "gravatar";
