@@ -130,6 +130,59 @@ pub async fn branch_delete(client: &GitClient, name: &str, force: bool) -> Resul
     Ok(result(out))
 }
 
+/// `stash@{index}`, after checking that it still names the stash whose commit is `oid`. The list
+/// the user clicked in can be stale: a stash made in a terminal shifts every index by one, and
+/// acting on the index alone would then apply or drop a different stash.
+async fn stash_selector(client: &GitClient, index: u32, oid: &str) -> Result<String> {
+    let selector = format!("stash@{{{index}}}");
+    let out = client
+        .exec_allow_failure(GitReq::new("stash", ["rev-parse".to_string(), "--verify".into(), "--quiet".into(), selector.clone()]))
+        .await?;
+    if !out.success() || String::from_utf8_lossy(&out.stdout).trim() != oid {
+        return Err(GitError::InvalidPath {
+            path: selector,
+            reason: "the stash list has changed since it was shown; check the list and try again".into(),
+        });
+    }
+    Ok(selector)
+}
+
+/// Save the working tree's changes as a new stash (`stash@{0}`) and reset the working tree to
+/// HEAD. With nothing to save, Git exits 0 and prints `No local changes to save`.
+pub async fn stash_push(client: &GitClient, message: Option<&str>, include_untracked: bool) -> Result<OpResult> {
+    let mut args: Vec<String> = vec!["stash".into(), "push".into()];
+    if include_untracked {
+        args.push("--include-untracked".into());
+    }
+    if let Some(m) = message.filter(|m| !m.trim().is_empty()) {
+        args.push("-m".into());
+        args.push(m.to_string());
+    }
+    let out = client.exec_allow_failure(GitReq::new("stash", args).user()).await?;
+    Ok(result(out))
+}
+
+/// Apply a stash's changes to the working tree and keep the stash.
+pub async fn stash_apply(client: &GitClient, index: u32, oid: &str) -> Result<OpResult> {
+    let selector = stash_selector(client, index, oid).await?;
+    let out = client.exec_allow_failure(GitReq::new("stash", ["stash".to_string(), "apply".into(), selector]).user()).await?;
+    Ok(result(out))
+}
+
+/// Apply a stash, then drop it. When applying stops on conflicts Git keeps the stash.
+pub async fn stash_pop(client: &GitClient, index: u32, oid: &str) -> Result<OpResult> {
+    let selector = stash_selector(client, index, oid).await?;
+    let out = client.exec_allow_failure(GitReq::new("stash", ["stash".to_string(), "pop".into(), selector]).user()).await?;
+    Ok(result(out))
+}
+
+/// Delete a stash without applying it.
+pub async fn stash_drop(client: &GitClient, index: u32, oid: &str) -> Result<OpResult> {
+    let selector = stash_selector(client, index, oid).await?;
+    let out = client.exec_allow_failure(GitReq::new("stash", ["stash".to_string(), "drop".into(), selector]).user()).await?;
+    Ok(result(out))
+}
+
 /// Repository-relative paths from the status list. They reach Git as
 /// literal pathspecs, so `:x`, `*.txt` and `-f` name exactly that file.
 fn valid_paths(paths: &[String]) -> Result<()> {
@@ -413,6 +466,67 @@ mod e2e {
         assert!(!c.ok && c.conflicts, "{c:?}");
         assert!(merge_abort(&client).await.unwrap().ok);
         assert!(branch_delete(&client, "clash", true).await.unwrap().ok);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stash_push_apply_pop_drop_and_stale_index() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-stash-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a.txt"), "1\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "one"]);
+        let client = client_for(&dir);
+        let stashes = || async { crate::git::queries::log::get_stashes(&client).await.unwrap() };
+
+        // Push: nothing to save is not an error; untracked files stay unless asked for.
+        let nothing = stash_push(&client, None, false).await.unwrap();
+        assert!(nothing.ok && nothing.stdout.contains("No local changes to save"), "{nothing:?}");
+        std::fs::write(dir.join("new.txt"), "untracked\n").unwrap();
+        assert!(stash_push(&client, Some("with untracked"), true).await.unwrap().ok);
+        assert!(!dir.join("new.txt").exists());
+        assert_eq!(stashes().await[0].message, "On main: with untracked");
+        assert!(stash_pop(&client, 0, &stashes().await[0].oid).await.unwrap().ok);
+        assert!(dir.join("new.txt").exists());
+        std::fs::remove_file(dir.join("new.txt")).unwrap();
+
+        // Two stashes: `first` ends up as stash@{1}, `second` as stash@{0}.
+        std::fs::write(dir.join("a.txt"), "first\n").unwrap();
+        git(&dir, &["stash", "push", "-qm", "first"]);
+        std::fs::write(dir.join("a.txt"), "second\n").unwrap();
+        git(&dir, &["stash", "push", "-qm", "second"]);
+        let list = stashes().await;
+        assert_eq!(list.len(), 2);
+        let (second, first) = (list[0].clone(), list[1].clone());
+
+        // An index that no longer matches its commit is refused, and nothing is dropped.
+        assert!(matches!(stash_drop(&client, 0, &first.oid).await, Err(GitError::InvalidPath { .. })));
+        assert_eq!(stashes().await.len(), 2);
+
+        // Apply keeps the stash; drop removes it without touching the working tree.
+        assert!(stash_apply(&client, 1, &first.oid).await.unwrap().ok);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "first\n");
+        assert_eq!(stashes().await.len(), 2);
+        git(&dir, &["checkout", "-q", "--", "a.txt"]);
+        assert!(stash_drop(&client, 1, &first.oid).await.unwrap().ok);
+        let list = stashes().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].oid, second.oid);
+
+        // Pop applies and removes.
+        assert!(stash_pop(&client, 0, &second.oid).await.unwrap().ok);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "second\n");
+        assert!(stashes().await.is_empty());
+
+        // A pop that conflicts reports it and keeps the stash.
+        git(&dir, &["stash", "push", "-qm", "third"]);
+        let third = stashes().await[0].clone();
+        std::fs::write(dir.join("a.txt"), "clash\n").unwrap();
+        git(&dir, &["commit", "-qam", "clash"]);
+        let popped = stash_pop(&client, 0, &third.oid).await.unwrap();
+        assert!(!popped.ok && popped.conflicts, "{popped:?}");
+        assert_eq!(stashes().await.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
