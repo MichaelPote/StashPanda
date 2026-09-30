@@ -27,6 +27,8 @@ pub async fn settings_update(
     let patch: serde_json::Value = serde_json::from_str(&patch)?;
     let next = apply_patch(&current, &patch)?;
     let revision = state.set_settings(next.clone())?;
+    // The View > Theme ticks follow the setting, whoever changed it.
+    crate::menu::sync_theme(&app, next.appearance.theme);
     SettingsChanged {
         revision,
         settings: next.clone(),

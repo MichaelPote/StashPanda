@@ -286,9 +286,9 @@ refresh per action in the console and the result matching the `git` command line
 ### Left for the phase after this one
 
 - [ ] **Menu bar follow-ups**: a real Settings dialog behind `file.settings`, the commit search
-      behind `edit.find`, and syncing the Theme check marks with the setting (the native
-      `CheckMenuItem`s are created checked for Dark and never updated). The Settings dialog comes
-      first, since three menu items wait on it.
+      behind `edit.find`. The Settings dialog comes first, since two menu items wait on it.
+      (The Theme check marks now follow the setting: fixed 2026-09-30 in `menu.rs`,
+      `sync_theme`.)
 
 ## Milestone 3: remote and history operations
 
