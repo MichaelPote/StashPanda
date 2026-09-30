@@ -155,6 +155,10 @@ impl Transport for WslTransport {
             _ => Ok(()),
         }
     }
+    async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>> {
+        // Through the UNC view, like read_file: no wsl.exe spawn.
+        super::host_modified_times(&self.mapper, paths).await
+    }
 }
 
 #[allow(dead_code)]

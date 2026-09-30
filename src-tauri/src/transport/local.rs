@@ -156,4 +156,7 @@ impl Transport for LocalTransport {
             _ => Ok(()),
         }
     }
+    async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>> {
+        super::host_modified_times(self.mapper.as_ref(), paths).await
+    }
 }

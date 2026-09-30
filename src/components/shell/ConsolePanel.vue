@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
-import { useLocalStorage } from "@vueuse/core";
+import { useLocalStorage, useResizeObserver } from "@vueuse/core";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
@@ -61,6 +61,11 @@ function clear(): void {
 }
 
 const scroller = ref<HTMLDivElement | null>(null);
+/** Visible width of the list, so expanded output stays panel-wide while the rows scroll sideways. */
+const viewWidth = ref(0);
+useResizeObserver(scroller, () => {
+  viewWidth.value = scroller.value?.clientWidth ?? 0;
+});
 const atBottom = ref(true);
 
 function onScroll(): void {
@@ -196,10 +201,12 @@ function categoryShort(category: Category): string {
         class="min-h-0 flex-1 overflow-auto font-mono text-xs scrollbar-thin"
         @scroll.passive="onScroll"
       >
+        <!-- Rows are as wide as the longest command line, so the list scrolls sideways instead of cutting it off. -->
+        <div class="w-max min-w-full">
         <div v-for="entry in entries" :key="entry.seq" class="border-b border-border/60">
           <button
             type="button"
-            class="flex h-(--row-h) w-full items-center gap-2 px-2 text-left hover:bg-row-hover"
+            class="flex h-(--row-h) w-full items-center gap-2 px-2 text-left whitespace-pre hover:bg-row-hover"
             @click="toggleExpanded(entry.seq)"
           >
             <component
@@ -228,10 +235,15 @@ function categoryShort(category: Category): string {
             >
               {{ categoryShort(entry.category) }}
             </span>
-            <span class="truncate" :title="entry.display">{{ entry.display }}</span>
+            <span class="shrink-0 pr-2" :title="entry.display">{{ entry.display }}</span>
           </button>
 
-          <div v-if="expanded.has(entry.seq)" class="space-y-1.5 bg-muted/20 px-7 py-1.5">
+          <!-- Pinned to the visible part of the list, with its own scrollbars for long output. -->
+          <div
+            v-if="expanded.has(entry.seq)"
+            class="sticky left-0 space-y-1.5 bg-muted/20 px-7 py-1.5"
+            :style="viewWidth > 0 ? { width: `${viewWidth}px` } : undefined"
+          >
             <p class="font-sans text-[0.7rem] text-muted-foreground">
               {{ entry.label }}
               <template v-if="entry.stdoutBytes || entry.stderrBytes">
@@ -260,6 +272,7 @@ function categoryShort(category: Category): string {
               No output.
             </p>
           </div>
+        </div>
         </div>
       </div>
     </template>

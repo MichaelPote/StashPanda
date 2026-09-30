@@ -37,6 +37,17 @@ export const commands = {
 	ignoreWhitespace: boolean,
 	ignoreCrAtEol: boolean,
 } | null) => typedError<DiffText, GitError>(__TAURI_INVOKE("get_file_diff", { key, target, path, oldPath, options })),
+	/**
+	 *  Last-modified time of each working-tree path (repository-relative), in milliseconds since
+	 *  1970, in the order given. Null for a path that no longer exists, such as a deleted file.
+	 */
+	getModifiedTimes: (key: string, paths: string[]) => typedError<(number | null)[], GitError>(__TAURI_INVOKE("get_modified_times", { key, paths })),
+	/**
+	 *  Switch refs (full names) off in the commit graph, or back on by leaving them out, and
+	 *  rebuild the graph from the commits already loaded; no Git command runs. The frontend saves
+	 *  the same list in `ui-state.json` (`perRepo[key].hiddenRefs`), which `repo_open` reads.
+	 */
+	graphSetHiddenRefs: (key: string, hidden: string[]) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_set_hidden_refs", { key, hidden })),
 	getBlobContent: (key: string, spec: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_blob_content", { key, spec })),
 	getWorktreeFileContent: (key: string, path: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_worktree_file_content", { key, path })),
 	getRepoStashes: (key: string) => typedError<StashEntry[], GitError>(__TAURI_INVOKE("get_repo_stashes", { key })),
@@ -302,6 +313,8 @@ export type GraphColumns = {
 	graph?: number | null,
 	author?: number,
 	date?: number,
+	/**  The short commit ID column, at the right-hand end. */
+	id?: number,
 };
 
 export type GraphMeta = {
@@ -314,6 +327,11 @@ export type GraphMeta = {
 	head: string | null,
 	headRef: string | null,
 	worktree: WorktreeSummary | null,
+	/**
+	 *  Lane colour (palette index 0 to 11) at the tip of every ref shown in the graph, keyed by
+	 *  full ref name. Hidden refs, and refs whose commit is not in the graph, are absent.
+	 */
+	refColours: { [key in string]: number },
 };
 
 export type GraphOrder = "date" | "topo";
@@ -540,6 +558,8 @@ export type RepoResolution = {
 
 export type RepoUiState = {
 	lastSelectedOid?: string | null,
+	/**  Full names of the refs switched off in the commit graph. */
+	hiddenRefs?: string[],
 };
 
 /**
@@ -572,7 +592,9 @@ export type SettingsChanged = {
 	settings: Settings,
 };
 
-export type SnapshotReason = "cache" | "live" | "refresh" | "status";
+export type SnapshotReason = "cache" | "live" | "refresh" | "status" | 
+/**  Refs were switched on or off in the graph. */
+"filter";
 
 export type StashEntry = {
 	oid: string,

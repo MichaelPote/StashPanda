@@ -20,6 +20,7 @@ export const PALETTE_SIZE = 12;
 
 export const DEFAULT_AUTHOR_WIDTH = 140;
 export const DEFAULT_DATE_WIDTH = 110;
+export const DEFAULT_ID_WIDTH = 76;
 
 /** Palette index actually used for a lane colour (the backend already wraps, this is a guard). */
 export function paletteIndex(colour: number): number {

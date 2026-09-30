@@ -3,7 +3,7 @@ import { computed, inject } from "vue";
 import type { GraphRow } from "@/lib/bindings";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefLabels from "@/components/graph/RefLabels.vue";
-import { formatAbsoluteTime, formatRelativeTime, hashString, initials, isoTime } from "@/lib/format";
+import { formatAbsoluteTime, formatRelativeTime, hashString, initials, isoTime, shortOid } from "@/lib/format";
 import { laneColour, PALETTE_SIZE } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
 
@@ -33,9 +33,11 @@ const dateText = computed(() =>
     :aria-selected="selected"
   >
     <div />
-    <div class="flex min-w-0 items-center gap-1 pr-2 leading-(--row-h)">
+    <!-- Pills always show their whole name; the subject truncates. A column narrower than the
+         pills clips them at its edge rather than letting them cover the next column. -->
+    <div class="flex min-w-0 items-center gap-1 overflow-hidden pr-2 leading-(--row-h)">
       <RefLabels v-if="row.refs.length > 0 || detachedHead" :refs="row.refs" :oid="row.oid" :colour="row.colour" :detached-head="detachedHead" />
-      <span class="truncate" :title="row.subject">{{ row.subject }}</span>
+      <span class="min-w-0 truncate" :title="row.subject">{{ row.subject }}</span>
     </div>
     <div class="flex min-w-0 items-center gap-1.5 px-1.5">
       <span
@@ -49,6 +51,9 @@ const dateText = computed(() =>
     </div>
     <div class="truncate px-1.5 leading-(--row-h) text-muted-foreground tabular-nums" :title="isoTime(row.authorTime)">
       {{ dateText }}
+    </div>
+    <div class="truncate px-1.5 font-mono text-xs leading-(--row-h) text-muted-foreground" :title="row.oid">
+      {{ shortOid(row.oid) }}
     </div>
   </div>
 </template>

@@ -49,7 +49,7 @@ defineExpose({
 </script>
 
 <template>
-  <div ref="scroller" class="relative h-full min-h-0 overflow-auto scrollbar-thin">
+  <div ref="scroller" class="relative h-full min-h-0 overflow-auto scrollbar-thin [scrollbar-gutter:stable]">
     <div class="relative w-full" :style="{ height: `${total * rowHeight}px` }">
       <div
         class="absolute inset-x-0 top-0 will-change-transform"

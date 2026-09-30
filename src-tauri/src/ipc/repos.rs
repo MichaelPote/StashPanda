@@ -131,6 +131,14 @@ pub async fn repo_open(app: AppHandle, state: State<'_, AppState>, key: String) 
         .cloned()
         .ok_or_else(|| GitError::RepoNotOpen { repo_id: key.clone() })?;
     let handle = open_repo(Some(&app), &entry, &settings, &state.host, Some(&state.ssh)).await?;
+    // Refs switched off in the graph last time, saved by the frontend in ui-state.json.
+    let hidden: crate::graph::snapshot::HiddenRefs = state
+        .ui_state()
+        .per_repo
+        .get(&key)
+        .map(|r| r.hidden_refs.iter().cloned().collect())
+        .unwrap_or_default();
+    *handle.hidden.write().expect("hidden refs lock") = std::sync::Arc::new(hidden);
     let info = handle.info.clone();
     crate::repo::watch_start::start(&app, &state.db, &handle, &settings);
     state.repos.write().await.insert(key.clone(), handle);

@@ -1,14 +1,17 @@
 <script setup lang="ts">
-export type ResizableColumn = "graph" | "author" | "date";
+import { ref } from "vue";
+
+export type ResizableColumn = "graph" | "author" | "date" | "id";
 
 const props = defineProps<{
   graphWidth: number;
   authorWidth: number;
   dateWidth: number;
+  idWidth: number;
 }>();
 
 const emit = defineEmits<{
-  /** `null` width = size the column automatically (graph column only). */
+  /** `null` width = back to the default (for the graph column: size it to the graph). */
   resize: [column: ResizableColumn, width: number | null];
 }>();
 
@@ -16,25 +19,54 @@ const LIMITS: Record<ResizableColumn, { min: number; max: number }> = {
   graph: { min: 28, max: 4000 },
   author: { min: 48, max: 400 },
   date: { min: 56, max: 260 },
+  id: { min: 40, max: 400 },
 };
 
 /**
- * Each handle changes exactly one column. The graph handle grows its column when dragged right;
- * the author and date handles sit on the left edge of their column, so dragging right shrinks it.
+ * One divider per column boundary. The commit message column takes whatever is left, so the
+ * divider on each side of it resizes the fixed column on the other side:
+ * - after Graph: dragging right widens the graph column;
+ * - before Author, Date and ID: they sit on the column's left edge, so dragging right narrows it.
+ * `position` places the divider's centre on the boundary, using the column widths that
+ * CommitGraphView sets as CSS variables.
  */
+const DIVIDERS: { column: ResizableColumn; direction: 1 | -1; label: string; position: Record<string, string> }[] = [
+  { column: "graph", direction: 1, label: "Resize the graph column", position: { left: "calc(var(--col-graph) - 3.5px)" } },
+  { column: "author", direction: -1, label: "Resize the author column", position: { right: "calc(var(--col-author) + var(--col-date) + var(--col-id) - 3.5px)" } },
+  { column: "date", direction: -1, label: "Resize the date column", position: { right: "calc(var(--col-date) + var(--col-id) - 3.5px)" } },
+  { column: "id", direction: -1, label: "Resize the ID column", position: { right: "calc(var(--col-id) - 3.5px)" } },
+];
+
+const dragging = ref<ResizableColumn | null>(null);
+
+function widthOf(column: ResizableColumn): number {
+  switch (column) {
+    case "graph":
+      return props.graphWidth;
+    case "author":
+      return props.authorWidth;
+    case "date":
+      return props.dateWidth;
+    case "id":
+      return props.idWidth;
+  }
+}
+
 function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEvent): void {
+  if (event.button !== 0) return;
   const startX = event.clientX;
-  const startWidth =
-    column === "graph" ? props.graphWidth : column === "author" ? props.authorWidth : props.dateWidth;
+  const startWidth = widthOf(column);
   const target = event.currentTarget as HTMLElement;
   target.setPointerCapture(event.pointerId);
   const { min, max } = LIMITS[column];
+  dragging.value = column;
 
   const onMove = (e: PointerEvent): void => {
     const next = Math.round(startWidth + direction * (e.clientX - startX));
     emit("resize", column, Math.min(max, Math.max(min, next)));
   };
   const onUp = (): void => {
+    dragging.value = null;
     target.removeEventListener("pointermove", onMove);
     target.removeEventListener("pointerup", onUp);
     target.removeEventListener("pointercancel", onUp);
@@ -47,38 +79,33 @@ function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEve
 </script>
 
 <template>
+  <!-- The header reserves the same scrollbar space as the rows below, so the columns line up. -->
   <div
-    class="graph-grid h-[21px] shrink-0 border-b border-border bg-table-head column-head select-none"
+    class="graph-grid relative h-[21px] shrink-0 overflow-hidden border-b border-border bg-table-head column-head select-none scrollbar-thin [scrollbar-gutter:stable]"
   >
-    <div class="relative flex items-center px-1.5">
-      <span class="sr-only">Graph</span>
-      <button
-        type="button"
-        class="absolute top-0 -right-1 z-10 h-full w-2 cursor-col-resize hover:bg-primary/30"
-        aria-label="Resize graph column"
-        @pointerdown="startDrag('graph', 1, $event)"
-        @dblclick="emit('resize', 'graph', null)"
-        title="Drag to set the graph width; double-click to size it to the graph"
+    <div class="flex items-center px-1.5"><span class="sr-only">Graph</span></div>
+    <div class="flex min-w-0 items-center truncate px-2">Commit message</div>
+    <div class="flex min-w-0 items-center truncate px-2">Author</div>
+    <div class="flex min-w-0 items-center truncate px-2">Date</div>
+    <div class="flex min-w-0 items-center truncate px-2">ID</div>
+
+    <button
+      v-for="d in DIVIDERS"
+      :key="d.column"
+      type="button"
+      class="group absolute top-0 z-10 flex h-full w-[7px] cursor-col-resize justify-center outline-none"
+      :style="d.position"
+      :aria-label="d.label"
+      :title="d.column === 'graph' ? 'Drag to set the graph width; double-click to size it to the graph' : 'Drag to set the column width; double-click for the default width'"
+      @pointerdown="startDrag(d.column, d.direction, $event)"
+      @dblclick="emit('resize', d.column, null)"
+    >
+      <span
+        :class="[
+          'h-full w-px transition-colors',
+          dragging === d.column ? 'w-[2px] bg-primary' : 'bg-border group-hover:w-[2px] group-hover:bg-primary/70 group-focus-visible:bg-primary',
+        ]"
       />
-    </div>
-    <div class="relative flex items-center truncate px-1.5">Commit message</div>
-    <div class="relative flex items-center truncate px-1.5">
-      <button
-        type="button"
-        class="absolute top-0 -left-1 z-10 h-full w-2 cursor-col-resize hover:bg-primary/30"
-        aria-label="Resize author column"
-        @pointerdown="startDrag('author', -1, $event)"
-      />
-      Author
-    </div>
-    <div class="relative flex items-center truncate px-1.5">
-      <button
-        type="button"
-        class="absolute top-0 -left-1 z-10 h-full w-2 cursor-col-resize hover:bg-primary/30"
-        aria-label="Resize date column"
-        @pointerdown="startDrag('date', -1, $event)"
-      />
-      Date
-    </div>
+    </button>
   </div>
 </template>

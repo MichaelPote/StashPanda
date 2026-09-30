@@ -73,6 +73,24 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn modified_times_through_the_local_transport() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = fixture();
+        let client = client_for(&dir).await;
+        let paths = ["untracked.txt", "renamed.txt", "gone.txt"];
+        let full: Vec<NativePath> = paths.iter().map(|p| super::diff::join_repo_path(&client.repo, p)).collect();
+        let times = client.transport.modified_times(&full).await.unwrap();
+        let on_disk = |name: &str| {
+            let t = std::fs::metadata(dir.join(name)).unwrap().modified().unwrap();
+            t.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+        };
+        assert_eq!(times, vec![Some(on_disk("untracked.txt")), Some(on_disk("renamed.txt")), None]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn every_query_runs_against_a_real_repository() {
         if which::which("git").is_err() {
             eprintln!("git not on PATH, skipping");

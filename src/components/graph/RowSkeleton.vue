@@ -16,5 +16,8 @@ defineProps<{
     <div class="flex items-center px-1.5">
       <span class="h-2.5 w-1/2 animate-pulse rounded-sm bg-muted" />
     </div>
+    <div class="flex items-center px-1.5">
+      <span class="h-2.5 w-2/3 animate-pulse rounded-sm bg-muted" />
+    </div>
   </div>
 </template>

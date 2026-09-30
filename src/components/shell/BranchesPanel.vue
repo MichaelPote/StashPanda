@@ -2,7 +2,6 @@
 import { computed, reactive } from "vue";
 import {
   ArchiveIcon,
-  CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CloudIcon,
@@ -13,6 +12,7 @@ import type { RefEntry } from "@/lib/bindings";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
+import RefToggleTag from "@/components/shell/RefToggleTag.vue";
 import { cn } from "@/lib/utils";
 import { useSessionsStore } from "@/stores/sessions";
 
@@ -79,11 +79,31 @@ function remoteShort(entry: RefEntry): string {
 
 const selectedOid = computed(() => active.value?.selectedRow?.oid ?? null);
 
+/** Lane colour of a ref's tip in the current graph, or null when it is not in the graph. */
+function colourOf(entry: RefEntry): number | null {
+  return active.value?.graph.meta?.refColours?.[entry.fullName] ?? null;
+}
+
+function isShown(entry: RefEntry): boolean {
+  return !(active.value?.hiddenRefs.has(entry.fullName) ?? false);
+}
+
+function toggleShown(entry: RefEntry): void {
+  const session = active.value;
+  if (session) void sessions.toggleRefVisible(session.key, entry.fullName);
+}
+
 async function reveal(entry: RefEntry): Promise<void> {
   const session = active.value;
   if (!session) return;
   const found = await sessions.selectCommit(session.key, entry.target);
-  if (!found) sessions.notify(`${entry.short} points at a commit that is not in the loaded graph.`);
+  if (!found) {
+    sessions.notify(
+      isShown(entry)
+        ? `${entry.short} points at a commit that is not in the loaded graph.`
+        : `${entry.short} is hidden in the graph. Click its coloured tag to show it again.`,
+    );
+  }
 }
 </script>
 
@@ -120,21 +140,24 @@ async function reveal(entry: RefEntry): Promise<void> {
             :target="b.target"
             :is-current="b.isHead"
           >
-            <button
-              type="button"
-              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-7 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
+            <div
+              role="button"
+              tabindex="0"
+              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
               :title="`${b.fullName}\n${b.target}\n${b.subject}`"
               @click="reveal(b)"
+              @keydown.enter="reveal(b)"
             >
-              <CheckIcon v-if="b.isHead" class="size-3 shrink-0 text-primary-tint" />
-              <span v-else class="size-3 shrink-0" />
-              <span :class="cn('truncate', b.isHead && 'font-semibold')">{{ b.short }}</span>
+              <ChevronRightIcon v-if="b.isHead" class="size-3.5 shrink-0 text-primary-tint" aria-label="Checked out" />
+              <span v-else class="size-3.5 shrink-0" />
+              <RefToggleTag :colour="colourOf(b)" :visible="isShown(b)" :name="b.short" @toggle="toggleShown(b)" />
+              <span :class="cn('truncate', b.isHead && 'font-semibold', !isShown(b) && 'text-muted-foreground')">{{ b.short }}</span>
               <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
                 <span v-if="b.upstreamGone" class="rounded-sm badge-deleted px-1">gone</span>
                 <span v-if="b.ahead" class="rounded-sm badge-modified px-1">↑{{ b.ahead }}</span>
                 <span v-if="b.behind" class="rounded-sm badge-primary px-1">↓{{ b.behind }}</span>
               </span>
-            </button>
+            </div>
           </RefContextMenu>
         </template>
 
@@ -164,14 +187,17 @@ async function reveal(entry: RefEntry): Promise<void> {
                 :target="b.target"
                 :is-current="false"
               >
-                <button
-                  type="button"
-                  :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-10 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
+                <div
+                  role="button"
+                  tabindex="0"
+                  :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-8 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
                   :title="`${b.fullName}\n${b.target}\n${b.subject}`"
                   @click="reveal(b)"
+                  @keydown.enter="reveal(b)"
                 >
+                  <RefToggleTag :colour="colourOf(b)" :visible="isShown(b)" :name="b.short" @toggle="toggleShown(b)" />
                   <span class="truncate text-muted-foreground">{{ remoteShort(b) }}</span>
-                </button>
+                </div>
               </RefContextMenu>
             </template>
           </template>
@@ -196,16 +222,19 @@ async function reveal(entry: RefEntry): Promise<void> {
             :target="t.target"
             :is-current="false"
           >
-            <button
-              type="button"
-              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-7 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-row-hover')"
+            <div
+              role="button"
+              tabindex="0"
+              :class="cn('flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-row-hover')"
               :title="`${t.fullName}\n${t.target}\n${t.subject}`"
               @click="reveal(t)"
+              @keydown.enter="reveal(t)"
             >
-              <TagIcon class="size-3 shrink-0 text-muted-foreground" />
-              <span class="truncate">{{ t.short }}</span>
+              <span class="size-3.5 shrink-0" />
+              <RefToggleTag :colour="colourOf(t)" :visible="isShown(t)" :name="t.short" @toggle="toggleShown(t)" />
+              <span :class="cn('truncate', !isShown(t) && 'text-muted-foreground')">{{ t.short }}</span>
               <span v-if="t.kind.type === 'tag' && t.kind.annotated" class="ml-auto text-[0.7rem] text-muted-foreground">annotated</span>
-            </button>
+            </div>
           </RefContextMenu>
         </template>
 

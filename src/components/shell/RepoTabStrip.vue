@@ -28,10 +28,12 @@ function onAuxClick(event: MouseEvent, key: string): void {
       :aria-selected="session.key === sessions.activeKey"
       :class="
         cn(
-          'group relative flex min-w-0 max-w-56 shrink-0 cursor-default items-center gap-1.5 px-[11px] text-[12.5px]',
+          // Every tab has the same box (3px top margin, 24px tall, a 1px border), so becoming active
+          // changes only colours and never moves the label.
+          'group relative mt-[3px] flex h-[24px] min-w-0 max-w-56 shrink-0 cursor-default items-center gap-1.5 rounded-t-lg border border-b-0 px-[11px] text-[12.5px] transition-colors',
           session.key === sessions.activeKey
-            ? 'mt-[3px] h-[25px] rounded-t-lg border border-b-0 border-border bg-background text-foreground shadow-[inset_0_-2px_0_var(--primary)]'
-            : 'text-muted-foreground hover:text-foreground',
+            ? 'border-primary/60 bg-primary/20 text-foreground shadow-[inset_0_2px_0_var(--primary)]'
+            : 'border-transparent text-muted-foreground hover:bg-ghost-hover hover:text-foreground',
         )
       "
       :title="`${session.info.nativePath} (${transportLabel(session.info.transport)})`"
@@ -40,7 +42,7 @@ function onAuxClick(event: MouseEvent, key: string): void {
       @mousedown.middle.prevent
       @keydown.enter="sessions.setActive(session.key)"
     >
-      <FolderGit2Icon class="size-3.5 shrink-0" />
+      <FolderGit2Icon :class="cn('size-3.5 shrink-0', session.key === sessions.activeKey && 'text-primary')" />
       <span class="truncate">{{ session.info.displayName }}</span>
       <button
         type="button"

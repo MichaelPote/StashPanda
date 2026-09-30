@@ -169,10 +169,12 @@ pub fn persist(conn: &mut Connection, key: &str, snap: &Arc<GraphSnapshot>) -> r
     }
 
     // seq counts from the bottom so appends at the top change nothing below.
-    let total_commit_rows = snap.order.iter().filter(|i| **i != u32::MAX).count() as i64;
+    // With refs hidden, `order` lacks the hidden commits; `full_order` has every one.
+    let all_order = snap.full_order.as_deref().unwrap_or(&snap.order);
+    let total_commit_rows = all_order.iter().filter(|i| **i != u32::MAX).count() as i64;
     let mut seq_of: rustc_hash::FxHashMap<Oid, i64> = rustc_hash::FxHashMap::default();
     let mut pos = 0i64;
-    for ci in &snap.order {
+    for ci in all_order {
         if *ci == u32::MAX {
             continue;
         }
@@ -318,7 +320,7 @@ mod tests {
             detached: false,
             remotes: vec![],
         };
-        Arc::new(GraphSnapshot::build(Arc::new(store), Arc::new(refs), None, GraphOrder::Date, version, true, false))
+        Arc::new(GraphSnapshot::build(Arc::new(store), Arc::new(refs), None, GraphOrder::Date, version, true, false, &Default::default()))
     }
 
     #[test]
@@ -335,7 +337,7 @@ mod tests {
         let b = loaded.store.index_of(&Oid::parse_hex(&format!("{:0>40}", "b")).unwrap()).unwrap();
         assert_eq!(loaded.store.commits[b as usize].parents.len(), 1);
         // Rebuilding a snapshot from the cache gives the same order as the live one.
-        let rebuilt = GraphSnapshot::build(Arc::new(loaded.store), Arc::new(loaded.refs), None, GraphOrder::Date, 2, true, false);
+        let rebuilt = GraphSnapshot::build(Arc::new(loaded.store), Arc::new(loaded.refs), None, GraphOrder::Date, 2, true, false, &Default::default());
         let live: Vec<String> = snap1.rows(0, 10).into_iter().map(|r| r.oid).collect();
         let cached: Vec<String> = rebuilt.rows(0, 10).into_iter().map(|r| r.oid).collect();
         assert_eq!(live, cached);

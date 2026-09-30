@@ -54,7 +54,7 @@ const title = computed(() => {
     type="button"
     :class="
       cn(
-        'pill-flat inline-flex max-w-[12rem] shrink-0 items-center gap-1 px-[7px] text-xs leading-none font-semibold whitespace-nowrap',
+        'pill-flat inline-flex shrink-0 items-center gap-1 px-[7px] text-xs leading-none font-semibold whitespace-nowrap',
         classes,
       )
     "
@@ -62,6 +62,6 @@ const title = computed(() => {
     :title="title"
   >
     <TagIcon v-if="label.kind.type === 'tag'" class="size-2.5 shrink-0" />
-    <span class="truncate">{{ text }}</span>
+    <span>{{ text }}</span>
   </button>
 </template>

@@ -29,7 +29,7 @@ const badges = computed(() => {
     :aria-selected="selected"
   >
     <div />
-    <div class="flex min-w-0 items-center gap-1.5 pr-2 leading-(--row-h)">
+    <div class="flex min-w-0 items-center gap-1.5 overflow-hidden pr-2 leading-(--row-h)">
       <span class="shrink-0 italic">Working Tree</span>
       <span
         v-for="b in badges"
@@ -40,6 +40,7 @@ const badges = computed(() => {
         {{ b.count }} {{ b.label }}
       </span>
     </div>
+    <div />
     <div />
     <div />
   </div>

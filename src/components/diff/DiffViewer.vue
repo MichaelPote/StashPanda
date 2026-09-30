@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { remToPx } from "@/lib/graph/paths";
 import { computed, ref, shallowRef, watch } from "vue";
-import { useDebounceFn, useLocalStorage } from "@vueuse/core";
+import { useDebounceFn, useLocalStorage, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon } from "@lucide/vue";
 import { commands, type DiffText } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,8 @@ const mode = useLocalStorage<Mode>("stashpanda.diff.mode", "unified");
 const contextLines = useLocalStorage<number>("stashpanda.diff.context", 3);
 const ignoreWhitespace = useLocalStorage<boolean>("stashpanda.diff.ignoreWhitespace", false);
 const ignoreCrAtEol = useLocalStorage<boolean>("stashpanda.diff.ignoreCrAtEol", false);
+/** Share of the side-by-side width given to the old (left) side. */
+const split = useLocalStorage<number>("stashpanda.diff.split", 0.5);
 
 const CONTEXT_CHOICES: { value: number; label: string }[] = [
   { value: 3, label: "3 lines" },
@@ -62,6 +64,7 @@ async function load(): Promise<void> {
     if (id !== request) return;
     diff.value = result;
     scroller.value?.scrollTo({ top: 0 });
+    resetSideScroll();
   } catch (e) {
     if (id !== request) return;
     diff.value = null;
@@ -114,6 +117,16 @@ interface Built {
   side: SideRow[];
   pairs: Pair[];
   maxLen: number;
+  /** Longest line on each side of the side-by-side view, in characters with tabs expanded. */
+  leftMax: number;
+  rightMax: number;
+}
+
+/** Display width of a line in characters, counting a tab as up to 8 columns (the browser default). */
+function displayLength(text: string): number {
+  let col = 0;
+  for (const ch of text) col += ch === "\t" ? 8 - (col % 8) : 1;
+  return col;
 }
 
 const built = computed<Built>(() => {
@@ -121,8 +134,10 @@ const built = computed<Built>(() => {
   const side: SideRow[] = [];
   const pairs: Pair[] = [];
   let maxLen = 0;
+  let leftMax = 0;
+  let rightMax = 0;
   const f = file.value;
-  if (!f) return { unified, side, pairs, maxLen };
+  if (!f) return { unified, side, pairs, maxLen, leftMax, rightMax };
 
   f.hunks.forEach((hunk, h) => {
     unified.push({ kind: "hunk", hunk: h, header: hunk.header });
@@ -146,6 +161,8 @@ const built = computed<Built>(() => {
           pairs.push({ old: d.text, new: a.text });
         }
         pairIds.push(pair);
+        if (d) leftMax = Math.max(leftMax, displayLength(d.text));
+        if (a) rightMax = Math.max(rightMax, displayLength(a.text));
         side.push({ kind: "pair", hunk: h, left: d, right: a, pair });
       }
       dels.forEach((d, i) => unified.push({ kind: "line", hunk: h, line: d, pair: pairIds[i] }));
@@ -175,11 +192,14 @@ const built = computed<Built>(() => {
       }
       flush();
       unified.push({ kind: "line", hunk: h, line });
+      const len = displayLength(line.text);
+      leftMax = Math.max(leftMax, len);
+      rightMax = Math.max(rightMax, len);
       side.push({ kind: "pair", hunk: h, left: line, right: line });
     }
     flush();
   });
-  return { unified, side, pairs, maxLen };
+  return { unified, side, pairs, maxLen, leftMax, rightMax };
 });
 
 const rowCount = computed(() => (mode.value === "unified" ? built.value.unified.length : built.value.side.length));
@@ -209,10 +229,112 @@ const visibleSide = computed(() => built.value.side.slice(virtual.start.value, v
 
 /** Gutter (two line numbers plus marker) in pixels, then the widest line in `ch`. */
 const GUTTER_PX = 92;
-const contentMinWidth = computed(() => {
-  const chars = Math.max(20, built.value.maxLen + 2);
-  return mode.value === "unified" ? `calc(${GUTTER_PX}px + ${chars}ch)` : `calc(${2 * GUTTER_PX}px + ${2 * chars}ch)`;
+/** Unified only: the rows are as wide as the longest line and the whole view scrolls sideways. */
+const contentMinWidth = computed(() => `calc(${GUTTER_PX}px + ${Math.max(20, built.value.maxLen + 2)}ch)`);
+
+// ---- Side by side: split, divider and horizontal scrolling --------------------------------
+//
+// The two sides share the vertical scroll, so their rows stay level, but each clips its own text
+// and scrolls it sideways with its own scrollbar under it. Moving one scrollbar moves the other
+// to the same fraction of its own range. The line numbers do not move sideways.
+
+const SPLIT_MIN = 0.15;
+const SPLIT_MAX = 0.85;
+/** Width of the rows (the scroller without its vertical scrollbar) and of that scrollbar. */
+const rowsWidth = ref(0);
+const scrollbarPx = ref(0);
+useResizeObserver(scroller, () => {
+  const el = scroller.value;
+  if (!el) return;
+  rowsWidth.value = el.clientWidth;
+  scrollbarPx.value = el.offsetWidth - el.clientWidth;
 });
+
+const leftPx = computed(() => Math.round(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, split.value)) * rowsWidth.value));
+const rightPx = computed(() => Math.max(0, rowsWidth.value - leftPx.value));
+const sideStyle = computed(() => ({ "--left-w": `${leftPx.value}px`, "--right-w": `${rightPx.value}px` }));
+
+const splitDragging = ref(false);
+
+function startSplitDrag(event: PointerEvent): void {
+  if (event.button !== 0 || rowsWidth.value <= 0) return;
+  const target = event.currentTarget as HTMLElement;
+  target.setPointerCapture(event.pointerId);
+  const startX = event.clientX;
+  const startLeft = leftPx.value;
+  splitDragging.value = true;
+  const onMove = (e: PointerEvent): void => {
+    const next = (startLeft + e.clientX - startX) / rowsWidth.value;
+    split.value = Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, next));
+  };
+  const onUp = (): void => {
+    splitDragging.value = false;
+    target.removeEventListener("pointermove", onMove);
+    target.removeEventListener("pointerup", onUp);
+    target.removeEventListener("pointercancel", onUp);
+  };
+  target.addEventListener("pointermove", onMove);
+  target.addEventListener("pointerup", onUp);
+  target.addEventListener("pointercancel", onUp);
+  event.preventDefault();
+}
+
+type Side = "left" | "right";
+const stripLeft = ref<HTMLDivElement | null>(null);
+const stripRight = ref<HTMLDivElement | null>(null);
+/** The scroll position this code just gave a strip, so its own scroll event is not synced back. */
+const expected: Record<Side, number | null> = { left: null, right: null };
+
+function strip(side: Side): HTMLDivElement | null {
+  return side === "left" ? stripLeft.value : stripRight.value;
+}
+
+/** Moves one side's text; set as a CSS variable so no row has to re-render while scrolling. */
+function applyOffset(side: Side, px: number): void {
+  scroller.value?.style.setProperty(side === "left" ? "--sx-left" : "--sx-right", `${px}px`);
+}
+
+function onStripScroll(side: Side): void {
+  const src = strip(side);
+  if (!src) return;
+  applyOffset(side, src.scrollLeft);
+  const wanted = expected[side];
+  expected[side] = null;
+  if (wanted !== null && Math.abs(src.scrollLeft - wanted) <= 1) return;
+  const other: Side = side === "left" ? "right" : "left";
+  const dst = strip(other);
+  if (!dst) return;
+  const srcMax = src.scrollWidth - src.clientWidth;
+  const dstMax = dst.scrollWidth - dst.clientWidth;
+  const target = Math.round((srcMax > 0 ? src.scrollLeft / srcMax : 0) * Math.max(0, dstMax));
+  if (Math.abs(dst.scrollLeft - target) > 1) {
+    expected[other] = target;
+    dst.scrollLeft = target;
+  }
+}
+
+/** A sideways wheel or trackpad movement over the rows scrolls the side under the pointer. */
+function onSideWheel(event: WheelEvent): void {
+  const dx = event.deltaX !== 0 ? event.deltaX : event.shiftKey ? event.deltaY : 0;
+  const el = scroller.value;
+  if (dx === 0 || !el) return;
+  const x = event.clientX - el.getBoundingClientRect().left;
+  const target = strip(x < leftPx.value ? "left" : "right");
+  if (!target) return;
+  event.preventDefault();
+  target.scrollLeft += dx;
+}
+
+function resetSideScroll(): void {
+  for (const side of ["left", "right"] as const) {
+    const el = strip(side);
+    if (el) el.scrollLeft = 0;
+    expected[side] = null;
+    applyOffset(side, 0);
+  }
+}
+
+watch(mode, () => resetSideScroll());
 
 // ---- Hunk navigation -----------------------------------------------------------------------
 
@@ -361,8 +483,13 @@ function toggleContext(value: string): void {
         This diff was truncated by the backend ({{ diff.bytes.toLocaleString() }} bytes); the rows below are incomplete.
       </div>
 
-      <div ref="scroller" class="relative min-h-0 flex-1 overflow-auto font-mono text-xs leading-(--diff-row-h) scrollbar-thin">
-        <div class="relative" :style="{ height: `${rowCount * ROW_H}px`, minWidth: contentMinWidth }">
+      <div class="relative flex min-h-0 flex-1 flex-col" :style="mode === 'side' ? sideStyle : undefined">
+      <div
+        ref="scroller"
+        :class="cn('relative min-h-0 flex-1 font-mono text-xs leading-(--diff-row-h) scrollbar-thin', mode === 'side' ? 'overflow-x-hidden overflow-y-auto' : 'overflow-auto')"
+        @wheel="mode === 'side' ? onSideWheel($event) : undefined"
+      >
+        <div class="relative" :style="mode === 'side' ? { height: `${rowCount * ROW_H}px` } : { height: `${rowCount * ROW_H}px`, minWidth: contentMinWidth }">
           <div class="absolute inset-x-0 top-0 will-change-transform" :style="{ transform: `translateY(${virtual.start.value * ROW_H}px)` }">
             <!-- Unified -->
             <template v-if="mode === 'unified'">
@@ -387,36 +514,36 @@ function toggleContext(value: string): void {
             <!-- Side by side -->
             <template v-else>
               <template v-for="(row, k) in visibleSide" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
+                <div v-if="row.kind === 'hunk'" class="flex h-5 items-center overflow-hidden bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
                   {{ row.header }}
                 </div>
-                <div v-else-if="row.kind === 'meta'" class="flex h-5 items-center border-l-2 border-transparent px-11 whitespace-pre text-muted-foreground italic">
+                <div v-else-if="row.kind === 'meta'" class="flex h-5 items-center overflow-hidden border-l-2 border-transparent px-11 whitespace-pre text-muted-foreground italic">
                   \ {{ row.text }}
                 </div>
-                <div v-else class="flex h-5">
-                  <div :class="cn('flex min-w-0 flex-1 whitespace-pre', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'border-l-2 border-transparent bg-muted/20')">
+                <div v-else class="diff-side-row h-5">
+                  <div :class="cn('flex min-w-0 overflow-hidden whitespace-pre', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'border-l-2 border-transparent bg-muted/20')">
                     <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.left?.oldNo ?? "" }}</span>
                     <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
-                    <span class="flex-1 pr-2">
+                    <span class="diff-text-left min-w-0 flex-1 overflow-hidden"><span class="inline-block pr-2">
                       <template v-if="row.left">
                         <template v-for="(seg, i) in segments(row.pair, 'old', row.left.text)" :key="i">
                           <mark v-if="seg.changed" class="rounded-sm bg-diff-del-mark text-inherit">{{ seg.text }}</mark>
                           <template v-else>{{ seg.text }}</template>
                         </template>
                       </template>
-                    </span>
+                    </span></span>
                   </div>
-                  <div :class="cn('flex min-w-0 flex-1 whitespace-pre', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'border-l-2 border-transparent bg-muted/20', 'border-l-border-soft')">
+                  <div :class="cn('flex min-w-0 overflow-hidden whitespace-pre', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'border-l-2 border-transparent bg-muted/20')">
                     <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.right?.newNo ?? "" }}</span>
                     <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
-                    <span class="flex-1 pr-2">
+                    <span class="diff-text-right min-w-0 flex-1 overflow-hidden"><span class="inline-block pr-2">
                       <template v-if="row.right">
                         <template v-for="(seg, i) in segments(row.pair, 'new', row.right.text)" :key="i">
                           <mark v-if="seg.changed" class="rounded-sm bg-diff-add-mark text-inherit">{{ seg.text }}</mark>
                           <template v-else>{{ seg.text }}</template>
                         </template>
                       </template>
-                    </span>
+                    </span></span>
                   </div>
                 </div>
               </template>
@@ -424,6 +551,57 @@ function toggleContext(value: string): void {
           </div>
         </div>
       </div>
+
+      <!-- Side by side: one horizontal scrollbar under each side's text, level with the rows above. -->
+      <div v-if="mode === 'side'" class="flex shrink-0 font-mono text-xs" :style="{ paddingRight: `${scrollbarPx}px` }">
+        <div class="flex" :style="{ width: `${leftPx}px` }">
+          <div class="diff-gutter-space shrink-0" />
+          <div ref="stripLeft" class="min-w-0 flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin" @scroll="onStripScroll('left')">
+            <div class="h-px" :style="{ width: `calc(${built.leftMax}ch + 0.5rem)` }" />
+          </div>
+        </div>
+        <div class="flex" :style="{ width: `${rightPx}px` }">
+          <div class="diff-gutter-space shrink-0" />
+          <div ref="stripRight" class="min-w-0 flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin" @scroll="onStripScroll('right')">
+            <div class="h-px" :style="{ width: `calc(${built.rightMax}ch + 0.5rem)` }" />
+          </div>
+        </div>
+      </div>
+
+      <!-- Divider between the two sides: drag to move it, double-click to go back to half and half. -->
+      <button
+        v-if="mode === 'side' && rowsWidth > 0"
+        type="button"
+        class="group absolute top-0 bottom-0 z-10 flex w-[7px] cursor-col-resize justify-center outline-none"
+        :style="{ left: `${leftPx - 3}px` }"
+        aria-label="Resize the two sides of the diff"
+        title="Drag to resize the two sides; double-click to split them evenly"
+        @pointerdown="startSplitDrag"
+        @dblclick="split = 0.5"
+      >
+        <span :class="['h-full w-px transition-colors', splitDragging ? 'w-[2px] bg-primary' : 'bg-border group-hover:w-[2px] group-hover:bg-primary/70']" />
+      </button>
+      </div>
     </template>
   </section>
 </template>
+
+<style>
+/* Side-by-side rows: the two sides take the widths the divider sets. */
+.diff-side-row {
+  display: grid;
+  grid-template-columns: var(--left-w, 50%) var(--right-w, 50%);
+}
+/* Each side's text moves by its own horizontal scroll; the line numbers stay where they are. */
+.diff-text-left > span {
+  transform: translateX(calc(-1 * var(--sx-left, 0px)));
+}
+.diff-text-right > span {
+  transform: translateX(calc(-1 * var(--sx-right, 0px)));
+}
+/* Same width as a side's gutter (2px border, 2.5rem line number, 0.75rem marker), so each
+   horizontal scrollbar starts under its text. */
+.diff-gutter-space {
+  width: calc(2px + 3.25rem);
+}
+</style>

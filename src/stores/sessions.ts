@@ -105,6 +105,8 @@ export interface RepoSession {
   fileSelection: FileSelection;
   /** Commit message typed into the Commit dialog and not committed yet. */
   commitDraft: string;
+  /** Full names of the refs switched off in the commit graph. Replaced, never mutated. */
+  hiddenRefs: Set<string>;
   /** Saved scroll offset of the commit list, so it survives tab switches and snapshot swaps. */
   scrollTop: number;
   /** A row index the graph view should scroll into view (set by the Branches panel). */
@@ -275,7 +277,11 @@ export const useSessionsStore = defineStore("sessions", () => {
 
     const firstIndex = Math.floor(session.scrollTop / ROW_HEIGHT);
     const offset = session.scrollTop - firstIndex * ROW_HEIGHT;
-    const anchorOid = rowAt(session.graph, firstIndex)?.oid ?? null;
+    // Scrolled to the very top, the list stays at the top: rows that appear above the old first
+    // row (the Working Tree row once status arrives after the cached paint, new commits) are
+    // then in view instead of hidden above it. Anywhere else, the old first row stays put.
+    const atTop = session.scrollTop < 1;
+    const anchorOid = atTop ? null : (rowAt(session.graph, firstIndex)?.oid ?? null);
     const selected = [...session.selection.oids];
 
     applyMeta(session, {
@@ -288,6 +294,7 @@ export const useSessionsStore = defineStore("sessions", () => {
       head: previous?.head ?? null,
       headRef: previous?.headRef ?? null,
       worktree: previous?.worktree ?? null,
+      refColours: previous?.refColours ?? {},
     });
     clearPages(session.graph);
     void refreshMeta(session, ev.version);
@@ -385,6 +392,8 @@ export const useSessionsStore = defineStore("sessions", () => {
         selectedFile: null,
         fileSelection: emptyFileSelection(),
         commitDraft: "",
+        // repo_open already gave the backend this list from ui-state.json.
+        hiddenRefs: new Set(uiState.state?.perRepo?.[key]?.hiddenRefs ?? []),
         scrollTop: 0,
         reveal: null,
         watcherKind: null,
@@ -443,6 +452,27 @@ export const useSessionsStore = defineStore("sessions", () => {
     if (!session) return;
     const results = await Promise.allSettled([loadStatus(session), loadRefs(session)]);
     for (const r of results) if (r.status === "rejected") notify(errorMessage(r.reason));
+  }
+
+  /**
+   * Switches a ref on or off in the commit graph. The backend rebuilds the graph from the commits
+   * it already has and emits a new snapshot; the list is saved per repository in ui-state.json.
+   */
+  async function toggleRefVisible(key: string, fullName: string): Promise<void> {
+    const session = sessions.get(key);
+    if (!session) return;
+    const next = new Set(session.hiddenRefs);
+    if (next.has(fullName)) next.delete(fullName);
+    else next.add(fullName);
+    session.hiddenRefs = next;
+    const list = [...next].sort();
+    uiState.patchDebounced({ perRepo: { [key]: { hiddenRefs: list } } });
+    try {
+      const meta = await unwrap(commands.graphSetHiddenRefs(key, list));
+      if (session.graph.meta === null || meta.version >= session.graph.meta.version) applyMeta(session, meta);
+    } catch (e) {
+      notify(errorMessage(e));
+    }
   }
 
   /** Replaces the selection with one row and makes it the Files panel's subject. */
@@ -544,6 +574,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     refetchRefsAndStatus,
     selectRow,
     selectCommit,
+    toggleRefVisible,
     notify,
     dismissNotice,
     consoleBuffer,

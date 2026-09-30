@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::git::queries::status::StatusSnapshot;
 use crate::git::GitClient;
-use crate::graph::snapshot::GraphSnapshot;
+use crate::graph::snapshot::{GraphSnapshot, HiddenRefs};
 use crate::settings::ResolvedTransport;
 use crate::transport::paths::{HostPath, NativePath};
 use crate::transport::SharedTransport;
@@ -59,9 +59,15 @@ pub struct RepoHandle {
     pub graph_version: AtomicU64,
     pub last_status: RwLock<Option<StatusSnapshot>>,
     pub watcher: std::sync::Mutex<Option<Box<dyn WatcherHandle>>>,
+    /// Refs switched off in the graph; read by every snapshot build.
+    pub hidden: std::sync::RwLock<Arc<HiddenRefs>>,
 }
 
 impl RepoHandle {
+    pub fn hidden_refs(&self) -> Arc<HiddenRefs> {
+        self.hidden.read().expect("hidden refs lock").clone()
+    }
+
     pub async fn close(self: Arc<Self>) {
         self.cancel.cancel();
         let w = self.watcher.lock().ok().and_then(|mut g| g.take());

@@ -7,7 +7,7 @@ use tauri::State;
 use crate::error::{GitError, Result};
 use crate::git::queries::blob::{get_blob, get_worktree_file, BlobContent};
 use crate::git::queries::commit_files::{get_commit_files, FileChange};
-use crate::git::queries::diff::{get_diff, DiffOptions, DiffTarget, DiffText};
+use crate::git::queries::diff::{get_diff, join_repo_path, DiffOptions, DiffTarget, DiffText};
 use crate::git::queries::log::{get_commit_body, get_stashes, StashEntry};
 use crate::git::queries::refs::{get_refs, RefsSnapshot};
 use crate::git::queries::status::{get_status, StatusSnapshot};
@@ -42,6 +42,16 @@ macro_rules! with_read_slot {
 pub async fn get_repo_status(state: State<'_, AppState>, key: String) -> Result<StatusSnapshot> {
     let h = repo(&state, &key).await?;
     with_read_slot!(h, get_status(&h.client).await)
+}
+
+/// Last-modified time of each working-tree path (repository-relative), in milliseconds since
+/// 1970, in the order given. Null for a path that no longer exists, such as a deleted file.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_modified_times(state: State<'_, AppState>, key: String, paths: Vec<String>) -> Result<Vec<Option<i64>>> {
+    let h = repo(&state, &key).await?;
+    let full: Vec<_> = paths.iter().map(|p| join_repo_path(&h.client.repo, p)).collect();
+    with_read_slot!(h, h.client.transport.modified_times(&full).await)
 }
 
 #[tauri::command]

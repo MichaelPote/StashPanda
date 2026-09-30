@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useEventListener } from "@vueuse/core";
+import { useEventListener, useLocalStorage } from "@vueuse/core";
 import { ChevronDownIcon, ChevronRightIcon, LoaderCircleIcon } from "@lucide/vue";
 import { commands, type DiffTarget, type FileChange } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
@@ -14,9 +14,12 @@ import {
   letterState,
   splitPath,
   statusLetter,
+  arrangeSections,
   worktreeSections as buildWorktreeSections,
   type FileItem,
   type FileSection,
+  type GroupBy,
+  type SortBy,
 } from "@/lib/files";
 import { cn } from "@/lib/utils";
 import { useListSelection } from "@/composables/useListSelection";
@@ -164,11 +167,63 @@ const worktreeSections = computed<FileSection[]>(() => buildWorktreeSections(pro
 
 // ---- Shared list behaviour -----------------------------------------------------------------
 
+// ---- Grouping and sorting ------------------------------------------------------------------
+
+const groupBy = useLocalStorage<GroupBy>("stashpanda.files.groupBy", "status");
+const sortBy = useLocalStorage<SortBy>("stashpanda.files.sortBy", "name");
+
+/** Sorting by date needs the working tree; a commit's files all share one date. */
+const sortingByDate = computed(() => sortBy.value === "modified" && mode.value === "worktree");
+
+/** Last-modified time per path, fetched when sorting by date and after every status refresh. */
+const times = ref<Map<string, number | null> | null>(null);
+let timesRequest = 0;
+
+watch(
+  () => [sortingByDate.value, props.session.status] as const,
+  async ([byDate, status]) => {
+    const request = (timesRequest += 1);
+    if (!byDate || !status) {
+      times.value = null;
+      return;
+    }
+    const paths = [...new Set(status.entries.filter((e) => !e.ignored).map((e) => e.path))];
+    if (paths.length === 0) {
+      times.value = new Map();
+      return;
+    }
+    try {
+      const result = await unwrap(commands.getModifiedTimes(props.session.key, paths));
+      if (request !== timesRequest) return;
+      times.value = new Map(paths.map((p, i) => [p, result[i] ?? null]));
+    } catch {
+      // Without times the list falls back to alphabetical order.
+      if (request === timesRequest) times.value = null;
+    }
+  },
+  { immediate: true },
+);
+
+function modifiedText(item: FileItem): string {
+  const ms = times.value?.get(item.path) ?? null;
+  return ms === null ? "" : formatRelativeTime(ms / 1000);
+}
+
+function modifiedTitle(item: FileItem): string | undefined {
+  const ms = times.value?.get(item.path) ?? null;
+  return ms === null ? undefined : `Modified ${formatAbsoluteTime(ms / 1000)}`;
+}
+
 const sections = computed<FileSection[]>(() => {
-  if (mode.value === "commit") return commitSections.value;
-  if (mode.value === "worktree") return worktreeSections.value;
-  return [];
+  if (mode.value === "none") return [];
+  const raw = mode.value === "commit" ? commitSections.value : worktreeSections.value;
+  return arrangeSections(raw, mode.value, groupBy.value, sortBy.value, times.value);
 });
+
+/** With the list grouped by something other than status, staged rows say so themselves. */
+function isStagedRow(item: FileItem): boolean {
+  return groupBy.value !== "status" && item.id.startsWith("staged:");
+}
 
 const flat = computed<FileItem[]>(() => sections.value.flatMap((s) => s.items));
 
@@ -246,7 +301,25 @@ const totalCount = computed(() => flat.value.length);
         {{ shortOid(selectedRow.oid) }}
       </span>
       <template #actions>
-        <span v-if="mode !== 'none'" class="text-[0.7rem] text-muted-foreground tabular-nums">{{ totalCount }} files</span>
+        <div v-if="mode !== 'none'" class="flex items-center gap-1.5 text-[0.7rem] text-muted-foreground">
+          <span class="tabular-nums">{{ totalCount }} files</span>
+          <label class="inline-flex items-center gap-1">
+            Group
+            <select v-model="groupBy" class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground" title="Group the files by">
+              <option value="status">Status</option>
+              <option value="folder">Folder</option>
+              <option value="none">No grouping</option>
+            </select>
+          </label>
+          <label class="inline-flex items-center gap-1">
+            Sort
+            <select v-model="sortBy" class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground" title="Sort the files by">
+              <option value="name">Name</option>
+              <option value="status">Git status</option>
+              <option value="modified" :disabled="mode !== 'worktree'" :title="mode !== 'worktree' ? 'The files in a commit all share its date' : undefined">Date modified</option>
+            </select>
+          </label>
+        </div>
       </template>
     </PanelHeader>
 
@@ -260,11 +333,17 @@ const totalCount = computed(() => flat.value.length);
           <span class="truncate" :title="`${selectedRow.authorName} <${selectedRow.authorEmail}>`">{{ selectedRow.authorName }}</span>
           <span class="ml-auto shrink-0 tabular-nums" :title="isoTime(selectedRow.authorTime)">{{ dateText }}</span>
         </div>
-        <button type="button" class="mt-0.5 flex w-full items-start gap-1 text-left" @click="toggleMessage">
-          <component :is="messageExpanded ? ChevronDownIcon : ChevronRightIcon" class="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-          <span class="min-w-0 flex-1 font-semibold break-words">{{ selectedRow.subject }}</span>
+        <p class="mt-0.5 w-full break-words">{{ selectedRow.subject }}</p>
+        <button
+          type="button"
+          class="mt-0.5 inline-flex items-center gap-0.5 text-xs text-muted-foreground hover:text-foreground"
+          :aria-expanded="messageExpanded"
+          @click="toggleMessage"
+        >
+          <component :is="messageExpanded ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0" />
+          {{ messageExpanded ? "Less" : "More" }}
         </button>
-        <div v-if="messageExpanded" class="pl-4 pt-1">
+        <div v-if="messageExpanded" class="pt-1">
           <p v-if="messageLoading" class="text-xs text-muted-foreground">Loading message…</p>
           <p v-else-if="messageError" class="text-xs text-destructive">{{ messageError }}</p>
           <pre v-else-if="messageBody.length > 0" class="max-h-40 overflow-auto font-sans text-xs whitespace-pre-wrap text-muted-foreground scrollbar-thin">{{ messageBody }}</pre>
@@ -296,9 +375,9 @@ const totalCount = computed(() => flat.value.length);
         </p>
 
         <template v-for="section in sections" :key="section.key">
-          <template v-if="mode === 'commit' || section.items.length > 0">
+          <template v-if="section.items.length > 0">
             <div
-              v-if="mode === 'worktree'"
+              v-if="groupBy !== 'none'"
               class="sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 smallcaps select-none"
             >
               {{ section.title }}
@@ -331,7 +410,12 @@ const totalCount = computed(() => flat.value.length);
                   <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
                   <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
                 </template>
-                <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
+                <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
+                <span v-if="groupBy !== 'folder' || item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
+              </span>
+              <span v-if="isStagedRow(item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
+              <span v-if="sortingByDate && modifiedText(item)" class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" :title="modifiedTitle(item)">
+                {{ modifiedText(item) }}
               </span>
               <span v-if="item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
               <span v-else-if="item.added !== null || item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">

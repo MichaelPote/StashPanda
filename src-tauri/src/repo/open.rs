@@ -136,5 +136,6 @@ pub async fn open_repo(
         graph_version: std::sync::atomic::AtomicU64::new(0),
         last_status: RwLock::new(None),
         watcher: std::sync::Mutex::new(None),
+        hidden: std::sync::RwLock::new(Default::default()),
     }))
 }

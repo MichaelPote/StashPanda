@@ -3,7 +3,9 @@
 use tauri::{AppHandle, State};
 
 use crate::error::{GitError, Result};
-use crate::graph::loader::{open_pipeline, refresh_full, refresh_status_only, SnapshotReason};
+use std::sync::Arc;
+
+use crate::graph::loader::{open_pipeline, rebuild_filtered, refresh_full, refresh_status_only, SnapshotReason};
 use crate::graph::snapshot::{GraphMeta, GraphRow};
 use crate::ipc::query::repo;
 use crate::state::AppState;
@@ -19,7 +21,20 @@ fn empty_meta() -> GraphMeta {
         head: None,
         head_ref: None,
         worktree: None,
+        ref_colours: Default::default(),
     }
+}
+
+/// Switch refs (full names) off in the commit graph, or back on by leaving them out, and
+/// rebuild the graph from the commits already loaded; no Git command runs. The frontend saves
+/// the same list in `ui-state.json` (`perRepo[key].hiddenRefs`), which `repo_open` reads.
+#[tauri::command]
+#[specta::specta]
+pub async fn graph_set_hidden_refs(app: AppHandle, state: State<'_, AppState>, key: String, hidden: Vec<String>) -> Result<GraphMeta> {
+    let h = repo(&state, &key).await?;
+    *h.hidden.write().expect("hidden refs lock") = Arc::new(hidden.into_iter().collect());
+    let order = state.settings().appearance.graph_order;
+    Ok(rebuild_filtered(Some(&app), &h, order).map(|s| s.meta()).unwrap_or_else(empty_meta))
 }
 
 /// Current snapshot metadata. When none exists yet a live load starts in the

@@ -124,6 +124,26 @@ pub trait Process: Send {
     }
 }
 
+/// `modified_times` for transports whose files the app can reach on its own filesystem
+/// (Local, and WSL through the `\\wsl.localhost` view). Symbolic links report their own time,
+/// since Git tracks the link rather than its target.
+pub(crate) async fn host_modified_times(mapper: &dyn PathMapper, paths: &[NativePath]) -> Result<Vec<Option<i64>>> {
+    let hosts: Vec<Option<String>> = paths.iter().map(|p| mapper.to_host(p).ok().map(|h| h.0)).collect();
+    let times = tokio::task::spawn_blocking(move || {
+        hosts
+            .into_iter()
+            .map(|host| {
+                let meta = std::fs::symlink_metadata(host?).ok()?;
+                let since = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+                i64::try_from(since.as_millis()).ok()
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| GitError::internal(e.to_string()))?;
+    Ok(times)
+}
+
 #[async_trait]
 pub trait Transport: Send + Sync {
     fn kind(&self) -> TransportKind;
@@ -136,6 +156,9 @@ pub trait Transport: Send + Sync {
     async fn read_file(&self, path: &NativePath, limit: usize) -> Result<Vec<u8>>;
     /// Delete one file. A file that does not exist is not an error.
     async fn remove_file(&self, path: &NativePath) -> Result<()>;
+    /// Last-modified time of each working-tree file, in milliseconds since 1970, one result per
+    /// path in order. None for a path that does not exist (a deleted file) or cannot be read.
+    async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>>;
     async fn shutdown(&self) {}
 
     /// Spawn, feed stdin, drain both pipes, wait. Honors `cmd.timeout`.

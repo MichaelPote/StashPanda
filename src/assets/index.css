@@ -424,6 +424,22 @@
   * {
     @apply border-border outline-ring/50;
     }
+  /* Keyboard focus: a 1px accent outline just inside the element, so a scrolling parent never
+     clips it. Replaces the browser's own focus ring, which ignores the theme. Components with
+     their own focus style (outline-none plus a ring utility) override this. */
+  :focus-visible {
+    outline: 1px solid var(--ring);
+    outline-offset: -1px;
+  }
+  /* Every Lucide icon draws its lines exactly 1px wide on screen, whatever the icon's size.
+     Lucide's own stroke-width is in the icon's 24-unit grid, so it would scale with the icon;
+     the non-scaling stroke keeps it at one pixel instead. */
+  svg.lucide {
+    stroke-width: 1px;
+  }
+  svg.lucide * {
+    vector-effect: non-scaling-stroke;
+  }
   body {
     @apply bg-window text-foreground;
     @apply font-sans;

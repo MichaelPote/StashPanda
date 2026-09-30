@@ -207,10 +207,32 @@ impl Transport for SshTransport {
         }
         Ok(())
     }
+    async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>> {
+        // One line per path whatever happens: GNU stat, then BSD stat, then "-" for a file that
+        // is gone. The paths are absolute, so none can be mistaken for an option.
+        const SCRIPT: &str = r#"for f; do stat -c %Y -- "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo -; done"#;
+        let mut times = Vec::with_capacity(paths.len());
+        for chunk in paths.chunks(MODIFIED_TIMES_CHUNK) {
+            let mut args: Vec<String> = vec!["-c".into(), SCRIPT.into(), "sh".into()];
+            args.extend(chunk.iter().map(|p| p.0.clone()));
+            let mut cmd = Cmd::git("stat", args);
+            cmd.program = Program::Other("sh".into());
+            let out = self.run(cmd).await?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut lines = text.lines();
+            for _ in chunk {
+                times.push(lines.next().and_then(|l| l.trim().parse::<i64>().ok()).map(|secs| secs * 1000));
+            }
+        }
+        Ok(times)
+    }
     async fn shutdown(&self) {
         // Connections are shared per host and closed by the pool on exit.
     }
 }
+
+/// Paths per remote `stat` loop, which keeps each command line far below the remote limit.
+const MODIFIED_TIMES_CHUNK: usize = 500;
 
 /// End-to-end against a private `sshd` started on a free port with throwaway
 /// keys, so nothing on the machine changes. Skips when sshd or ssh-keygen is
@@ -327,6 +349,16 @@ mod e2e {
         let bytes = transport.read_file(&NativePath(repo.join("a.txt").to_string_lossy().into_owned()), 1024).await.unwrap();
         assert_eq!(bytes, b"hello\nworld\n");
         assert!(matches!(transport.read_file(&NativePath(repo.join("a.txt").to_string_lossy().into_owned()), 3).await, Err(GitError::TooLarge { .. })));
+        let times = transport
+            .modified_times(&[
+                NativePath(repo.join("a.txt").to_string_lossy().into_owned()),
+                NativePath(repo.join("missing.txt").to_string_lossy().into_owned()),
+            ])
+            .await
+            .unwrap();
+        let expected = std::fs::metadata(repo.join("a.txt")).unwrap().modified().unwrap()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64 * 1000;
+        assert_eq!(times, vec![Some(expected), None], "remote stat reports whole seconds");
 
         // Many concurrent channels share one connection.
         let mut tasks = Vec::new();

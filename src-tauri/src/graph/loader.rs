@@ -24,6 +24,8 @@ pub enum SnapshotReason {
     Live,
     Refresh,
     Status,
+    /// Refs were switched on or off in the graph.
+    Filter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
@@ -195,6 +197,7 @@ async fn rebuild(
         version,
         true,
         truncated,
+        &handle.hidden_refs(),
     ));
     handle.graph.store(Some(snap.clone()));
     *handle.last_status.write().await = Some(status_snap);
@@ -236,6 +239,7 @@ pub async fn load_from_cache(
         version,
         true,
         cached.truncated,
+        &handle.hidden_refs(),
     ));
     tracing::debug!("cache paint for {} with {} commits took {:?}", handle.key, snap.store.len(), started.elapsed());
     // Do not overwrite a live snapshot that landed first.
@@ -288,6 +292,29 @@ pub async fn refresh_status_only(
     Ok(apply_status(app, handle, &current, status_snap, order).await)
 }
 
+/// Rebuild the current snapshot with the handle's hidden refs, from the commits already loaded:
+/// no Git command runs and nothing is persisted. None when there is no snapshot yet; the first
+/// load then uses the hidden refs by itself.
+pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, order: GraphOrder) -> Option<Arc<GraphSnapshot>> {
+    let current = handle.graph.load_full()?;
+    let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
+    let snap = Arc::new(GraphSnapshot::build(
+        current.store.clone(),
+        current.refs.clone(),
+        current.worktree,
+        order,
+        version,
+        current.complete,
+        current.truncated,
+        &handle.hidden_refs(),
+    ));
+    handle.graph.store(Some(snap.clone()));
+    if let Some(app) = app {
+        let _ = GraphSnapshotEvent::from_snapshot(&handle.key, &snap, SnapshotReason::Filter).emit(app);
+    }
+    Some(snap)
+}
+
 /// Store the new status, and swap in a snapshot with or without the Working
 /// Tree row when its summary changed.
 async fn apply_status(
@@ -311,6 +338,7 @@ async fn apply_status(
         version,
         current.complete,
         current.truncated,
+        &handle.hidden_refs(),
     ));
     handle.graph.store(Some(snap.clone()));
     *handle.last_status.write().await = Some(status_snap);

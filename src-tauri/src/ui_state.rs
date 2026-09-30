@@ -52,6 +52,8 @@ pub struct GraphColumns {
     pub graph: Option<u32>,
     pub author: u32,
     pub date: u32,
+    /// The short commit ID column, at the right-hand end.
+    pub id: u32,
 }
 
 impl Default for GraphColumns {
@@ -60,6 +62,7 @@ impl Default for GraphColumns {
             graph: None,
             author: 140,
             date: 150,
+            id: 76,
         }
     }
 }
@@ -76,4 +79,6 @@ pub struct Session {
 #[serde(default, rename_all = "camelCase")]
 pub struct RepoUiState {
     pub last_selected_oid: Option<String>,
+    /// Full names of the refs switched off in the commit graph.
+    pub hidden_refs: Vec<String>,
 }

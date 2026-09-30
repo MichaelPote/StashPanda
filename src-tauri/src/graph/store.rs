@@ -100,6 +100,25 @@ impl CommitStore {
         true
     }
 
+    /// For each commit index, whether it is reachable from `tips` (a tip itself counts).
+    pub fn reachable_from(&self, tips: &[Oid]) -> Vec<bool> {
+        let mut keep = vec![false; self.commits.len()];
+        let mut stack: Vec<u32> = tips.iter().filter_map(|t| self.index_of(t)).collect();
+        while let Some(i) = stack.pop() {
+            if std::mem::replace(&mut keep[i as usize], true) {
+                continue;
+            }
+            for p in &self.commits[i as usize].parents {
+                if let Some(pi) = self.index_of(p) {
+                    if !keep[pi as usize] {
+                        stack.push(pi);
+                    }
+                }
+            }
+        }
+        keep
+    }
+
     /// Keep only commits reachable from `tips`; returns the dropped oids.
     pub fn retain_reachable_from(&mut self, tips: &[Oid]) -> Vec<Oid> {
         let mut keep = vec![false; self.commits.len()];

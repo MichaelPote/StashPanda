@@ -201,3 +201,89 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 export function isSelectAllKey(event: KeyboardEvent): boolean {
   return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && (event.key === "a" || event.key === "A");
 }
+
+// ---- Grouping and sorting for display ------------------------------------------------------
+
+/** How the Files panel groups its list. `status` is Staged, Unstaged, Untracked and Conflicted. */
+export type GroupBy = "status" | "folder" | "none";
+/**
+ * `name` is by path; `status` is by kind of change (see `STATUS_RANK`), then path; `modified` is
+ * newest first and only applies to the working tree.
+ */
+export type SortBy = "name" | "status" | "modified";
+
+/** Order of the kinds of change when sorting by Git status. */
+const STATUS_RANK: Record<FileState, number> = {
+  added: 0,
+  modified: 1,
+  renamed: 2,
+  deleted: 3,
+  untracked: 4,
+  conflict: 5,
+  neutral: 6,
+};
+
+/** Commit mode has no index or working tree, so its status groups are the kinds of change. */
+const COMMIT_STATUS_GROUPS: { key: string; title: string; states: FileState[] }[] = [
+  { key: "added", title: "Added", states: ["added"] },
+  { key: "modified", title: "Modified", states: ["modified"] },
+  { key: "renamed", title: "Renamed or copied", states: ["renamed"] },
+  { key: "deleted", title: "Deleted", states: ["deleted"] },
+  { key: "other", title: "Other", states: ["conflict", "untracked", "neutral"] },
+];
+
+/**
+ * Regroups and sorts the Files panel's sections for display. Items keep their ids, so the
+ * selection and the Commit dialog see the same items whatever the grouping. `times` maps a path
+ * to its last-modified time in milliseconds (null for a file that is gone); files without a time
+ * sort after those with one.
+ */
+export function arrangeSections(
+  sections: FileSection[],
+  mode: "commit" | "worktree",
+  groupBy: GroupBy,
+  sortBy: SortBy,
+  times: ReadonlyMap<string, number | null> | null,
+): FileSection[] {
+  const byDate = sortBy === "modified" && mode === "worktree" && times !== null;
+  const compare = (a: FileItem, b: FileItem): number => {
+    if (byDate) {
+      const ta = times.get(a.path) ?? null;
+      const tb = times.get(b.path) ?? null;
+      if (ta !== tb) {
+        if (ta === null) return 1;
+        if (tb === null) return -1;
+        return tb - ta;
+      }
+    }
+    if (sortBy === "status" && a.state !== b.state) return STATUS_RANK[a.state] - STATUS_RANK[b.state];
+    return a.path.localeCompare(b.path);
+  };
+  const sorted = (items: FileItem[]): FileItem[] => [...items].sort(compare);
+  const all = sections.flatMap((s) => s.items);
+
+  if (groupBy === "none") return [{ key: "all", title: "All files", items: sorted(all) }];
+
+  if (groupBy === "folder") {
+    const folders = new Map<string, FileItem[]>();
+    for (const item of all) {
+      const dir = splitPath(item.path).dir;
+      const list = folders.get(dir);
+      if (list) list.push(item);
+      else folders.set(dir, [item]);
+    }
+    // Top-level files first, then folders alphabetically.
+    return [...folders.entries()]
+      .sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
+      .map(([dir, items]) => ({ key: `folder:${dir}`, title: dir === "" ? "Top level" : dir, items: sorted(items) }));
+  }
+
+  if (mode === "commit") {
+    return COMMIT_STATUS_GROUPS.map((g) => ({
+      key: g.key,
+      title: g.title,
+      items: sorted(all.filter((i) => g.states.includes(i.state))),
+    }));
+  }
+  return sections.map((s) => ({ ...s, items: sorted(s.items) }));
+}

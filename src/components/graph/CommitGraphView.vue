@@ -13,7 +13,7 @@ import VirtualRowList from "@/components/graph/VirtualRowList.vue";
 import WorkingTreeRow from "@/components/graph/WorkingTreeRow.vue";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { useGraphPages } from "@/composables/useGraphPages";
-import { DEFAULT_AUTHOR_WIDTH, DEFAULT_DATE_WIDTH, autoGraphColumnWidth, ROW_HEIGHT } from "@/lib/graph/paths";
+import { DEFAULT_AUTHOR_WIDTH, DEFAULT_DATE_WIDTH, DEFAULT_ID_WIDTH, autoGraphColumnWidth, ROW_HEIGHT } from "@/lib/graph/paths";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
@@ -56,11 +56,13 @@ const graphWidth = computed(
 );
 const authorWidth = computed(() => uiState.state?.graphColumns?.author ?? DEFAULT_AUTHOR_WIDTH);
 const dateWidth = computed(() => uiState.state?.graphColumns?.date ?? DEFAULT_DATE_WIDTH);
+const idWidth = computed(() => uiState.state?.graphColumns?.id ?? DEFAULT_ID_WIDTH);
 
 const columnStyle = computed(() => ({
   "--col-graph": `${graphWidth.value}px`,
   "--col-author": `${authorWidth.value}px`,
   "--col-date": `${dateWidth.value}px`,
+  "--col-id": `${idWidth.value}px`,
 }));
 
 function onResize(column: ResizableColumn, width: number | null): void {
@@ -283,7 +285,7 @@ function onScrollTop(top: number): void {
       </template>
     </PanelHeader>
     <GraphLoadingBar :loaded="loadedCount" :visible="loadingVisible" />
-    <GraphHeader :graph-width="graphWidth" :author-width="authorWidth" :date-width="dateWidth" @resize="onResize" />
+    <GraphHeader :graph-width="graphWidth" :author-width="authorWidth" :date-width="dateWidth" :id-width="idWidth" @resize="onResize" />
 
     <EmptyState v-if="meta && meta.version > 0 && meta.total === 0 && !session.graph.loading" message="This repository has no commits yet." />
 
@@ -319,7 +321,7 @@ function onScrollTop(top: number): void {
 <style>
 .graph-grid {
   display: grid;
-  grid-template-columns: var(--col-graph) minmax(0, 1fr) var(--col-author) var(--col-date);
+  grid-template-columns: var(--col-graph) minmax(0, 1fr) var(--col-author) var(--col-date) var(--col-id);
 }
 .graph-row {
   contain: strict;

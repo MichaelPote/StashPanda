@@ -71,7 +71,7 @@ function run(action: ToolbarAction): void {
 
 /** Chiclet key: icon on top, caption below. The bottom margin leaves room for the 2px lip. */
 const KEY_CLASS =
-  "key relative mb-[2px] inline-flex h-[3rem] w-[4.5rem] shrink-0 flex-col items-center justify-between rounded-lg border px-0.5 pt-[5px] pb-1 text-[10px] leading-none font-medium whitespace-nowrap outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-45 [&_svg]:size-4 [&_svg]:shrink-0";
+  "key relative mb-[2px] inline-flex h-[3rem] w-[4.5rem] shrink-0 flex-col items-center justify-between rounded-lg border px-0.5 pt-[5px] pb-1 text-[10px] leading-none font-medium whitespace-nowrap outline-none focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-45 [&_svg]:size-6 [&_svg]:shrink-0";
 const CAPTION_CLASS = "block max-w-[59px] truncate text-[9px] font-medium tracking-[0.04em] uppercase";
 </script>
 
