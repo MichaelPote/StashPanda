@@ -1,46 +1,46 @@
 <script setup lang="ts">
-import { remToPx } from "@/lib/graph/paths";
 import { computed, ref, shallowRef, watch } from "vue";
-import { useDebounceFn, useLocalStorage, useResizeObserver } from "@vueuse/core";
+import { useDebounceFn, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon } from "@lucide/vue";
 import { commands, type DiffText } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import { useVirtualRows } from "@/composables/useVirtualRows";
+import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import type { RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
+import { useUiStateStore } from "@/stores/uiState";
 
 const props = defineProps<{
   session: RepoSession;
 }>();
 
 const settings = useSettingsStore();
+const uiState = useUiStateStore();
 
-/** Diff text size (Tailwind `text-xs`) in pixels. */
-const FONT_PX = remToPx(0.75);
+/** Font, size, line height, tab width and ligatures from the `diff` section of settings.json. */
+const font = computed(() => resolveDiffFont(settings.settings?.diff));
+const textStyle = computed(() => diffTextStyle(font.value));
+const wordHighlight = computed(() => settings.settings?.diff?.wordHighlight ?? true);
 /**
- * Row height in whole pixels: the diff font size times `appearance.diffLineHeight` from
- * settings.json. The virtual list and the rows both use this one number, so rows never drift from
- * where the list expects them.
+ * Row height in whole pixels: the font size times the line height. The virtual list and the rows
+ * both use this one number, so rows never drift from where the list expects them.
  */
-const rowPx = computed(() => {
-  const factor = settings.settings?.appearance?.diffLineHeight ?? 1.2;
-  const clamped = Number.isFinite(factor) ? Math.min(3, Math.max(1, factor)) : 1.2;
-  return Math.max(1, Math.round(FONT_PX * clamped));
-});
+const rowPx = computed(() => diffRowPx(font.value));
 const ALL_CONTEXT = 99999;
 
 type Mode = "unified" | "side";
-const mode = useLocalStorage<Mode>("stashpanda.diff.mode", "unified");
-const contextLines = useLocalStorage<number>("stashpanda.diff.context", 3);
-const ignoreWhitespace = useLocalStorage<boolean>("stashpanda.diff.ignoreWhitespace", false);
-const ignoreCrAtEol = useLocalStorage<boolean>("stashpanda.diff.ignoreCrAtEol", false);
+// The header's choices and the divider position, remembered in the UI state.
+const mode = uiState.pref<Mode>((s) => s.diff?.layout, "unified", (layout) => ({ diff: { layout } }));
+const contextLines = uiState.pref<number>((s) => s.diff?.contextLines, 3, (contextLines) => ({ diff: { contextLines } }));
+const ignoreWhitespace = uiState.pref<boolean>((s) => s.diff?.ignoreWhitespace, false, (ignoreWhitespace) => ({ diff: { ignoreWhitespace } }));
+const ignoreCrAtEol = uiState.pref<boolean>((s) => s.diff?.ignoreCrAtEol, false, (ignoreCrAtEol) => ({ diff: { ignoreCrAtEol } }));
 /** Share of the side-by-side width given to the old (left) side. */
-const split = useLocalStorage<number>("stashpanda.diff.split", 0.5);
+const split = uiState.pref<number>((s) => s.diff?.split, 0.5, (split) => ({ diff: { split } }));
 
 const CONTEXT_CHOICES: { value: number; label: string }[] = [
   { value: 3, label: "3 lines" },
@@ -135,13 +135,6 @@ interface Built {
   rightMax: number;
 }
 
-/** Display width of a line in characters, counting a tab as up to 8 columns (the browser default). */
-function displayLength(text: string): number {
-  let col = 0;
-  for (const ch of text) col += ch === "\t" ? 8 - (col % 8) : 1;
-  return col;
-}
-
 const built = computed<Built>(() => {
   const unified: UnifiedRow[] = [];
   const side: SideRow[] = [];
@@ -151,6 +144,7 @@ const built = computed<Built>(() => {
   let rightMax = 0;
   const f = file.value;
   if (!f) return { unified, side, pairs, maxLen, leftMax, rightMax };
+  const tab = font.value.tabWidth;
 
   f.hunks.forEach((hunk, h) => {
     unified.push({ kind: "hunk", hunk: h, header: hunk.header });
@@ -174,8 +168,8 @@ const built = computed<Built>(() => {
           pairs.push({ old: d.text, new: a.text });
         }
         pairIds.push(pair);
-        if (d) leftMax = Math.max(leftMax, displayLength(d.text));
-        if (a) rightMax = Math.max(rightMax, displayLength(a.text));
+        if (d) leftMax = Math.max(leftMax, displayLength(d.text, tab));
+        if (a) rightMax = Math.max(rightMax, displayLength(a.text, tab));
         side.push({ kind: "pair", hunk: h, left: d, right: a, pair });
       }
       dels.forEach((d, i) => unified.push({ kind: "line", hunk: h, line: d, pair: pairIds[i] }));
@@ -190,7 +184,7 @@ const built = computed<Built>(() => {
     };
 
     for (const line of hunk.lines) {
-      maxLen = Math.max(maxLen, line.text.length);
+      maxLen = Math.max(maxLen, displayLength(line.text, tab));
       if (line.kind === "del") {
         dels.push(line);
         continue;
@@ -205,7 +199,7 @@ const built = computed<Built>(() => {
       }
       flush();
       unified.push({ kind: "line", hunk: h, line });
-      const len = displayLength(line.text);
+      const len = displayLength(line.text, tab);
       leftMax = Math.max(leftMax, len);
       rightMax = Math.max(rightMax, len);
       side.push({ kind: "pair", hunk: h, left: line, right: line });
@@ -221,7 +215,7 @@ const segmentCache = new Map<number, { old: Segment[]; new: Segment[] }>();
 watch(built, () => segmentCache.clear());
 
 function segments(pair: number | undefined, sideOf: "old" | "new", fallback: string): Segment[] {
-  if (pair === undefined) return [{ text: fallback, changed: false }];
+  if (pair === undefined || !wordHighlight.value) return [{ text: fallback, changed: false }];
   let entry = segmentCache.get(pair);
   if (!entry) {
     const p = built.value.pairs[pair];
@@ -240,10 +234,13 @@ const virtual = useVirtualRows(scroller, { rowHeight: () => rowPx.value, total: 
 const visibleUnified = computed(() => built.value.unified.slice(virtual.start.value, virtual.end.value));
 const visibleSide = computed(() => built.value.side.slice(virtual.start.value, virtual.end.value));
 
-/** Gutter (two line numbers plus marker) in pixels, then the widest line in `ch`. */
-const GUTTER_PX = 92;
-/** Unified only: the rows are as wide as the longest line and the whole view scrolls sideways. */
-const contentMinWidth = computed(() => `calc(${GUTTER_PX}px + ${Math.max(20, built.value.maxLen + 2)}ch)`);
+/**
+ * Unified only: the rows are as wide as the longest line and the whole view scrolls sideways. The
+ * gutter is the border, two line numbers and the marker (widths from `diffTextStyle`).
+ */
+const contentMinWidth = computed(
+  () => `calc(2px + 2 * var(--diff-num-w) + var(--diff-mark-w) + ${Math.max(20, built.value.maxLen + 2)}ch)`,
+);
 
 // ---- Side by side: split, divider and horizontal scrolling --------------------------------
 //
@@ -419,7 +416,7 @@ function toggleContext(value: string): void {
 </script>
 
 <template>
-  <section class="area flex h-full min-h-0 flex-col" :style="{ '--diff-row-h': `${rowPx}px` }">
+  <section class="area flex h-full min-h-0 flex-col">
     <PanelHeader title="Diff">
       <span v-if="selected" class="truncate font-mono text-xs text-foreground" :title="headerPath">{{ headerPath }}</span>
       <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
@@ -499,7 +496,8 @@ function toggleContext(value: string): void {
       <div class="relative flex min-h-0 flex-1 flex-col" :style="mode === 'side' ? sideStyle : undefined">
       <div
         ref="scroller"
-        :class="cn('relative min-h-0 flex-1 font-mono text-xs leading-(--diff-row-h) scrollbar-thin', mode === 'side' ? 'overflow-x-hidden overflow-y-auto' : 'overflow-auto')"
+        :class="cn('relative min-h-0 flex-1 select-text scrollbar-thin', mode === 'side' ? 'overflow-x-hidden overflow-y-auto' : 'overflow-auto')"
+        :style="textStyle"
         @wheel="mode === 'side' ? onSideWheel($event) : undefined"
       >
         <div class="relative" :style="mode === 'side' ? { height: `${rowCount * rowPx}px` } : { height: `${rowCount * rowPx}px`, minWidth: contentMinWidth }">
@@ -511,9 +509,9 @@ function toggleContext(value: string): void {
                   {{ row.header }}
                 </div>
                 <div v-else :class="cn('flex h-(--diff-row-h) whitespace-pre', lineClass(row.line?.kind))">
-                  <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.oldNo ?? "" }}</span>
-                  <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.newNo ?? "" }}</span>
-                  <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ marker(row.line?.kind) }}</span>
+                  <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.oldNo ?? "" }}</span>
+                  <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.newNo ?? "" }}</span>
+                  <span class="w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none">{{ marker(row.line?.kind) }}</span>
                   <span class="flex-1 pr-2">
                     <template v-for="(seg, i) in segments(row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
                       <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'rounded-sm bg-diff-del-mark text-inherit' : 'rounded-sm bg-diff-add-mark text-inherit'">{{ seg.text }}</mark>
@@ -530,13 +528,13 @@ function toggleContext(value: string): void {
                 <div v-if="row.kind === 'hunk'" class="flex h-(--diff-row-h) items-center overflow-hidden bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
                   {{ row.header }}
                 </div>
-                <div v-else-if="row.kind === 'meta'" class="flex h-(--diff-row-h) items-center overflow-hidden border-l-2 border-transparent px-11 whitespace-pre text-muted-foreground italic">
+                <div v-else-if="row.kind === 'meta'" class="flex h-(--diff-row-h) items-center overflow-hidden border-l-2 border-transparent pr-2 pl-[calc(var(--diff-num-w)+var(--diff-mark-w))] whitespace-pre text-muted-foreground italic">
                   \ {{ row.text }}
                 </div>
                 <div v-else class="diff-side-row h-(--diff-row-h)">
                   <div :class="cn('flex min-w-0 overflow-hidden whitespace-pre', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'border-l-2 border-transparent bg-muted/20')">
-                    <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.left?.oldNo ?? "" }}</span>
-                    <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
+                    <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.left?.oldNo ?? "" }}</span>
+                    <span class="w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
                     <span class="diff-text-left min-w-0 flex-1 overflow-hidden"><span class="inline-block pr-2">
                       <template v-if="row.left">
                         <template v-for="(seg, i) in segments(row.pair, 'old', row.left.text)" :key="i">
@@ -547,8 +545,8 @@ function toggleContext(value: string): void {
                     </span></span>
                   </div>
                   <div :class="cn('flex min-w-0 overflow-hidden whitespace-pre', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'border-l-2 border-transparent bg-muted/20')">
-                    <span class="w-10 shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.right?.newNo ?? "" }}</span>
-                    <span class="w-3 shrink-0 text-center text-muted-foreground select-none">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
+                    <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.right?.newNo ?? "" }}</span>
+                    <span class="w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
                     <span class="diff-text-right min-w-0 flex-1 overflow-hidden"><span class="inline-block pr-2">
                       <template v-if="row.right">
                         <template v-for="(seg, i) in segments(row.pair, 'new', row.right.text)" :key="i">
@@ -566,7 +564,7 @@ function toggleContext(value: string): void {
       </div>
 
       <!-- Side by side: one horizontal scrollbar under each side's text, level with the rows above. -->
-      <div v-if="mode === 'side'" class="flex shrink-0 font-mono text-xs" :style="{ paddingRight: `${scrollbarPx}px` }">
+      <div v-if="mode === 'side'" class="flex shrink-0" :style="[textStyle, { paddingRight: `${scrollbarPx}px`, lineHeight: 'normal' }]">
         <div class="flex" :style="{ width: `${leftPx}px` }">
           <div class="diff-gutter-space shrink-0" />
           <div ref="stripLeft" class="min-w-0 flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin" @scroll="onStripScroll('left')">
@@ -612,9 +610,9 @@ function toggleContext(value: string): void {
 .diff-text-right > span {
   transform: translateX(calc(-1 * var(--sx-right, 0px)));
 }
-/* Same width as a side's gutter (2px border, 2.5rem line number, 0.75rem marker), so each
-   horizontal scrollbar starts under its text. */
+/* Same width as a side's gutter (2px border, line number, marker), so each horizontal scrollbar
+   starts under its text. The widths come from `diffTextStyle` in `lib/diff/font.ts`. */
 .diff-gutter-space {
-  width: calc(2px + 3.25rem);
+  width: calc(2px + var(--diff-num-w) + var(--diff-mark-w));
 }
 </style>

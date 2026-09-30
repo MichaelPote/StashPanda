@@ -1,4 +1,5 @@
 pub mod events;
+pub mod fonts;
 pub mod graph;
 pub mod keys;
 pub mod ops;
