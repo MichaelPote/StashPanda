@@ -20,7 +20,14 @@ import "@fontsource/jetbrains-mono/600.css";
 import "@fontsource/jetbrains-mono/700.css";
 import "@/assets/index.css";
 import App from "./App.vue";
+import { ROW_HEIGHT } from "@/lib/graph/paths";
 import { useSettingsStore } from "@/stores/settings";
+
+// Rows are drawn with the CSS variable --row-h, but the commit graph's SVG and the virtual lists
+// space rows by ROW_HEIGHT, which is --row-h rounded to whole pixels (1.6rem = 22.4px becomes
+// 22px). Using the rounded value for both keeps each graph dot centred on its row; otherwise the
+// 0.4px difference adds up down the list.
+document.documentElement.style.setProperty("--row-h", `${ROW_HEIGHT}px`);
 
 // Dark is the default, so paint dark before settings arrive to avoid a light flash.
 document.documentElement.classList.add("dark");
