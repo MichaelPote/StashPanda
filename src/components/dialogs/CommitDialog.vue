@@ -33,8 +33,6 @@ const amend = ref(false);
 const error = ref<string | null>(null);
 const submitting = ref(false);
 const loadingPrevious = ref(false);
-/** The previous commit's message as loaded for an amend, so unticking Amend can take it back out. */
-let previousMessage: string | null = null;
 const messageBox = ref<InstanceType<typeof Textarea> | null>(null);
 
 watch(request, (r) => {
@@ -44,7 +42,6 @@ watch(request, (r) => {
   rows.value = { ids: new Set(), anchorId: null };
   list.cursorId.value = null;
   amend.value = false;
-  previousMessage = null;
   error.value = null;
   submitting.value = false;
   loadingPrevious.value = false;
@@ -66,18 +63,17 @@ async function onAmendChange(): Promise<void> {
   const r = request.value;
   if (!r) return;
   if (!amend.value) {
-    if (previousMessage !== null && message.value === previousMessage) message.value = session.value?.commitDraft ?? "";
-    previousMessage = null;
+    // The message stays, including one loaded from the last commit, so it can be reused for a new
+    // commit. It becomes the draft now, since the draft is not saved while Amend is ticked.
+    const s = session.value;
+    if (s) s.commitDraft = message.value;
     return;
   }
   if (message.value.trim().length > 0) return;
   loadingPrevious.value = true;
   try {
     const text = (await unwrap(commands.getCommitMessage(r.key, "HEAD"))).replace(/\r\n/g, "\n").trimEnd();
-    if (amend.value && message.value.trim().length === 0) {
-      previousMessage = text;
-      message.value = text;
-    }
+    if (amend.value && message.value.trim().length === 0) message.value = text;
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
@@ -221,7 +217,7 @@ async function submit(): Promise<void> {
     }
     const what = n === 0 ? "the message" : `${n} ${n === 1 ? "file" : "files"}`;
     const where = r.branch ? ` on ${r.branch}` : "";
-    sessions.notify(amend.value ? `Amended the last commit${where} with ${what}.` : `Committed ${what}${where}.`);
+    sessions.notifySuccess(amend.value ? `Amended the last commit${where} with ${what}.` : `Committed ${what}${where}.`);
     dialogs.resolve("commit", result);
   } catch (e) {
     error.value = errorMessage(e);
@@ -233,7 +229,7 @@ async function submit(): Promise<void> {
 
 <template>
   <Dialog :open="request !== null" @update:open="onOpenChange">
-    <DialogContent v-if="request" class="gap-5 p-6 sm:max-w-3xl" @open-auto-focus="focusMessage">
+    <DialogContent v-if="request" class="sm:max-w-3xl" size-key="commit" :close-on-outside-click="false" @open-auto-focus="focusMessage">
       <DialogHeader>
         <DialogTitle>{{ amend ? "Amend last commit" : "Commit" }}</DialogTitle>
         <DialogDescription>
@@ -243,8 +239,9 @@ async function submit(): Promise<void> {
         </DialogDescription>
       </DialogHeader>
 
-      <form class="grid min-w-0 gap-3" @submit.prevent="submit">
-        <div class="grid min-w-0 gap-1.5">
+      <!-- Dragged taller, the dialog shares the extra height between the file list and the message. -->
+      <form class="grid min-w-0 gap-3" data-dialog-grow @submit.prevent="submit">
+        <div class="grid min-w-0 gap-1.5" data-dialog-grow>
           <div class="flex items-center gap-2">
             <label class="flex items-center gap-2 text-base font-medium select-none">
               <input
@@ -266,6 +263,8 @@ async function submit(): Promise<void> {
             role="listbox"
             aria-multiselectable="true"
             aria-label="Files to commit"
+            data-dialog-grow
+            style="--grow-basis: 18rem"
             tabindex="0"
             class="max-h-72 min-h-(--row-h) overflow-auto rounded-lg border border-border well py-0.5 outline-none scrollbar-thin focus-visible:ring-2 focus-visible:ring-ring/50"
             @keydown="onListKeydown"
@@ -329,12 +328,14 @@ async function submit(): Promise<void> {
           </p>
         </div>
 
-        <div class="grid gap-1.5">
+        <div class="grid gap-1.5" data-dialog-grow>
           <Label for="commit-message" class="text-base">Message</Label>
           <Textarea
             id="commit-message"
             ref="messageBox"
             v-model="message"
+            data-dialog-grow
+            style="--grow-basis: 12rem"
             class="h-48 resize-y font-mono text-base field-sizing-fixed"
             placeholder="Summary on the first line&#10;&#10;Details after a blank line"
             spellcheck="true"
@@ -357,19 +358,19 @@ async function submit(): Promise<void> {
         </p>
       </form>
 
-      <DialogFooter class="-mx-6 -mb-6 items-center gap-2.5 px-6 py-4">
+      <DialogFooter>
         <span v-if="commitHint" class="mr-auto text-xs text-muted-foreground">{{ commitHint }}</span>
-        <Button type="button" variant="outline" size="lg" class="min-w-24 px-4" @click="dialogs.cancel()">Cancel</Button>
+        <Button type="button" variant="outline" @click="dialogs.cancel()">Cancel</Button>
         <Tooltip>
           <TooltipTrigger as-child>
             <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->
             <span class="inline-flex">
-              <Button type="button" variant="outline" size="lg" class="min-w-24 px-4" disabled>{{ pushLabel }}</Button>
+              <Button type="button" variant="outline" disabled>{{ pushLabel }}</Button>
             </span>
           </TooltipTrigger>
           <TooltipContent side="top">Push is not built yet (milestone 3).</TooltipContent>
         </Tooltip>
-        <Button type="button" size="lg" class="min-w-28 px-4" :disabled="!canCommit" @click="submit">
+        <Button type="button" class="min-w-28" :disabled="!canCommit" @click="submit">
           <LoaderCircleIcon v-if="submitting" class="animate-spin" />
           {{ commitLabel }}
         </Button>

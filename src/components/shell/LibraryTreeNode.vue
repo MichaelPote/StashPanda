@@ -28,6 +28,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   open: [key: string];
+  edit: [key: string];
   remove: [key: string];
 }>();
 
@@ -50,7 +51,7 @@ function toggleGroup(): void {
   <template v-if="node.kind === 'group'">
     <button
       type="button"
-      class="flex h-(--row-h) w-full cursor-pointer items-center gap-1 pr-2 text-left text-base hover:bg-row-hover"
+      class="flex h-(--row-h) w-full items-center gap-1 pr-2 text-left text-base hover:bg-row-hover"
       :style="indent"
       @click="toggleGroup"
     >
@@ -72,6 +73,7 @@ function toggleGroup(): void {
         :node="child"
         :depth="depth + 1"
         @open="emit('open', $event)"
+        @edit="emit('edit', $event)"
         @remove="emit('remove', $event)"
       />
       <p
@@ -90,7 +92,7 @@ function toggleGroup(): void {
         type="button"
         :class="
           cn(
-            'flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 pr-2 text-left text-base hover:bg-row-hover',
+            'flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left text-base hover:bg-row-hover',
             isActive && 'row-selected',
             isOpen && !isActive && 'font-medium',
           )
@@ -117,6 +119,7 @@ function toggleGroup(): void {
     </ContextMenuTrigger>
     <ContextMenuContent class="min-w-44">
       <ContextMenuItem class="text-base" @select="emit('open', node.id)">Open</ContextMenuItem>
+      <ContextMenuItem class="text-base" @select="emit('edit', node.id)">Edit…</ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem class="text-base" variant="destructive" @select="emit('remove', node.id)">
         Remove from library

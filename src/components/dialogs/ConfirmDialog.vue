@@ -15,17 +15,16 @@ function onOpenChange(open: boolean): void {
 
 <template>
   <Dialog :open="request !== null" @update:open="onOpenChange">
-    <DialogContent v-if="request" class="sm:max-w-md">
+    <DialogContent v-if="request" class="sm:max-w-lg" size-key="confirm">
       <DialogHeader>
         <DialogTitle>{{ request.title }}</DialogTitle>
         <DialogDescription class="whitespace-pre-line text-base">{{ request.message }}</DialogDescription>
       </DialogHeader>
       <DialogFooter>
-        <Button type="button" variant="outline" size="sm" @click="dialogs.resolve('confirm', false)">Cancel</Button>
+        <Button type="button" variant="outline" @click="dialogs.resolve('confirm', false)">Cancel</Button>
         <Button
           type="button"
           :variant="request.destructive ? 'destructive' : 'default'"
-          size="sm"
           autofocus
           @click="dialogs.resolve('confirm', true)"
         >

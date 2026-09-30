@@ -23,7 +23,7 @@ function onOpenChange(open: boolean): void {
 
 <template>
   <Dialog :open="isOpen" @update:open="onOpenChange">
-    <DialogContent class="sm:max-w-sm">
+    <DialogContent class="sm:max-w-md" size-key="about">
       <DialogHeader>
         <DialogTitle>StashPanda</DialogTitle>
         <DialogDescription>A desktop Git client for local, WSL and SSH repositories.</DialogDescription>
@@ -35,7 +35,7 @@ function onOpenChange(open: boolean): void {
         <dd>{{ hostText }}</dd>
       </dl>
       <DialogFooter>
-        <Button type="button" size="sm" @click="dialogs.resolve('about', null)">Close</Button>
+        <Button type="button" @click="dialogs.resolve('about', null)">Close</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>

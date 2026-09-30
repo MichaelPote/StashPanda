@@ -69,6 +69,18 @@ export const useLibraryStore = defineStore("library", () => {
     return entry;
   }
 
+  /** Saves an edited entry. The returned entry has a new key when the path or connection moved it. */
+  async function updateRepo(
+    key: string,
+    path: string,
+    connection: Connection,
+    displayName: string | null,
+  ): Promise<RepoEntry> {
+    const entry = await unwrap(commands.repoUpdate(key, path, connection, displayName));
+    await settings.refresh();
+    return entry;
+  }
+
   async function removeRepo(key: string): Promise<void> {
     await unwrap(commands.repoRemove(key));
     await settings.refresh();
@@ -80,5 +92,5 @@ export const useLibraryStore = defineStore("library", () => {
     await settings.update({ library: { groups: next } });
   }
 
-  return { groups, repos, repoByKey, tree, isEmpty, addRepo, removeRepo, setGroupCollapsed };
+  return { groups, repos, repoByKey, tree, isEmpty, addRepo, updateRepo, removeRepo, setGroupCollapsed };
 });

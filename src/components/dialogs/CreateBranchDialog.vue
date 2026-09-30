@@ -51,7 +51,7 @@ async function submit(): Promise<void> {
       error.value = opFailureText(result, `Creating branch ${branch}`);
       return;
     }
-    sessions.notify(checkout.value ? `Created branch ${branch} and checked it out.` : `Created branch ${branch}.`);
+    sessions.notifySuccess(checkout.value ? `Created branch ${branch} and checked it out.` : `Created branch ${branch}.`);
     dialogs.resolve("createBranch", result);
   } catch (e) {
     error.value = errorMessage(e);
@@ -63,7 +63,7 @@ async function submit(): Promise<void> {
 
 <template>
   <Dialog :open="request !== null" @update:open="onOpenChange">
-    <DialogContent v-if="request" class="sm:max-w-md">
+    <DialogContent v-if="request" class="sm:max-w-lg" size-key="createBranch">
       <DialogHeader>
         <DialogTitle>Create branch</DialogTitle>
         <DialogDescription>
@@ -97,8 +97,8 @@ async function submit(): Promise<void> {
       </form>
 
       <DialogFooter>
-        <Button type="button" variant="outline" size="sm" @click="dialogs.cancel()">Cancel</Button>
-        <Button type="button" size="sm" :disabled="!canSubmit" @click="submit">
+        <Button type="button" variant="outline" @click="dialogs.cancel()">Cancel</Button>
+        <Button type="button" :disabled="!canSubmit" @click="submit">
           <LoaderCircleIcon v-if="submitting" class="animate-spin" />
           Create
         </Button>

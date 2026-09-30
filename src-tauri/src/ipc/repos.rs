@@ -6,7 +6,7 @@ use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
 use crate::error::{GitError, Result};
-use crate::ipc::events::SettingsChanged;
+use crate::ipc::events::{SettingsChanged, UiStateChanged};
 use crate::platform::Host;
 use crate::repo::open::open_repo;
 use crate::repo::resolve::{repo_key, resolve};
@@ -105,6 +105,50 @@ pub async fn repo_add(
     Ok(entry)
 }
 
+/// Change a library entry's path, connection or display name. A new path or connection can give
+/// the entry a new key, in which case the entry under the old key is replaced. The group, the git
+/// override and the last-opened time carry over. An empty `display_name` clears the name.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    path: String,
+    connection: Connection,
+    display_name: Option<String>,
+) -> Result<RepoEntry> {
+    let mut settings = state.settings();
+    let existing = settings.library.find(&key).cloned().ok_or_else(|| GitError::Internal {
+        detail: format!("repository {key} is not in the library"),
+    })?;
+    let mut entry = RepoEntry {
+        path: path.trim().to_string(),
+        connection,
+        display_name: display_name.filter(|s| !s.trim().is_empty()),
+        git_executable: existing.git_executable,
+        group_id: existing.group_id,
+        last_opened_at: existing.last_opened_at,
+        ..Default::default()
+    };
+    let res = resolve(&entry, &settings, &state.host, Some(&state.ssh))?;
+    entry.key = repo_key(&res.resolved, &res.native_path);
+    entry.resolved_transport = Some(res.resolved);
+    if entry.key != key {
+        if let Some(other) = settings.library.find(&entry.key) {
+            return Err(GitError::InvalidPath {
+                path: entry.path,
+                reason: format!("it is already in the library as {}", other.path),
+            });
+        }
+        settings.library.remove(&key);
+    }
+    settings.library.upsert(entry.clone());
+    let revision = state.set_settings(settings.clone())?;
+    SettingsChanged { revision, settings }.emit(&app)?;
+    Ok(entry)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_remove(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<()> {
@@ -115,6 +159,12 @@ pub async fn repo_remove(app: AppHandle, state: State<'_, AppState>, key: String
     settings.library.remove(&key);
     let revision = state.set_settings(settings.clone())?;
     SettingsChanged { revision, settings }.emit(&app)?;
+    // Its remembered UI state (hidden refs, last selected commit) goes with it.
+    let mut ui = state.ui_state();
+    if ui.per_repo.remove(&key).is_some() {
+        let revision = state.set_ui_state(ui)?;
+        UiStateChanged { revision }.emit(&app)?;
+    }
     Ok(())
 }
 
@@ -131,7 +181,7 @@ pub async fn repo_open(app: AppHandle, state: State<'_, AppState>, key: String) 
         .cloned()
         .ok_or_else(|| GitError::RepoNotOpen { repo_id: key.clone() })?;
     let handle = open_repo(Some(&app), &entry, &settings, &state.host, Some(&state.ssh)).await?;
-    // Refs switched off in the graph last time, saved by the frontend in ui-state.json.
+    // Refs switched off in the graph last time, saved by the frontend in the UI state.
     let hidden: crate::graph::snapshot::HiddenRefs = state
         .ui_state()
         .per_repo

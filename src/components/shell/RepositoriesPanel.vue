@@ -7,6 +7,8 @@ import EmptyState from "@/components/shell/EmptyState.vue";
 import LibraryTreeNode from "@/components/shell/LibraryTreeNode.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import { errorMessage } from "@/lib/ipc";
+import { removeFromLibrary } from "@/lib/repoActions";
+import { useDialogsStore } from "@/stores/dialogs";
 import { useLibraryStore } from "@/stores/library";
 import { useSessionsStore } from "@/stores/sessions";
 
@@ -14,6 +16,7 @@ const emit = defineEmits<{
   addRepo: [];
 }>();
 
+const dialogs = useDialogsStore();
 const library = useLibraryStore();
 const sessions = useSessionsStore();
 
@@ -25,14 +28,6 @@ async function open(key: string): Promise<void> {
   }
 }
 
-async function remove(key: string): Promise<void> {
-  try {
-    if (sessions.sessions.has(key)) await sessions.closeTab(key);
-    await library.removeRepo(key);
-  } catch (e) {
-    sessions.notify(errorMessage(e));
-  }
-}
 </script>
 
 <template>
@@ -63,7 +58,8 @@ async function remove(key: string): Promise<void> {
           :node="node"
           :depth="0"
           @open="open"
-          @remove="remove"
+          @edit="dialogs.editRepo"
+          @remove="removeFromLibrary"
         />
       </div>
     </ScrollArea>

@@ -1,4 +1,5 @@
 import type { VariantProps } from 'class-variance-authority'
+import type { InjectionKey } from 'vue'
 import { cva } from 'class-variance-authority'
 
 export { default as Button } from './Button.vue'
@@ -20,6 +21,7 @@ export const buttonVariants = cva(
         'xs': 'h-6 gap-1 rounded-[min(var(--radius-md),10px)] px-2 text-xs in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*=size-])]:size-3',
         'sm': 'h-7 gap-1 rounded-[min(var(--radius-md),12px)] px-2.5 text-[0.8rem] in-data-[slot=button-group]:rounded-lg has-data-[icon=inline-end]:pr-1.5 has-data-[icon=inline-start]:pl-1.5 [&_svg:not([class*=size-])]:size-3.5',
         'lg': 'h-9 gap-1.5 px-2.5 has-data-[icon=inline-end]:pr-2 has-data-[icon=inline-start]:pl-2',
+        'action': 'h-9 min-w-24 gap-1.5 px-4 has-data-[icon=inline-end]:pr-3 has-data-[icon=inline-start]:pl-3',
         'icon': 'size-8',
         'icon-xs': 'size-6 rounded-[min(var(--radius-md),10px)] in-data-[slot=button-group]:rounded-lg [&_svg:not([class*=size-])]:size-3',
         'icon-sm': 'size-7 rounded-[min(var(--radius-md),12px)] in-data-[slot=button-group]:rounded-lg',
@@ -33,3 +35,7 @@ export const buttonVariants = cva(
   },
 )
 export type ButtonVariants = VariantProps<typeof buttonVariants>
+
+// A container such as a dialog footer provides this to set the size of every button inside it
+// that does not pass `size` itself.
+export const buttonSizeKey: InjectionKey<ButtonVariants['size']> = Symbol('button-size')

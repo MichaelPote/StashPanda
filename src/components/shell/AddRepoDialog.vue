@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useDebounceFn } from "@vueuse/core";
+import { homeDir, join } from "@tauri-apps/api/path";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { ChevronDownIcon, ChevronRightIcon, FolderOpenIcon, LoaderCircleIcon, TriangleAlertIcon } from "@lucide/vue";
-import { commands, type Connection, type RepoResolution } from "@/lib/bindings";
+import { ChevronDownIcon, ChevronRightIcon, EllipsisIcon, FolderOpenIcon, LoaderCircleIcon, TriangleAlertIcon } from "@lucide/vue";
+import { commands, type Connection, type RepoEntry, type RepoResolution } from "@/lib/bindings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -19,12 +20,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { transportLabel } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
+import { removeFromLibrary } from "@/lib/repoActions";
+import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
-import { useLibraryStore } from "@/stores/library";
+import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore } from "@/stores/sessions";
 
 const open = defineModel<boolean>("open", { default: false });
 
+const dialogs = useDialogsStore();
 const host = useHostStore();
 const library = useLibraryStore();
 const sessions = useSessionsStore();
@@ -37,6 +41,11 @@ const kind = ref<ConnectionKind>("auto");
 const wslDistro = ref("");
 const ssh = ref({ host: "", user: "", port: "", identityFile: "", remoteGit: "" });
 const advancedOpen = ref(false);
+/**
+ * The library entry being edited, or null when adding. Taken from the store when the dialog opens
+ * and kept until the next open, so the title does not flip back to "Add" while the dialog fades out.
+ */
+const editingKey = ref<string | null>(null);
 
 const distros = ref<string[]>([]);
 const isWindows = computed(() => host.info?.type === "windows");
@@ -111,8 +120,14 @@ watch([path, connection], () => {
 });
 
 watch(open, async (isOpen) => {
-  if (!isOpen) return;
+  if (!isOpen) {
+    dialogs.editRepoKey = null;
+    return;
+  }
   reset();
+  const entry = dialogs.editRepoKey ? library.repoByKey.get(dialogs.editRepoKey) : undefined;
+  editingKey.value = entry?.key ?? null;
+  if (entry) fill(entry);
   if (isWindows.value && distros.value.length === 0) {
     try {
       distros.value = await unwrap(commands.wslListDistros());
@@ -137,10 +152,40 @@ function reset(): void {
   resolveSerial += 1;
 }
 
+/** Puts an existing entry's values into the fields for editing. */
+function fill(entry: RepoEntry): void {
+  path.value = entry.path ?? "";
+  displayName.value = entry.displayName ?? "";
+  const c: Connection = entry.connection ?? { type: "auto" };
+  kind.value = c.type;
+  if (c.type === "wsl") wslDistro.value = c.distro;
+  if (c.type === "ssh") {
+    ssh.value = {
+      host: c.host,
+      user: c.user ?? "",
+      port: c.port?.toString() ?? "",
+      identityFile: c.identityFile ?? "",
+      remoteGit: c.remoteGit ?? "",
+    };
+  }
+  advancedOpen.value = c.type !== "auto";
+}
+
 async function browse(): Promise<void> {
   try {
     const picked = await openDialog({ directory: true, multiple: false, title: "Choose a repository folder" });
     if (typeof picked === "string" && picked.length > 0) path.value = picked;
+  } catch (e) {
+    submitError.value = errorMessage(e);
+  }
+}
+
+async function browseIdentityFile(): Promise<void> {
+  try {
+    // Start in ~/.ssh, where keys usually live; the picker falls back to its own default if it is missing.
+    const defaultPath = await join(await homeDir(), ".ssh").catch(() => undefined);
+    const picked = await openDialog({ directory: false, multiple: false, title: "Choose an SSH key", defaultPath });
+    if (typeof picked === "string" && picked.length > 0) ssh.value.identityFile = picked;
   } catch (e) {
     submitError.value = errorMessage(e);
   }
@@ -155,6 +200,10 @@ async function submit(): Promise<void> {
   submitting.value = true;
   submitError.value = null;
   try {
+    if (editingKey.value) {
+      await saveEdit(editingKey.value);
+      return;
+    }
     const entry = await library.addRepo(
       path.value.trim(),
       connection.value,
@@ -171,6 +220,41 @@ async function submit(): Promise<void> {
   }
 }
 
+async function saveEdit(key: string): Promise<void> {
+  const before = library.repoByKey.get(key);
+  const entry = await library.updateRepo(key, path.value.trim(), connection.value, displayName.value.trim() || null);
+  if (!entry.key) throw new Error("The backend returned a library entry without a key.");
+  // The old key is gone once the path or connection moved the entry, so a retry must use the new one.
+  editingKey.value = entry.key;
+  const session = sessions.sessions.get(key);
+  if (session) {
+    const moved =
+      entry.key !== key ||
+      entry.path !== before?.path ||
+      JSON.stringify(entry.connection) !== JSON.stringify(before?.connection);
+    if (moved) {
+      // The open tab talks to the old location, so it is reopened against the new one.
+      await sessions.closeTab(key);
+      await sessions.openTab(entry.key);
+    } else {
+      session.info = { ...session.info, displayName: repoDisplayName(entry) };
+    }
+  }
+  open.value = false;
+}
+
+/** The same removal as the Repositories context menu; the dialog closes once it is done. */
+async function removeEntry(): Promise<void> {
+  const key = editingKey.value;
+  if (!key) return;
+  submitting.value = true;
+  try {
+    if (await removeFromLibrary(key)) open.value = false;
+  } finally {
+    submitting.value = false;
+  }
+}
+
 const kinds: { id: ConnectionKind; label: string }[] = [
   { id: "auto", label: "Auto (detect from the path)" },
   { id: "local", label: "Local" },
@@ -179,17 +263,16 @@ const kinds: { id: ConnectionKind; label: string }[] = [
 ];
 
 const selectClass =
-  "h-8 w-full rounded-lg border border-input bg-transparent px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
+  "well h-8 w-full rounded-lg border px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 </script>
 
 <template>
   <Dialog v-model:open="open">
-    <DialogContent class="sm:max-w-lg">
+    <DialogContent class="sm:max-w-2xl" size-key="addRepo" :close-on-outside-click="false">
       <DialogHeader>
-        <DialogTitle>Add repository</DialogTitle>
+        <DialogTitle>{{ editingKey ? "Edit repository" : "Add repository" }}</DialogTitle>
         <DialogDescription>
           Enter a Windows, UNC, Linux or <span class="font-mono">user@host:/path</span> location.
-          The library remembers it and opens it in a new tab.
         </DialogDescription>
       </DialogHeader>
 
@@ -201,7 +284,7 @@ const selectClass =
               id="add-repo-path"
               v-model="path"
               class="font-mono text-base"
-              placeholder="C:\src\project, \\wsl.localhost\Ubuntu\home\me\project or /home/me/code/project"
+              placeholder="Local, WSL or SSH path"
               autocomplete="off"
               spellcheck="false"
             />
@@ -314,12 +397,30 @@ const selectClass =
                   <Input id="add-repo-ssh-port" v-model="ssh.port" class="text-base" placeholder="22" inputmode="numeric" autocomplete="off" />
                 </div>
                 <div class="grid gap-1.5">
-                  <Label for="add-repo-ssh-identity" class="text-base">Identity file</Label>
-                  <Input id="add-repo-ssh-identity" v-model="ssh.identityFile" class="font-mono text-base" placeholder="~/.ssh/id_ed25519" autocomplete="off" />
+                  <Label for="add-repo-ssh-identity" class="text-base">SSH key</Label>
+                  <div class="flex gap-2">
+                    <Input id="add-repo-ssh-identity" v-model="ssh.identityFile" class="font-mono text-base" placeholder="~/.ssh/id_ed25519" autocomplete="off" />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="icon"
+                      class="shrink-0"
+                      title="Choose an SSH key file"
+                      aria-label="Choose an SSH key file"
+                      @click="browseIdentityFile"
+                    >
+                      <EllipsisIcon />
+                    </Button>
+                  </div>
                 </div>
                 <div class="col-span-2 grid gap-1.5">
                   <Label for="add-repo-ssh-git" class="text-base">Remote git path</Label>
                   <Input id="add-repo-ssh-git" v-model="ssh.remoteGit" class="font-mono text-base" placeholder="/usr/bin/git" autocomplete="off" />
+                  <p class="text-xs text-muted-foreground">
+                    Where the <span class="font-mono">git</span> program is on the SSH host. Leave this empty to use the
+                    <span class="font-mono">git</span> found on the host's <span class="font-mono">PATH</span>; fill it in only
+                    if that is missing or is the wrong version.
+                  </p>
                 </div>
               </div>
             </div>
@@ -332,10 +433,21 @@ const selectClass =
       </form>
 
       <DialogFooter>
-        <Button type="button" variant="outline" size="sm" @click="open = false">Cancel</Button>
-        <Button type="button" size="sm" :disabled="!canSubmit" @click="submit">
+        <Button
+          v-if="editingKey"
+          type="button"
+          variant="destructive"
+          class="sm:mr-auto"
+          title="Remove this repository from the library. The files on disk are not touched."
+          :disabled="submitting"
+          @click="removeEntry"
+        >
+          Remove
+        </Button>
+        <Button type="button" variant="outline" @click="open = false">Cancel</Button>
+        <Button type="button" :disabled="!canSubmit" @click="submit">
           <LoaderCircleIcon v-if="submitting" class="animate-spin" />
-          Add
+          {{ editingKey ? "Save" : "Add" }}
         </Button>
       </DialogFooter>
     </DialogContent>

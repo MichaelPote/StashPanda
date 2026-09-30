@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { HTMLAttributes } from 'vue'
 import { DialogClose } from 'reka-ui'
+import { provide } from 'vue'
 import { cn } from '@/lib/utils'
-import { Button } from '@/components/ui/button'
+import { Button, buttonSizeKey } from '@/components/ui/button'
 
 const props = withDefaults(defineProps<{
   class?: HTMLAttributes['class']
@@ -10,12 +11,14 @@ const props = withDefaults(defineProps<{
 }>(), {
   showCloseButton: false,
 })
+
+provide(buttonSizeKey, 'action')
 </script>
 
 <template>
   <div
     data-slot="dialog-footer"
-    :class="cn('bg-muted/50 -mx-4 -mb-4 rounded-b-xl border-t p-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end', props.class)"
+    :class="cn('dialog-well -mx-6 -mb-6 rounded-b-xl border-t px-6 py-4 flex flex-col-reverse gap-2.5 sm:flex-row sm:items-center sm:justify-end', props.class)"
   >
     <slot />
     <DialogClose v-if="showCloseButton" as-child>

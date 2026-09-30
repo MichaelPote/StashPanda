@@ -55,7 +55,7 @@ async function submit(): Promise<void> {
       error.value = opFailureText(result, `Creating tag ${tag}`);
       return;
     }
-    sessions.notify(`Created ${text.length > 0 ? "annotated " : ""}tag ${tag} at ${r.targetLabel}.`);
+    sessions.notifySuccess(`Created ${text.length > 0 ? "annotated " : ""}tag ${tag} at ${r.targetLabel}.`);
     dialogs.resolve("createTag", result);
   } catch (e) {
     error.value = errorMessage(e);
@@ -67,7 +67,7 @@ async function submit(): Promise<void> {
 
 <template>
   <Dialog :open="request !== null" @update:open="onOpenChange">
-    <DialogContent v-if="request" class="sm:max-w-md">
+    <DialogContent v-if="request" class="sm:max-w-lg" size-key="createTag">
       <DialogHeader>
         <DialogTitle>Create tag</DialogTitle>
         <DialogDescription>
@@ -75,7 +75,7 @@ async function submit(): Promise<void> {
         </DialogDescription>
       </DialogHeader>
 
-      <form class="grid gap-3" @submit.prevent="submit">
+      <form class="grid gap-3" data-dialog-grow @submit.prevent="submit">
         <div class="grid gap-1.5">
           <Label for="create-tag-name" class="text-base">Tag name</Label>
           <Input
@@ -90,11 +90,11 @@ async function submit(): Promise<void> {
           <p v-if="nameProblem" class="text-xs text-destructive">{{ nameProblem }}</p>
         </div>
 
-        <div class="grid gap-1.5">
+        <div class="grid gap-1.5" data-dialog-grow>
           <Label for="create-tag-message" class="text-base">
             Message <span class="text-muted-foreground">(optional; makes the tag annotated)</span>
           </Label>
-          <Textarea id="create-tag-message" v-model="message" class="min-h-16 text-base" placeholder="Release 1.2.0" spellcheck="true" />
+          <Textarea id="create-tag-message" v-model="message" data-dialog-grow style="--grow-basis: 4rem" class="min-h-16 text-base" placeholder="Release 1.2.0" spellcheck="true" />
         </div>
 
         <label class="flex items-center gap-2 text-base select-none">
@@ -108,8 +108,8 @@ async function submit(): Promise<void> {
       </form>
 
       <DialogFooter>
-        <Button type="button" variant="outline" size="sm" @click="dialogs.cancel()">Cancel</Button>
-        <Button type="button" size="sm" :disabled="!canSubmit" @click="submit">
+        <Button type="button" variant="outline" @click="dialogs.cancel()">Cancel</Button>
+        <Button type="button" :disabled="!canSubmit" @click="submit">
           <LoaderCircleIcon v-if="submitting" class="animate-spin" />
           Create
         </Button>
