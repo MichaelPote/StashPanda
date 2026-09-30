@@ -89,9 +89,13 @@ kill_win_tree() {
 
 # "<pid> <name>" for whatever listens on a Windows TCP port, or nothing.
 # `wslrelay` means the listener is a process inside WSL.
+# When nothing listens, Get-NetTCPConnection reports an error: SilentlyContinue
+# hides the message, but powershell.exe still exits with 1, which `set -e`
+# would turn into a silent exit of the whole script. No listener is the normal
+# answer, so the exit code is ignored and only the output counts.
 win_port_owner() {
   (cd /mnt/c && powershell.exe -NoProfile -NonInteractive -Command \
-    "Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { '{0} {1}' -f \$_.OwningProcess, (Get-Process -Id \$_.OwningProcess).ProcessName }") | tr -d '\r'
+    "Get-NetTCPConnection -LocalPort $1 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1 | ForEach-Object { '{0} {1}' -f \$_.OwningProcess, (Get-Process -Id \$_.OwningProcess).ProcessName }") | tr -d '\r' || true
 }
 
 # Stop before starting when the Windows side of the Vite port is taken,
