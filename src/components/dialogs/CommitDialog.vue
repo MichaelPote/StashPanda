@@ -233,7 +233,7 @@ async function submit(): Promise<void> {
 
 <template>
   <Dialog :open="request !== null" @update:open="onOpenChange">
-    <DialogContent v-if="request" class="sm:max-w-xl" @open-auto-focus="focusMessage">
+    <DialogContent v-if="request" class="gap-5 p-6 sm:max-w-3xl" @open-auto-focus="focusMessage">
       <DialogHeader>
         <DialogTitle>{{ amend ? "Amend last commit" : "Commit" }}</DialogTitle>
         <DialogDescription>
@@ -267,7 +267,7 @@ async function submit(): Promise<void> {
             aria-multiselectable="true"
             aria-label="Files to commit"
             tabindex="0"
-            class="max-h-56 min-h-(--row-h) overflow-auto rounded-lg border border-border well py-0.5 outline-none scrollbar-thin focus-visible:ring-2 focus-visible:ring-ring/50"
+            class="max-h-72 min-h-(--row-h) overflow-auto rounded-lg border border-border well py-0.5 outline-none scrollbar-thin focus-visible:ring-2 focus-visible:ring-ring/50"
             @keydown="onListKeydown"
           >
             <li v-if="files.length === 0" class="flex h-(--row-h) items-center px-2 text-base text-muted-foreground italic">
@@ -335,19 +335,20 @@ async function submit(): Promise<void> {
             id="commit-message"
             ref="messageBox"
             v-model="message"
-            class="h-36 resize-y font-mono text-base field-sizing-fixed"
+            class="h-48 resize-y font-mono text-base field-sizing-fixed"
             placeholder="Summary on the first line&#10;&#10;Details after a blank line"
             spellcheck="true"
             :disabled="loadingPrevious"
             @keydown="onMessageKeydown"
           />
-          <div class="flex items-center gap-3">
-            <label class="flex items-center gap-2 text-base select-none" :class="!request.hasHead && 'opacity-50'">
+          <div class="flex items-center gap-2">
+            <label class="flex shrink-0 items-center gap-2 text-base whitespace-nowrap select-none" :class="!request.hasHead && 'opacity-50'">
               <input v-model="amend" type="checkbox" class="size-3.5 accent-primary" :disabled="!request.hasHead" @change="onAmendChange" />
               Amend the last commit
             </label>
-            <LoaderCircleIcon v-if="loadingPrevious" class="size-3.5 animate-spin text-muted-foreground" />
-            <span class="ml-auto text-xs text-muted-foreground">Ctrl+Enter to confirm. Space ticks or unticks the selected files.</span>
+            <!-- The spinner's space is always reserved, so showing it never moves the text around it. -->
+            <LoaderCircleIcon :class="cn('size-3.5 shrink-0 animate-spin text-muted-foreground', !loadingPrevious && 'invisible')" aria-hidden="true" />
+            <span class="ml-auto min-w-0 text-right text-xs text-muted-foreground">Ctrl+Enter to confirm. Space ticks or unticks the selected files.</span>
           </div>
         </div>
 
@@ -356,19 +357,19 @@ async function submit(): Promise<void> {
         </p>
       </form>
 
-      <DialogFooter class="items-center">
+      <DialogFooter class="-mx-6 -mb-6 items-center gap-2.5 px-6 py-4">
         <span v-if="commitHint" class="mr-auto text-xs text-muted-foreground">{{ commitHint }}</span>
-        <Button type="button" variant="outline" size="sm" @click="dialogs.cancel()">Cancel</Button>
+        <Button type="button" variant="outline" size="lg" class="min-w-24 px-4" @click="dialogs.cancel()">Cancel</Button>
         <Tooltip>
           <TooltipTrigger as-child>
             <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->
             <span class="inline-flex">
-              <Button type="button" variant="outline" size="sm" disabled>{{ pushLabel }}</Button>
+              <Button type="button" variant="outline" size="lg" class="min-w-24 px-4" disabled>{{ pushLabel }}</Button>
             </span>
           </TooltipTrigger>
           <TooltipContent side="top">Push is not built yet (milestone 3).</TooltipContent>
         </Tooltip>
-        <Button type="button" size="sm" :disabled="!canCommit" @click="submit">
+        <Button type="button" size="lg" class="min-w-28 px-4" :disabled="!canCommit" @click="submit">
           <LoaderCircleIcon v-if="submitting" class="animate-spin" />
           {{ commitLabel }}
         </Button>
