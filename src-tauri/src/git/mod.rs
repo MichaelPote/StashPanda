@@ -103,6 +103,7 @@ impl GitClient {
             .category(req.category)
             .timeout(req.timeout);
         cmd.env = common_env();
+        cmd.summary = Some(req.args.clone());
         if let Some(b) = &req.stdin {
             cmd = cmd.stdin_bytes(b.clone());
         }

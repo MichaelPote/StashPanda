@@ -57,6 +57,9 @@ pub enum StdinMode {
 pub struct Cmd {
     pub program: Program,
     pub args: Vec<String>,
+    /// The arguments the caller asked for, before the flags every git command carries were added
+    /// (`checkout master`). The console lists this first; None means `args` is already that.
+    pub summary: Option<Vec<String>>,
     pub env: Vec<(String, String)>,
     pub stdin: StdinMode,
     pub category: Category,
@@ -69,6 +72,7 @@ impl Cmd {
         Cmd {
             program: Program::Git,
             args,
+            summary: None,
             env: Vec::new(),
             stdin: StdinMode::Null,
             category: Category::Internal,

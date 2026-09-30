@@ -163,9 +163,9 @@ pub async fn get_diff(
             args.push(op.to_string());
         }
     }
-    let out = client
-        .exec_allow_failure(GitReq::new("diff", args).user())
-        .await?;
+    // Internal, like the other queries: it runs whenever a file is clicked, which is viewing,
+    // not an action on the repository, so it stays out of the console's Log mode.
+    let out = client.exec_allow_failure(GitReq::new("diff", args)).await?;
     // `diff` exits 1 when differences exist only with --exit-code; without it, non-zero is an error.
     if !out.success() {
         return Err(GitError::CommandFailed {

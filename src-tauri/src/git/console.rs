@@ -30,6 +30,9 @@ pub struct ConsoleEvent {
     pub argv: Vec<String>,
     /// Shell-quoted single line for display.
     pub display: String,
+    /// Just the git arguments the app asked for, shell-quoted (`checkout master`), without the
+    /// transport wrapper or the flags every command carries. The console lists this first.
+    pub command: String,
     pub started_at_ms: u64,
     pub duration_ms: Option<u64>,
     pub exit_code: Option<i32>,
@@ -39,6 +42,9 @@ pub struct ConsoleEvent {
     pub stderr_bytes: u64,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    /// True when the command wrote output that this event leaves out: a successful internal or
+    /// watcher command keeps only its byte counts (see `kept_output`).
+    pub output_omitted: bool,
     pub error: Option<GitError>,
 }
 
@@ -58,6 +64,7 @@ pub struct ConsoleTicket {
     label: String,
     argv: Vec<String>,
     display: String,
+    command: String,
 }
 
 fn lossy_capped(bytes: &[u8], cap: usize) -> (String, bool) {
@@ -66,6 +73,30 @@ fn lossy_capped(bytes: &[u8], cap: usize) -> (String, bool) {
     } else {
         (String::from_utf8_lossy(&bytes[..cap]).into_owned(), true)
     }
+}
+
+/// The output text a finished command's console event carries: `(stdout, stdout_truncated,
+/// stderr, stderr_truncated, omitted)`. A successful internal or watcher command (graph loads,
+/// status polls) carries none. Nothing reads the console's copy except the Console panel; the
+/// caller has the real output from `GitClient::exec`. Keeping it would cost up to twice `cap` per
+/// entry, in the event sent to the WebView and in the Console's buffer of `console.maxLines`
+/// entries, for rows that are almost never opened. User commands and failures keep it.
+fn kept_output(
+    category: Category,
+    output: Option<&Output>,
+    failed: bool,
+    cap: usize,
+) -> (String, bool, String, bool, bool) {
+    let Some(out) = output else {
+        return (String::new(), false, String::new(), false, false);
+    };
+    if category != Category::UserAction && !failed && out.success() {
+        let omitted = !out.stdout.is_empty() || !out.stderr.is_empty();
+        return (String::new(), false, String::new(), false, omitted);
+    }
+    let (stdout, stdout_truncated) = lossy_capped(&out.stdout, cap);
+    let (stderr, stderr_truncated) = lossy_capped(&out.stderr, cap);
+    (stdout, stdout_truncated, stderr, stderr_truncated, false)
 }
 
 fn now_ms() -> u64 {
@@ -88,6 +119,7 @@ impl ConsoleRecorder {
     pub fn start(&self, cmd: &Cmd, argv: Vec<String>) -> ConsoleTicket {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let display = display_command(&argv);
+        let command = display_command(cmd.summary.as_deref().unwrap_or(&cmd.args));
         let ticket = ConsoleTicket {
             seq,
             started: Instant::now(),
@@ -96,6 +128,7 @@ impl ConsoleRecorder {
             label: cmd.label.to_string(),
             argv,
             display,
+            command,
         };
         let ev = ConsoleEvent {
             repo_id: self.repo_id.clone(),
@@ -105,6 +138,7 @@ impl ConsoleRecorder {
             label: ticket.label.clone(),
             argv: ticket.argv.clone(),
             display: ticket.display.clone(),
+            command: ticket.command.clone(),
             started_at_ms: ticket.started_at_ms,
             duration_ms: None,
             exit_code: None,
@@ -114,6 +148,7 @@ impl ConsoleRecorder {
             stderr_bytes: 0,
             stdout_truncated: false,
             stderr_truncated: false,
+            output_omitted: false,
             error: None,
         };
         if let Some(app) = &self.app {
@@ -123,12 +158,8 @@ impl ConsoleRecorder {
     }
 
     pub fn finish(&self, ticket: ConsoleTicket, output: Option<&Output>, error: Option<&GitError>) {
-        let (stdout, stdout_truncated) = output
-            .map(|o| lossy_capped(&o.stdout, self.cap))
-            .unwrap_or_default();
-        let (stderr, stderr_truncated) = output
-            .map(|o| lossy_capped(&o.stderr, self.cap))
-            .unwrap_or_default();
+        let (stdout, stdout_truncated, stderr, stderr_truncated, output_omitted) =
+            kept_output(ticket.category, output, error.is_some(), self.cap);
         let ev = ConsoleEvent {
             repo_id: self.repo_id.clone(),
             seq: ticket.seq,
@@ -137,6 +168,7 @@ impl ConsoleRecorder {
             label: ticket.label,
             argv: ticket.argv,
             display: ticket.display,
+            command: ticket.command,
             started_at_ms: ticket.started_at_ms,
             duration_ms: Some(ticket.started.elapsed().as_millis() as u64),
             exit_code: output.and_then(|o| o.exit_code),
@@ -146,10 +178,41 @@ impl ConsoleRecorder {
             stderr_bytes: output.map(|o| o.stderr.len() as u64).unwrap_or(0),
             stdout_truncated,
             stderr_truncated,
+            output_omitted,
             error: error.cloned(),
         };
         if let Some(app) = &self.app {
             let _ = ev.emit(app);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn out(code: i32, stdout: &str, stderr: &str) -> Output {
+        Output { exit_code: Some(code), stdout: stdout.as_bytes().to_vec(), stderr: stderr.as_bytes().to_vec() }
+    }
+
+    #[test]
+    fn successful_internal_and_watcher_output_is_left_out() {
+        for category in [Category::Internal, Category::Watcher] {
+            let (stdout, _, stderr, _, omitted) = kept_output(category, Some(&out(0, "abc", "warn")), false, 100);
+            assert_eq!((stdout.as_str(), stderr.as_str(), omitted), ("", "", true));
+        }
+        // Nothing written, so nothing was left out.
+        assert!(!kept_output(Category::Internal, Some(&out(0, "", "")), false, 100).4);
+    }
+
+    #[test]
+    fn user_commands_and_failures_keep_their_output() {
+        let (stdout, _, _, _, omitted) = kept_output(Category::UserAction, Some(&out(0, "abc", "")), false, 100);
+        assert_eq!((stdout.as_str(), omitted), ("abc", false));
+        let (_, _, stderr, _, omitted) = kept_output(Category::Internal, Some(&out(128, "", "fatal: x")), false, 100);
+        assert_eq!((stderr.as_str(), omitted), ("fatal: x", false));
+        // Exit code 0 but classified as an error by the caller.
+        let (stdout, _, _, _, omitted) = kept_output(Category::Watcher, Some(&out(0, "abc", "")), true, 100);
+        assert_eq!((stdout.as_str(), omitted), ("abc", false));
     }
 }
