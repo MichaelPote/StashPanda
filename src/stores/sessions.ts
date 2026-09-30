@@ -72,6 +72,17 @@ export interface NoticeAction {
   run: () => void | Promise<void>;
 }
 
+/** Rows selected in the Files panel, by `FileItem.id`. Replaced, never mutated. */
+export interface FileSelection {
+  ids: Set<string>;
+  /** Start of a Shift-range. */
+  anchorId: string | null;
+}
+
+export function emptyFileSelection(): FileSelection {
+  return { ids: new Set<string>(), anchorId: null };
+}
+
 export interface SelectedFile {
   path: string;
   oldPath?: string | null;
@@ -89,7 +100,11 @@ export interface RepoSession {
   selection: Selection;
   /** The row that drives the Files panel: the most recently selected commit or the Working Tree row. */
   selectedRow: GraphRow | null;
+  /** The file whose diff is shown: the last file clicked, whatever else is selected. */
   selectedFile: SelectedFile | null;
+  fileSelection: FileSelection;
+  /** Commit message typed into the Commit dialog and not committed yet. */
+  commitDraft: string;
   /** Saved scroll offset of the commit list, so it survives tab switches and snapshot swaps. */
   scrollTop: number;
   /** A row index the graph view should scroll into view (set by the Branches panel). */
@@ -248,6 +263,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     if (session.selectedRow && !keep.has(session.selectedRow.oid)) {
       session.selectedRow = null;
       session.selectedFile = null;
+      session.fileSelection = emptyFileSelection();
     }
   }
 
@@ -367,6 +383,8 @@ export const useSessionsStore = defineStore("sessions", () => {
         selection: { oids: new Set<string>(), anchorOid: null },
         selectedRow: null,
         selectedFile: null,
+        fileSelection: emptyFileSelection(),
+        commitDraft: "",
         scrollTop: 0,
         reveal: null,
         watcherKind: null,
@@ -432,6 +450,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     session.selection = { oids: new Set([row.oid]), anchorOid: row.oid };
     session.selectedRow = row;
     session.selectedFile = null;
+    session.fileSelection = emptyFileSelection();
     if (row.kind === "commit") uiState.patchDebounced({ perRepo: { [session.key]: { lastSelectedOid: row.oid } } });
   }
 

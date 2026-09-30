@@ -22,6 +22,7 @@ pub struct Settings {
     pub console: ConsoleSettings,
     pub polling: Polling,
     pub cache: CacheSettings,
+    pub commit: CommitSettings,
     pub library: RepoLibrary,
 }
 
@@ -34,6 +35,7 @@ impl Default for Settings {
             console: ConsoleSettings::default(),
             polling: Polling::default(),
             cache: CacheSettings::default(),
+            commit: CommitSettings::default(),
             library: RepoLibrary::default(),
         }
     }
@@ -83,6 +85,23 @@ pub enum GraphOrder {
 pub enum AvatarSource {
     Initials,
     Gravatar,
+}
+
+/// Which files the Commit dialog ticks when nothing is selected in the file list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitPreselect {
+    /// Every changed file: staged, unstaged and untracked (not conflicted).
+    #[default]
+    All,
+    /// Only files with staged changes, committed as they are staged.
+    Staged,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CommitSettings {
+    pub preselect: CommitPreselect,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]

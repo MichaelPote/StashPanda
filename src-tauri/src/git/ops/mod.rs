@@ -199,11 +199,75 @@ pub async fn unstage(client: &GitClient, paths: &[String]) -> Result<OpResult> {
 /// hook or GPG waits for input that can never arrive.
 const COMMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
-/// Commit the index. The message goes through stdin (`-F -`), so its length
-/// and characters never matter; Git itself refuses an empty one. With `amend`
-/// and an empty message, the previous message is kept.
-pub async fn commit(client: &GitClient, message: &str, amend: bool, sign_off: bool) -> Result<OpResult> {
-    let mut args = vec!["commit"];
+/// Most bytes of paths passed to `git commit --only` on the command line.
+/// The message already uses stdin, so the paths cannot go there as well;
+/// this stays well under the Windows command-line limit of 32,767 characters.
+const ONLY_ARGV_BYTES: usize = 24 * 1024;
+
+/// Every path in the index that differs from HEAD, with renames split into
+/// their two paths so they match what the frontend passes for a rename.
+async fn staged_paths(client: &GitClient) -> Result<Vec<String>> {
+    let out = client
+        .exec_allow_failure(GitReq::new("diff", ["diff", "--cached", "--name-only", "-z", "--no-renames"]))
+        .await?;
+    if !out.success() {
+        return Err(classify_git_failure("diff", vec![], out.exit_code, &out.stderr, &TransportKind::Local));
+    }
+    Ok(out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect())
+}
+
+/// Commit the index, or with `paths` exactly those paths. The message goes
+/// through stdin (`-F -`), so its length and characters never matter; Git
+/// itself refuses an empty one. With `amend` and an empty message, the
+/// previous message is kept.
+///
+/// `paths` are staged first (`add -A`, so new, changed and deleted files all
+/// count; pass both paths of a rename). When other paths are staged as well,
+/// the commit adds `--only` so they stay staged and out of the commit. If the
+/// commit itself fails (a hook refuses, the message is empty), `paths` stay
+/// staged. An empty `paths` with `amend` changes only the message.
+pub async fn commit(client: &GitClient, message: &str, paths: Option<&[String]>, amend: bool, sign_off: bool) -> Result<OpResult> {
+    let mut staged_first: Option<OpResult> = None;
+    let mut only: Option<&[String]> = None;
+    // An amend naming no paths rewords the last commit and leaves whatever is staged alone.
+    if let Some([]) = paths {
+        if !amend {
+            return Err(GitError::InvalidPath { path: String::new(), reason: "no paths given".into() });
+        }
+        only = Some(&[]);
+    } else if let Some(paths) = paths {
+        valid_paths(paths)?;
+        let added = stage(client, paths).await?;
+        if !added.ok {
+            return Ok(added);
+        }
+        let chosen: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+        if staged_paths(client).await?.iter().any(|p| !chosen.contains(p.as_str())) {
+            let bytes: usize = paths.iter().map(|p| p.len() + 1).sum();
+            if bytes > ONLY_ARGV_BYTES {
+                return Err(GitError::InvalidPath {
+                    path: String::new(),
+                    reason: format!(
+                        "{} files are selected while other files are staged too, which is more than one commit command can name. Unstage the other files, or commit everything that is staged.",
+                        paths.len()
+                    ),
+                });
+            }
+            only = Some(paths);
+        }
+        staged_first = Some(added);
+    }
+
+    let mut args: Vec<&str> = Vec::new();
+    if only.is_some() {
+        args.push("--literal-pathspecs");
+    }
+    args.push("commit");
     if amend {
         args.push("--amend");
     }
@@ -211,16 +275,25 @@ pub async fn commit(client: &GitClient, message: &str, amend: bool, sign_off: bo
         args.push("--signoff");
     }
     let keep_message = amend && message.trim().is_empty();
-    let mut req = if keep_message {
+    if keep_message {
         args.push("--no-edit");
-        GitReq::new("commit", args)
     } else {
         args.extend(["-F", "-"]);
-        GitReq::new("commit", args).stdin(message.as_bytes().to_vec())
-    };
+    }
+    if let Some(paths) = only {
+        args.extend(["--only", "--"]);
+        args.extend(paths.iter().map(String::as_str));
+    }
+    let mut req = GitReq::new("commit", args);
+    if !keep_message {
+        req = req.stdin(message.as_bytes().to_vec());
+    }
     req = req.user().timeout(Some(COMMIT_TIMEOUT));
-    let out = client.exec_allow_failure(req).await?;
-    Ok(result(out))
+    let committed = result(client.exec_allow_failure(req).await?);
+    Ok(match staged_first {
+        Some(added) => combine(added, committed),
+        None => committed,
+    })
 }
 
 /// Most untracked paths per `git clean` call, which has no stdin form.
@@ -447,32 +520,93 @@ mod e2e {
 
         // Nothing staged: Git refuses.
         std::fs::write(dir.join("a.txt"), "1\n").unwrap();
-        assert!(!commit(&client, "nothing", false, false).await.unwrap().ok);
+        assert!(!commit(&client, "nothing", None, false, false).await.unwrap().ok);
 
         // A message with a leading dash, an issue number and non-ASCII text arrives intact.
         stage(&client, &strs(&["a.txt"])).await.unwrap();
         let message = "-leading dash\n\n#123 is the issue\nnaïve café ✓";
-        let r = commit(&client, message, false, false).await.unwrap();
+        let r = commit(&client, message, None, false, false).await.unwrap();
         assert!(r.ok, "{r:?}");
         assert_eq!(body("HEAD").await, message);
 
         // Empty message: Git refuses, the index keeps its change.
         std::fs::write(dir.join("a.txt"), "2\n").unwrap();
         stage(&client, &strs(&["a.txt"])).await.unwrap();
-        let r = commit(&client, "  \n", false, false).await.unwrap();
+        let r = commit(&client, "  \n", None, false, false).await.unwrap();
         assert!(!r.ok && r.stderr.contains("empty commit message"), "{r:?}");
 
         // Amend with no message keeps the old one and takes the staged change.
-        assert!(commit(&client, "", true, false).await.unwrap().ok);
+        assert!(commit(&client, "", None, true, false).await.unwrap().ok);
         assert_eq!(body("HEAD").await, message);
         assert_eq!(status_of(&client).await, vec![]);
 
         // Amend with a new message and a sign-off.
-        let r = commit(&client, "reworded", true, true).await.unwrap();
+        let r = commit(&client, "reworded", None, true, true).await.unwrap();
         assert!(r.ok, "{r:?}");
         assert_eq!(body("HEAD").await, "reworded\n\nSigned-off-by: T <t@t>");
         let count = Command::new("git").arg("-C").arg(&dir).args(["rev-list", "--count", "HEAD"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "1", "amend did not add a commit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn commit_selected_paths_only() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-commit-paths-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "t@t"]);
+        git(&dir, &["config", "user.name", "T"]);
+        git(&dir, &["config", "commit.gpgsign", "false"]);
+        for name in ["a.txt", "b.txt", "old.txt", "gone.txt"] {
+            std::fs::write(dir.join(name), "base\n").unwrap();
+        }
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+        let files_in = |rev: &str| {
+            let out = Command::new("git").arg("-C").arg(&dir)
+                .args(["diff-tree", "-r", "--name-only", "--no-commit-id", "--no-renames", rev]).output().unwrap();
+            let mut v: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect();
+            v.sort();
+            v
+        };
+
+        // b.txt is staged but not selected. The selection covers an unstaged change,
+        // an untracked file, a deletion and a rename (both paths).
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "changed\n").unwrap();
+        git(&dir, &["add", "b.txt"]);
+        std::fs::write(dir.join("new.txt"), "new\n").unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::rename(dir.join("old.txt"), dir.join("renamed.txt")).unwrap();
+        let chosen = strs(&["a.txt", "new.txt", "gone.txt", "renamed.txt", "old.txt"]);
+        let r = commit(&client, "selected", Some(&chosen), false, false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(files_in("HEAD"), strs(&["a.txt", "gone.txt", "new.txt", "old.txt", "renamed.txt"]));
+        assert_eq!(status_of(&client).await, vec![("b.txt".into(), true, false, false)], "b.txt stays staged");
+
+        // With nothing else staged, the selection is the whole commit.
+        std::fs::write(dir.join("a.txt"), "again\n").unwrap();
+        let r = commit(&client, "just a", Some(&strs(&["a.txt", "b.txt"])), false, false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(files_in("HEAD"), strs(&["a.txt", "b.txt"]));
+        assert_eq!(status_of(&client).await, vec![]);
+
+        // An amend naming no paths changes the message and leaves b.txt staged.
+        std::fs::write(dir.join("b.txt"), "staged, not amended\n").unwrap();
+        git(&dir, &["add", "b.txt"]);
+        let r = commit(&client, "just a, reworded", Some(&[]), true, false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(files_in("HEAD"), strs(&["a.txt", "b.txt"]));
+        assert_eq!(status_of(&client).await, vec![("b.txt".into(), true, false, false)]);
+        assert!(matches!(commit(&client, "x", Some(&[]), false, false).await, Err(GitError::InvalidPath { .. })));
+        git(&dir, &["restore", "--staged", "--worktree", "b.txt"]);
+
+        // A failed commit leaves the selection staged.
+        std::fs::write(dir.join("a.txt"), "third\n").unwrap();
+        let r = commit(&client, "", Some(&strs(&["a.txt"])), false, false).await.unwrap();
+        assert!(!r.ok, "{r:?}");
+        assert_eq!(status_of(&client).await, vec![("a.txt".into(), true, false, false)]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

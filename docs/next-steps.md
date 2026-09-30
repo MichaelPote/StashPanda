@@ -132,7 +132,7 @@ Each item names the files it touches so it can be picked up cold.
       (theme, date format, graph order, show remote branches, show stashes), Git executables
       (`git.windowsExecutable`, `git.linuxExecutable`, `git.windowsExecutableFromLinux`,
       `git.wslDefaultDistro`, `git.wslAutomountRoot`), Console (`console.showInternal`,
-      `console.verboseHelpers`, `console.maxLines`), Polling, Cache. All fields exist in
+      `console.verboseHelpers`, `console.maxLines`), Polling, Cache, Commit (`commit.preselect`). All fields exist in
       `Settings` (see `bindings.ts`) and save through `settings.update(patch)`. Nothing in the UI
       edits settings today.
 - [ ] **SSH Keys page** (`src/components/settings/KeyManagerPage.vue`, `KeyRow.vue`,
@@ -233,6 +233,11 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       to edit the old message, the frontend loads it with `getCommitBody(key, "HEAD")`. There is no
       new oid in the result: the frontend reads the new HEAD from the refs it refetches. Timeout
       10 minutes, for slow commit hooks.
+      Extended on 2026-09-30 with `paths`: the paths are staged with `add -A`, and when other
+      files are staged too, the commit adds `--only` (paths on the command line, at most 24 KB,
+      because the message already uses stdin) so those stay staged and out of the commit. An
+      empty `paths` with `amend` runs `--amend --only` with no paths, which changes only the
+      message.
 - [ ] **c. `stash_save(message, include_untracked)`, `stash_apply(index, pop)`, `stash_drop(index)`**.
       The `getRepoStashes` query already exists.
 - [ ] **d. `branch_rename`, `reset(mode, target)`, `cherry_pick`, `revert`**. Cherry-pick and
@@ -247,10 +252,24 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
 
 ### Step 3: frontend
 
+- [x] **Multi-select in the Files panel** (2026-09-30). Click, Ctrl-click, Shift-click,
+      Ctrl+Shift-click, arrow keys with and without Shift and Ctrl, Home, End and Ctrl+A, from
+      `src/composables/useListSelection.ts`, which the Commit dialog's list uses too. reka-ui's
+      `Listbox` was checked first and not used: its mouse clicks ignore Shift and Ctrl. The diff
+      shows the last file clicked, not the whole selection. Ctrl+A outside a text field never
+      selects page text (`App.vue`) and selects every file in the active tab.
 - [ ] **Files panel**: context menu (stage, unstage, discard, open, reveal, copy path) and the
       Stage, Unstage and Discard toolbar groups.
-- [ ] **Commit message editor** with amend (loads the previous message). "Commit and push later"
-      waits for milestone 3, since push does not exist yet.
+- [x] **Commit dialog** (2026-09-30, `src/components/dialogs/CommitDialog.vue`, opened by the
+      toolbar's Commit button). Lists every outstanding file with a checkbox. The files selected
+      in the Files panel start ticked; with no selection, the `commit.preselect` setting decides
+      (`all`, the default, or `staged`); it is edited in `settings.json` until the Settings dialog
+      exists. Space
+      flips the ticks of the selected rows. Ticking exactly the staged files commits the index as
+      it is; any other set is committed as it is on disk, with a warning for partly staged files.
+      Amend loads the previous message, and the buttons change to "Amend Message" (nothing
+      ticked) or "Amend Commit" (files ticked). The message draft survives Cancel. "Commit & Push" is
+      shown disabled until push exists in milestone 3.
 - [ ] **Stash list in `BranchesPanel.vue`** replacing the `TODO(backend)` comment, with apply, pop
       and drop, plus the Save Stash and Apply Stash toolbar buttons.
 - [ ] **Commit context menu additions**: reset (soft, mixed or hard), cherry-pick, revert.

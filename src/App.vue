@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import { useEventListener } from "@vueuse/core";
 import { FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import AboutDialog from "@/components/dialogs/AboutDialog.vue";
+import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
 import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
@@ -18,8 +20,10 @@ import RepositoriesPanel from "@/components/shell/RepositoriesPanel.vue";
 import RepoTabStrip from "@/components/shell/RepoTabStrip.vue";
 import RepoWorkspace from "@/components/shell/RepoWorkspace.vue";
 import StatusBar from "@/components/shell/StatusBar.vue";
+import { isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
+import { openCommitDialog } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { useSessionsStore } from "@/stores/sessions";
@@ -45,6 +49,13 @@ onMounted(async () => {
   }
   ready.value = true;
   await sessions.restore();
+});
+
+// Ctrl+A never selects the page text: outside a text field it means "select every file", which
+// the active tab's Files panel does in its own listener. The native Edit > Select All menu item
+// sends the same key press, so it takes this path too.
+useEventListener(window, "keydown", (event: KeyboardEvent) => {
+  if (isSelectAllKey(event) && !isEditableTarget(event.target)) event.preventDefault();
 });
 
 onBeforeUnmount(() => {
@@ -90,7 +101,7 @@ async function refresh(): Promise<void> {
 <template>
   <TooltipProvider :delay-duration="300">
     <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
-      <AppToolbar @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" />
+      <AppToolbar :has-repo="sessions.active !== null" @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" @commit="openCommitDialog(sessions.active)" />
 
       <div
         v-if="sessions.notice"
@@ -195,6 +206,7 @@ async function refresh(): Promise<void> {
     <AddRepoDialog v-model:open="dialogs.addRepoOpen" />
     <CreateBranchDialog />
     <CreateTagDialog />
+    <CommitDialog />
     <ConfirmDialog />
     <AboutDialog />
   </TooltipProvider>

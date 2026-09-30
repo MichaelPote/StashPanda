@@ -1,13 +1,27 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { ChevronDownIcon, ChevronRightIcon, LoaderCircleIcon } from "@lucide/vue";
-import { commands, type ChangeStatus, type DiffTarget, type FileChange, type StatusEntry } from "@/lib/bindings";
+import { commands, type DiffTarget, type FileChange } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
+import {
+  STATE_CLASSES,
+  isEditableTarget,
+  isSelectAllKey,
+  letterState,
+  splitPath,
+  statusLetter,
+  worktreeSections as buildWorktreeSections,
+  type FileItem,
+  type FileSection,
+} from "@/lib/files";
 import { cn } from "@/lib/utils";
-import type { RepoSession, SelectedFile } from "@/stores/sessions";
+import { useListSelection } from "@/composables/useListSelection";
+import { useDialogsStore } from "@/stores/dialogs";
+import { emptyFileSelection, useSessionsStore, type RepoSession, type SelectedFile } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 
 const props = defineProps<{
@@ -15,25 +29,8 @@ const props = defineProps<{
 }>();
 
 const settings = useSettingsStore();
-
-/** One clickable line in either mode. */
-interface FileItem {
-  id: string;
-  path: string;
-  oldPath: string | null;
-  letter: string;
-  state: FileState;
-  added: number | null;
-  deleted: number | null;
-  binary: boolean;
-  target: DiffTarget;
-}
-
-interface Section {
-  key: string;
-  title: string;
-  items: FileItem[];
-}
+const sessions = useSessionsStore();
+const dialogs = useDialogsStore();
 
 const selectedRow = computed(() => props.session.selectedRow);
 const mode = computed<"none" | "commit" | "worktree">(() => {
@@ -41,62 +38,6 @@ const mode = computed<"none" | "commit" | "worktree">(() => {
   if (!row) return "none";
   return row.kind === "workingTree" ? "worktree" : "commit";
 });
-
-// ---- Status letters ------------------------------------------------------------------------
-
-type FileState = "added" | "modified" | "deleted" | "renamed" | "conflict" | "untracked" | "neutral";
-
-/** Badge and selected-row band per file state, written out in full so Tailwind finds them. */
-const STATE_CLASSES: Record<FileState, { badge: string; band: string }> = {
-  added: { badge: "badge-added", band: "band-added" },
-  modified: { badge: "badge-modified", band: "band-modified" },
-  deleted: { badge: "badge-deleted", band: "band-deleted" },
-  renamed: { badge: "badge-renamed", band: "band-renamed" },
-  conflict: { badge: "badge-conflict", band: "band-conflict" },
-  untracked: { badge: "badge-untracked", band: "band-untracked" },
-  neutral: { badge: "badge-neutral", band: "band-untracked" },
-};
-
-function letterState(letter: string): FileState {
-  switch (letter.charAt(0)) {
-    case "A":
-      return "added";
-    case "M":
-      return "modified";
-    case "D":
-      return "deleted";
-    case "R":
-    case "C":
-      return "renamed";
-    case "U":
-      return "conflict";
-    case "?":
-      return "untracked";
-    default:
-      return "neutral";
-  }
-}
-
-function statusLetter(status: ChangeStatus): string {
-  switch (status) {
-    case "added":
-      return "A";
-    case "modified":
-      return "M";
-    case "deleted":
-      return "D";
-    case "renamed":
-      return "R";
-    case "copied":
-      return "C";
-    case "typeChanged":
-      return "T";
-    case "unmerged":
-      return "U";
-    case "unknown":
-      return "?";
-  }
-}
 
 // ---- Commit mode ---------------------------------------------------------------------------
 
@@ -144,6 +85,7 @@ watch(
   () => selectedRow.value?.oid,
   () => {
     parentIndex.value = 0;
+    props.session.fileSelection = emptyFileSelection();
     message.value = null;
     messageExpanded.value = false;
     messageError.value = null;
@@ -188,7 +130,7 @@ const commitTarget = computed<DiffTarget | null>(() => {
   return { type: "commit", commit: row.oid, parent: parentOid.value };
 });
 
-const commitSections = computed<Section[]>(() => {
+const commitSections = computed<FileSection[]>(() => {
   const target = commitTarget.value;
   if (!target) return [];
   const items: FileItem[] = changes.value.map((c) => {
@@ -218,56 +160,11 @@ const dateText = computed(() => {
 
 // ---- Working tree mode ---------------------------------------------------------------------
 
-function worktreeItem(
-  entry: StatusEntry,
-  section: string,
-  letter: string,
-  target: DiffTarget,
-  state: FileState = letterState(letter),
-): FileItem {
-  return {
-    id: `${section}:${entry.path}`,
-    path: entry.path,
-    oldPath: entry.origPath,
-    letter,
-    state,
-    added: null,
-    deleted: null,
-    binary: false,
-    target,
-  };
-}
-
-const worktreeSections = computed<Section[]>(() => {
-  const entries = props.session.status?.entries ?? [];
-  const staged: FileItem[] = [];
-  const unstaged: FileItem[] = [];
-  const untracked: FileItem[] = [];
-  const conflicted: FileItem[] = [];
-  for (const e of entries) {
-    if (e.ignored) continue;
-    if (e.conflicted) {
-      conflicted.push(worktreeItem(e, "conflicted", `${e.x}${e.y}`.replace(/\./g, ""), { type: "unstaged" }, "conflict"));
-      continue;
-    }
-    if (e.untracked) {
-      untracked.push(worktreeItem(e, "untracked", "?", { type: "untracked" }));
-      continue;
-    }
-    if (e.staged || e.x !== ".") staged.push(worktreeItem(e, "staged", e.x, { type: "staged" }));
-    if (e.unstaged || (e.y !== "." && e.y !== "?")) unstaged.push(worktreeItem(e, "unstaged", e.y, { type: "unstaged" }));
-  }
-  return [
-    { key: "staged", title: "Staged", items: staged },
-    { key: "unstaged", title: "Unstaged", items: unstaged },
-    { key: "untracked", title: "Untracked", items: untracked },
-    { key: "conflicted", title: "Conflicted", items: conflicted },
-  ];
-});
+const worktreeSections = computed<FileSection[]>(() => buildWorktreeSections(props.session.status));
 
 // ---- Shared list behaviour -----------------------------------------------------------------
 
-const sections = computed<Section[]>(() => {
+const sections = computed<FileSection[]>(() => {
   if (mode.value === "commit") return commitSections.value;
   if (mode.value === "worktree") return worktreeSections.value;
   return [];
@@ -275,18 +172,46 @@ const sections = computed<Section[]>(() => {
 
 const flat = computed<FileItem[]>(() => sections.value.flatMap((s) => s.items));
 
-function isSelected(item: FileItem): boolean {
+/** The row whose diff is shown: the last one clicked, whatever else is selected. */
+function isFocus(item: FileItem): boolean {
   const sel = props.session.selectedFile;
   return sel !== null && sel.path === item.path && sel.target.type === item.target.type;
 }
 
-function select(item: FileItem): void {
+/** More than one row selected, so the focus row gets an outline to show which diff is open. */
+const multiple = computed(() => props.session.fileSelection.ids.size > 1);
+
+function showDiff(item: FileItem): void {
   const next: SelectedFile = { path: item.path, oldPath: item.oldPath, target: item.target };
   props.session.selectedFile = next;
 }
 
-// Drop a selected working tree file that is no longer in the list after a status refresh.
+const byId = computed(() => new Map(flat.value.map((i) => [i.id, i])));
+
+const list = useListSelection({
+  order: () => flat.value.map((i) => i.id),
+  get: () => props.session.fileSelection,
+  set: (next) => {
+    props.session.fileSelection = next;
+  },
+  onActivate: (id) => {
+    const item = byId.value.get(id);
+    if (item) showDiff(item);
+  },
+  reveal: (id) => {
+    const item = byId.value.get(id);
+    if (item) document.getElementById(rowId(item))?.scrollIntoView({ block: "nearest" });
+  },
+  initialCursor: () => flat.value.find((i) => isFocus(i))?.id ?? null,
+});
+
+function isSelected(item: FileItem): boolean {
+  return list.isSelected(item.id);
+}
+
+// Drop rows that are no longer in the list after a status refresh, and the diff with them.
 watch(flat, (items) => {
+  list.prune();
   const sel = props.session.selectedFile;
   if (!sel || mode.value === "none") return;
   if (!items.some((i) => i.path === sel.path && i.target.type === sel.target.type)) {
@@ -295,28 +220,19 @@ watch(flat, (items) => {
 });
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-  const items = flat.value;
-  if (items.length === 0) return;
-  event.preventDefault();
-  const current = items.findIndex((i) => isSelected(i));
-  let next: number;
-  if (current < 0) next = event.key === "ArrowDown" ? 0 : items.length - 1;
-  else next = Math.min(items.length - 1, Math.max(0, current + (event.key === "ArrowDown" ? 1 : -1)));
-  const item = items[next];
-  if (item) {
-    select(item);
-    document.getElementById(rowId(item))?.scrollIntoView({ block: "nearest" });
-  }
+  list.onKeydown(event);
 }
+
+// Ctrl+A selects every file in the active tab's list. App.vue stops the browser from selecting
+// the page text; this listener only does the selecting. Text fields keep their own Ctrl+A.
+useEventListener(window, "keydown", (event: KeyboardEvent) => {
+  if (!isSelectAllKey(event) || isEditableTarget(event.target)) return;
+  if (sessions.activeKey !== props.session.key || dialogs.active !== null || dialogs.addRepoOpen) return;
+  list.selectAll();
+});
 
 function rowId(item: FileItem): string {
   return `file-${props.session.key.slice(0, 8)}-${item.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-}
-
-function splitPath(path: string): { dir: string; name: string } {
-  const idx = path.lastIndexOf("/");
-  return idx < 0 ? { dir: "", name: path } : { dir: path.slice(0, idx + 1), name: path.slice(idx + 1) };
 }
 
 const totalCount = computed(() => flat.value.length);
@@ -370,7 +286,7 @@ const totalCount = computed(() => flat.value.length);
         </div>
       </div>
 
-      <div class="min-h-0 flex-1 overflow-auto scrollbar-thin">
+      <div class="min-h-0 flex-1 overflow-auto scrollbar-thin select-none">
         <div v-if="mode === 'commit' && changesLoading && changes.length === 0" class="flex h-(--row-h) items-center gap-1.5 px-2 text-base text-muted-foreground">
           <LoaderCircleIcon class="size-3 animate-spin" /> Loading changes…
         </div>
@@ -395,12 +311,15 @@ const totalCount = computed(() => flat.value.length);
               type="button"
               :class="
                 cn(
-                  'flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 text-left text-base',
+                  'flex h-(--row-h) w-full cursor-pointer items-center gap-1.5 px-2 text-left text-base outline-none',
                   isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
+                  multiple && isFocus(item) && 'shadow-[inset_2px_0_0_var(--ring)]',
                 )
               "
+              :aria-selected="isSelected(item)"
               :title="item.oldPath ? `${item.oldPath} → ${item.path}` : item.path"
-              @click="select(item)"
+              @mousedown="list.onMousedown"
+              @click="list.onClick(item.id, $event)"
             >
               <span
                 :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"

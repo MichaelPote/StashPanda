@@ -92,10 +92,13 @@ export const commands = {
 	 */
 	opDiscard: (key: string, tracked: string[], untracked: string[], toHead: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_discard", { key, tracked, untracked, toHead })),
 	/**
-	 *  Commit the index. With `amend` and an empty `message` the previous message
-	 *  is kept; fetch it with `getCommitBody(key, "HEAD")` to edit it instead.
+	 *  Commit the index, or with `paths` stage exactly those paths and commit only
+	 *  them (other staged paths stay staged). Pass both paths of a rename. An
+	 *  empty `paths` with `amend` changes only the message. With
+	 *  `amend` and an empty `message` the previous message is kept; fetch it with
+	 *  `getCommitMessage(key, "HEAD")` to edit it instead.
 	 */
-	opCommit: (key: string, message: string, amend: boolean, signOff: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_commit", { key, message, amend, signOff })),
+	opCommit: (key: string, message: string, paths: string[] | null, amend: boolean, signOff: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_commit", { key, message, paths, amend, signOff })),
 	/**
 	 *  Delete `<git dir>/index.lock` after a Git process crashed or was killed
 	 *  and left it behind. The frontend confirms with the user first, since
@@ -153,6 +156,17 @@ export type CacheSettings = {
 export type Category = "userAction" | "internal" | "watcher";
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged" | "unmerged" | "unknown";
+
+/**  Which files the Commit dialog ticks when nothing is selected in the file list. */
+export type CommitPreselect = 
+/**  Every changed file: staged, unstaged and untracked (not conflicted). */
+"all" | 
+/**  Only files with staged changes, committed as they are staged. */
+"staged";
+
+export type CommitSettings = {
+	preselect?: CommitPreselect,
+};
 
 /**  How a repository is reached. `Auto` resolves from the path on every open. */
 export type Connection = { type: "auto" } | { type: "local" } | { type: "wsl"; distro: string } | { type: "ssh"; host: string; user: string | null; port: number | null; identityFile: string | null; remoteGit: string | null };
@@ -549,6 +563,7 @@ export type Settings = {
 	console?: ConsoleSettings,
 	polling?: Polling,
 	cache?: CacheSettings,
+	commit?: CommitSettings,
 	library?: RepoLibrary,
 };
 

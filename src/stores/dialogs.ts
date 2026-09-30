@@ -1,6 +1,7 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
 import type { OpResult } from "@/lib/bindings";
+import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
   key: string;
@@ -16,6 +17,20 @@ export interface CreateTagPayload {
   targetLabel: string;
 }
 
+export interface CommitPayload {
+  key: string;
+  /** Every outstanding file in the working tree. */
+  files: CommitFile[];
+  /** Paths ticked when the dialog opens. */
+  ticked: string[];
+  /** The ticks came from the file list selection rather than the preselect setting. */
+  fromSelection: boolean;
+  /** Checked-out branch, or null when HEAD is detached. */
+  branch: string | null;
+  /** False on an unborn branch, where there is no commit to amend. */
+  hasHead: boolean;
+}
+
 export interface ConfirmPayload {
   title: string;
   message: string;
@@ -27,6 +42,7 @@ export interface ConfirmPayload {
 export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
+  commit: { payload: CommitPayload; result: OpResult | null };
   confirm: { payload: ConfirmPayload; result: boolean };
   about: { payload: null; result: null };
 }
@@ -37,6 +53,7 @@ export type DialogKind = keyof DialogSpecs;
 const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createBranch: null,
   createTag: null,
+  commit: null,
   confirm: false,
   about: null,
 };

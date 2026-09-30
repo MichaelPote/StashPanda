@@ -73,12 +73,15 @@ pub async fn op_discard(app: AppHandle, state: State<'_, AppState>, key: String,
     write_op!(app, state, key, |c| ops::discard(c, &tracked, &untracked, to_head).await)
 }
 
-/// Commit the index. With `amend` and an empty `message` the previous message
-/// is kept; fetch it with `getCommitBody(key, "HEAD")` to edit it instead.
+/// Commit the index, or with `paths` stage exactly those paths and commit only
+/// them (other staged paths stay staged). Pass both paths of a rename. An
+/// empty `paths` with `amend` changes only the message. With
+/// `amend` and an empty `message` the previous message is kept; fetch it with
+/// `getCommitMessage(key, "HEAD")` to edit it instead.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_commit(app: AppHandle, state: State<'_, AppState>, key: String, message: String, amend: bool, sign_off: bool) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::commit(c, &message, amend, sign_off).await)
+pub async fn op_commit(app: AppHandle, state: State<'_, AppState>, key: String, message: String, paths: Option<Vec<String>>, amend: bool, sign_off: bool) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::commit(c, &message, paths.as_deref(), amend, sign_off).await)
 }
 
 /// Delete `<git dir>/index.lock` after a Git process crashed or was killed

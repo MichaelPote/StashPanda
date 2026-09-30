@@ -4,10 +4,12 @@
  * refs and status afterwards, and never throws.
  */
 import { commands, type OpResult } from "@/lib/bindings";
+import { commitFiles } from "@/lib/files";
 import { errorMessage, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
+import { useSettingsStore } from "@/stores/settings";
 
 /** Runs one write operation and refetches refs and status once it has finished, whatever the outcome. */
 export async function runOp(key: string, op: Promise<IpcResult<OpResult>>): Promise<OpResult> {
@@ -103,6 +105,28 @@ export async function mergeInto(key: string, target: string, label: string = tar
 export async function createBranchHere(key: string, startPoint: string, startLabel: string): Promise<void> {
   const dialogs = useDialogsStore();
   await dialogs.open("createBranch", { key, startPoint, startLabel });
+}
+
+/**
+ * Opens the Commit dialog listing every outstanding file, with the files selected in the working
+ * tree list ticked, or when nothing is selected, what the `commit.preselect` setting says. The
+ * dialog runs the commit itself.
+ */
+export async function openCommitDialog(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const dialogs = useDialogsStore();
+  if (!session) {
+    sessions.notify("Open a repository first.");
+    return;
+  }
+  if (session.info.isBare) {
+    sessions.notify("A bare repository has no working tree to commit from.");
+    return;
+  }
+  const preselect = useSettingsStore().settings?.commit?.preselect ?? "all";
+  const { files, ticked, fromSelection } = commitFiles(session.status, session.fileSelection.ids, preselect);
+  const hasHead = (session.status?.headOid ?? null) !== null;
+  await dialogs.open("commit", { key: session.key, files, ticked, fromSelection, branch: currentBranch(session), hasHead });
 }
 
 /** Opens the Create Tag dialog for `target`. The dialog runs the command itself. */
