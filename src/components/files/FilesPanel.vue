@@ -381,7 +381,13 @@ const totalCount = computed(() => flat.value.length);
           <template v-if="section.items.length > 0">
             <div
               v-if="groupBy !== 'none'"
-              class="sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 smallcaps select-none"
+              :class="
+                cn(
+                  'sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 select-none',
+                  // Folder names keep their case; only the fixed status headings use small capitals.
+                  groupBy === 'folder' ? 'font-mono text-xs text-muted-foreground' : 'smallcaps',
+                )
+              "
             >
               {{ section.title }}
               <span class="tabular-nums">({{ section.items.length }})</span>
