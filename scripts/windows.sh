@@ -14,8 +14,9 @@
 #   scripts/windows.sh sync    # mirror the source and run npm install on Windows
 #
 # The mirror is one-way: edit the code in WSL, then re-run this script.
-# In `ux` mode only Rust changes need a re-run; Vue, TypeScript and CSS changes
-# hot reload in the running app.
+# In `ux` mode nothing needs a re-run: Vue, TypeScript and CSS changes hot
+# reload in the running app, and src-tauri/ keeps being copied to the mirror,
+# so the Windows `tauri dev` rebuilds and restarts the app after a Rust change.
 set -euo pipefail
 
 WIN_DIR='C:\src\stashpanda'
@@ -48,10 +49,15 @@ run_win() {
 # Win32_Process.Create shares no handles with us, so the call returns at once;
 # PowerShell's Start-Process does not return until the child exits when it is
 # launched through WSL interop.
+# ShowWindow = 0 hides the console window Windows would otherwise open for the
+# new cmd.exe. Nothing is written to it, since all output goes to the log
+# files, so it would only be an empty window titled after npm's last command.
+# The app's own window still shows: npm starts its children with the default
+# window mode, so the hidden setting stops at the first node process.
 start_win_detached() {
   local command="$1"
   (cd /mnt/c && powershell.exe -NoProfile -NonInteractive -Command \
-    "(Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'cmd.exe /c \"cd /d $WIN_DIR && $command\"'; CurrentDirectory = '$WIN_DIR' }).ProcessId") | tr -d '\r'
+    "\$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; (Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = 'cmd.exe /c \"cd /d $WIN_DIR && $command\"'; CurrentDirectory = '$WIN_DIR'; ProcessStartupInformation = \$startup }).ProcessId") | tr -d '\r'
 }
 
 # True while a Windows process is alive. tasklist called through interop
@@ -132,7 +138,12 @@ start_win_logged() {
   fi
   echo "Windows process id: $win_pid"
   # inotify does not fire on the /mnt/c mount, so poll the log files instead.
-  tail -n +1 -f ---disable-inotify --sleep-interval=1 "$WSL_DIR/tauri-dev.log" "$WSL_DIR/tauri-dev.err.log" | tr -d '\r' &
+  # --pid makes tail exit once this script has, however the script ends: a run
+  # whose cleanup never happened otherwise leaves its tail echoing every later
+  # run's log into the same terminal, so each line shows up once per old run.
+  # The `kill` in stop_win_logged only stops tr: $! is the last command in the
+  # pipeline.
+  tail -n +1 -f ---disable-inotify --sleep-interval=1 --pid=$$ "$WSL_DIR/tauri-dev.log" "$WSL_DIR/tauri-dev.err.log" | tr -d '\r' &
   tail_pid=$!
 }
 
@@ -152,6 +163,24 @@ wait_win_exit() {
       return
     fi
     sleep 3
+  done
+}
+
+# Copy src-tauri/ to the mirror every few seconds and report what changed. The
+# mirror's target/ and gen/ are excluded, which also keeps --delete off them.
+# Without this the Windows backend stays at the build from when the script
+# started, while Vite hot reloads frontend code that expects the newer IPC
+# types; a missing field then reaches the components as undefined.
+sync_rust_loop() {
+  local changed
+  while sleep 2; do
+    changed="$(rsync -a --delete --itemize-changes \
+      --exclude '/target' --exclude '/gen' \
+      "$SRC_DIR/src-tauri/" "$WSL_DIR/src-tauri/" 2>&1 | grep -E '^(>f|\*deleting)' || true)"
+    if [ -n "$changed" ]; then
+      echo "Copied Rust changes to the Windows mirror; tauri dev will rebuild:"
+      echo "$changed" | sed 's/^/  /'
+    fi
   done
 }
 
@@ -184,11 +213,12 @@ ux_mode() {
   # A Windows process on the port would shadow WSL's Vite for the app.
   require_free_win_port
 
-  local vite_pid=""
+  local vite_pid="" sync_pid=""
   cleanup() {
     trap - EXIT INT TERM
     echo
     echo "Stopping..."
+    if [ -n "$sync_pid" ]; then kill "$sync_pid" 2>/dev/null || true; fi
     stop_win_logged
     if [ -n "$vite_pid" ]; then
       kill "$vite_pid" 2>/dev/null || true
@@ -215,6 +245,9 @@ ux_mode() {
 
   echo "Starting the Windows app (it loads the frontend from WSL's Vite)"
   start_win_logged "npm run tauri dev -- --config src-tauri/tauri.wsl-dev.conf.json"
+  sync_rust_loop &
+  sync_pid=$!
+  echo "Rust changes under src-tauri/ are copied to the mirror as you save them."
   echo "Press Ctrl-C to stop both Vite and the Windows app."
   # Exit when Vite dies (the app is useless without it) or the Windows app exits.
   wait_win_exit "$vite_pid"
