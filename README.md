@@ -43,8 +43,10 @@ The Linux build runs inside WSL and appears on the Windows desktop through WSLg:
 npm run tauri dev
 ```
 
-Settings live in `~/.config/com.bravedigital.stashpanda/` (`settings.json` and `ui-state.json`)
-and the commit cache in `~/.local/share/com.bravedigital.stashpanda/stashpanda.sqlite`.
+Settings live in `~/.config/com.bravedigital.stashpanda/settings.json`. The commit cache and the
+remembered UI state (panel sizes, column widths, open tabs, the Console, Files panel and diff header
+choices, and each repository's hidden branches) live in
+`~/.local/share/com.bravedigital.stashpanda/stashpanda.sqlite`.
 
 ## Building for Windows
 

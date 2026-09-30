@@ -1,9 +1,9 @@
-//! Debounced writer for `settings.json` and `ui-state.json`.
+//! Debounced writer for `settings.json` and the UI state rows in the SQLite database.
 //!
 //! Callers send a [`PersistRequest`]; the task waits for the debounce window
 //! to pass with no further request of that kind, then snapshots the current
-//! value from `AppState` and writes it atomically. `flush_now` writes both
-//! files synchronously and is called on exit.
+//! value from `AppState` and writes it (the file atomically, the rows in one
+//! transaction). `flush_now` writes both synchronously and is called on exit.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::settings::{save_json_atomic, Settings};
+use crate::storage::{ui_prefs, Db};
 use crate::ui_state::UiState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub trait PersistSource: Send + Sync + 'static {
 pub struct PersistHandle {
     tx: mpsc::UnboundedSender<PersistRequest>,
     settings_path: PathBuf,
-    ui_state_path: PathBuf,
+    db: Arc<Db>,
 }
 
 impl PersistHandle {
@@ -43,13 +44,14 @@ impl PersistHandle {
         let _ = self.tx.send(what);
     }
 
-    /// Synchronous write of both files. Used from `RunEvent::ExitRequested`.
+    /// Synchronous write of settings and UI state. Used from `RunEvent::ExitRequested`.
     pub fn flush_now(&self, source: &dyn PersistSource) {
         if let Err(e) = save_json_atomic(&self.settings_path, &source.snapshot_settings()) {
             tracing::error!("could not save settings.json on exit: {e}");
         }
-        if let Err(e) = save_json_atomic(&self.ui_state_path, &source.snapshot_ui_state()) {
-            tracing::error!("could not save ui-state.json on exit: {e}");
+        let ui = source.snapshot_ui_state();
+        if let Err(e) = self.db.run_blocking(move |c| ui_prefs::save(c, &ui)) {
+            tracing::error!("could not save the UI state on exit: {e}");
         }
     }
 }
@@ -57,14 +59,14 @@ impl PersistHandle {
 /// Spawn the persist task on the Tauri async runtime.
 pub fn spawn(
     settings_path: PathBuf,
-    ui_state_path: PathBuf,
+    db: Arc<Db>,
     source: Arc<dyn PersistSource>,
 ) -> PersistHandle {
     let (tx, mut rx) = mpsc::unbounded_channel::<PersistRequest>();
     let handle = PersistHandle {
         tx,
         settings_path: settings_path.clone(),
-        ui_state_path: ui_state_path.clone(),
+        db: db.clone(),
     };
 
     tauri::async_runtime::spawn(async move {
@@ -110,9 +112,8 @@ pub fn spawn(
                     if ui_due.is_some_and(|t| t <= now) {
                         ui_due = None;
                         let snapshot = source.snapshot_ui_state();
-                        let path = ui_state_path.clone();
-                        if let Err(e) = tokio::task::spawn_blocking(move || save_json_atomic(&path, &snapshot)).await {
-                            tracing::error!("ui-state persist task panicked: {e}");
+                        if let Err(e) = db.run(move |c| ui_prefs::save(c, &snapshot)).await {
+                            tracing::error!("could not save the UI state: {e}");
                         }
                     }
                 }

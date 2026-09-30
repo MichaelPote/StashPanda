@@ -1,4 +1,4 @@
-import { computed, ref } from "vue";
+import { computed, ref, type WritableComputedRef } from "vue";
 import { defineStore } from "pinia";
 import { commands, events, type Panels, type UiState } from "@/lib/bindings";
 import { unwrap } from "@/lib/ipc";
@@ -17,6 +17,48 @@ type PanelSizeKey = keyof typeof PANEL_DEFAULTS;
 
 const DEBOUNCE_MS = 300;
 
+/**
+ * Values the Console, Files panel and diff header kept in the WebView's localStorage before they
+ * moved into the UI state (2026-09-30). Each turns the stored text into a patch, or null when the
+ * text is not a value it knows. `useLocalStorage` stored strings as they are, numbers and booleans
+ * as their text, and objects as JSON.
+ */
+const LEGACY_LOCAL_STORAGE: [string, (raw: string) => JsonObject | null][] = [
+  [
+    "stashpanda.console.filters",
+    (raw) => {
+      const v = JSON.parse(raw) as Record<string, unknown>;
+      const out: JsonObject = {};
+      for (const k of ["userAction", "internal", "watcher"]) if (typeof v[k] === "boolean") out[k] = v[k];
+      return { console: out };
+    },
+  ],
+  ["stashpanda.files.groupBy", (raw) => (["status", "folder", "none"].includes(raw) ? { files: { groupBy: raw } } : null)],
+  ["stashpanda.files.sortBy", (raw) => (["name", "status", "modified"].includes(raw) ? { files: { sortBy: raw } } : null)],
+  ["stashpanda.diff.mode", (raw) => (["unified", "side"].includes(raw) ? { diff: { layout: raw } } : null)],
+  ["stashpanda.diff.context", (raw) => (Number(raw) > 0 ? { diff: { contextLines: Math.round(Number(raw)) } } : null)],
+  ["stashpanda.diff.ignoreWhitespace", (raw) => ({ diff: { ignoreWhitespace: raw === "true" } })],
+  ["stashpanda.diff.ignoreCrAtEol", (raw) => ({ diff: { ignoreCrAtEol: raw === "true" } })],
+  ["stashpanda.diff.split", (raw) => (Number.isFinite(Number(raw)) ? { diff: { split: Number(raw) } } : null)],
+];
+
+/** Moves the old localStorage values into one patch and deletes them, so this runs only once. */
+function takeLegacyLocalStorage(): JsonObject | null {
+  let patch: JsonObject | null = null;
+  for (const [key, toPatch] of LEGACY_LOCAL_STORAGE) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null) continue;
+      const p = toPatch(raw);
+      if (p) patch = patch ? combinePatches(patch, p) : p;
+      localStorage.removeItem(key);
+    } catch {
+      // Unreadable storage or a malformed value: leave that one at its default.
+    }
+  }
+  return patch;
+}
+
 export const useUiStateStore = defineStore("uiState", () => {
   const state = ref<UiState | null>(null);
   let listening = false;
@@ -27,6 +69,8 @@ export const useUiStateStore = defineStore("uiState", () => {
 
   async function load(): Promise<void> {
     state.value = await unwrap(commands.uiStateGet());
+    const legacy = takeLegacyLocalStorage();
+    if (legacy) await update(legacy);
     if (!listening) {
       listening = true;
       await events.uiStateChanged.listen(async () => {
@@ -71,6 +115,17 @@ export const useUiStateStore = defineStore("uiState", () => {
     }, DEBOUNCE_MS);
   }
 
+  /**
+   * One remembered value as a ref: reads it from the UI state with a default for a missing value,
+   * and writes it with a debounced patch (shown at once, saved 300 ms after the last change).
+   */
+  function pref<T>(read: (s: UiState) => T | null | undefined, fallback: T, write: (value: T) => JsonObject): WritableComputedRef<T> {
+    return computed({
+      get: () => (state.value ? (read(state.value) ?? fallback) : fallback),
+      set: (value: T) => patchDebounced(write(value)),
+    });
+  }
+
   const panels = computed<Panels>(() => state.value?.panels ?? {});
 
   /** Saved percentage for a splitter panel, or the default when nothing is saved. */
@@ -108,6 +163,7 @@ export const useUiStateStore = defineStore("uiState", () => {
     update,
     flush,
     patchDebounced,
+    pref,
     panelSize,
     setPanelSize,
     setConsoleCollapsed,

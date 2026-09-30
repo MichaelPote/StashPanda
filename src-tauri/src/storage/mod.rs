@@ -1,10 +1,11 @@
-//! SQLite-backed commit and ref cache.
+//! SQLite database: the commit and ref cache, and remembered UI state (`ui_prefs`).
 //!
 //! One connection behind a mutex, used only through [`Db::run`], which moves
 //! the closure onto a blocking thread so the async runtime never waits on
 //! disk. WAL mode lets a page read proceed while a background write runs.
 
 pub mod repo_cache;
+pub mod ui_prefs;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -13,8 +14,9 @@ use rusqlite::Connection;
 
 use crate::error::{GitError, Result};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 const SCHEMA_SQL: &str = include_str!("schema.sql");
+const SCHEMA_V2_SQL: &str = include_str!("schema_v2.sql");
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -54,10 +56,15 @@ impl Db {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version < 1 {
             conn.execute_batch(SCHEMA_SQL)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            tracing::info!("cache database initialised at schema version {SCHEMA_VERSION}");
+            conn.pragma_update(None, "user_version", 1)?;
+            tracing::info!("cache database initialised at schema version 1");
         }
-        // Future migrations: `if version < 2 { ... }`.
+        if version < 2 {
+            conn.execute_batch(SCHEMA_V2_SQL)?;
+            conn.pragma_update(None, "user_version", 2)?;
+            tracing::info!("database migrated to schema version 2 (UI state tables)");
+        }
+        // Future migrations: `if version < 3 { ... }`.
         Ok(())
     }
 
@@ -112,6 +119,6 @@ mod tests {
                 rows.collect()
             })
             .unwrap();
-        assert_eq!(tables, vec!["commits", "refs", "repos"]);
+        assert_eq!(tables, vec!["commits", "refs", "repo_ui_prefs", "repos", "ui_prefs"]);
     }
 }

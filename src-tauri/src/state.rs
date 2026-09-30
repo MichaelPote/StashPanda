@@ -11,14 +11,15 @@ use crate::transport::ssh_pool::SshContext;
 use crate::platform::Host;
 use crate::repo::RepoHandle;
 use crate::persist::{self, PersistHandle, PersistRequest, PersistSource};
-use crate::settings::{load_json_or_default, Settings};
-use crate::storage::Db;
+use crate::settings::{load_json_migrated, load_json_or_default, migrate_settings, Settings};
+use crate::storage::{ui_prefs, Db};
 use crate::ui_state::UiState;
 
 pub struct AppPaths {
     pub config_dir: PathBuf,
     pub data_dir: PathBuf,
     pub settings_file: PathBuf,
+    /// Where the UI state lived before it moved to the database; imported once, then renamed.
     pub ui_state_file: PathBuf,
     pub cache_db: PathBuf,
 }
@@ -69,12 +70,10 @@ impl AppState {
         };
 
         let mut warnings = Vec::new();
-        let (settings, w) = load_json_or_default::<Settings>(&paths.settings_file);
+        let (settings, w) = load_json_migrated::<Settings>(&paths.settings_file, migrate_settings);
         warnings.extend(w);
-        let (ui_state, w) = load_json_or_default::<UiState>(&paths.ui_state_file);
-        warnings.extend(w);
-
         let db = Db::open(&paths.cache_db)?;
+        let ui_state = load_ui_state(&db, &paths.ui_state_file, &mut warnings);
 
         let inner = Arc::new(Inner {
             settings: RwLock::new(settings),
@@ -83,11 +82,7 @@ impl AppState {
             ui_state_revision: RwLock::new(0),
         });
 
-        let persist = persist::spawn(
-            paths.settings_file.clone(),
-            paths.ui_state_file.clone(),
-            inner.clone(),
-        );
+        let persist = persist::spawn(paths.settings_file.clone(), db.clone(), inner.clone());
 
         tracing::info!(
             "config dir {}, data dir {}",
@@ -152,5 +147,68 @@ impl AppState {
 
     pub fn flush(&self) {
         self.persist.flush_now(self.inner.as_ref());
+    }
+}
+
+/// The UI state from the database. When the database has none yet, `ui-state.json` from before
+/// the move is imported into it and renamed to `ui-state.json.imported`, so it is read only once.
+fn load_ui_state(db: &Db, legacy_file: &std::path::Path, warnings: &mut Vec<String>) -> UiState {
+    match db.run_blocking(|c| ui_prefs::load(c)) {
+        Ok(Some(json)) => match serde_json::from_value::<UiState>(json) {
+            Ok(state) => return state,
+            Err(e) => {
+                warnings.push(format!("The saved UI state could not be read ({e}); panel sizes and similar choices are back to their defaults."));
+                return UiState::default();
+            }
+        },
+        Ok(None) => {}
+        Err(e) => {
+            warnings.push(format!("The saved UI state could not be read from the database: {e}"));
+            return UiState::default();
+        }
+    }
+    if !legacy_file.exists() {
+        return UiState::default();
+    }
+    let (state, w) = load_json_or_default::<UiState>(legacy_file);
+    warnings.extend(w);
+    let snapshot = state.clone();
+    match db.run_blocking(move |c| ui_prefs::save(c, &snapshot)) {
+        Ok(()) => {
+            let imported = legacy_file.with_extension("json.imported");
+            if let Err(e) = std::fs::rename(legacy_file, &imported) {
+                tracing::warn!("imported {} but could not rename it: {e}", legacy_file.display());
+            } else {
+                tracing::info!("imported {} into the database", legacy_file.display());
+            }
+        }
+        // The file stays where it is, so the next start tries again.
+        Err(e) => warnings.push(format!("Could not move {} into the database: {e}", legacy_file.display())),
+    }
+    state
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_ui_state_file_is_imported_once() {
+        let dir = std::env::temp_dir().join(format!("stashpanda-ui-import-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("ui-state.json");
+        std::fs::write(&file, r#"{"panels":{"leftWidth":33.0},"perRepo":{"r1":{"hiddenRefs":["refs/heads/x"]}}}"#).unwrap();
+        let db = Db::open_in_memory().unwrap();
+        let mut warnings = Vec::new();
+
+        let state = load_ui_state(&db, &file, &mut warnings);
+        assert_eq!(state.panels.left_width, 33.0);
+        assert!(!file.exists() && dir.join("ui-state.json.imported").exists());
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // The second start reads the database, not the (renamed) file.
+        let again = load_ui_state(&db, &file, &mut warnings);
+        assert_eq!(again.per_repo["r1"].hidden_refs, vec!["refs/heads/x"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

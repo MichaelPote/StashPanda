@@ -1,7 +1,10 @@
-//! `ui-state.json`: window geometry, panel sizes, column widths, open tabs.
+//! UI state: what the window remembers between runs, as opposed to settings. Panel sizes, column
+//! widths, open tabs, the Console, Files panel and diff header choices, dialog sizes, and for each
+//! repository the refs hidden from the graph.
 //!
-//! Written constantly and never hand-edited; safe to delete. Kept out of
-//! `settings.json` so the churn never races a hand edit there.
+//! Stored in the SQLite database as one row per value (`storage::ui_prefs`), written constantly
+//! and never hand-edited. Kept out of `settings.json` so the churn never races a hand edit there.
+//! Before 2026-09-30 it was `ui-state.json`, which is imported once and renamed.
 
 use serde::{Deserialize, Deserializer, Serialize};
 use specta::Type;
@@ -14,7 +17,95 @@ pub struct UiState {
     pub panels: Panels,
     pub graph_columns: GraphColumns,
     pub session: Session,
+    pub console: ConsoleView,
+    pub files: FilesView,
+    pub diff: DiffView,
+    /// Dialogs the user has dragged bigger, by the name each dialog gives `DialogContent`.
+    pub dialog_sizes: SortedMap<DialogSize>,
     pub per_repo: SortedMap<RepoUiState>,
+}
+
+/// A dialog's size in CSS pixels after the user dragged its edges. It is applied as a minimum,
+/// so the dialog never draws smaller than its content needs.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DialogSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The Console header's Log button, which switches the other three off and shows the standard
+/// output of the user's own commands as plain text, and its User, Internal and Watcher buttons
+/// (which kinds of command are listed). Log mode is the default.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ConsoleView {
+    pub user_action: bool,
+    pub internal: bool,
+    pub watcher: bool,
+    pub log: bool,
+}
+
+impl Default for ConsoleView {
+    fn default() -> Self {
+        Self { user_action: false, internal: false, watcher: false, log: true }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FilesGroupBy {
+    #[default]
+    Status,
+    Folder,
+    /// One flat list.
+    #[serde(rename = "none")]
+    Flat,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FilesSortBy {
+    #[default]
+    Name,
+    Status,
+    Modified,
+}
+
+/// The Files panel's grouping and sorting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FilesView {
+    pub group_by: FilesGroupBy,
+    pub sort_by: FilesSortBy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffLayout {
+    #[default]
+    Unified,
+    /// Side by side.
+    Side,
+}
+
+/// The diff header's choices and the side-by-side divider.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DiffView {
+    pub layout: DiffLayout,
+    /// Lines of context around each change; 99999 shows the whole file.
+    pub context_lines: u32,
+    pub ignore_whitespace: bool,
+    pub ignore_cr_at_eol: bool,
+    /// Share of the side-by-side width given to the old (left) side.
+    pub split: f64,
+}
+
+impl Default for DiffView {
+    fn default() -> Self {
+        Self { layout: DiffLayout::Unified, context_lines: 3, ignore_whitespace: false, ignore_cr_at_eol: false, split: 0.5 }
+    }
 }
 
 /// Sizes are percentages of the containing splitter group, matching what the
