@@ -58,7 +58,7 @@ pub async fn graph_rows(
     count: u32,
 ) -> Result<Vec<GraphRow>> {
     let h = repo(&state, &key).await?;
-    let snap = h.graph.load_full().ok_or_else(|| GitError::StaleVersion { requested: version, current: 0 })?;
+    let snap = h.graph.load_full().ok_or(GitError::StaleVersion { requested: version, current: 0 })?;
     if snap.version != version {
         return Err(GitError::StaleVersion { requested: version, current: snap.version });
     }
@@ -74,7 +74,7 @@ pub async fn graph_find(
     oids: Vec<String>,
 ) -> Result<Vec<Option<u32>>> {
     let h = repo(&state, &key).await?;
-    let snap = h.graph.load_full().ok_or_else(|| GitError::StaleVersion { requested: version, current: 0 })?;
+    let snap = h.graph.load_full().ok_or(GitError::StaleVersion { requested: version, current: 0 })?;
     if snap.version != version {
         return Err(GitError::StaleVersion { requested: version, current: snap.version });
     }

@@ -18,10 +18,11 @@ Each item names the files it touches so it can be picked up cold.
       key it computes, so re-adding either would have created a duplicate. Both entries and their
       open tabs in `ui-state.json` are gone. The Windows build keeps its own settings in
       `%APPDATA%\com.bravedigital.stashpanda\` and was already clean.
-- [ ] **Clippy warnings.** Clippy was first installed on 2026-09-23 (`rustup component add clippy`);
-      `cargo clippy --all-targets` reports 22 warnings, all in code written before then (octal-looking
-      `\0` escapes in parser test fixtures, `&PathBuf` parameters, and similar). One small cleanup
-      commit.
+- [x] **Clippy warnings** (fixed 2026-09-30). `cargo clippy --all-targets` reports none. The
+      24 warnings were style points: `\0` followed by a digit in parser test fixtures (now
+      `\x00`), `&PathBuf` parameters (now `&Path`), and small rewrites clippy suggested. The one
+      `#[allow]` is on `Oid::len`, which is the hash length and never zero, so an `is_empty`
+      would mean nothing.
 - [x] **Windows toolchain and workflow** (done 2026-09-21). Windows has rustup with the
       `stable-x86_64-pc-windows-msvc` toolchain, Node 24, Visual Studio 18 Community with the
       "Desktop development with C++" workload plus the Windows 11 SDK 10.0.26100 (the SDK was the

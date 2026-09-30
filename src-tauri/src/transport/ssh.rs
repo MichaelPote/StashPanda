@@ -217,7 +217,7 @@ impl Transport for SshTransport {
 /// missing.
 #[cfg(test)]
 mod e2e {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
     use std::sync::Arc;
 
@@ -246,7 +246,7 @@ mod e2e {
         assert!(st.success());
     }
 
-    fn start_sshd(dir: &PathBuf, port: u16) -> Sshd {
+    fn start_sshd(dir: &Path, port: u16) -> Sshd {
         let host_key = dir.join("host_key");
         keygen(&host_key);
         let cfg = format!(
@@ -303,7 +303,7 @@ mod e2e {
         let transport = SshTransport::new(target.clone(), None, ctx.clone());
 
         // Unknown host key is refused and remembered for "Trust this host".
-        let err = transport.probe().await.err().expect("unknown host must be refused");
+        let err = transport.probe().await.expect_err("unknown host must be refused");
         assert!(matches!(err, GitError::SshHostKeyUnknown { .. }), "{err:?}");
         ctx.trust_offered("127.0.0.1", port).unwrap();
         assert!(std::fs::read_to_string(dir.join("known_hosts")).unwrap().contains("ssh-ed25519"));

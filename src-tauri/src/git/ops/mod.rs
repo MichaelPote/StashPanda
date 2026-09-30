@@ -278,7 +278,7 @@ pub async fn discard(client: &GitClient, tracked: &[String], untracked: &[String
 
 #[cfg(test)]
 mod e2e {
-    use std::path::PathBuf;
+    use std::path::Path;
     use std::process::Command;
     use std::sync::Arc;
 
@@ -290,7 +290,7 @@ mod e2e {
     use crate::transport::paths::{IdentityMapper, NativePath};
     use crate::transport::SharedTransport;
 
-    fn git(dir: &PathBuf, args: &[&str]) {
+    fn git(dir: &Path, args: &[&str]) {
         let st = Command::new("git").arg("-C").arg(dir)
             .args(["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false"]).args(args).status().unwrap();
         assert!(st.success(), "git {args:?}");
@@ -343,7 +343,7 @@ mod e2e {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    fn client_for(dir: &PathBuf) -> GitClient {
+    fn client_for(dir: &Path) -> GitClient {
         let transport: SharedTransport = Arc::new(LocalTransport { git: which::which("git").unwrap(), mapper: Box::new(IdentityMapper), windows_git_from_linux: false });
         let version = crate::git::versions::GitVersion::parse(&Command::new("git").arg("version").output().unwrap().stdout).unwrap();
         GitClient { transport, repo: NativePath(dir.to_string_lossy().into_owned()), caps: Capabilities::for_version(version), console: Arc::new(ConsoleRecorder::new(None, "ops".into(), 4096)) }

@@ -64,7 +64,7 @@ pub async fn repo_resolve(
     Ok(RepoResolution {
         key,
         resolved_transport: res.resolved,
-        host_path: Some(res.host_path.0).filter(|_| !is_ssh),
+        host_path: (!is_ssh).then_some(res.host_path.0),
         native_path: res.native_path.0,
         display_name,
         warnings: res.warnings,

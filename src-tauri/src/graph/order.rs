@@ -55,10 +55,8 @@ pub fn order(store: &CommitStore, mode: GraphOrder) -> Vec<u32> {
         for i in &out {
             seen[*i as usize] = true;
         }
-        for i in 0..n {
-            if !seen[i] {
-                out.push(i as u32);
-            }
+        for (i, _) in seen.iter().enumerate().filter(|(_, seen)| !**seen) {
+            out.push(i as u32);
         }
     }
     out

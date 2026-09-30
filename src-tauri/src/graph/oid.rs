@@ -39,6 +39,9 @@ impl Oid {
         &self.bytes[..self.len as usize]
     }
 
+    // Byte length of the hash (20 for SHA-1, 32 for SHA-256), never zero, so an
+    // `is_empty` would have nothing to report.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.len as usize
     }

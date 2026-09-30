@@ -215,7 +215,7 @@ pub fn persist(conn: &mut Connection, key: &str, snap: &Arc<GraphSnapshot>) -> r
             }
         }
         let mut delete = tx.prepare("DELETE FROM commits WHERE repo_id = ?1 AND oid = ?2")?;
-        for (oid, _) in existing.iter() {
+        for oid in existing.keys() {
             if snap.store.index_of(oid).is_none() {
                 delete.execute(params![repo_id, oid.as_bytes()])?;
             }
@@ -258,7 +258,7 @@ pub fn evict(conn: &Connection, library_keys: &[String], max_repos: u32) -> rusq
         .collect::<rusqlite::Result<_>>()?;
     let mut kept = 0u32;
     for (id, key) in rows {
-        let in_library = library_keys.iter().any(|k| *k == key);
+        let in_library = library_keys.contains(&key);
         if in_library && kept < max_repos {
             kept += 1;
             continue;

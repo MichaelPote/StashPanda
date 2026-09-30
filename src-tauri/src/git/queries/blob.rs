@@ -35,11 +35,8 @@ pub fn detect_eol(bytes: &[u8]) -> Eol {
     let mut crlf = 0usize;
     let mut prev_cr = false;
     for b in bytes {
-        match b {
-            b'\n' => {
-                if prev_cr { crlf += 1 } else { lf += 1 }
-            }
-            _ => {}
+        if b == &b'\n' {
+            if prev_cr { crlf += 1 } else { lf += 1 }
         }
         prev_cr = *b == b'\r';
     }

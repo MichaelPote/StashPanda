@@ -190,9 +190,10 @@ pub struct LibraryGroup {
 }
 
 /// How a repository is reached. `Auto` resolves from the path on every open.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Connection {
+    #[default]
     Auto,
     Local,
     Wsl {
@@ -205,12 +206,6 @@ pub enum Connection {
         identity_file: Option<String>,
         remote_git: Option<String>,
     },
-}
-
-impl Default for Connection {
-    fn default() -> Self {
-        Connection::Auto
-    }
 }
 
 /// The transport `Auto` resolved to last time; shown in the UI and used to key

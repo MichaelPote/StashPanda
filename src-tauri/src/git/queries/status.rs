@@ -207,7 +207,7 @@ mod tests {
     use super::*;
 
     // Captured from the fixture repository: rename, added, unmerged, untracked.
-    const SAMPLE: &[u8] = b"# branch.oid 2422c79de60063b9087b72d5296086f13ac6294a\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +3 -1\0# stash 2\02 R. N... 100644 100644 100644 3e757656cf36eca53338e520d134963a44f793f8 3e757656cf36eca53338e520d134963a44f793f8 R100 moved.txt\0added.txt\01 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 6fd928e49eb0a24cd20972d3b280dd2447f46fb2 staged.txt\0u DU N... 100644 000000 100644 100644 94954abda49de8615a048f8d2e64b5de848e27a1 0000000000000000000000000000000000000000 2299c3797826 a.txt\0? untracked.txt\01 .M N... 100644 100644 100644 aaaa bbbb sp ace.txt\0";
+    const SAMPLE: &[u8] = b"# branch.oid 2422c79de60063b9087b72d5296086f13ac6294a\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +3 -1\0# stash 2\x002 R. N... 100644 100644 100644 3e757656cf36eca53338e520d134963a44f793f8 3e757656cf36eca53338e520d134963a44f793f8 R100 moved.txt\0added.txt\x001 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 6fd928e49eb0a24cd20972d3b280dd2447f46fb2 staged.txt\0u DU N... 100644 000000 100644 100644 94954abda49de8615a048f8d2e64b5de848e27a1 0000000000000000000000000000000000000000 2299c3797826 a.txt\0? untracked.txt\x001 .M N... 100644 100644 100644 aaaa bbbb sp ace.txt\0";
 
     #[test]
     fn parses_headers_and_every_entry_kind() {

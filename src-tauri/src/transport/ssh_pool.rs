@@ -3,7 +3,7 @@
 //! policy and the authentication chain.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -332,14 +332,14 @@ async fn connect(target: &SshTarget, ctx: &SshContext) -> Result<SshConn> {
     Err(GitError::SshAuthFailed { host: target.host.clone(), methods_tried: tried })
 }
 
-fn expand_tilde(p: &PathBuf) -> PathBuf {
+fn expand_tilde(p: &Path) -> PathBuf {
     let s = p.to_string_lossy();
     if let Some(rest) = s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\")) {
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             return PathBuf::from(home).join(rest);
         }
     }
-    p.clone()
+    p.to_path_buf()
 }
 
 /// Returns Some(true) on success, Some(false) when the agent had keys but none

@@ -42,9 +42,9 @@ pub async fn keys_scan(state: State<'_, AppState>, extra_dirs: Vec<String>) -> R
 #[tauri::command]
 #[specta::specta]
 pub async fn keys_inspect(path: String) -> Result<KeyInfo> {
-    Ok(tokio::task::spawn_blocking(move || keys::inspect(Path::new(&path)))
+    tokio::task::spawn_blocking(move || keys::inspect(Path::new(&path)))
         .await
-        .map_err(|e| GitError::internal(e.to_string()))?)
+        .map_err(|e| GitError::internal(e.to_string()))
 }
 
 /// Check a passphrase and optionally remember it for this session.

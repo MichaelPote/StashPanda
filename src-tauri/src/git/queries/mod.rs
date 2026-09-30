@@ -12,7 +12,7 @@ pub mod status;
 /// transport. Skipped when `git` is not on PATH.
 #[cfg(test)]
 mod e2e {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::Arc;
 
@@ -23,7 +23,7 @@ mod e2e {
     use crate::transport::paths::{IdentityMapper, NativePath};
     use crate::transport::SharedTransport;
 
-    fn git(dir: &PathBuf, args: &[&str]) {
+    fn git(dir: &Path, args: &[&str]) {
         let st = Command::new("git")
             .arg("-C").arg(dir)
             .args(["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false"])
@@ -57,7 +57,7 @@ mod e2e {
         dir
     }
 
-    async fn client_for(dir: &PathBuf) -> GitClient {
+    async fn client_for(dir: &Path) -> GitClient {
         let transport: SharedTransport = Arc::new(LocalTransport {
             git: which::which("git").unwrap(),
             mapper: Box::new(IdentityMapper),
