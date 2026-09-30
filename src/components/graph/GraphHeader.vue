@@ -96,7 +96,7 @@ function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEve
       class="group absolute top-0 z-10 flex h-full w-[7px] cursor-col-resize justify-center outline-none"
       :style="d.position"
       :aria-label="d.label"
-      :title="d.column === 'graph' ? 'Drag to set the graph width; double-click to size it to the graph' : 'Drag to set the column width; double-click for the default width'"
+      :title="d.column === 'graph' ? 'Drag to set the graph width; double-click to size it to the graph' : 'Drag to set the column width; double-click to size it to its contents'"
       @pointerdown="startDrag(d.column, d.direction, $event)"
       @dblclick="emit('resize', d.column, null)"
     >

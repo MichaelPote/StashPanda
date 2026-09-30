@@ -22,6 +22,7 @@ fn empty_meta() -> GraphMeta {
         head_ref: None,
         worktree: None,
         ref_colours: Default::default(),
+        widest_authors: Vec::new(),
     }
 }
 

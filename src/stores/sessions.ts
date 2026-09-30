@@ -295,6 +295,7 @@ export const useSessionsStore = defineStore("sessions", () => {
       headRef: previous?.headRef ?? null,
       worktree: previous?.worktree ?? null,
       refColours: previous?.refColours ?? {},
+      widestAuthors: previous?.widestAuthors ?? [],
     });
     clearPages(session.graph);
     void refreshMeta(session, ev.version);

@@ -80,6 +80,9 @@ pub struct GraphMeta {
     /// Lane colour (palette index 0 to 11) at the tip of every ref shown in the graph, keyed by
     /// full ref name. Hidden refs, and refs whose commit is not in the graph, are absent.
     pub ref_colours: std::collections::BTreeMap<String, u8>,
+    /// The longest distinct author names (by character count, at most 24), so the frontend can
+    /// size the Author column to fit every row without measuring the whole history.
+    pub widest_authors: Vec<String>,
 }
 
 /// Full names of the refs (branches, remote branches, tags) switched off in the graph.
@@ -206,7 +209,15 @@ impl GraphSnapshot {
             head_ref: self.refs.head_ref.clone(),
             worktree: self.worktree,
             ref_colours: self.ref_colours(),
+            widest_authors: self.widest_authors(),
         }
+    }
+
+    fn widest_authors(&self) -> Vec<String> {
+        let mut names: Vec<&str> = self.store.authors.iter().map(|a| &*a.name).collect();
+        names.sort_unstable_by(|a, b| b.chars().count().cmp(&a.chars().count()).then(a.cmp(b)));
+        names.dedup();
+        names.into_iter().take(24).map(String::from).collect()
     }
 
     fn ref_colours(&self) -> std::collections::BTreeMap<String, u8> {

@@ -307,16 +307,16 @@ export type GitSettings = {
 };
 
 /**
- *  Pixel widths; the subject column takes the remainder. `graph` is None
- *  until the user drags the handle: the frontend then sizes the column to the
- *  lane count of the current snapshot.
+ *  Pixel widths; the commit message column takes the remainder. Each is None
+ *  until the user drags its divider: the frontend then sizes the column to its
+ *  content (the graph to the lane count, the others to their widest value).
  */
 export type GraphColumns = {
 	graph?: number | null,
-	author?: number,
-	date?: number,
+	author?: number | null,
+	date?: number | null,
 	/**  The short commit ID column, at the right-hand end. */
-	id?: number,
+	id?: number | null,
 };
 
 export type GraphMeta = {
@@ -334,6 +334,11 @@ export type GraphMeta = {
 	 *  full ref name. Hidden refs, and refs whose commit is not in the graph, are absent.
 	 */
 	refColours: { [key in string]: number },
+	/**
+	 *  The longest distinct author names (by character count, at most 24), so the frontend can
+	 *  size the Author column to fit every row without measuring the whole history.
+	 */
+	widestAuthors: string[],
 };
 
 export type GraphOrder = "date" | "topo";

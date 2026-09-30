@@ -13,7 +13,8 @@ import VirtualRowList from "@/components/graph/VirtualRowList.vue";
 import WorkingTreeRow from "@/components/graph/WorkingTreeRow.vue";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { useGraphPages } from "@/composables/useGraphPages";
-import { DEFAULT_AUTHOR_WIDTH, DEFAULT_DATE_WIDTH, DEFAULT_ID_WIDTH, autoGraphColumnWidth, ROW_HEIGHT } from "@/lib/graph/paths";
+import { autoAuthorWidth, autoDateWidth, autoIdWidth, fontsVersion } from "@/lib/graph/columnWidths";
+import { autoGraphColumnWidth, ROW_HEIGHT } from "@/lib/graph/paths";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
@@ -54,9 +55,20 @@ const total = computed(() => meta.value?.total ?? 0);
 const graphWidth = computed(
   () => uiState.state?.graphColumns?.graph ?? autoGraphColumnWidth(meta.value?.maxLanes ?? 0),
 );
-const authorWidth = computed(() => uiState.state?.graphColumns?.author ?? DEFAULT_AUTHOR_WIDTH);
-const dateWidth = computed(() => uiState.state?.graphColumns?.date ?? DEFAULT_DATE_WIDTH);
-const idWidth = computed(() => uiState.state?.graphColumns?.id ?? DEFAULT_ID_WIDTH);
+// Author, Date and ID size themselves to their widest possible value (re-measured once the web
+// fonts load) until a divider is dragged; double-clicking a divider returns to automatic.
+const authorWidth = computed(() => {
+  void fontsVersion.value;
+  return uiState.state?.graphColumns?.author ?? autoAuthorWidth(meta.value?.widestAuthors ?? []);
+});
+const dateWidth = computed(() => {
+  void fontsVersion.value;
+  return uiState.state?.graphColumns?.date ?? autoDateWidth(dateFormat.value);
+});
+const idWidth = computed(() => {
+  void fontsVersion.value;
+  return uiState.state?.graphColumns?.id ?? autoIdWidth();
+});
 
 const columnStyle = computed(() => ({
   "--col-graph": `${graphWidth.value}px`,
