@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { useEventListener, useLocalStorage } from "@vueuse/core";
+import { useEventListener, useLocalStorage, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronRightIcon, LoaderCircleIcon } from "@lucide/vue";
 import { commands, type DiffTarget, type FileChange } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
@@ -21,6 +21,8 @@ import {
   type GroupBy,
   type SortBy,
 } from "@/lib/files";
+import { fontsVersion, rowTextWidth } from "@/lib/graph/columnWidths";
+import { remToPx } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
 import { useListSelection } from "@/composables/useListSelection";
 import { useDialogsStore } from "@/stores/dialogs";
@@ -291,6 +293,33 @@ function rowId(item: FileItem): string {
 }
 
 const totalCount = computed(() => flat.value.length);
+
+// ---- Name and path columns -----------------------------------------------------------------
+//
+// Unless the list is grouped by folder (where the heading has the path), each row shows the file
+// name in a column of one shared width, then its folder, so names are never pushed out of view
+// by long paths and the paths line up.
+
+const tabular = computed(() => groupBy.value !== "folder");
+const listEl = ref<HTMLElement | null>(null);
+const listWidth = ref(0);
+useResizeObserver(listEl, () => {
+  listWidth.value = listEl.value?.clientWidth ?? 0;
+});
+
+/** The widest file name, at least 6rem and at most 55% of the list. */
+const nameColumnPx = computed(() => {
+  void fontsVersion.value;
+  const widest = Math.ceil(rowTextWidth(flat.value.map((i) => splitPath(i.path).name))) + 4;
+  const cap = listWidth.value > 0 ? Math.floor(listWidth.value * 0.55) : widest;
+  return Math.max(remToPx(6), Math.min(widest, cap));
+});
+
+/** The folder column: the file's folder, or where a renamed file came from. */
+function pathText(item: FileItem): string {
+  if (item.oldPath && item.oldPath !== item.path) return `from ${item.oldPath}`;
+  return splitPath(item.path).dir.replace(/\/$/, "");
+}
 </script>
 
 <template>
@@ -368,7 +397,7 @@ const totalCount = computed(() => flat.value.length);
         </div>
       </div>
 
-      <div class="min-h-0 flex-1 overflow-auto scrollbar-thin select-none">
+      <div ref="listEl" class="min-h-0 flex-1 overflow-auto scrollbar-thin select-none">
         <div v-if="mode === 'commit' && changesLoading && changes.length === 0" class="flex h-(--row-h) items-center gap-1.5 px-2 text-base text-muted-foreground">
           <LoaderCircleIcon class="size-3 animate-spin" /> Loading changes…
         </div>
@@ -414,13 +443,20 @@ const totalCount = computed(() => flat.value.length);
               >
                 {{ item.letter }}
               </span>
-              <span class="min-w-0 flex-1 truncate">
+              <template v-if="tabular">
+                <span class="shrink-0 truncate" :style="{ width: `${nameColumnPx}px` }">{{ splitPath(item.path).name }}</span>
+                <!-- Truncates from the start, so the end of the path, nearest the file, stays visible. -->
+                <span :class="cn('files-path min-w-0 flex-1 truncate text-[0.85em]', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">
+                  <span dir="ltr">{{ pathText(item) }}</span>
+                </span>
+              </template>
+              <span v-else class="min-w-0 flex-1 truncate">
                 <template v-if="item.oldPath && item.oldPath !== item.path">
                   <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
                   <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
                 </template>
                 <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
-                <span v-if="groupBy !== 'folder' || item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
+                <span v-if="item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
               </span>
               <span v-if="isStagedRow(item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
               <span v-if="sortingByDate && modifiedText(item)" class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" :title="modifiedTitle(item)">
@@ -438,3 +474,12 @@ const totalCount = computed(() => flat.value.length);
     </template>
   </section>
 </template>
+
+<style>
+/* Right-to-left layout puts the ellipsis at the start of the path; the inner dir="ltr" span keeps
+   the path itself in its normal order. */
+.files-path {
+  direction: rtl;
+  text-align: left;
+}
+</style>

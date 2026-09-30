@@ -42,6 +42,14 @@ function rowFont(): string {
   return `400 ${rootFontSizePx()}px ${fontVar("--font-sans")}`;
 }
 
+/** Widest of `texts` in the regular row font (`text-base`, IBM Plex Sans), in pixels. */
+export function rowTextWidth(texts: Iterable<string>): number {
+  const font = rowFont();
+  let widest = 0;
+  for (const t of texts) widest = Math.max(widest, textWidth(t, font));
+  return widest;
+}
+
 export function autoAuthorWidth(names: readonly string[]): number {
   const font = rowFont();
   const widest = names.reduce((max, name) => Math.max(max, textWidth(name, font)), 0);
