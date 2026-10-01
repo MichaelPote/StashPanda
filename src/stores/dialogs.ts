@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { OpResult, PullMode, StashEntry } from "@/lib/bindings";
+import type { OpResult, PullMode, PushTarget, StashEntry } from "@/lib/bindings";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -75,6 +75,20 @@ export interface PullPayload {
   autostash: boolean;
 }
 
+export interface PushPayload {
+  key: string;
+  /** The checked-out branch, which tracks no remote branch yet. */
+  branch: string;
+  /** Remote names, in config order. */
+  remotes: string[];
+}
+
+/** Where the Push dialog chose to push, and whether the branch should track it from now on. */
+export interface PushChoice {
+  target: PushTarget;
+  setUpstream: boolean;
+}
+
 export interface SettingsPayload {
   /** The page to show first (a section `id` from `components/settings/sections.ts`); General when absent. */
   section?: string;
@@ -95,6 +109,7 @@ export interface DialogSpecs {
   stashPush: { payload: StashPushPayload; result: OpResult | null };
   stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
   pull: { payload: PullPayload; result: OpResult | null };
+  push: { payload: PushPayload; result: PushChoice | null };
   confirm: { payload: ConfirmPayload; result: boolean };
   /** Resolves true when the changes were saved. */
   settings: { payload: SettingsPayload; result: boolean };
@@ -111,6 +126,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   stashPush: null,
   stashApply: null,
   pull: null,
+  push: null,
   confirm: false,
   settings: false,
   about: null,

@@ -7,12 +7,14 @@ use std::time::Duration;
 
 use tauri::{AppHandle, State};
 use tauri_specta::Event;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::{GitError, Result};
-use crate::git::ops::{self, OpResult, PullMode};
+use crate::git::ops::{self, OpResult, PullMode, PushTarget};
 use crate::graph::loader::refresh_if_changed;
 use crate::ipc::events::OperationProgress;
 use crate::ipc::query::repo;
+use crate::repo::RepoHandle;
 use crate::state::AppState;
 use crate::transport::paths::NativePath;
 
@@ -163,17 +165,10 @@ pub async fn op_pull(
     autostash: bool,
 ) -> Result<OpResult> {
     let h = repo(&state, &key).await?;
-    let emit = |line: String, cancellable: bool| {
-        let _ = OperationProgress { repo_id: key.clone(), op_id: op_id.clone(), line, cancellable }.emit(&app);
-    };
+    let emit = progress_emitter(&app, &key, &op_id);
     let out = {
         let op = h.start_operation(&op_id)?;
-        // Cancelling while another write still holds the gate stops the wait as well.
-        let _gate = tokio::select! {
-            biased;
-            _ = op.token.cancelled() => return Err(GitError::Cancelled),
-            g = h.write_gate.lock() => g,
-        };
+        let _gate = gate_or_cancel(&h, &op.token).await?;
         let progress = |line: String| emit(line, true);
         let fetched = ops::pull_fetch(&h.client, &remote, &branch, &progress, &op.token).await;
         // From here on Stop no longer applies: `opCancel` finds no operation and resolves false.
@@ -202,6 +197,91 @@ pub async fn op_pull(
         Some(lock_path) => Err(GitError::IndexLocked { lock_path }),
         None => Ok(r),
     })
+}
+
+/// Sends a running operation's progress as `operationProgress` events.
+fn progress_emitter<'a>(app: &'a AppHandle, key: &'a str, op_id: &'a str) -> impl Fn(String, bool) + Send + Sync + 'a {
+    move |line, cancellable| {
+        let _ = OperationProgress { repo_id: key.to_string(), op_id: op_id.to_string(), line, cancellable }.emit(app);
+    }
+}
+
+/// Wait for the write gate. Cancelling while another write still holds it stops the wait.
+async fn gate_or_cancel<'a>(h: &'a RepoHandle, token: &CancellationToken) -> Result<tokio::sync::MutexGuard<'a, ()>> {
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(GitError::Cancelled),
+        g = h.write_gate.lock() => Ok(g),
+    }
+}
+
+/// Run a network operation that is cancellable from start to end (fetch, push): registered
+/// under `op_id`, under the write gate but not the exclusive lock, with progress as
+/// `operationProgress` events and a refresh afterwards. A macro rather than a function taking an
+/// async closure, which Tauri's `Send` bound on commands cannot see through.
+macro_rules! network_op {
+    ($app:expr, $state:expr, $key:expr, $op_id:expr, |$h:ident, $progress:ident, $cancel:ident| $body:expr) => {{
+        let $h = repo(&$state, &$key).await?;
+        let emit = progress_emitter(&$app, &$key, &$op_id);
+        let out = {
+            let op = $h.start_operation(&$op_id)?;
+            let _gate = gate_or_cancel(&$h, &op.token).await?;
+            let $progress = |line: String| emit(line, true);
+            let $cancel = &op.token;
+            $body
+        };
+        after_write(&$app, &$state, &$key).await;
+        out
+    }};
+}
+
+/// Fetch from every remote (`git fetch --all`). `opId` works as for `opPull`; `opCancel` stops
+/// the fetch at any point, leaving the remote-tracking branches where they were.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String) -> Result<OpResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| ops::fetch_all(&h.client, &progress, cancel).await)
+}
+
+/// Push local `branch`. With no `target`, to the upstream it tracks (failing with `invalidPath`
+/// when it has none: call `getUpstream` first); with a `target`, there, and `setUpstream` makes
+/// the branch track it. Never forces: a rejected push comes back with `ok: false` and
+/// `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn op_push(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    op_id: String,
+    branch: String,
+    target: Option<PushTarget>,
+    set_upstream: bool,
+) -> Result<OpResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| {
+        let resolved = match target {
+            Some(t) => Ok((t, set_upstream)),
+            None => match ops::upstream_of(&h.client, &branch).await {
+                Ok(Some(t)) => Ok((t, false)),
+                Ok(None) => Err(GitError::InvalidPath { path: branch.clone(), reason: "the branch does not track a remote branch; choose where to push it".into() }),
+                Err(e) => Err(e),
+            },
+        };
+        match resolved {
+            Ok((target, set_upstream)) => ops::push(&h.client, &branch, &target, set_upstream, &progress, cancel).await,
+            Err(e) => Err(e),
+        }
+    })
+}
+
+/// The remote branch local `branch` tracks (`branch.<branch>.remote` and `.merge`), or null.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_upstream(state: State<'_, AppState>, key: String, branch: String) -> Result<Option<PushTarget>> {
+    let h = repo(&state, &key).await?;
+    let _shared = h.lock.read().await;
+    ops::upstream_of(&h.client, &branch).await
 }
 
 /// Stop a running operation started with `opId` (a pull while it fetches). Resolves false when

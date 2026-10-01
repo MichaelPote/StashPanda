@@ -169,6 +169,28 @@ export const commands = {
 	 */
 	opCancel: (key: string, opId: string) => typedError<boolean, GitError>(__TAURI_INVOKE("op_cancel", { key, opId })),
 	/**
+	 *  Fetch from every remote (`git fetch --all`). `opId` works as for `opPull`; `opCancel` stops
+	 *  the fetch at any point, leaving the remote-tracking branches where they were.
+	 */
+	opFetch: (key: string, opId: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_fetch", { key, opId })),
+	/**
+	 *  Push local `branch`. With no `target`, to the upstream it tracks (failing with `invalidPath`
+	 *  when it has none: call `getUpstream` first); with a `target`, there, and `setUpstream` makes
+	 *  the branch track it. Never forces: a rejected push comes back with `ok: false` and
+	 *  `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
+	 */
+	opPush: (key: string, opId: string, branch: string, target: {
+	remote: string,
+	/**  The branch name on the remote, without `refs/heads/`. */
+	branch: string,
+} | null, setUpstream: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push", { key, opId, branch, target, setUpstream })),
+	/**  The remote branch local `branch` tracks (`branch.<branch>.remote` and `.merge`), or null. */
+	getUpstream: (key: string, branch: string) => typedError<{
+	remote: string,
+	/**  The branch name on the remote, without `refs/heads/`. */
+	branch: string,
+} | null, GitError>(__TAURI_INVOKE("get_upstream", { key, branch })),
+	/**
 	 *  The pull mode the repository's Git config asks for when pulling into `branch`
 	 *  (`branch.<branch>.rebase`, `pull.rebase`, `pull.ff`), or null when none is set.
 	 */
@@ -668,6 +690,13 @@ export type PullMode =
 "rebase" | 
 /**  Only move the branch forward; refuse when both sides have new commits (`--ff-only`). */
 "fastForwardOnly";
+
+/**  Where a branch is pushed: a remote and the branch's name there. */
+export type PushTarget = {
+	remote: string,
+	/**  The branch name on the remote, without `refs/heads/`. */
+	branch: string,
+};
 
 export type RefEntry = {
 	/**  `refs/heads/dev` */

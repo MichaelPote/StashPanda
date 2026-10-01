@@ -11,6 +11,7 @@ import {
   type GraphProgressEvent,
   type GraphRow,
   type GraphSnapshotEvent,
+  type OperationProgress,
   type RefsSnapshot,
   type RepoChangedEvent,
   type RepoInfo,
@@ -80,6 +81,20 @@ export interface NoticeAction {
   run: () => void | Promise<void>;
 }
 
+/** A fetch, pull or push in progress in one repository. Replaced, never mutated. */
+export interface RunningOperation {
+  /** The id the operation was started with; `opCancel` takes it. */
+  opId: string;
+  /** What is happening, such as `Fetching from every remote`. */
+  title: string;
+  /** Git's latest progress update, such as `Receiving objects:  45% (450/1000)`; empty at first. */
+  line: string;
+  /** False once the operation has reached a step that cannot be stopped. */
+  cancellable: boolean;
+  /** Stop was pressed and the operation has not finished yet. */
+  stopping: boolean;
+}
+
 /** Rows selected in the Files panel, by `FileItem.id`. Replaced, never mutated. */
 export interface FileSelection {
   ids: Set<string>;
@@ -122,6 +137,8 @@ export interface RepoSession {
   /** A row index the graph view should scroll into view (set by the Branches panel). */
   reveal: { index: number } | null;
   watcherKind: WatcherKind | null;
+  /** The fetch, pull or push running in this repository, shown in the status bar. */
+  operation: RunningOperation | null;
 }
 
 function toEntry(ev: ConsoleEvent): ConsoleEntry {
@@ -217,6 +234,13 @@ export const useSessionsStore = defineStore("sessions", () => {
       buffer.push(toEntry(ev));
     }
     trimBuffer(buffer);
+  }
+
+  function onOperationProgress(ev: OperationProgress): void {
+    const session = sessions.get(ev.repoId);
+    const op = session?.operation;
+    if (!session || !op || op.opId !== ev.opId) return;
+    session.operation = { ...op, line: ev.line, cancellable: ev.cancellable };
   }
 
   // ---- Graph snapshot handling -------------------------------------------------------------
@@ -369,6 +393,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         events.graphProgressEvent.listen((event) => onGraphProgress(event.payload)),
         events.repoChangedEvent.listen((event) => onRepoChanged(event.payload)),
         events.watcherStateEvent.listen((event) => onWatcherState(event.payload)),
+        events.operationProgress.listen((event) => onOperationProgress(event.payload)),
       ]).then(() => undefined);
     }
     return initialised;
@@ -423,6 +448,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         scrollTop: 0,
         reveal: null,
         watcherKind: null,
+        operation: null,
       });
       sessions.set(key, session);
       setActive(key);

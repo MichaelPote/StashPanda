@@ -97,6 +97,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_rebase_abort,
             ipc::ops::op_pull,
             ipc::ops::op_cancel,
+            ipc::ops::op_fetch,
+            ipc::ops::op_push,
+            ipc::ops::get_upstream,
             ipc::ops::get_pull_mode,
         ])
         .events(collect_events![

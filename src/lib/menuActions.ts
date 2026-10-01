@@ -7,7 +7,16 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { events, type Theme } from "@/lib/bindings";
 import { errorMessage } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
-import { createBranchHere, createTagAt, openApplyStashDialog, openPullDialog, openStashDialog, removeFromLibrary } from "@/lib/repoActions";
+import {
+  createBranchHere,
+  createTagAt,
+  fetchAll,
+  openApplyStashDialog,
+  openPullDialog,
+  openStashDialog,
+  pushCurrentBranch,
+  removeFromLibrary,
+} from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
@@ -111,8 +120,10 @@ export async function dispatch(id: string): Promise<void> {
       await openPullDialog(sessions.active);
       return;
     case "repo.fetch":
+      await fetchAll(sessions.active);
+      return;
     case "repo.push":
-      sessions.notify("Coming in milestone 3.");
+      await pushCurrentBranch(sessions.active);
       return;
     case "repo.remove": {
       // The same removal as the Repositories context menu and the Edit Repository dialog.

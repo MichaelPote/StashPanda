@@ -13,6 +13,7 @@ import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
 import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
 import PullDialog from "@/components/dialogs/PullDialog.vue";
+import PushDialog from "@/components/dialogs/PushDialog.vue";
 import StashDialog from "@/components/dialogs/StashDialog.vue";
 import SettingsDialog from "@/components/settings/SettingsDialog.vue";
 import AddRepoDialog from "@/components/shell/AddRepoDialog.vue";
@@ -27,7 +28,7 @@ import StatusBar from "@/components/shell/StatusBar.vue";
 import { commitFileCount, isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
-import { openCommitDialog, openPullDialog, openStashDialog } from "@/lib/repoActions";
+import { fetchAll, openCommitDialog, openPullDialog, openStashDialog, pushCurrentBranch } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
@@ -113,6 +114,7 @@ const success = computed(() => sessions.noticeKind === "success");
     <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
       <AppToolbar :has-repo="sessions.active !== null" :commit-count="commitCount" @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" @commit="openCommitDialog(sessions.active)"
         @stash-save="openStashDialog(sessions.active)" @pull="openPullDialog(sessions.active)"
+        @fetch="fetchAll(sessions.active)" @push="pushCurrentBranch(sessions.active)"
       />
 
       <!-- An error notice is red with a warning icon; a success notice is plain, with a tick. -->
@@ -240,6 +242,7 @@ const success = computed(() => sessions.noticeKind === "success");
     <StashDialog />
     <ApplyStashDialog />
     <PullDialog />
+    <PushDialog />
     <ConfirmDialog />
     <SettingsDialog />
     <AboutDialog />

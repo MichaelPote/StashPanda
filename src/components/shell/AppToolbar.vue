@@ -5,6 +5,7 @@ import {
   ArrowDownToLineIcon,
   ArrowDownUpIcon,
   ArrowUpFromLineIcon,
+  CloudDownloadIcon,
   FolderOpenIcon,
   GitCommitHorizontalIcon,
   GitMergeIcon,
@@ -31,9 +32,11 @@ const emit = defineEmits<{
   commit: [];
   stashSave: [];
   pull: [];
+  fetch: [];
+  push: [];
 }>();
 
-type ToolbarEvent = "commit" | "stashSave" | "pull";
+type ToolbarEvent = "commit" | "stashSave" | "pull" | "fetch" | "push";
 
 interface ToolbarAction {
   label: string;
@@ -53,9 +56,10 @@ const M3 = "Coming in milestone 3";
 
 const groups: ToolbarAction[][] = [
   [
+    { label: "Fetch from Every Remote", caption: "Fetch", icon: CloudDownloadIcon, event: "fetch" },
     { label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, event: "pull" },
     { label: "Sync", caption: "Sync", icon: ArrowDownUpIcon, coming: M3 },
-    { label: "Push", caption: "Push", icon: ArrowUpFromLineIcon, coming: M3 },
+    { label: "Push to Upstream", caption: "Push", icon: ArrowUpFromLineIcon, event: "push" },
     { label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, event: "commit", primary: true },
   ],
   [
@@ -78,6 +82,8 @@ function run(action: ToolbarAction): void {
   if (action.event === "commit") emit("commit");
   else if (action.event === "stashSave") emit("stashSave");
   else if (action.event === "pull") emit("pull");
+  else if (action.event === "fetch") emit("fetch");
+  else if (action.event === "push") emit("push");
 }
 
 /**

@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import type { UnlistenFn } from "@tauri-apps/api/event";
 import { LoaderCircleIcon } from "@lucide/vue";
-import { commands, events, type PullMode } from "@/lib/bindings";
+import { commands, type PullMode } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { errorMessage, IpcError } from "@/lib/ipc";
-import { pullOutcome, runOp } from "@/lib/repoActions";
+import { pullOutcome, runOperation, stopOperation } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore } from "@/stores/sessions";
@@ -22,27 +21,25 @@ const request = computed(() => dialogs.current("pull"));
 const sourceShort = ref("");
 const mode = ref<PullMode>("merge");
 const error = ref<string | null>(null);
-/** The id of the pull this dialog is showing while it runs, else null. */
-const runningOp = ref<string | null>(null);
-/** The latest progress update Git wrote, such as `Receiving objects:  45% (450/1000)`. */
-const progressLine = ref("");
-const stopping = ref(false);
-/** False once the fetch is done and the merge or rebase step, which cannot be stopped, has begun. */
-const stoppable = ref(true);
+/** True while this dialog is showing a pull it started. */
+const running = ref(false);
 
 watch(request, (r) => {
   if (!r) return;
   sourceShort.value = r.source.short;
   mode.value = r.mode;
   error.value = null;
-  runningOp.value = null;
-  progressLine.value = "";
-  stopping.value = false;
-  stoppable.value = true;
+  running.value = false;
 });
 
+/** The pull's progress, which the status bar shows too. */
+const operation = computed(() => (request.value && running.value ? (sessions.sessions.get(request.value.key)?.operation ?? null) : null));
+const progressLine = computed(() => operation.value?.line ?? "");
+/** False once the fetch is done and the merge or rebase step, which cannot be stopped, has begun. */
+const stoppable = computed(() => operation.value?.cancellable ?? true);
+const stopping = computed(() => operation.value?.stopping ?? false);
+
 const source = computed(() => request.value?.sources.find((s) => s.short === sourceShort.value) ?? null);
-const running = computed(() => runningOp.value !== null);
 const canSubmit = computed(() => request.value !== null && source.value !== null && !running.value);
 /** The percentage in the latest progress update, for the bar; null when it has none. */
 const percent = computed(() => {
@@ -63,45 +60,29 @@ const MODES: { id: PullMode; label: string; detail: (into: string) => string }[]
 const selectClass =
   "well h-8 w-full rounded-lg border px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
-/** Closing the dialog while the pull runs leaves it running; its outcome then shows in the notice strip. */
+/** Closing the dialog while the pull runs leaves it running in the status bar; its outcome then shows in the notice strip. */
 function onOpenChange(open: boolean): void {
   if (!open) dialogs.cancel();
 }
 
-async function stop(): Promise<void> {
-  const r = request.value;
-  const opId = runningOp.value;
-  if (!r || opId === null) return;
-  stopping.value = true;
-  try {
-    await commands.opCancel(r.key, opId);
-  } catch (e) {
-    error.value = errorMessage(e);
-  }
+function stop(): void {
+  if (request.value) void stopOperation(request.value.key);
 }
 
 async function submit(): Promise<void> {
   const r = request.value;
   const from = source.value;
   if (!r || !from || !canSubmit.value) return;
-  const opId = crypto.randomUUID();
   const chosen = mode.value;
   uiState.patchDebounced({ perRepo: { [r.key]: { pullMode: chosen } } });
-  runningOp.value = opId;
-  progressLine.value = "";
-  stopping.value = false;
-  stoppable.value = true;
+  running.value = true;
   error.value = null;
   /** True while this dialog is still showing this pull, so the outcome can go inline. */
-  const showing = () => request.value === r && runningOp.value === opId;
-  let unlisten: UnlistenFn | null = null;
+  const showing = () => request.value === r;
   try {
-    unlisten = await events.operationProgress.listen((event) => {
-      if (event.payload.opId !== opId || !showing()) return;
-      progressLine.value = event.payload.line;
-      stoppable.value = event.payload.cancellable;
-    });
-    const result = await runOp(r.key, commands.opPull(r.key, opId, from.remote, from.branch, chosen, r.autostash));
+    const result = await runOperation(r.key, `Pulling ${from.short} into ${r.into}`, (opId) =>
+      commands.opPull(r.key, opId, from.remote, from.branch, chosen, r.autostash),
+    );
     const outcome = pullOutcome(r.key, result, from.short, r.into, chosen);
     if (outcome.failed && showing()) {
       error.value = outcome.message;
@@ -115,9 +96,7 @@ async function submit(): Promise<void> {
     if (showing()) error.value = message;
     else sessions.notify(message);
   } finally {
-    unlisten?.();
-    if (runningOp.value === opId) runningOp.value = null;
-    stopping.value = false;
+    if (showing()) running.value = false;
   }
 }
 </script>

@@ -195,6 +195,84 @@ async fn fast_forwards(client: &GitClient) -> Result<bool> {
     Ok(out.exit_code != Some(1))
 }
 
+/// `git fetch --all --progress`: every remote, honouring `fetch.prune` and the remotes' own
+/// settings. Stopping it is safe, as for `pull_fetch`.
+pub async fn fetch_all(client: &GitClient, progress: &(dyn Fn(String) + Send + Sync), cancel: &tokio_util::sync::CancellationToken) -> Result<OpResult> {
+    let req = GitReq::new("fetch", ["fetch", "--all", "--progress"]).user().timeout(None).own_session();
+    let out = client.exec_streaming(req, progress, cancel).await?;
+    Ok(result(out))
+}
+
+/// Where a branch is pushed: a remote and the branch's name there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PushTarget {
+    pub remote: String,
+    /// The branch name on the remote, without `refs/heads/`.
+    pub branch: String,
+}
+
+/// The upstream `branch` tracks, from `branch.<branch>.remote` and `branch.<branch>.merge`. None
+/// when either is missing, or when the upstream is another local branch (remote `.`).
+pub async fn upstream_of(client: &GitClient, branch: &str) -> Result<Option<PushTarget>> {
+    valid_ref_name(branch)?;
+    let pattern = format!(r"^branch\.{}\.(remote|merge)$", regex_escape(branch));
+    let out = client.exec_allow_failure(GitReq::new("config", ["config".to_string(), "-z".into(), "--get-regexp".into(), pattern])).await?;
+    if !out.success() && out.exit_code != Some(1) {
+        return Err(classify_git_failure("config", vec![], out.exit_code, &out.stderr, &client.transport.kind()));
+    }
+    Ok(upstream_from_config(&out.stdout, branch))
+}
+
+fn upstream_from_config(bytes: &[u8], branch: &str) -> Option<PushTarget> {
+    let (mut remote, mut merge) = (None, None);
+    for entry in bytes.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let text = String::from_utf8_lossy(entry);
+        let Some((key, value)) = text.split_once('\n') else { continue };
+        if key == format!("branch.{branch}.remote") {
+            remote = Some(value.trim().to_string());
+        } else if key == format!("branch.{branch}.merge") {
+            merge = Some(value.trim().to_string());
+        }
+    }
+    let remote = remote.filter(|r| !r.is_empty() && r != ".")?;
+    let branch = merge?.strip_prefix("refs/heads/")?.to_string();
+    Some(PushTarget { remote, branch })
+}
+
+/// `git push --progress <remote> refs/heads/<branch>:refs/heads/<target branch>`, with
+/// `--set-upstream` when `set_upstream`. Full ref names on both sides, so a tag with the same
+/// name as the branch cannot be pushed by mistake. Never forces: a push the remote rejects
+/// because it has commits the branch lacks fails with `[rejected]` in stderr (see
+/// `push_rejected`). Stopping it is safe for the local repository; if the remote had already
+/// taken the update, the next fetch shows it.
+pub async fn push(
+    client: &GitClient,
+    branch: &str,
+    target: &PushTarget,
+    set_upstream: bool,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_ref_name(branch)?;
+    valid_ref_name(&target.remote)?;
+    valid_ref_name(&target.branch)?;
+    let refspec = format!("refs/heads/{branch}:refs/heads/{}", target.branch);
+    let mut args = vec!["push", "--progress"];
+    if set_upstream {
+        args.push("--set-upstream");
+    }
+    args.extend([target.remote.as_str(), refspec.as_str()]);
+    let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
+    Ok(result(out))
+}
+
+/// True when the remote refused a push because it has commits the pushed branch does not:
+/// `! [rejected] dev -> dev (fetch first)` or `(non-fast-forward)`.
+pub fn push_rejected(res: &OpResult) -> bool {
+    !res.ok && res.stderr.contains("[rejected]")
+}
+
 /// The pull mode the repository's Git config asks for, in the order `git pull` reads it:
 /// `branch.<branch>.rebase`, then `pull.rebase`, then `pull.ff`. None when none of them is set.
 pub async fn configured_pull_mode(client: &GitClient, branch: Option<&str>) -> Result<Option<PullMode>> {
@@ -1029,6 +1107,64 @@ mod e2e {
         assert!(matches!(pull("-x", "main", PullMode::Merge, false).await, Err(GitError::InvalidPath { .. })));
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[tokio::test]
+    async fn fetch_and_push_to_the_upstream_or_a_new_branch() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-push-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local, other) = (root.join("origin.git"), root.join("local"), root.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        for dir in [&local, &other] {
+            run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), dir.as_os_str()]);
+            for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+                git(dir, &["config", k, v]);
+            }
+        }
+        let client = client_for(&local);
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let rev = |dir: &Path, r: &str| String::from_utf8(Command::new("git").arg("-C").arg(dir).args(["rev-parse", r]).output().unwrap().stdout).unwrap();
+
+        // A first push to a new remote branch sets the upstream. (Cloning an empty repository
+        // already makes main track origin/main, so that is undone first.)
+        git(&local, &["config", "--remove-section", "branch.main"]);
+        std::fs::write(local.join("a.txt"), "1\n").unwrap();
+        git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "one"]);
+        assert_eq!(upstream_of(&client, "main").await.unwrap(), None);
+        let main = PushTarget { remote: "origin".into(), branch: "main".into() };
+        let first = push(&client, "main", &main, true, &progress, &cancel).await.unwrap();
+        assert!(first.ok, "{first:?}");
+        assert_eq!(upstream_of(&client, "main").await.unwrap(), Some(main.clone()));
+        assert_eq!(rev(&origin, "main"), rev(&local, "HEAD"));
+
+        // Another clone pushes; fetch brings it into origin/main, and our push is then rejected.
+        git(&other, &["pull", "-q", "origin", "main"]);
+        std::fs::write(other.join("b.txt"), "2\n").unwrap();
+        git(&other, &["add", "-A"]); git(&other, &["commit", "-qm", "two"]); git(&other, &["push", "-q", "origin", "main"]);
+        let fetched = fetch_all(&client, &progress, &cancel).await.unwrap();
+        assert!(fetched.ok, "{fetched:?}");
+        assert_eq!(rev(&local, "origin/main"), rev(&other, "HEAD"));
+        std::fs::write(local.join("c.txt"), "3\n").unwrap();
+        git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "three"]);
+        let rejected = push(&client, "main", &main, false, &progress, &cancel).await.unwrap();
+        assert!(push_rejected(&rejected), "{rejected:?}");
+
+        // A branch pushed under another name; a tag of the same name is not pushed instead.
+        git(&local, &["tag", "topic"]);
+        git(&local, &["branch", "topic", "HEAD~1"]);
+        let topic = PushTarget { remote: "origin".into(), branch: "remote-topic".into() };
+        assert!(push(&client, "topic", &topic, true, &progress, &cancel).await.unwrap().ok);
+        assert_eq!(rev(&origin, "refs/heads/remote-topic"), rev(&local, "refs/heads/topic"));
+        assert_eq!(upstream_of(&client, "topic").await.unwrap(), Some(topic));
+        assert!(Command::new("git").arg("-C").arg(&origin).args(["rev-parse", "--verify", "-q", "refs/tags/topic"]).status().unwrap().code() == Some(1));
+
+        cancel.cancel();
+        assert!(matches!(fetch_all(&client, &progress, &cancel).await, Err(GitError::Cancelled)));
+        assert!(matches!(push(&client, "main", &PushTarget { remote: "-o".into(), branch: "main".into() }, false, &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 #[cfg(test)]
@@ -1051,5 +1187,14 @@ mod tests {
         // The last value for a key wins, as in Git (system, then global, then local config).
         assert_eq!(mode(b"pull.rebase\ntrue\0pull.rebase\nfalse\0", None), Some(PullMode::Merge));
         assert_eq!(regex_escape("feat.x+1"), r"feat\.x\+1");
+    }
+
+    #[test]
+    fn upstream_comes_from_branch_config() {
+        let cfg = b"branch.Dev.remote\norigin\0branch.Dev.merge\nrefs/heads/feature/dev\0";
+        assert_eq!(upstream_from_config(cfg, "Dev"), Some(PushTarget { remote: "origin".into(), branch: "feature/dev".into() }));
+        assert_eq!(upstream_from_config(b"branch.dev.remote\norigin\0", "dev"), None);
+        // Tracking another local branch is not an upstream to push to.
+        assert_eq!(upstream_from_config(b"branch.dev.remote\n.\0branch.dev.merge\nrefs/heads/main\0", "dev"), None);
     }
 }

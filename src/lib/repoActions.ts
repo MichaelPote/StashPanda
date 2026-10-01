@@ -3,9 +3,9 @@
  * panel and the native menu bar, plus removing a repository from the library. Every function
  * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
-import { commands, type OpResult, type PullMode, type StashEntry } from "@/lib/bindings";
+import { commands, type OpResult, type PullMode, type PushTarget, type StashEntry } from "@/lib/bindings";
 import { commitFiles } from "@/lib/files";
-import { errorMessage, unwrap, type IpcResult } from "@/lib/ipc";
+import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
 import { useDialogsStore, type PullSource } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
@@ -159,7 +159,7 @@ export function pullReason(session: RepoSession | null | undefined): string | nu
   if (!session.status || !session.refs) return "The repository is still loading.";
   if (isDetached(session) || currentBranch(session) === null) return "HEAD is detached. Check out a branch before pulling.";
   if (session.status.conflictedCount > 0) return "Resolve the conflicted files first: Git cannot pull while files are unmerged.";
-  return null;
+  return busyReason(session);
 }
 
 /**
@@ -267,11 +267,152 @@ export function pullOutcome(key: string, result: OpResult, from: string, into: s
       failed: false,
     };
   }
-  // GIT_TERMINAL_PROMPT=0 stops Git asking for a username and password on a terminal it does not have.
-  const message = /terminal prompts disabled|could not read Username/i.test(output)
-    ? `Git needs a username and password for this remote, and StashPanda cannot ask for them yet. Set up a credential helper (Git Credential Manager on Windows), or use an SSH remote.`
-    : opFailureText(result, `Pulling ${from} into ${into}`);
-  return { message, kind: "error", action: null, failed: true };
+  return { message: networkFailureText(result, `Pulling ${from} into ${into}`), kind: "error", action: null, failed: true };
+}
+
+/**
+ * `opFailureText` for a command that talks to a remote, with the one failure that needs
+ * explaining: GIT_TERMINAL_PROMPT=0 stops Git asking for a username and password on a terminal it
+ * does not have.
+ */
+export function networkFailureText(result: OpResult, what: string): string {
+  if (/terminal prompts disabled|could not read Username/i.test(`${result.stdout}\n${result.stderr}`)) {
+    return "Git needs a username and password for this remote, and StashPanda cannot ask for them yet. Set up a credential helper (Git Credential Manager on Windows), or use an SSH remote.";
+  }
+  return opFailureText(result, what);
+}
+
+/** Why a fetch, pull or push cannot start because one is already running, or null. */
+function busyReason(session: RepoSession): string | null {
+  const op = session.operation;
+  return op ? `Wait for the current operation to finish (${op.title.toLowerCase()}).` : null;
+}
+
+/**
+ * Runs a fetch, pull or push and shows it in the status bar until it finishes: `start` gets the
+ * operation id to pass to the command. Refetches refs and status afterwards. Throws what the
+ * command throws, including `cancelled` after Stop.
+ */
+export async function runOperation(
+  key: string,
+  title: string,
+  start: (opId: string) => Promise<IpcResult<OpResult>>,
+): Promise<OpResult> {
+  const sessions = useSessionsStore();
+  const session = sessions.sessions.get(key);
+  const opId = crypto.randomUUID();
+  if (session) session.operation = { opId, title, line: "", cancellable: true, stopping: false };
+  try {
+    return await runOp(key, start(opId));
+  } finally {
+    if (session && session.operation?.opId === opId) session.operation = null;
+  }
+}
+
+/** Asks the running fetch, pull or push to stop. Its own call then fails with `cancelled`. */
+export async function stopOperation(key: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const session = sessions.sessions.get(key);
+  const op = session?.operation;
+  if (!session || !op || !op.cancellable || op.stopping) return;
+  session.operation = { ...op, stopping: true };
+  try {
+    await unwrap(commands.opCancel(key, op.opId));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+function isCancelled(e: unknown): boolean {
+  return e instanceof IpcError && e.error.kind === "cancelled";
+}
+
+/** Why the repository cannot fetch right now, or null when it can. */
+export function fetchReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (!session.refs) return "The repository is still loading.";
+  if (session.refs.remotes.length === 0) return "This repository has no remotes to fetch from.";
+  return busyReason(session);
+}
+
+/** Runs `git fetch --all`, with progress and Stop in the status bar. */
+export async function fetchAll(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = fetchReason(session);
+  if (reason || !session?.refs) {
+    sessions.notify(reason ?? "The repository is still loading.");
+    return;
+  }
+  const remotes = session.refs.remotes.map((r) => r.name);
+  const from = remotes.length === 1 ? remotes[0] : `${remotes.length} remotes`;
+  const key = session.key;
+  try {
+    const result = await runOperation(key, `Fetching from ${from}`, (opId) => commands.opFetch(key, opId));
+    if (result.ok) sessions.notifySuccess(`Fetched from ${from}.`);
+    else sessions.notify(networkFailureText(result, `Fetching from ${from}`));
+  } catch (e) {
+    sessions.notify(isCancelled(e) ? "The fetch was stopped. The remote branches are as they were before it." : errorMessage(e));
+  }
+}
+
+/** Why the checked-out branch cannot be pushed right now, or null when it can. */
+export function pushReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (!session.status || !session.refs) return "The repository is still loading.";
+  if (isDetached(session) || currentBranch(session) === null) return "HEAD is detached. Check out a branch to push it.";
+  if (session.status.headOid === null) return "This branch has no commits yet, so there is nothing to push.";
+  if (session.refs.remotes.length === 0) return "This repository has no remotes to push to.";
+  return busyReason(session);
+}
+
+/**
+ * Pushes the checked-out branch to the remote branch it tracks, with progress and Stop in the
+ * status bar. A branch that tracks nothing opens the Push dialog to choose where, which then
+ * sets that as its upstream. Never forces: when the remote has commits the branch lacks, the
+ * notice offers to pull them.
+ */
+export async function pushCurrentBranch(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = pushReason(session);
+  const branch = currentBranch(session);
+  if (reason || !session?.refs || branch === null) {
+    sessions.notify(reason ?? "The repository is still loading.");
+    return;
+  }
+  const key = session.key;
+  let target: PushTarget | null;
+  try {
+    target = await unwrap(commands.getUpstream(key, branch));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+    return;
+  }
+  let setUpstream = false;
+  if (target === null) {
+    const choice = await useDialogsStore().open("push", { key, branch, remotes: session.refs.remotes.map((r) => r.name) });
+    if (!choice) return;
+    ({ target, setUpstream } = choice);
+  }
+  const to = `${target.remote}/${target.branch}`;
+  try {
+    const result = await runOperation(key, `Pushing ${branch} to ${to}`, (opId) => commands.opPush(key, opId, branch, target, setUpstream));
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (result.ok) {
+      const tracking = setUpstream ? ` ${branch} now tracks it.` : "";
+      sessions.notifySuccess(/Everything up-to-date/i.test(output) ? `${to} already has every commit on ${branch}.` : `Pushed ${branch} to ${to}.${tracking}`);
+    } else if (result.stderr.includes("[rejected]")) {
+      sessions.notify(`${to} has commits that ${branch} does not have. Pull them first, then push again.`, {
+        label: "Pull…",
+        run: () => openPullDialog(sessions.sessions.get(key) ?? null),
+      });
+    } else {
+      sessions.notify(networkFailureText(result, `Pushing ${branch} to ${to}`));
+    }
+  } catch (e) {
+    sessions.notify(
+      isCancelled(e) ? `The push was stopped. ${to} may already have the commits; the next fetch shows whether it does.` : errorMessage(e),
+    );
+  }
 }
 
 /**

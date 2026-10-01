@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { STATE_CLASSES, commitPaths, splitPath } from "@/lib/files";
 import { errorMessage, unwrap } from "@/lib/ipc";
-import { opFailureText, runOp } from "@/lib/repoActions";
+import { opFailureText, pushCurrentBranch, runOp } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useEventListener } from "@vueuse/core";
 import { useListSelection, type ListSelectionState } from "@/composables/useListSelection";
@@ -183,6 +183,23 @@ const commitLabel = computed(() => {
   return tickedFiles.value.length === 0 ? "Amend Message" : "Amend Commit";
 });
 const pushLabel = computed(() => (amend.value ? "Amend & Push" : "Commit & Push"));
+/** Why Commit & Push cannot be used, or null. A branch with no commits yet can still be pushed once this commit exists. */
+const pushBlocked = computed(() => {
+  const r = request.value;
+  if (!r) return null;
+  if (r.branch === null) return "HEAD is detached, so there is no branch to push.";
+  const s = session.value;
+  if (s?.refs && s.refs.remotes.length === 0) return "This repository has no remotes to push to.";
+  if (s?.operation) return `Wait for the current operation to finish (${s.operation.title.toLowerCase()}).`;
+  // Amending a commit the upstream already has would need a force push. The branch being no
+  // commits ahead of its upstream means HEAD is on it.
+  const tip = s?.refs?.refs.find((x) => x.kind.type === "localBranch" && x.short === r.branch);
+  if (amend.value && tip?.upstream && (tip.ahead ?? 0) === 0) {
+    return "The last commit is already on the remote, so pushing the amended one would need a force push, which StashPanda does not do.";
+  }
+  return null;
+});
+const canPush = computed(() => canCommit.value && pushBlocked.value === null);
 
 function onOpenChange(open: boolean): void {
   if (!open) dialogs.cancel();
@@ -195,9 +212,10 @@ function onMessageKeydown(event: KeyboardEvent): void {
   }
 }
 
-async function submit(): Promise<void> {
+/** Commits, then with `push` pushes the branch to its upstream (or asks where, when it has none). */
+async function submit(push = false): Promise<void> {
   const r = request.value;
-  if (!r || !canCommit.value) return;
+  if (!r || !canCommit.value || (push && !canPush.value)) return;
   // An amend with nothing ticked passes an empty list, which changes only the message; null
   // would commit whatever is staged.
   const commitWith = tickedFiles.value.length === 0 ? [] : paths.value;
@@ -219,6 +237,8 @@ async function submit(): Promise<void> {
     const where = r.branch ? ` on ${r.branch}` : "";
     sessions.notifySuccess(amend.value ? `Amended the last commit${where} with ${what}.` : `Committed ${what}${where}.`);
     dialogs.resolve("commit", result);
+    // The commit is done and reported; the push reports itself in the status bar and notices.
+    if (push) void pushCurrentBranch(sessions.sessions.get(r.key) ?? null);
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
@@ -240,7 +260,7 @@ async function submit(): Promise<void> {
       </DialogHeader>
 
       <!-- Dragged taller, the dialog shares the extra height between the file list and the message. -->
-      <form class="grid min-w-0 gap-3" data-dialog-grow @submit.prevent="submit">
+      <form class="grid min-w-0 gap-3" data-dialog-grow @submit.prevent="submit()">
         <div class="grid min-w-0 gap-1.5" data-dialog-grow>
           <div class="flex items-center gap-2">
             <label class="flex items-center gap-2 text-base font-medium select-none">
@@ -361,16 +381,16 @@ async function submit(): Promise<void> {
       <DialogFooter>
         <span v-if="commitHint" class="mr-auto text-xs text-muted-foreground">{{ commitHint }}</span>
         <Button type="button" variant="outline" @click="dialogs.cancel()">Cancel</Button>
-        <Tooltip>
+        <Tooltip :disabled="pushBlocked === null">
           <TooltipTrigger as-child>
             <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->
             <span class="inline-flex">
-              <Button type="button" variant="outline" disabled>{{ pushLabel }}</Button>
+              <Button type="button" variant="outline" :disabled="!canPush" @click="submit(true)">{{ pushLabel }}</Button>
             </span>
           </TooltipTrigger>
-          <TooltipContent side="top">Push is not built yet (milestone 3).</TooltipContent>
+          <TooltipContent side="top">{{ pushBlocked }}</TooltipContent>
         </Tooltip>
-        <Button type="button" class="min-w-28" :disabled="!canCommit" @click="submit">
+        <Button type="button" class="min-w-28" :disabled="!canCommit" @click="submit()">
           <LoaderCircleIcon v-if="submitting" class="animate-spin" />
           {{ commitLabel }}
         </Button>

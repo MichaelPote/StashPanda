@@ -347,9 +347,10 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       flips the ticks of the selected rows. Ticking exactly the staged files commits the index as
       it is; any other set is committed as it is on disk, with a warning for partly staged files.
       Amend loads the previous message, and the buttons change to "Amend Message" (nothing
-      ticked) or "Amend Commit" (files ticked). The message draft survives Cancel. "Commit & Push" is
-      shown disabled until push exists in milestone 3. The dialog is 48rem wide with large buttons,
-      and the overlay behind every dialog (`ui/dialog/DialogOverlay.vue`) is black at 50%.
+      ticked) or "Amend Commit" (files ticked). The message draft survives Cancel. "Commit & Push"
+      works since 2026-10-01 (see Fetch and push under milestone 3). The dialog is 48rem wide
+      with large buttons, and the overlay behind every dialog (`ui/dialog/DialogOverlay.vue`) is
+      black at 50%.
 - [x] **Stashes in the interface** (2026-10-01). The Branches panel lists the stashes, with
       Apply, Pop and Drop on right-click (Drop asks first). A "Stash changes" dialog
       (`StashDialog.vue`) takes an optional message and an "Include untracked files" checkbox; an
@@ -598,11 +599,32 @@ none of it has been checked in the running app yet.
       Linux side, which does not reach the Windows process tree. A fetch stopped on Windows at
       the moment it writes refs can leave a `.lock` file under `.git/refs`, since `taskkill /F`
       gives Git no chance to clean up.
-- [ ] **Fetch and push** on the same plumbing: `op_fetch` and `op_push` through
-      `exec_streaming` and the registry, with Repository › Fetch and Push and the toolbar's Sync
-      and Push buttons. Credential prompts: we run with `GIT_TERMINAL_PROMPT=0`, so an HTTPS
-      remote with no credential helper fails (the pull notice says so); a `GIT_ASKPASS` helper is
-      still to be designed.
+- [x] **Fetch and push** (2026-10-01), on the same plumbing as pull. `op_fetch(key, opId)` runs
+      `git fetch --all --progress`, which follows `fetch.prune`. `op_push(key, opId, branch,
+      target, setUpstream)` runs `git push --progress [--set-upstream] <remote>
+      refs/heads/<branch>:refs/heads/<remote branch>`; full ref names on both sides, so a tag
+      with the branch's name is never pushed instead. With no `target` it pushes to the upstream
+      from `branch.<name>.remote` and `.merge`, which `get_upstream` also returns (an upstream
+      on remote `.`, another local branch, counts as none). It never forces. Both are stoppable
+      from start to end and hold only the write gate, through the new `network_op!` macro in
+      `ipc/ops.rs`. Test: `fetch_and_push_to_the_upstream_or_a_new_branch`.
+      Frontend (`lib/repoActions.ts`):
+      - A new Fetch toolbar button and Repository › Fetch run `fetchAll`, in one click.
+      - The toolbar's Push button and Repository › Push run `pushCurrentBranch`, in one click to
+        the upstream. A branch with no upstream opens `PushDialog.vue` (remote, branch name on
+        the remote, "Track it from now on", ticked by default). A rejected push says the remote
+        has commits the branch lacks and offers "Pull…".
+      - The Commit dialog's "Commit & Push" commits, then runs `pushCurrentBranch`. "Amend &
+        Push" is disabled when the last commit is already on the upstream (the branch is not
+        ahead of it), since that would need a force push.
+      - `runOperation` keeps the running fetch, pull or push on the session
+        (`RepoSession.operation`), fed by `operationProgress` events in `stores/sessions.ts`.
+        The status bar shows its title, Git's latest progress line and Stop; the Pull dialog
+        reads the same state. A second fetch, pull or push in the same repository is refused
+        with a notice while one runs.
+      - Credential failures (`GIT_TERMINAL_PROMPT=0`) get one explanation for all three
+        (`networkFailureText`); a `GIT_ASKPASS` helper is still to be designed.
+      Not yet tried in the running app. The toolbar's Sync button is still disabled.
 - [ ] **Merge, rebase, cherry-pick, revert** with conflict detection (`u` entries in status), a
       conflict list using the `:1:`, `:2:`, `:3:` blob stages (`get_blob_content` already accepts
       those specs), and continue / abort actions.
