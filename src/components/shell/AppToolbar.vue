@@ -30,9 +30,10 @@ const emit = defineEmits<{
   refresh: [];
   commit: [];
   stashSave: [];
+  pull: [];
 }>();
 
-type ToolbarEvent = "commit" | "stashSave";
+type ToolbarEvent = "commit" | "stashSave" | "pull";
 
 interface ToolbarAction {
   label: string;
@@ -52,7 +53,7 @@ const M3 = "Coming in milestone 3";
 
 const groups: ToolbarAction[][] = [
   [
-    { label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, coming: M3 },
+    { label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, event: "pull" },
     { label: "Sync", caption: "Sync", icon: ArrowDownUpIcon, coming: M3 },
     { label: "Push", caption: "Push", icon: ArrowUpFromLineIcon, coming: M3 },
     { label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, event: "commit", primary: true },
@@ -76,6 +77,7 @@ const groups: ToolbarAction[][] = [
 function run(action: ToolbarAction): void {
   if (action.event === "commit") emit("commit");
   else if (action.event === "stashSave") emit("stashSave");
+  else if (action.event === "pull") emit("pull");
 }
 
 /**

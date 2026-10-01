@@ -148,6 +148,37 @@ export const commands = {
 	 *  index. A lock that has already gone counts as success.
 	 */
 	opRemoveStaleLock: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("op_remove_stale_lock", { key })),
+	opRebaseAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase_abort", { key })),
+	/**
+	 *  Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
+	 *  `git rebase` (see `ops::pull_fetch` and `ops::pull_integrate`). `opId` is chosen by the
+	 *  caller: each progress update arrives as an `operationProgress` event carrying it, and
+	 *  `opCancel` with it stops the pull while it is fetching, which then fails with `cancelled` and
+	 *  changes no branch. Once the fetch is done, an event with `cancellable: false` says the local
+	 *  step has begun, which always runs to the end. `autostash` stashes uncommitted changes first
+	 *  and reapplies them afterwards.
+	 * 
+	 *  Holds the write gate throughout, so no other write overlaps, but takes the exclusive lock only
+	 *  for the local step: reads (status, graph pages, diffs) carry on during the network transfer.
+	 */
+	opPull: (key: string, opId: string, remote: string, branch: string, mode: PullMode, autostash: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_pull", { key, opId, remote, branch, mode, autostash })),
+	/**
+	 *  Stop a running operation started with `opId` (a pull while it fetches). Resolves false when
+	 *  it has finished or reached a step that cannot be stopped. The pull's own command returns once
+	 *  Git has exited, with `cancelled`.
+	 */
+	opCancel: (key: string, opId: string) => typedError<boolean, GitError>(__TAURI_INVOKE("op_cancel", { key, opId })),
+	/**
+	 *  The pull mode the repository's Git config asks for when pulling into `branch`
+	 *  (`branch.<branch>.rebase`, `pull.rebase`, `pull.ff`), or null when none is set.
+	 */
+	getPullMode: (key: string, branch: string | null) => typedError<
+/**  Fast-forward when possible, otherwise a merge commit (`--no-rebase`). */
+"merge" | 
+/**  Replay local commits on top of the fetched ones (`--rebase`). */
+"rebase" | 
+/**  Only move the branch forward; refuse when both sides have new commits (`--ff-only`). */
+"fastForwardOnly" | null, GitError>(__TAURI_INVOKE("get_pull_mode", { key, branch })),
 };
 
 /** Events */
@@ -157,6 +188,7 @@ export const events = {
 	graphProgressEvent: makeEvent<GraphProgressEvent>("graph-progress-event"),
 	graphSnapshotEvent: makeEvent<GraphSnapshotEvent>("graph-snapshot-event"),
 	menuActionEvent: makeEvent<MenuActionEvent>("menu-action-event"),
+	operationProgress: makeEvent<OperationProgress>("operation-progress"),
 	repoChangedEvent: makeEvent<RepoChangedEvent>("repo-changed-event"),
 	settingsChanged: makeEvent<SettingsChanged>("settings-changed"),
 	uiStateChanged: makeEvent<UiStateChanged>("ui-state-changed"),
@@ -597,6 +629,18 @@ export type OpResult = {
 };
 
 /**
+ *  One progress update from a running operation (a pull): the text Git wrote on stderr since its
+ *  last `\r` or `\n`, such as `Receiving objects:  45% (450/1000), 1.2 MiB | 500 KiB/s`.
+ */
+export type OperationProgress = {
+	repoId: string,
+	opId: string,
+	line: string,
+	/**  False once the operation has reached a step that `opCancel` cannot stop. */
+	cancellable: boolean,
+};
+
+/**
  *  Sizes are percentages of the containing splitter group, matching what the
  *  reka-ui `SplitterGroup` reports, so they survive window resizes.
  */
@@ -615,6 +659,15 @@ export type Polling = {
 	refsIntervalMs?: number,
 	autoFetchMinutes?: number | null,
 };
+
+/**  How a pull brings the fetched commits into the current branch. */
+export type PullMode = 
+/**  Fast-forward when possible, otherwise a merge commit (`--no-rebase`). */
+"merge" | 
+/**  Replay local commits on top of the fetched ones (`--rebase`). */
+"rebase" | 
+/**  Only move the branch forward; refuse when both sides have new commits (`--ff-only`). */
+"fastForwardOnly";
 
 export type RefEntry = {
 	/**  `refs/heads/dev` */
@@ -735,6 +788,11 @@ export type RepoUiState = {
 	lastSelectedOid?: string | null,
 	/**  Full names of the refs switched off in the commit graph. */
 	hiddenRefs?: string[],
+	/**
+	 *  The mode last chosen in the Pull dialog. Until there is one, the dialog starts from the
+	 *  repository's Git config, then Merge.
+	 */
+	pullMode?: PullMode | null,
 };
 
 /**

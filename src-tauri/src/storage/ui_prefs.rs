@@ -138,7 +138,7 @@ mod tests {
         state.dialog_sizes.insert("commit".into(), crate::ui_state::DialogSize { width: 900, height: 640 });
         state.per_repo.insert(
             "repo-1".into(),
-            RepoUiState { last_selected_oid: Some("abc".into()), hidden_refs: vec!["refs/remotes/origin/old".into()] },
+            RepoUiState { last_selected_oid: Some("abc".into()), hidden_refs: vec!["refs/remotes/origin/old".into()], pull_mode: None },
         );
 
         let back = roundtrip(&state);
@@ -160,7 +160,7 @@ mod tests {
     fn one_row_per_value() {
         let db = Db::open_in_memory().unwrap();
         let mut state = UiState::default();
-        state.per_repo.insert("repo-1".into(), RepoUiState { last_selected_oid: None, hidden_refs: vec!["refs/heads/x".into()] });
+        state.per_repo.insert("repo-1".into(), RepoUiState { last_selected_oid: None, hidden_refs: vec!["refs/heads/x".into()], pull_mode: None });
         db.run_blocking(move |c| save(c, &state)).unwrap();
         let rows: Vec<(String, String)> = db
             .run_blocking(|c| {
@@ -193,7 +193,7 @@ mod tests {
     fn a_removed_repository_loses_its_rows() {
         let db = Db::open_in_memory().unwrap();
         let mut state = UiState::default();
-        state.per_repo.insert("gone".into(), RepoUiState { last_selected_oid: None, hidden_refs: vec!["refs/heads/x".into()] });
+        state.per_repo.insert("gone".into(), RepoUiState { last_selected_oid: None, hidden_refs: vec!["refs/heads/x".into()], pull_mode: None });
         let first = state.clone();
         db.run_blocking(move |c| save(c, &first)).unwrap();
         state.per_repo.remove("gone");

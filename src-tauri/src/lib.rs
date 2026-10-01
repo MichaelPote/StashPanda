@@ -94,11 +94,16 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_discard,
             ipc::ops::op_commit,
             ipc::ops::op_remove_stale_lock,
+            ipc::ops::op_rebase_abort,
+            ipc::ops::op_pull,
+            ipc::ops::op_cancel,
+            ipc::ops::get_pull_mode,
         ])
         .events(collect_events![
             ipc::events::SettingsChanged,
             ipc::events::UiStateChanged,
             ipc::events::AppWarning,
+            ipc::events::OperationProgress,
             git::console::ConsoleEvent,
             graph::loader::GraphSnapshotEvent,
             graph::loader::GraphProgressEvent,

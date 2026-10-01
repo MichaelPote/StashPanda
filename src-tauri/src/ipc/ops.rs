@@ -6,10 +6,12 @@
 use std::time::Duration;
 
 use tauri::{AppHandle, State};
+use tauri_specta::Event;
 
 use crate::error::{GitError, Result};
-use crate::git::ops::{self, OpResult};
+use crate::git::ops::{self, OpResult, PullMode};
 use crate::graph::loader::refresh_if_changed;
+use crate::ipc::events::OperationProgress;
 use crate::ipc::query::repo;
 use crate::state::AppState;
 use crate::transport::paths::NativePath;
@@ -34,6 +36,7 @@ macro_rules! write_op {
     ($app:expr, $state:expr, $key:expr, |$client:ident| $body:expr) => {{
         let h = repo(&$state, &$key).await?;
         let out = {
+            let _gate = h.write_gate.lock().await;
             let _exclusive = h.lock.write().await;
             let $client = &h.client;
             let mut out = $body;
@@ -128,6 +131,97 @@ pub async fn op_merge(app: AppHandle, state: State<'_, AppState>, key: String, t
 #[specta::specta]
 pub async fn op_merge_abort(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<OpResult> {
     write_op!(app, state, key, |c| ops::merge_abort(c).await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn op_rebase_abort(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::rebase_abort(c).await)
+}
+
+/// Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
+/// `git rebase` (see `ops::pull_fetch` and `ops::pull_integrate`). `opId` is chosen by the
+/// caller: each progress update arrives as an `operationProgress` event carrying it, and
+/// `opCancel` with it stops the pull while it is fetching, which then fails with `cancelled` and
+/// changes no branch. Once the fetch is done, an event with `cancellable: false` says the local
+/// step has begun, which always runs to the end. `autostash` stashes uncommitted changes first
+/// and reapplies them afterwards.
+///
+/// Holds the write gate throughout, so no other write overlaps, but takes the exclusive lock only
+/// for the local step: reads (status, graph pages, diffs) carry on during the network transfer.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn op_pull(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    op_id: String,
+    remote: String,
+    branch: String,
+    mode: PullMode,
+    autostash: bool,
+) -> Result<OpResult> {
+    let h = repo(&state, &key).await?;
+    let emit = |line: String, cancellable: bool| {
+        let _ = OperationProgress { repo_id: key.clone(), op_id: op_id.clone(), line, cancellable }.emit(&app);
+    };
+    let out = {
+        let op = h.start_operation(&op_id)?;
+        // Cancelling while another write still holds the gate stops the wait as well.
+        let _gate = tokio::select! {
+            biased;
+            _ = op.token.cancelled() => return Err(GitError::Cancelled),
+            g = h.write_gate.lock() => g,
+        };
+        let progress = |line: String| emit(line, true);
+        let fetched = ops::pull_fetch(&h.client, &remote, &branch, &progress, &op.token).await;
+        // From here on Stop no longer applies: `opCancel` finds no operation and resolves false.
+        let stopped = op.token.is_cancelled();
+        drop(op);
+        match fetched {
+            // Stop pressed just as the fetch finished: honour it before anything is merged.
+            Ok(_) if stopped => Err(GitError::Cancelled),
+            Ok(f) if f.ok => {
+                emit(
+                    match mode {
+                        PullMode::Rebase => format!("Rebasing onto {remote}/{branch}…"),
+                        PullMode::Merge => format!("Merging {remote}/{branch}…"),
+                        PullMode::FastForwardOnly => format!("Fast-forwarding to {remote}/{branch}…"),
+                    },
+                    false,
+                );
+                let _exclusive = h.lock.write().await;
+                ops::pull_integrate(&h.client, &remote, &branch, mode, autostash).await.map(|r| ops::combine(f, r))
+            }
+            other => other,
+        }
+    };
+    after_write(&app, &state, &key).await;
+    out.and_then(|r| match ops::index_lock_in(&r) {
+        Some(lock_path) => Err(GitError::IndexLocked { lock_path }),
+        None => Ok(r),
+    })
+}
+
+/// Stop a running operation started with `opId` (a pull while it fetches). Resolves false when
+/// it has finished or reached a step that cannot be stopped. The pull's own command returns once
+/// Git has exited, with `cancelled`.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_cancel(state: State<'_, AppState>, key: String, op_id: String) -> Result<bool> {
+    let h = repo(&state, &key).await?;
+    Ok(h.cancel_operation(&op_id))
+}
+
+/// The pull mode the repository's Git config asks for when pulling into `branch`
+/// (`branch.<branch>.rebase`, `pull.rebase`, `pull.ff`), or null when none is set.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_pull_mode(state: State<'_, AppState>, key: String, branch: Option<String>) -> Result<Option<PullMode>> {
+    let h = repo(&state, &key).await?;
+    let _shared = h.lock.read().await;
+    ops::configured_pull_mode(&h.client, branch.as_deref()).await
 }
 
 #[tauri::command]

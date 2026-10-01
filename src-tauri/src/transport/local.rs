@@ -23,6 +23,88 @@ pub struct LocalTransport {
 
 pub struct TokioProcess {
     pub child: Child,
+    /// Taken at spawn, since `Child::id` forgets it once the process has been waited for.
+    pid: Option<u32>,
+    /// Spawned with `Cmd::own_session`: terminate and kill reach its whole process group (Unix)
+    /// or process tree (Windows).
+    own_session: bool,
+    /// `wait` has reported the exit, so the pid may already belong to another process.
+    exited: bool,
+}
+
+impl TokioProcess {
+    pub fn new(child: Child) -> TokioProcess {
+        let pid = child.id();
+        TokioProcess { child, pid, own_session: false, exited: false }
+    }
+
+    fn with_own_session(child: Child) -> TokioProcess {
+        let pid = child.id();
+        TokioProcess { child, pid, own_session: true, exited: false }
+    }
+}
+
+impl Drop for TokioProcess {
+    /// `kill_on_drop` reaches only the process itself. One with its own session takes the rest of
+    /// its group or tree with it.
+    fn drop(&mut self) {
+        let (true, false, Some(pid)) = (self.own_session, self.exited, self.pid) else { return };
+        #[cfg(unix)]
+        let _ = signal_group(pid, SIGKILL);
+        #[cfg(not(unix))]
+        tauri::async_runtime::spawn(async move {
+            let _ = kill_tree(pid).await;
+        });
+    }
+}
+
+/// Make the child lead a new session, so it has no controlling terminal and its pid is also the
+/// id of the process group its children join.
+#[cfg(unix)]
+fn set_own_session(c: &mut Command) {
+    // SAFETY: setsid is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        c.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn set_own_session(_: &mut Command) {}
+
+/// Send `signal` to every process in the group `pgid` leads.
+#[cfg(unix)]
+fn signal_group(pgid: u32, signal: i32) -> Result<()> {
+    // SAFETY: a plain system call; a negative pid addresses the process group.
+    let rc = unsafe { libc::kill(-(pgid as i32), signal) };
+    let err = std::io::Error::last_os_error();
+    // ESRCH: the whole group has already exited.
+    if rc == -1 && err.raw_os_error() != Some(libc::ESRCH) {
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+const SIGTERM: i32 = libc::SIGTERM;
+#[cfg(unix)]
+const SIGKILL: i32 = libc::SIGKILL;
+
+#[cfg_attr(unix, allow(dead_code))]
+/// Kill `pid` and every process it started, with `taskkill /T /F`. Git for Windows' `git.exe` in
+/// `cmd\` is a launcher that starts the real `git.exe` in `mingw64\bin\`, which in turn starts
+/// `git-remote-https.exe` or `ssh.exe`; killing only the first leaves the others running.
+async fn kill_tree(pid: u32) -> Result<()> {
+    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_string());
+    let mut c = base_command(&format!(r"{root}\System32\taskkill.exe"));
+    c.args(["/T", "/F", "/PID", &pid.to_string()]);
+    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.status().await?;
+    Ok(())
 }
 
 #[async_trait]
@@ -38,11 +120,27 @@ impl Process for TokioProcess {
     }
     async fn wait(&mut self) -> Result<Option<i32>> {
         let status = self.child.wait().await?;
+        self.exited = true;
         Ok(status.code())
     }
     async fn kill(&mut self) -> Result<()> {
+        if let (true, Some(pid)) = (self.own_session, self.pid) {
+            #[cfg(unix)]
+            signal_group(pid, SIGKILL)?;
+            #[cfg(not(unix))]
+            kill_tree(pid).await?;
+        }
         self.child.kill().await?;
         Ok(())
+    }
+    async fn terminate(&mut self) -> Result<()> {
+        match (self.own_session, self.pid) {
+            #[cfg(unix)]
+            (true, Some(pid)) => signal_group(pid, SIGTERM),
+            #[cfg(not(unix))]
+            (true, Some(pid)) => kill_tree(pid).await,
+            _ => self.kill().await,
+        }
     }
 }
 
@@ -98,6 +196,9 @@ impl Transport for LocalTransport {
             c.env(k, v);
         }
         apply_stdin(&mut c, &cmd.stdin);
+        if cmd.own_session {
+            set_own_session(&mut c);
+        }
         let child = c.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 GitError::GitNotFound {
@@ -109,7 +210,7 @@ impl Transport for LocalTransport {
                 }
             }
         })?;
-        Ok(Box::new(TokioProcess { child }))
+        Ok(Box::new(if cmd.own_session { TokioProcess::with_own_session(child) } else { TokioProcess::new(child) }))
     }
     async fn probe(&self) -> Result<TransportInfo> {
         let out = self

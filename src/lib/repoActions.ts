@@ -3,14 +3,15 @@
  * panel and the native menu bar, plus removing a repository from the library. Every function
  * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
-import { commands, type OpResult, type StashEntry } from "@/lib/bindings";
+import { commands, type OpResult, type PullMode, type StashEntry } from "@/lib/bindings";
 import { commitFiles } from "@/lib/files";
 import { errorMessage, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
-import { useDialogsStore } from "@/stores/dialogs";
+import { useDialogsStore, type PullSource } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
-import { useSessionsStore, type RepoSession } from "@/stores/sessions";
+import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
+import { useUiStateStore } from "@/stores/uiState";
 
 /** Runs one write operation and refetches refs and status once it has finished, whatever the outcome. */
 export async function runOp(key: string, op: Promise<IpcResult<OpResult>>): Promise<OpResult> {
@@ -137,6 +138,140 @@ export async function abortMerge(key: string): Promise<void> {
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
+}
+
+/** Runs `git rebase --abort` and reports the outcome. */
+export async function abortRebase(key: string): Promise<void> {
+  const sessions = useSessionsStore();
+  try {
+    const result = await runOp(key, commands.opRebaseAbort(key));
+    if (result.ok) sessions.notifySuccess("The rebase was aborted. The branch is back where it was before the pull.");
+    else sessions.notify(opFailureText(result, "Aborting the rebase"));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Why the active repository cannot pull right now, or null when it can. */
+export function pullReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.isBare) return "A bare repository has no checked-out branch to pull into.";
+  if (!session.status || !session.refs) return "The repository is still loading.";
+  if (isDetached(session) || currentBranch(session) === null) return "HEAD is detached. Check out a branch before pulling.";
+  if (session.status.conflictedCount > 0) return "Resolve the conflicted files first: Git cannot pull while files are unmerged.";
+  return null;
+}
+
+/**
+ * Opens the Pull dialog for the checked-out branch, with its upstream picked. When the working tree
+ * has uncommitted changes, asks first; going ahead pulls with `--autostash`. The mode starts as
+ * the one last used in this repository, else what the repository's Git config asks for, else
+ * Merge. The dialog runs the pull itself and reports the outcome.
+ */
+export async function openPullDialog(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const dialogs = useDialogsStore();
+  const reason = pullReason(session);
+  const into = currentBranch(session);
+  if (reason || !session?.refs || into === null) {
+    sessions.notify(reason ?? "The repository is still loading.");
+    return;
+  }
+  const key = session.key;
+  const refs = session.refs.refs;
+  const sources: PullSource[] = refs.flatMap((r) =>
+    r.kind.type === "remoteBranch" ? [{ short: r.short, remote: r.kind.remote, branch: stripRemote(r.short, r.kind.remote) }] : [],
+  );
+  if (sources.length === 0) {
+    sessions.notify("There are no remote branches to pull from. Add a remote, or fetch from it first.");
+    return;
+  }
+  const upstream = refs.find((r) => r.kind.type === "localBranch" && r.short === into)?.upstream ?? null;
+  const upstreamSource = upstream === null ? undefined : sources.find((s) => `refs/remotes/${s.short}` === upstream);
+  const source = upstreamSource ?? sources.find((s) => s.short === `origin/${into}`) ?? sources[0];
+
+  const uncommitted = uncommittedSummary(session);
+  if (uncommitted !== null) {
+    const confirmed = await dialogs.open("confirm", {
+      title: "Pull with uncommitted changes?",
+      message:
+        `The working tree has uncommitted changes (${uncommitted}). Pulling anyway stashes them first, pulls, ` +
+        "then puts them back (git pull --autostash). If putting them back conflicts, they also stay in a stash, so nothing is lost.",
+      confirmLabel: "Pull anyway (autostash)",
+    });
+    if (!confirmed) return;
+  }
+
+  let mode: PullMode | null = useUiStateStore().state?.perRepo?.[key]?.pullMode ?? null;
+  if (mode === null) {
+    try {
+      mode = await unwrap(commands.getPullMode(key, into));
+    } catch {
+      // Reading the config is only for the starting choice; Merge is a fine one.
+    }
+  }
+  await dialogs.open("pull", {
+    key,
+    into,
+    sources,
+    source,
+    sourceIsUpstream: upstreamSource !== undefined && source === upstreamSource,
+    mode: mode ?? "merge",
+    autostash: uncommitted !== null,
+  });
+}
+
+/** What the notice strip says after a pull ran to the end, and the button it offers. */
+export interface PullOutcome {
+  message: string;
+  kind: "success" | "error";
+  action: NoticeAction | null;
+  /** A plain failure: the Pull dialog keeps it open so another mode or branch can be tried. */
+  failed: boolean;
+}
+
+/** Turns a finished pull into the notice to show. `from` is `origin/dev`, `into` the local branch. */
+export function pullOutcome(key: string, result: OpResult, from: string, into: string, mode: PullMode): PullOutcome {
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+    return {
+      message: `Pulled ${from} into ${into}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
+      kind: "error",
+      action: null,
+      failed: false,
+    };
+  }
+  if (result.ok) {
+    const message = /Already up to date|Current branch .* is up to date/i.test(output)
+      ? `${into} is already up to date with ${from}.`
+      : /Successfully rebased/i.test(output)
+        ? `Pulled ${from} into ${into}, with ${into}'s own commits rebased on top.`
+        : /Merge made by/i.test(output)
+          ? `Pulled ${from} into ${into} with a merge commit.`
+          : `Pulled ${from} into ${into}.`;
+    return { message, kind: "success", action: null, failed: false };
+  }
+  if (result.conflicts && mode === "rebase") {
+    return {
+      message: `The pull stopped on conflicts while rebasing ${into} onto ${from}. Resolve them, or abort the rebase.`,
+      kind: "error",
+      action: { label: "Abort rebase", run: () => abortRebase(key) },
+      failed: false,
+    };
+  }
+  if (result.conflicts) {
+    return {
+      message: `The pull stopped on conflicts while merging ${from} into ${into}. Resolve them, or abort the merge.`,
+      kind: "error",
+      action: { label: "Abort merge", run: () => abortMerge(key) },
+      failed: false,
+    };
+  }
+  // GIT_TERMINAL_PROMPT=0 stops Git asking for a username and password on a terminal it does not have.
+  const message = /terminal prompts disabled|could not read Username/i.test(output)
+    ? `Git needs a username and password for this remote, and StashPanda cannot ask for them yet. Set up a credential helper (Git Credential Manager on Windows), or use an SSH remote.`
+    : opFailureText(result, `Pulling ${from} into ${into}`);
+  return { message, kind: "error", action: null, failed: true };
 }
 
 /**

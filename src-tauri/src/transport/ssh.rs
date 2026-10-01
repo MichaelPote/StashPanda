@@ -62,12 +62,20 @@ pub struct SshChannelProcess {
     stderr: Option<Box<dyn AsyncRead + Send + Unpin>>,
     exit: Option<oneshot::Receiver<Option<i32>>>,
     kill: Arc<Notify>,
+    term: Arc<Notify>,
 }
 
-async fn pump(mut channel: Channel<Msg>, mut out_w: tokio::io::WriteHalf<tokio::io::SimplexStream>, mut err_w: tokio::io::WriteHalf<tokio::io::SimplexStream>, exit_tx: oneshot::Sender<Option<i32>>, kill: Arc<Notify>) {
+/// `kill` sends SIGTERM and closes the channel at once, which OpenSSH's sshd answers by ending
+/// the remote process and its children. `term` sends SIGTERM and keeps reading, so the exit is
+/// reported only once the remote process has really gone; a server that ignores signal requests
+/// leaves it running until the caller falls back to `kill`.
+async fn pump(mut channel: Channel<Msg>, mut out_w: tokio::io::WriteHalf<tokio::io::SimplexStream>, mut err_w: tokio::io::WriteHalf<tokio::io::SimplexStream>, exit_tx: oneshot::Sender<Option<i32>>, kill: Arc<Notify>, term: Arc<Notify>) {
     let mut code: Option<i32> = None;
     loop {
         tokio::select! {
+            _ = term.notified() => {
+                let _ = channel.signal(Sig::TERM).await;
+            }
             _ = kill.notified() => {
                 let _ = channel.signal(Sig::TERM).await;
                 let _ = channel.close().await;
@@ -116,6 +124,10 @@ impl Process for SshChannelProcess {
         self.kill.notify_one();
         Ok(())
     }
+    async fn terminate(&mut self) -> Result<()> {
+        self.term.notify_one();
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -150,8 +162,10 @@ impl Transport for SshTransport {
         let (exit_tx, exit_rx) = oneshot::channel();
         let kill = Arc::new(Notify::new());
         let kill2 = kill.clone();
+        let term = Arc::new(Notify::new());
+        let term2 = term.clone();
         tauri::async_runtime::spawn(async move {
-            pump(channel, out_w, err_w, exit_tx, kill2).await;
+            pump(channel, out_w, err_w, exit_tx, kill2, term2).await;
             drop(permit);
         });
         Ok(Box::new(SshChannelProcess {
@@ -160,6 +174,7 @@ impl Transport for SshTransport {
             stderr: Some(Box::new(err_r)),
             exit: Some(exit_rx),
             kill,
+            term,
         }))
     }
     async fn probe(&self) -> Result<TransportInfo> {
@@ -380,6 +395,26 @@ mod e2e {
         let mut proc = transport.spawn(cmd).await.unwrap();
         proc.kill().await.unwrap();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proc.wait()).await.expect("killed process exits");
+
+        // Terminate: the exit is reported only once the remote process has gone, and the child
+        // it started has gone with it. The `^` anchors keep pgrep from matching its own caller.
+        let alive = || String::from_utf8_lossy(&Command::new("pgrep").args(["-f", "^sleep 31[78]"]).output().unwrap().stdout).into_owned();
+        let mut cmd = Cmd::git("sh", vec!["-c".into(), "sleep 317 & sleep 318".into()]);
+        cmd.program = Program::Other("sh".into());
+        let mut proc = transport.spawn(cmd).await.unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive().lines().count() < 2 {
+            assert!(std::time::Instant::now() < deadline, "remote sleeps did not start");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        proc.terminate().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), proc.wait()).await.expect("terminated process exits").unwrap();
+        // The background child may take a moment longer than the shell.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !alive().is_empty() {
+            assert!(std::time::Instant::now() < deadline, "left running: {}", alive());
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
 
         ctx.pool.disconnect_all().await;
         let _ = std::fs::remove_dir_all(&dir);

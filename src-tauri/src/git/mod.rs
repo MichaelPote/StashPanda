@@ -9,6 +9,8 @@ pub mod versions;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::error::{classify_git_failure, GitError, Result};
 use crate::transport::paths::NativePath;
 use crate::transport::{Category, Cmd, Output, SharedTransport};
@@ -24,6 +26,8 @@ pub struct GitReq {
     pub timeout: Option<Duration>,
     /// Extra `-c key=value` config for this call only.
     pub config: Vec<(String, String)>,
+    /// See `Cmd::own_session`.
+    pub own_session: bool,
 }
 
 impl GitReq {
@@ -39,7 +43,13 @@ impl GitReq {
             category: Category::Internal,
             timeout: Some(Duration::from_secs(120)),
             config: Vec::new(),
+            own_session: false,
         }
+    }
+    /// Run in a session of its own, so cancelling reaches Git's children and Git has no terminal.
+    pub fn own_session(mut self) -> GitReq {
+        self.own_session = true;
+        self
     }
     pub fn user(mut self) -> GitReq {
         self.category = Category::UserAction;
@@ -103,6 +113,7 @@ impl GitClient {
             .category(req.category)
             .timeout(req.timeout);
         cmd.env = common_env();
+        cmd.own_session = req.own_session;
         cmd.summary = Some(req.args.clone());
         if let Some(b) = &req.stdin {
             cmd = cmd.stdin_bytes(b.clone());
@@ -145,6 +156,25 @@ impl GitClient {
         let argv = self.transport.render(&cmd);
         let ticket = self.console.start(&cmd, argv);
         match self.transport.run(cmd).await {
+            Ok(out) => {
+                self.console.finish(ticket, Some(&out), None);
+                Ok(out)
+            }
+            Err(err) => {
+                self.console.finish(ticket, None, Some(&err));
+                Err(err)
+            }
+        }
+    }
+
+    /// Like `exec_allow_failure` for a command that reports progress on stderr: each update goes
+    /// to `progress` as it arrives, and cancelling `cancel` kills the process (see
+    /// `Transport::run_streaming`).
+    pub async fn exec_streaming(&self, req: GitReq, progress: &(dyn Fn(String) + Send + Sync), cancel: &CancellationToken) -> Result<Output> {
+        let cmd = self.build_cmd(&req);
+        let argv = self.transport.render(&cmd);
+        let ticket = self.console.start(&cmd, argv);
+        match self.transport.run_streaming(cmd, progress, cancel).await {
             Ok(out) => {
                 self.console.finish(ticket, Some(&out), None);
                 Ok(out)

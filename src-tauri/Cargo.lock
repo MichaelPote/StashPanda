@@ -4821,6 +4821,7 @@ dependencies = [
  "des",
  "dunce",
  "fontdb",
+ "libc",
  "md-5",
  "notify-debouncer-full",
  "pkcs1",

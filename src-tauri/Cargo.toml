@@ -56,6 +56,9 @@ base64 = "0.23.1"
 zeroize = "1.9.0"
 fontdb = "0.24.0"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 
 # Debug builds keep line numbers for our own code (panics and backtraces still
 # name the file and line) but no debugger info for dependencies, which is most

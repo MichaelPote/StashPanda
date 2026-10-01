@@ -3,16 +3,35 @@
 //! Always the `-e` form (no login shell). Every command costs one `wsl.exe`
 //! start (about 87 ms measured), so callers batch where they can.
 
+use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
+
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::local::{apply_stdin, base_command, TokioProcess};
 use super::paths::{NativePath, PathMapper, WslMapper};
-use super::{Cmd, Process, Program, Transport, TransportInfo, TransportKind};
+use super::{Cmd, PidLine, Process, Program, Transport, TransportInfo, TransportKind};
 use crate::error::{GitError, Result};
 use crate::git::versions::{GitVersion, MIN_GIT};
 
 pub const WSL_EXE: &str = r"C:\Windows\System32\wsl.exe";
+
+/// `wsl.exe` as this build starts it. Tests on Linux reach it through WSL interop, so the
+/// transport's own code runs against a real distro there too.
+fn wsl_exe() -> &'static str {
+    if cfg!(all(test, not(windows))) {
+        "/mnt/c/Windows/System32/wsl.exe"
+    } else {
+        WSL_EXE
+    }
+}
+
+/// How a command with `Cmd::own_session` starts inside the distro: `setsid -w` makes it lead a
+/// new session with no terminal and waits for it, so `wsl.exe` exits when it does; the shell
+/// prints its pid, which `exec` hands to the command, and that pid is also the process group
+/// every process it starts joins.
+const OWN_SESSION_WRAPPER: [&str; 5] = ["setsid", "-w", "sh", "-c", r#"echo $$; exec "$@""#];
 
 pub struct WslTransport {
     pub distro: String,
@@ -39,7 +58,7 @@ pub fn decode_wsl_text(bytes: &[u8]) -> String {
 
 /// `wsl.exe -l -q` output as distro names.
 pub async fn list_distros() -> Result<Vec<String>> {
-    let mut c = base_command(WSL_EXE);
+    let mut c = base_command(wsl_exe());
     c.args(["-l", "-q"]);
     let out = c.output().await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -58,7 +77,12 @@ pub async fn list_distros() -> Result<Vec<String>> {
 
 impl WslTransport {
     fn argv(&self, cmd: &Cmd) -> Vec<String> {
-        let mut v = vec![WSL_EXE.to_string(), "-d".into(), self.distro.clone(), "-e".into()];
+        let mut v = vec![wsl_exe().to_string(), "-d".into(), self.distro.clone(), "-e".into()];
+        if cmd.own_session {
+            v.extend(OWN_SESSION_WRAPPER.map(String::from));
+            // `$0` for the script.
+            v.push("sh".into());
+        }
         if !cmd.env.is_empty() {
             v.push("env".into());
             for (k, val) in &cmd.env {
@@ -99,7 +123,11 @@ impl Transport for WslTransport {
                 GitError::Io { detail: e.to_string() }
             }
         })?;
-        Ok(Box::new(TokioProcess { child }))
+        let process = TokioProcess::new(child);
+        if !cmd.own_session {
+            return Ok(Box::new(process));
+        }
+        Ok(Box::new(WslProcess { wsl: process, distro: self.distro.clone(), pid: Arc::new(OnceLock::new()), exited: false }))
     }
     async fn probe(&self) -> Result<TransportInfo> {
         let cmd = Cmd::git("version", vec!["--version".into()]);
@@ -162,6 +190,89 @@ impl Transport for WslTransport {
 }
 
 #[allow(dead_code)]
+/// A command started with `Cmd::own_session`. Killing `wsl.exe` would leave the Linux process
+/// running, so terminate and kill signal its process group inside the distro instead, through a
+/// second `wsl.exe`, using the pid the wrapper printed first on stdout.
+///
+/// Killing `wsl.exe` alone ends the processes it started directly (measured 2026-10-01), but not
+/// one in a session of its own, which is what the wrapper creates. So dropping a `WslProcess`
+/// that has not exited kills its group as well.
+struct WslProcess {
+    wsl: TokioProcess,
+    distro: String,
+    /// Known once stdout has been read past the wrapper's first line.
+    pid: Arc<OnceLock<u32>>,
+    exited: bool,
+}
+
+/// How long `terminate` waits for the wrapper's pid line. It is the first thing the wrapper
+/// prints, so only a stop in the first moments of the command waits at all.
+const PID_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `kill -<signal> -- -<pid>` inside the distro.
+async fn signal_wsl_group(distro: &str, pid: u32, signal: &str) -> Result<()> {
+    let mut c = base_command(wsl_exe());
+    c.args(["-d", distro, "-e", "kill", &format!("-{signal}"), "--", &format!("-{pid}")]);
+    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    c.status().await?;
+    Ok(())
+}
+
+impl Drop for WslProcess {
+    fn drop(&mut self) {
+        if self.exited {
+            return;
+        }
+        if let Some(pid) = self.pid.get().copied() {
+            let distro = self.distro.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = signal_wsl_group(&distro, pid, "KILL").await;
+            });
+        }
+    }
+}
+
+#[async_trait]
+impl Process for WslProcess {
+    fn stdin(&mut self) -> Option<Box<dyn AsyncWrite + Send + Unpin>> {
+        self.wsl.stdin()
+    }
+    fn stdout(&mut self) -> Option<Box<dyn AsyncRead + Send + Unpin>> {
+        let pid = self.pid.clone();
+        self.wsl.stdout().map(|r| Box::new(PidLine::new(r, pid)) as _)
+    }
+    fn stderr(&mut self) -> Option<Box<dyn AsyncRead + Send + Unpin>> {
+        self.wsl.stderr()
+    }
+    async fn wait(&mut self) -> Result<Option<i32>> {
+        let code = self.wsl.wait().await?;
+        self.exited = true;
+        Ok(code)
+    }
+    async fn kill(&mut self) -> Result<()> {
+        if let Some(pid) = self.pid.get().copied() {
+            let _ = signal_wsl_group(&self.distro, pid, "KILL").await;
+        }
+        self.wsl.kill().await
+    }
+    async fn terminate(&mut self) -> Result<()> {
+        // The caller keeps reading stdout meanwhile, which is where the pid arrives.
+        let deadline = std::time::Instant::now() + PID_WAIT;
+        while self.pid.get().is_none() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        match self.pid.get().copied() {
+            Some(pid) => signal_wsl_group(&self.distro, pid, "TERM").await,
+            // The wrapper never printed (no `setsid` in the distro, say), so nothing runs in a
+            // session of its own and killing `wsl.exe` ends it.
+            None => self.wsl.kill().await,
+        }
+    }
+    fn remote_pid(&self) -> Option<u32> {
+        self.pid.get().copied()
+    }
+}
+
 fn _assert_types(_: &dyn AsyncRead, _: &dyn AsyncWrite) {}
 
 #[cfg(test)]

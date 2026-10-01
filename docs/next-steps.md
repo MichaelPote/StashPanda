@@ -2,8 +2,8 @@
 
 Status as of 2026-10-01. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
 milestone 2 planned on 2026-09-23, the commit dialog and a round of interface and graph work
-added on 2026-09-30, and stashes and a second round of interface work added on 2026-10-01 (see
-"Interface, merge and checkout work" below). Everything not listed here is done and tested; see
+added on 2026-09-30, and stashes, a second round of interface work and pull added on 2026-10-01
+(see "Interface, merge and checkout work" and "Milestone 3" below). Everything not listed here is done and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
@@ -64,8 +64,9 @@ Each item names the files it touches so it can be picked up cold.
       `wsl.exe -d Ubuntu -e env ... git -C /home/me/code/stashpanda ...`, confirm `wsl_list_distros`
       returns `Ubuntu`, and verify the argument self-test the plan calls for (an argument with a
       space and a quote through `wsl.exe -e`) with a fallback to `-e sh -c '<quoted>'` if `wsl.exe`
-      re-splits it. The remote-pid `sh -c 'echo $$; exec "$@"'` wrapper for cancellable commands is
-      not implemented; `Process::kill` on the WSL transport only kills `wsl.exe`.
+      re-splits it. The remote-pid wrapper for cancellable commands exists since 2026-10-01 (see
+      "Stopping a command properly" under milestone 3), and an argument with a space and a quote
+      was seen to pass through `wsl.exe -e` unsplit from WSL interop that day.
 - [ ] **Windows git from Linux for `/mnt/<d>/` paths.** `repo/resolve.rs` builds a `LocalTransport`
       with `windows_git_from_linux = true` and a `WindowsFromLinuxMapper`; untested against a real
       `/mnt/c/...` repository. Open one from the Linux build and check the console shows `C:\...`
@@ -288,9 +289,8 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       lock only showed as a generic non-zero exit. `op_remove_stale_lock(key)` deletes
       `<git dir>/index.lock` through the new `Transport::remove_file` (`tokio::fs` for Local and
       WSL, `rm -f` over SSH); a missing file counts as success.
-- **Put off to milestone 3:** `OperationRegistry` and `start_operation` / `cancel_operation`.
-  Nothing in milestone 2 streams progress, and fetch, pull and push will show what the registry
-  needs.
+- **Put off to milestone 3, done 2026-10-01 with pull:** the operation registry
+  (`RepoHandle::start_operation` and `cancel_operation`, and the `op_cancel` command).
 
 ### Step 2: backend operations, in the order the UI needs them
 
@@ -534,11 +534,75 @@ none of it has been checked in the running app yet.
 
 ## Milestone 3: remote and history operations
 
-- [ ] **Fetch, pull, push** with streamed progress: `--progress` on stderr, lines split on `\r`
-      and `\n`, emitted as `operation_progress`; `operation_finished` at the end; cancel through
-      `Process::kill` (local) or `Sig::TERM` on the SSH channel. Credential prompts: we run with
-      `GIT_TERMINAL_PROMPT=0`; HTTPS remotes need a `GIT_ASKPASS` helper or the user's credential
-      manager, to be designed.
+- [x] **Pull** (2026-10-01). `op_pull(key, opId, remote, branch, mode, autostash)` runs two
+      commands rather than `git pull`, so that Stop only ever lands on the network transfer:
+      `ops::pull_fetch` runs `git fetch --progress <remote> <branch>`, which can be stopped, and
+      `ops::pull_integrate` then brings `FETCH_HEAD` in, which cannot. Merge is
+      `merge --no-edit FETCH_HEAD` (the same "Merge branch 'dev' of <url>" message as `git
+      pull`); Fast-forward only is `merge --ff-only FETCH_HEAD`; Rebase fast-forwards when the
+      branch has no commits of its own, and otherwise runs `rebase --onto FETCH_HEAD <fork
+      point>` with the fork point from `merge-base --fork-point refs/remotes/<remote>/<branch>
+      HEAD`, so commits the remote has rewritten are dropped as `git pull --rebase` drops them.
+      `--autostash` goes on the second command. All checked against `git pull` with Git 2.43.
+      `Transport::run_streaming` reads stderr as it arrives, splits it on `\r` and `\n`, strips
+      escape codes, and sends each update as an `operationProgress` event carrying the caller's
+      `opId`; the `stderr` it returns keeps only the last update of each line. When the fetch is
+      done, an event with `cancellable: false` names the local step, and the dialog disables
+      Stop. There is no `operation_finished` event: the command's own result is the end.
+      `op_cancel(key, opId)` cancels through the registry on `RepoHandle` (`start_operation`,
+      `cancel_operation`; tokens are children of the repository's, so closing the tab cancels
+      too). `get_pull_mode` reads `branch.<name>.rebase`, `pull.rebase` and `pull.ff` in Git's
+      order. `op_rebase_abort` is new, for a rebasing pull that conflicts.
+      Test: `pull_modes_conflicts_autostash_and_cancel`.
+      **Locking changed:** every write now takes `RepoHandle::write_gate` for its whole run, so
+      writes never overlap; short writes also take the exclusive lock as before. A pull holds the
+      gate throughout but the exclusive lock only for its local step, so status polls, graph
+      pages and diffs keep working while it fetches.
+      Frontend: the toolbar's Pull button and Repository › Pull open `PullDialog.vue` (remote
+      branch, defaulting to the upstream; Merge, Rebase or Fast-forward only, remembered in
+      `perRepo[key].pullMode`, else the Git config, else Merge). With uncommitted changes,
+      `openPullDialog` asks first and offers "Pull anyway (autostash)". The dialog shows the
+      latest progress line with a bar from its percentage, and Stop. Closing the dialog leaves
+      the pull running; the outcome then shows in the notice strip. Conflicts offer Abort rebase
+      or Abort merge; an autostash that conflicts on the way back (Git exits 0) is reported as
+      needing attention. Not yet tried in the running app.
+- [x] **Stopping a command properly** (2026-10-01, for the pull's fetch). `Cmd::own_session`
+      (`GitReq::own_session`) runs a command so that `Process::terminate` reaches it and every
+      process it starts, and `run_streaming` returns `Cancelled` only once it has exited, or
+      after `TERMINATE_GRACE` (5 s) and a `kill`. The write gate is therefore never released
+      while Git still runs.
+      - Linux and macOS (`transport/local.rs`): `setsid` before `exec`, so Git leads a new
+        session with no controlling terminal (`ssh` cannot stop to ask for a passphrase on the
+        terminal StashPanda was started from) and terminate sends SIGTERM to its process group,
+        which lets Git remove its lock files.
+      - Windows: `taskkill /T /F` on the process tree. Git for Windows' `cmd\git.exe` is a
+        launcher for `mingw64\bin\git.exe`, so killing only the first left the real Git and its
+        `git-remote-https.exe` or `ssh.exe` running. Compiled and clean under clippy on Windows,
+        not yet run there: the Windows test binary exits with `STATUS_ENTRYPOINT_NOT_FOUND`
+        before any test starts (see Packaging and CI).
+      - WSL (`transport/wsl.rs`): `wsl.exe -d <distro> -e setsid -w sh -c 'echo $$; exec "$@"'
+        sh <command>`. `PidLine` takes the pid off stdout; terminate runs `kill -TERM -- -<pid>`
+        through a second `wsl.exe` (87 ms). Measured 2026-10-01: killing `wsl.exe` alone does end
+        the Linux processes it started, but not ones in a session of their own, so a
+        `WslProcess` dropped before it exits kills its group too, and so does a `TokioProcess`
+        with `own_session` on Linux.
+      - SSH (`transport/ssh.rs`): terminate sends SIGTERM on the channel and keeps reading until
+        the exit status arrives; `kill` still closes the channel, which OpenSSH's `sshd` answers
+        by ending the remote process and its children (checked with OpenSSH 9.6).
+      Tests: `own_session_on_the_local_transport`, `own_session_on_the_wsl_transport` (drives
+      the real `WslTransport` through `wsl.exe` interop from WSL; skips elsewhere),
+      `pid_line_takes_the_first_line_and_passes_the_rest`, and the terminate step in
+      `ssh_transport_against_private_sshd`. With `own_session` off, or the `Drop` impls disabled,
+      the local and WSL tests fail.
+      Left: Windows `git.exe` driven from the Linux build through interop gets `setsid` on the
+      Linux side, which does not reach the Windows process tree. A fetch stopped on Windows at
+      the moment it writes refs can leave a `.lock` file under `.git/refs`, since `taskkill /F`
+      gives Git no chance to clean up.
+- [ ] **Fetch and push** on the same plumbing: `op_fetch` and `op_push` through
+      `exec_streaming` and the registry, with Repository › Fetch and Push and the toolbar's Sync
+      and Push buttons. Credential prompts: we run with `GIT_TERMINAL_PROMPT=0`, so an HTTPS
+      remote with no credential helper fails (the pull notice says so); a `GIT_ASKPASS` helper is
+      still to be designed.
 - [ ] **Merge, rebase, cherry-pick, revert** with conflict detection (`u` entries in status), a
       conflict list using the `:1:`, `:2:`, `:3:` blob stages (`get_blob_content` already accepts
       those specs), and continue / abort actions.
@@ -585,7 +649,9 @@ none of it has been checked in the running app yet.
   bindings.
 - The `WslTransport::probe` treats exit code 255 or -1 as "distro missing" only when the message
   matches; `wsl.exe` error text varies by version and language.
-- `Process::kill` on the WSL transport kills `wsl.exe`, not the Linux child (see step 14).
+- On the WSL transport, a command without `Cmd::own_session` that times out is stopped by killing
+  `wsl.exe`. That does end the Linux processes it started (measured 2026-10-01), but abruptly, so
+  Git cannot remove its lock files. Only the pull's fetch uses `own_session` so far.
 - `keys_convert` writes `<stem>` for OpenSSH output, which for a file named `foo.ppk` produces `foo`
   next to it; for a file with no extension (already OpenSSH) it refuses unless `overwrite` is set.
   Confirm this is the naming Michael wants.

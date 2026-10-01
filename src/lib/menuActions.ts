@@ -7,7 +7,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { events, type Theme } from "@/lib/bindings";
 import { errorMessage } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
-import { createBranchHere, createTagAt, openApplyStashDialog, openStashDialog, removeFromLibrary } from "@/lib/repoActions";
+import { createBranchHere, createTagAt, openApplyStashDialog, openPullDialog, openStashDialog, removeFromLibrary } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
@@ -107,8 +107,10 @@ export async function dispatch(id: string): Promise<void> {
     case "repo.apply_stash":
       await openApplyStashDialog(sessions.active);
       return;
-    case "repo.fetch":
     case "repo.pull":
+      await openPullDialog(sessions.active);
+      return;
+    case "repo.fetch":
     case "repo.push":
       sessions.notify("Coming in milestone 3.");
       return;

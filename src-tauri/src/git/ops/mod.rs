@@ -98,6 +98,162 @@ pub async fn merge_abort(client: &GitClient) -> Result<OpResult> {
     Ok(result(out))
 }
 
+/// Stop a rebase that stopped on conflicts (including one a rebasing pull started) and put the
+/// branch back where it was.
+pub async fn rebase_abort(client: &GitClient) -> Result<OpResult> {
+    let out = client.exec_allow_failure(GitReq::new("rebase", ["rebase", "--abort"]).user()).await?;
+    Ok(result(out))
+}
+
+/// How a pull brings the fetched commits into the current branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PullMode {
+    /// Fast-forward when possible, otherwise a merge commit (`--no-rebase`).
+    Merge,
+    /// Replay local commits on top of the fetched ones (`--rebase`).
+    Rebase,
+    /// Only move the branch forward; refuse when both sides have new commits (`--ff-only`).
+    FastForwardOnly,
+}
+
+/// The first half of a pull: `git fetch --progress <remote> <branch>`, which writes `FETCH_HEAD`
+/// and updates `refs/remotes/<remote>/<branch>`. `--progress` makes Git report progress even
+/// though stderr is a pipe; each update goes to `progress`. No timeout: a slow remote is stopped
+/// through `cancel`. Fetch touches no `index.lock` and changes no branch, so stopping it is safe:
+/// Git removes its ref lock files on SIGTERM, and a stopped fetch only leaves the remote-tracking
+/// branch where it was.
+///
+/// StashPanda pulls in two commands rather than `git pull` so that Stop only ever lands here.
+/// Stopping `git pull` in its merge or rebase step leaves a half-done rebase, and on Windows,
+/// where Git can only be killed outright, an `index.lock` too.
+pub async fn pull_fetch(
+    client: &GitClient,
+    remote: &str,
+    branch: &str,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_ref_name(remote)?;
+    valid_ref_name(branch)?;
+    let req = GitReq::new("fetch", ["fetch", "--progress", remote, branch]).user().timeout(None).own_session();
+    let out = client.exec_streaming(req, progress, cancel).await?;
+    Ok(result(out))
+}
+
+/// The second half of a pull: bring `FETCH_HEAD` into the current branch the way `git pull`
+/// would, checked against it with Git 2.43.
+///
+/// - Merge: `git merge --no-edit FETCH_HEAD`, which writes the same "Merge branch 'dev' of
+///   <url>" message. `pull.ff` is not read, so `pull.ff=only` does not override the choice.
+/// - Fast-forward only: `git merge --ff-only FETCH_HEAD`.
+/// - Rebase: when the branch has no commits of its own this fast-forwards, as `git pull
+///   --rebase` does. Otherwise `git rebase --onto FETCH_HEAD <fork point>`, where the fork point
+///   comes from `git merge-base --fork-point refs/remotes/<remote>/<branch> HEAD`, so commits the
+///   remote has since rewritten are dropped rather than replayed; without one it rebases onto
+///   `FETCH_HEAD` itself.
+///
+/// `autostash` stashes uncommitted changes first and reapplies them afterwards: when reapplying
+/// conflicts, Git still exits 0, prints "Applying autostash resulted in conflicts" and keeps the
+/// changes as `stash@{0}`. Not cancellable. Timeout 10 minutes, for slow hooks.
+pub async fn pull_integrate(client: &GitClient, remote: &str, branch: &str, mode: PullMode, autostash: bool) -> Result<OpResult> {
+    valid_ref_name(remote)?;
+    valid_ref_name(branch)?;
+    let timeout = Some(std::time::Duration::from_secs(600));
+    let autostash_flag = autostash.then_some("--autostash");
+    if mode == PullMode::Rebase && !fast_forwards(client).await? {
+        let tracking = format!("refs/remotes/{remote}/{branch}");
+        let fork = client
+            .exec_allow_failure(GitReq::new("merge-base", ["merge-base", "--fork-point", &tracking, "HEAD"]))
+            .await?;
+        let fork_point = if fork.success() { String::from_utf8_lossy(&fork.stdout).trim().to_string() } else { String::new() };
+        let upstream = if fork_point.is_empty() { "FETCH_HEAD" } else { fork_point.as_str() };
+        let mut args = vec!["rebase"];
+        args.extend(autostash_flag);
+        args.extend(["--onto", "FETCH_HEAD", upstream]);
+        let out = client.exec_allow_failure(GitReq::new("rebase", args).user().timeout(timeout)).await?;
+        return Ok(result(out));
+    }
+    let mut args = vec!["merge", "--no-edit"];
+    if mode != PullMode::Merge {
+        args.push("--ff-only");
+    }
+    args.extend(autostash_flag);
+    args.push("FETCH_HEAD");
+    let out = client.exec_allow_failure(GitReq::new("merge", args).user().timeout(timeout)).await?;
+    Ok(result(out))
+}
+
+/// True when HEAD is `FETCH_HEAD` or behind it, so the branch has no commits of its own and
+/// bringing the fetched commits in is a fast-forward. Also true on an unborn branch, where `git
+/// merge` checks the fetched commit out.
+async fn fast_forwards(client: &GitClient) -> Result<bool> {
+    let out = client
+        .exec_allow_failure(GitReq::new("merge-base", ["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"]))
+        .await?;
+    // 0: an ancestor; 1: not; anything else: HEAD has no commit yet.
+    Ok(out.exit_code != Some(1))
+}
+
+/// The pull mode the repository's Git config asks for, in the order `git pull` reads it:
+/// `branch.<branch>.rebase`, then `pull.rebase`, then `pull.ff`. None when none of them is set.
+pub async fn configured_pull_mode(client: &GitClient, branch: Option<&str>) -> Result<Option<PullMode>> {
+    let mut pattern = String::from(r"^pull\.(rebase|ff)$");
+    if let Some(b) = branch {
+        pattern.push_str(&format!(r"|^branch\.{}\.rebase$", regex_escape(b)));
+    }
+    let out = client.exec_allow_failure(GitReq::new("config", ["config".to_string(), "-z".into(), "--get-regexp".into(), pattern])).await?;
+    // Exit 1 means nothing matched.
+    if !out.success() && out.exit_code != Some(1) {
+        return Err(classify_git_failure("config", vec![], out.exit_code, &out.stderr, &client.transport.kind()));
+    }
+    Ok(pull_mode_from_config(&out.stdout, branch))
+}
+
+/// Escape a branch name for the POSIX extended regular expression `git config --get-regexp` takes.
+fn regex_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if r".^$*+?()[]{}|\".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Parse `git config -z --get-regexp` output (`key\nvalue\0`, or `key\0` for a key with no
+/// value, which Git reads as true). Git prints section and key names in lower case; the branch
+/// name in the middle keeps its case. A later entry for the same key wins, as in Git.
+fn pull_mode_from_config(bytes: &[u8], branch: Option<&str>) -> Option<PullMode> {
+    let (mut branch_rebase, mut pull_rebase, mut pull_ff) = (None, None, None);
+    let branch_key = branch.map(|b| format!("branch.{b}.rebase"));
+    for entry in bytes.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let text = String::from_utf8_lossy(entry);
+        let (key, value) = match text.split_once('\n') {
+            Some((k, v)) => (k.to_string(), v.trim().to_ascii_lowercase()),
+            None => (text.to_string(), "true".to_string()),
+        };
+        match key.as_str() {
+            "pull.rebase" => pull_rebase = Some(value),
+            "pull.ff" => pull_ff = Some(value),
+            k if Some(k) == branch_key.as_deref() => branch_rebase = Some(value),
+            _ => {}
+        }
+    }
+    // `merges`, `interactive` and their one-letter forms all rebase; StashPanda runs a plain one.
+    let rebases = |v: &str| matches!(v, "true" | "yes" | "on" | "1" | "merges" | "m" | "interactive" | "i");
+    let ff_only = pull_ff.as_deref() == Some("only");
+    match branch_rebase.or(pull_rebase) {
+        Some(v) if rebases(&v) => Some(PullMode::Rebase),
+        Some(_) if ff_only => Some(PullMode::FastForwardOnly),
+        Some(_) => Some(PullMode::Merge),
+        None if ff_only => Some(PullMode::FastForwardOnly),
+        None if pull_ff.is_some() => Some(PullMode::Merge),
+        None => None,
+    }
+}
+
 /// Lightweight tag, or annotated when `message` is given.
 pub async fn tag_create(client: &GitClient, name: &str, target: &str, message: Option<&str>, force: bool) -> Result<OpResult> {
     valid_ref_name(name)?;
@@ -213,7 +369,7 @@ async fn exec_with_paths(client: &GitClient, label: &'static str, args: &[&str],
 }
 
 /// Both steps' output, succeeding only when both did.
-fn combine(a: OpResult, b: OpResult) -> OpResult {
+pub(crate) fn combine(a: OpResult, b: OpResult) -> OpResult {
     let join = |x: String, y: String| match (x.is_empty(), y.is_empty()) {
         (true, _) => y,
         (_, true) => x,
@@ -770,5 +926,130 @@ mod e2e {
         let ok = checkout(&client, "other").await.unwrap();
         assert!(ok.ok && index_lock_in(&ok).is_none(), "{ok:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pull_modes_conflicts_autostash_and_cancel() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-pull-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local) = (root.join("origin"), root.join("local"));
+        std::fs::create_dir_all(&origin).unwrap();
+        git(&origin, &["init", "-q", "-b", "main"]);
+        std::fs::write(origin.join("a.txt"), "1\n").unwrap();
+        git(&origin, &["add", "-A"]); git(&origin, &["commit", "-qm", "base"]);
+        let st = Command::new("git").arg("clone").arg("-q").arg(&origin).arg(&local).status().unwrap();
+        assert!(st.success());
+        // The client adds no identity of its own, and pulls here make merge and rebased commits.
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&local, &["config", k, v]);
+        }
+        let client = client_for(&local);
+        let lines = std::sync::Mutex::new(Vec::<String>::new());
+        let progress = |l: String| lines.lock().unwrap().push(l);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // Both halves, as `op_pull` runs them.
+        let pull = |remote: &'static str, branch: &'static str, mode: PullMode, autostash: bool| {
+            let (client, progress, cancel) = (&client, &progress, &cancel);
+            async move {
+                let fetched = pull_fetch(client, remote, branch, progress, cancel).await?;
+                if !fetched.ok {
+                    return Ok(fetched);
+                }
+                Ok::<_, GitError>(combine(fetched, pull_integrate(client, remote, branch, mode, autostash).await?))
+            }
+        };
+        let head = |dir: &Path, rev: &str| String::from_utf8(Command::new("git").arg("-C").arg(dir).args(["rev-parse", rev]).output().unwrap().stdout).unwrap();
+
+        // Fast-forward, with progress on stderr and the remote-tracking branch updated.
+        std::fs::write(origin.join("b.txt"), "b\n").unwrap();
+        git(&origin, &["add", "-A"]); git(&origin, &["commit", "-qm", "remote one"]);
+        let ff = pull("origin", "main", PullMode::FastForwardOnly, false).await.unwrap();
+        assert!(ff.ok, "{ff:?}");
+        assert_eq!(head(&local, "HEAD"), head(&origin, "HEAD"));
+        assert_eq!(head(&local, "origin/main"), head(&origin, "HEAD"));
+        assert!(lines.lock().unwrap().iter().any(|l| l.contains("FETCH_HEAD")), "{:?}", lines.lock().unwrap());
+        assert!(!ff.stderr.contains('\r'));
+
+        // Both sides move on: fast-forward only refuses, merge makes a merge commit.
+        std::fs::write(origin.join("c.txt"), "c\n").unwrap();
+        git(&origin, &["add", "-A"]); git(&origin, &["commit", "-qm", "remote two"]);
+        std::fs::write(local.join("d.txt"), "d\n").unwrap();
+        git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "local one"]);
+        let refused = pull("origin", "main", PullMode::FastForwardOnly, false).await.unwrap();
+        assert!(!refused.ok && !refused.conflicts && refused.stderr.contains("Not possible to fast-forward"), "{refused:?}");
+        // `--no-rebase` wins over `pull.ff=only` in the repository's config.
+        git(&local, &["config", "pull.ff", "only"]);
+        let merged = pull("origin", "main", PullMode::Merge, false).await.unwrap();
+        assert!(merged.ok, "{merged:?}");
+        assert_eq!(head(&local, "HEAD^2"), head(&origin, "HEAD"));
+        git(&local, &["config", "--unset", "pull.ff"]);
+
+        // A rebase that conflicts stops with conflicts, and aborting puts the branch back.
+        std::fs::write(origin.join("a.txt"), "remote\n").unwrap();
+        git(&origin, &["commit", "-qam", "remote three"]);
+        std::fs::write(local.join("a.txt"), "local\n").unwrap();
+        git(&local, &["commit", "-qam", "local two"]);
+        let before = head(&local, "HEAD");
+        let stopped = pull("origin", "main", PullMode::Rebase, false).await.unwrap();
+        assert!(!stopped.ok && stopped.conflicts, "{stopped:?}");
+        assert!(local.join(".git/rebase-merge").exists());
+        assert!(rebase_abort(&client).await.unwrap().ok);
+        assert_eq!(head(&local, "HEAD"), before);
+
+        // The remote rewrites a commit the branch already has: the fork point drops the old copy
+        // instead of replaying it, as `git pull --rebase` does.
+        git(&local, &["reset", "-q", "--hard", "origin/main"]);
+        std::fs::write(origin.join("e.txt"), "old\n").unwrap();
+        git(&origin, &["add", "-A"]); git(&origin, &["commit", "-qm", "rewritten later"]);
+        assert!(pull("origin", "main", PullMode::Rebase, false).await.unwrap().ok);
+        std::fs::write(local.join("f.txt"), "f\n").unwrap();
+        git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "mine"]);
+        git(&origin, &["reset", "-q", "--hard", "HEAD~1"]);
+        std::fs::write(origin.join("g.txt"), "g\n").unwrap();
+        git(&origin, &["add", "-A"]); git(&origin, &["commit", "-qm", "replacement"]);
+        let rebased = pull("origin", "main", PullMode::Rebase, false).await.unwrap();
+        assert!(rebased.ok, "{rebased:?}");
+        let subjects = String::from_utf8(Command::new("git").arg("-C").arg(&local).args(["log", "--format=%s", "-3"]).output().unwrap().stdout).unwrap();
+        assert_eq!(subjects, "mine\nreplacement\nremote three\n");
+
+        // Autostash: uncommitted changes that clash with the pulled commits stay in a stash, and
+        // Git still exits 0.
+        // Two back, so the pulled commits include "remote three", which changes a.txt.
+        git(&local, &["reset", "-q", "--hard", "origin/main~2"]);
+        std::fs::write(local.join("a.txt"), "dirty\n").unwrap();
+        let stashed = pull("origin", "main", PullMode::Merge, true).await.unwrap();
+        assert!(stashed.ok && !stashed.conflicts, "{stashed:?}");
+        assert!(format!("{}{}", stashed.stdout, stashed.stderr).contains("Applying autostash resulted in conflicts"), "{stashed:?}");
+        assert_eq!(crate::git::queries::log::get_stashes(&client).await.unwrap().len(), 1);
+
+        // A cancelled pull stops with `Cancelled`.
+        cancel.cancel();
+        let cancelled = pull("origin", "main", PullMode::Merge, false).await;
+        assert!(matches!(cancelled, Err(GitError::Cancelled)), "{cancelled:?}");
+        assert!(matches!(pull("-x", "main", PullMode::Merge, false).await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pull_mode_follows_git_config_precedence() {
+        let mode = |cfg: &[u8], branch: Option<&str>| pull_mode_from_config(cfg, branch);
+        assert_eq!(mode(b"", Some("main")), None);
+        assert_eq!(mode(b"pull.rebase\ntrue\0", None), Some(PullMode::Rebase));
+        assert_eq!(mode(b"pull.rebase\nmerges\0", None), Some(PullMode::Rebase));
+        assert_eq!(mode(b"pull.rebase\nfalse\0", None), Some(PullMode::Merge));
+        assert_eq!(mode(b"pull.ff\nonly\0", None), Some(PullMode::FastForwardOnly));
+        assert_eq!(mode(b"pull.ff\nfalse\0", None), Some(PullMode::Merge));
+        assert_eq!(mode(b"pull.rebase\nfalse\0pull.ff\nonly\0", None), Some(PullMode::FastForwardOnly));
+        // The branch's own setting comes first; a key with no value means true.
+        assert_eq!(mode(b"pull.rebase\ntrue\0branch.Dev.x.rebase\nfalse\0", Some("Dev.x")), Some(PullMode::Merge));
+        assert_eq!(mode(b"branch.dev.rebase\0", Some("dev")), Some(PullMode::Rebase));
+        // The last value for a key wins, as in Git (system, then global, then local config).
+        assert_eq!(mode(b"pull.rebase\ntrue\0pull.rebase\nfalse\0", None), Some(PullMode::Merge));
+        assert_eq!(regex_escape("feat.x+1"), r"feat\.x\+1");
     }
 }

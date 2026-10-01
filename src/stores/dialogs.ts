@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { OpResult, StashEntry } from "@/lib/bindings";
+import type { OpResult, PullMode, StashEntry } from "@/lib/bindings";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -50,6 +50,31 @@ export interface StashApplyChoice {
   drop: boolean;
 }
 
+/** A remote branch the Pull dialog can pull from. */
+export interface PullSource {
+  /** `origin/dev` */
+  short: string;
+  remote: string;
+  /** The branch's name on the remote: `dev`. */
+  branch: string;
+}
+
+export interface PullPayload {
+  key: string;
+  /** The checked-out branch the commits are pulled into. */
+  into: string;
+  /** Every remote branch, in the order the refs list gives them. */
+  sources: PullSource[];
+  /** The remote branch picked when the dialog opens: the branch's upstream when it has one. */
+  source: PullSource;
+  /** `source` is the branch's upstream. */
+  sourceIsUpstream: boolean;
+  /** The mode picked when the dialog opens. */
+  mode: PullMode;
+  /** The working tree has uncommitted changes and the user chose to pull anyway with `--autostash`. */
+  autostash: boolean;
+}
+
 export interface SettingsPayload {
   /** The page to show first (a section `id` from `components/settings/sections.ts`); General when absent. */
   section?: string;
@@ -69,6 +94,7 @@ export interface DialogSpecs {
   commit: { payload: CommitPayload; result: OpResult | null };
   stashPush: { payload: StashPushPayload; result: OpResult | null };
   stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
+  pull: { payload: PullPayload; result: OpResult | null };
   confirm: { payload: ConfirmPayload; result: boolean };
   /** Resolves true when the changes were saved. */
   settings: { payload: SettingsPayload; result: boolean };
@@ -84,6 +110,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   commit: null,
   stashPush: null,
   stashApply: null,
+  pull: null,
   confirm: false,
   settings: false,
   about: null,
