@@ -117,11 +117,13 @@
   .diff-curve-hunk {
     fill: var(--color-diff-hunk);
   }
+  /* A change with lines on both sides has no outline, so its fill is a touch stronger than the
+     lines' own background: a quarter of the way to the changed words' colour. */
   .diff-curve-stop-del {
-    stop-color: var(--diff-del-bg);
+    stop-color: color-mix(in srgb, var(--diff-del-bg), var(--diff-del-mark) 25%);
   }
   .diff-curve-stop-add {
-    stop-color: var(--diff-add-bg);
+    stop-color: color-mix(in srgb, var(--diff-add-bg), var(--diff-add-mark) 25%);
   }
   /* The top and bottom edges of an insertion's or a deletion's band, in the changed words'
      stronger colour. Each edge is solid where it meets the line marking where the lines would
