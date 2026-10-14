@@ -244,6 +244,7 @@ pub async fn repo_update(
         git_executable: existing.git_executable,
         group_id: existing.group_id,
         last_opened_at: existing.last_opened_at,
+        colour: existing.colour,
         ..Default::default()
     };
     let res = resolve(&entry, &settings, &state.host, Some(&state.ssh))?;
@@ -259,6 +260,23 @@ pub async fn repo_update(
         settings.library.remove(&key);
     }
     settings.library.upsert(entry.clone());
+    let revision = state.set_settings(settings.clone())?;
+    SettingsChanged { revision, settings }.emit(&app)?;
+    Ok(entry)
+}
+
+/// Gives a repository a colour (a hue, palette index 0 to 5), or takes it away with None. It
+/// colours the repository's icon in the Repositories list and, while its tab is active, the
+/// interface's accent. Saved in the library in the settings, not in the repository.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_set_colour(app: AppHandle, state: State<'_, AppState>, key: String, colour: Option<u8>) -> Result<RepoEntry> {
+    let mut settings = state.settings();
+    let entry = settings.library.find_mut(&key).ok_or_else(|| GitError::Internal {
+        detail: format!("repository {key} is not in the library"),
+    })?;
+    entry.colour = colour.filter(|c| *c < crate::graph::lanes::HUE_COUNT);
+    let entry = entry.clone();
     let revision = state.set_settings(settings.clone())?;
     SettingsChanged { revision, settings }.emit(&app)?;
     Ok(entry)
@@ -314,6 +332,14 @@ pub async fn repo_open(app: AppHandle, state: State<'_, AppState>, key: String) 
         .map(|r| r.hidden_refs.iter().cloned().collect())
         .unwrap_or_default();
     *handle.hidden.write().expect("hidden refs lock") = std::sync::Arc::new(hidden);
+    // Colours chosen for refs, saved the same way.
+    let colours: crate::graph::snapshot::RefColours = state
+        .ui_state()
+        .per_repo
+        .get(&key)
+        .map(|r| r.ref_colours.iter().map(|(k, c)| (k.clone(), *c)).collect())
+        .unwrap_or_default();
+    *handle.colours.write().expect("ref colours lock") = std::sync::Arc::new(colours);
     let info = handle.info.clone();
     crate::repo::watch_start::start(&app, &state.db, &handle, &settings);
     state.repos.write().await.insert(key.clone(), handle);

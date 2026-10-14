@@ -357,6 +357,9 @@ pub struct RepoEntry {
     pub git_executable: Option<String>,
     pub group_id: Option<String>,
     pub last_opened_at: Option<i64>,
+    /// A hue chosen for the repository (palette index 0 to 5): the colour of its icon in the
+    /// Repositories list and, while its tab is the active one, the interface's accent colour.
+    pub colour: Option<u8>,
 }
 
 impl RepoLibrary {

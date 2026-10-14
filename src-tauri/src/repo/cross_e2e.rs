@@ -23,6 +23,7 @@ fn entry(path: String) -> RepoEntry {
         git_executable: None,
         group_id: None,
         last_opened_at: None,
+        colour: None,
     }
 }
 

@@ -174,6 +174,8 @@ pub struct RepoUiState {
     pub last_selected_oid: Option<String>,
     /// Full names of the refs switched off in the commit graph.
     pub hidden_refs: Vec<String>,
+    /// Colours chosen for refs in the commit graph, by full name: a hue, palette index 0 to 5.
+    pub ref_colours: std::collections::BTreeMap<String, u8>,
     /// The mode last chosen in the Pull dialog. Until there is one, the dialog starts from the
     /// repository's Git config, then Merge.
     pub pull_mode: Option<crate::git::ops::PullMode>,

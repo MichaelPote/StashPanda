@@ -228,7 +228,7 @@ async fn rebuild(
     };
 
     let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
-    let snap = Arc::new(GraphSnapshot::build(
+    let snap = Arc::new(GraphSnapshot::build_coloured(
         store,
         refs_snap,
         worktree,
@@ -237,6 +237,7 @@ async fn rebuild(
         true,
         truncated,
         &handle.hidden_refs(),
+        &handle.ref_colours(),
     ));
     handle.graph.store(Some(snap.clone()));
     *handle.last_status.write().await = Some(status_snap);
@@ -367,6 +368,7 @@ async fn stream_full(
     let mut shown = handle.graph.load_full();
     let mut partials = shown.as_ref().is_none_or(|s| !s.complete);
     let hidden = handle.hidden_refs();
+    let colours = handle.ref_colours();
     let mut store = CommitStore::new();
     let mut count = 0u32;
     let mut next_swap = Instant::now() + PARTIAL_EVERY;
@@ -385,7 +387,7 @@ async fn stream_full(
         }
         let started = Instant::now();
         let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
-        let snap = Arc::new(GraphSnapshot::build(
+        let snap = Arc::new(GraphSnapshot::build_coloured(
             Arc::new(store.clone()),
             refs.clone(),
             worktree,
@@ -394,6 +396,7 @@ async fn stream_full(
             false,
             false,
             &hidden,
+            &colours,
         ));
         if swap_if_current(handle, &shown, &snap) {
             if let Some(app) = app {
@@ -434,9 +437,10 @@ pub async fn load_from_cache(
 ) -> Result<Option<Arc<GraphSnapshot>>> {
     let started = Instant::now();
     let hidden = handle.hidden_refs();
+    let colours = handle.ref_colours();
     let build = |cached: repo_cache::CachedGraph, complete: bool| {
         let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
-        Arc::new(GraphSnapshot::build(
+        Arc::new(GraphSnapshot::build_coloured(
             Arc::new(cached.store),
             Arc::new(cached.refs),
             None,
@@ -445,6 +449,7 @@ pub async fn load_from_cache(
             complete,
             cached.truncated,
             &hidden,
+            &colours,
         ))
     };
     let emit = |snap: &GraphSnapshot| {
@@ -529,7 +534,7 @@ pub async fn refresh_status_only(
 pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, options: GraphOptions) -> Option<Arc<GraphSnapshot>> {
     let current = handle.graph.load_full()?;
     let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
-    let snap = Arc::new(GraphSnapshot::build(
+    let snap = Arc::new(GraphSnapshot::build_coloured(
         current.store.clone(),
         current.refs.clone(),
         current.worktree,
@@ -538,6 +543,7 @@ pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, optio
         current.complete,
         current.truncated,
         &handle.hidden_refs(),
+        &handle.ref_colours(),
     ));
     handle.graph.store(Some(snap.clone()));
     if let Some(app) = app {
@@ -561,7 +567,7 @@ async fn apply_status(
         return current.clone();
     }
     let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
-    let snap = Arc::new(GraphSnapshot::build(
+    let snap = Arc::new(GraphSnapshot::build_coloured(
         current.store.clone(),
         current.refs.clone(),
         wt,
@@ -570,6 +576,7 @@ async fn apply_status(
         current.complete,
         current.truncated,
         &handle.hidden_refs(),
+        &handle.ref_colours(),
     ));
     handle.graph.store(Some(snap.clone()));
     *handle.last_status.write().await = Some(status_snap);

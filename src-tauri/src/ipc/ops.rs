@@ -588,6 +588,7 @@ mod e2e {
             git_executable: None,
             group_id: None,
             last_opened_at: None,
+            colour: None,
         };
         let h = crate::repo::open::open_repo(None, &entry, &Settings::default(), &Host::detect(), None).await.unwrap();
         let lines = Mutex::new(Vec::<(String, bool)>::new());

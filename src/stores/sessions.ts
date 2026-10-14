@@ -142,6 +142,8 @@ export interface RepoSession {
   commitDraft: string;
   /** Full names of the refs switched off in the commit graph. Replaced, never mutated. */
   hiddenRefs: Set<string>;
+  /** Colours chosen for refs, by full name: a hue, palette index 0 to 5 (see `setRefColour`). */
+  refColours: Record<string, number>;
   /** Saved scroll offset of the commit list, so it survives tab switches and snapshot swaps. */
   scrollTop: number;
   /** A row index the graph view should scroll into view (set by the Branches panel). */
@@ -599,6 +601,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         commitDraft: "",
         // repo_open already gave the backend this list from ui-state.json.
         hiddenRefs: new Set(uiState.state?.perRepo?.[key]?.hiddenRefs ?? []),
+        refColours: { ...(uiState.state?.perRepo?.[key]?.refColours ?? {}) },
         scrollTop: 0,
         reveal: null,
         restoreOid: uiState.state?.perRepo?.[key]?.lastSelectedOid ?? null,
@@ -688,6 +691,29 @@ export const useSessionsStore = defineStore("sessions", () => {
     uiState.patchDebounced({ perRepo: { [key]: { hiddenRefs: list } } });
     try {
       const meta = await unwrap(commands.graphSetHiddenRefs(key, list));
+      if (session.graph.meta === null || meta.version >= session.graph.meta.version) applyMeta(session, meta);
+    } catch (e) {
+      notify(errorMessage(e));
+    }
+  }
+
+  /**
+   * Gives a branch or tag a colour of the user's choosing (a hue, palette index 0 to 5), or with
+   * `null` hands it back to the automatic colours. The backend rebuilds the graph with it: a
+   * branch colours its lane, any ref its pill. Saved per repository in the app's UI state, never
+   * in the repository.
+   */
+  async function setRefColour(key: string, fullName: string, colour: number | null): Promise<void> {
+    const session = sessions.get(key);
+    if (!session) return;
+    const next = { ...session.refColours };
+    if (colour === null) delete next[fullName];
+    else next[fullName] = colour;
+    session.refColours = next;
+    // A key set to null is how the UI state's merge deletes it.
+    uiState.patchDebounced({ perRepo: { [key]: { refColours: colour === null ? { ...next, [fullName]: null } : next } } });
+    try {
+      const meta = await unwrap(commands.graphSetRefColours(key, next));
       if (session.graph.meta === null || meta.version >= session.graph.meta.version) applyMeta(session, meta);
     } catch (e) {
       notify(errorMessage(e));
@@ -840,6 +866,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     selectIndex,
     openFind,
     toggleRefVisible,
+    setRefColour,
     notify,
     dismissNotice,
     dismissSuccess,

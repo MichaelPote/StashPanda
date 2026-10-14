@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import type { RefKind } from "@/lib/bindings";
 import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import HueSubmenu from "@/components/ui/HueSubmenu.vue";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { shortSha } from "@/lib/refNames";
 import {
@@ -79,6 +80,13 @@ const mergeReason = computed(() => {
 });
 
 const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch cannot be deleted." : null));
+
+/** The colour chosen for this ref, or null for the automatic one. */
+const chosenColour = computed(() => session.value?.refColours[props.fullName] ?? null);
+
+function chooseColour(colour: number | null): void {
+  void sessions.setRefColour(props.sessionKey, props.fullName, colour);
+}
 </script>
 
 <template>
@@ -105,6 +113,9 @@ const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch c
         <ActionMenuItem destructive @select="removeTag(sessionKey, short)">Remove Tag {{ short }}</ActionMenuItem>
       </template>
 
+      <ContextMenuSeparator />
+      <!-- Kept in the app's own UI state, not in the repository. -->
+      <HueSubmenu :chosen="chosenColour" @choose="chooseColour" />
       <ContextMenuSeparator />
       <ActionMenuItem @select="copyText(target, 'the SHA')">Copy SHA {{ shortSha(target) }}</ActionMenuItem>
     </ContextMenuContent>

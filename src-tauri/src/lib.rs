@@ -65,6 +65,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::query::get_file_diff,
             ipc::query::get_modified_times,
             ipc::graph::graph_set_hidden_refs,
+            ipc::graph::graph_set_ref_colours,
+            ipc::repos::repo_set_colour,
             ipc::query::get_blob_content,
             ipc::query::get_worktree_file_content,
             ipc::query::get_conflict_file,

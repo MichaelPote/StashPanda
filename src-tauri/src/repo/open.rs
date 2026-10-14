@@ -172,6 +172,7 @@ pub async fn open_repo(
         catfile: Arc::new(crate::git::catfile::CatFile::new(settings.console.verbose_helpers)),
         watcher_state: std::sync::Mutex::new(None),
         hidden: std::sync::RwLock::new(Default::default()),
+        colours: std::sync::RwLock::new(Default::default()),
     }))
 }
 
@@ -221,6 +222,7 @@ mod tests {
                 git_executable: None,
                 group_id: None,
                 last_opened_at: None,
+                colour: None,
             };
             open_repo(None, &entry, &Settings::default(), &Host::detect(), None).await.unwrap()
         };

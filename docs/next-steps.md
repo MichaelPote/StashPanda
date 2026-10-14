@@ -1230,6 +1230,34 @@ and anything over WSL or SSH.
         coloured as one run, and follow the "Syntax Highlighting" setting.
       Tried in the running Linux build on 2026-10-14, in both diff layouts and in Blame: wrapping
       both ways, a match on one side only, and a match at the end of a 300-character line.
+- [x] **Colours chosen for branches, tags and repositories** (2026-10-14). A "Colour" submenu
+      (`components/ui/HueSubmenu.vue`) offers Automatic and the palette's six hues, palette
+      indices 0 to 5 (`lib/hues.ts`): the dark theme repeats them as 6 to 11 and the light theme's
+      6 to 11 are shades of them, so these are every colour there is. Names follow the theme
+      (Violet, Teal, Green, Yellow, Orange, Pink in the dark one).
+      - **Branches and tags**, from their right-click menu in the graph and the Branches panel
+        (`RefContextMenu.vue`). Saved per repository in the app's UI state
+        (`perRepo[key].refColours`), never in the repository, and sent to the backend with
+        `graph_set_ref_colours`, which `repo_open` also reads, as with hidden refs.
+        `GraphSnapshot::build_coloured` passes a branch tip's colour to `LaneSweep::push_row`:
+        the top-most tip on a lane colours the whole lane, the stretch drawn above it before any
+        branch reached it included (each slot keeps the rows and edges it drew until then), so
+        the Working Tree row takes `main`'s colour; a tip lower on a lane takes it in place of a
+        picked colour, on its pills or from its row down as `appearance.commitLaneColours` says.
+        Any ref with a chosen colour wears it on its pill; a tracked remote branch without one
+        wears its local branch's. Tests: `a_chosen_colour_on_the_first_tip_recolours_the_lane_above_it_too`,
+        `a_chosen_colour_on_a_lower_tip_follows_the_lane_colour_mode`,
+        `a_colour_outside_the_six_hues_is_ignored`, `chosen_colours_go_on_branches_lanes_and_any_refs_pill`.
+      - **Repositories**, from the Repositories list's right-click menu. Saved in the library
+        (`RepoEntry.colour`, set with `repo_set_colour`). It colours the repository's icon in the
+        list and its tab, and while its tab is active it is the interface's accent: App.vue puts
+        the hue in `data-accent` on `<html>`, and `index.css` redefines `--primary`, `--ring`,
+        the filled buttons' `--primary-fill` and its shades, and `--row-selected` from it. In
+        the light theme filled buttons darken the hue under white text; in the dark theme they
+        keep it under the hue's own dark ink (`--graph-lane-ink-N`).
+      Tried in the running Linux build: Green on `main` (its pill, its lane from the Working Tree
+      row down, and `origin › main`), Orange on a tag, Pink on the repository (accent, tab,
+      Commit button, selected rows, icon), all kept after a restart and cleared again.
 
 ## Packaging and CI
 

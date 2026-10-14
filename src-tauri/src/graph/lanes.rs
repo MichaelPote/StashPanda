@@ -10,6 +10,11 @@
 //! below it gets a colour of its own: on its pills only
 //! (`CommitLaneColours::KeepLane`), or on the lane from that tip down too
 //! (`CommitLaneColours::ChangeAtEachTip`).
+//!
+//! A branch can have a colour chosen by the user (`push_row`'s `chosen`). The top-most tip on a
+//! lane then colours the whole lane, the stretch drawn above it before any branch reached it
+//! included (such as the Working Tree row above HEAD); a tip below it takes the chosen colour in
+//! place of a picked one, on its pills or from its row down as the mode says.
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -21,8 +26,8 @@ use crate::settings::CommitLaneColours;
 
 pub const PALETTE_SIZE: u8 = 12;
 /// Distinct hues in the palette: the dark theme repeats lanes 0 to 5 as 6 to 11, so two indices
-/// with the same remainder look the same.
-const HUE_COUNT: u8 = 6;
+/// with the same remainder look the same. A colour the user chooses is one of 0 to 5.
+pub const HUE_COUNT: u8 = 6;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -73,6 +78,10 @@ struct Slot {
     born_from: Option<u16>,
     /// The nearest branch tip placed on this lane so far, as the caller's ref index.
     branch: Option<u32>,
+    /// While no branch tip has reached the lane: the rows and edges drawn in its colour so far,
+    /// so that a tip with a chosen colour can recolour the stretch above it.
+    unowned_rows: Vec<usize>,
+    unowned_edges: Vec<usize>,
 }
 
 struct Pending {
@@ -174,7 +183,7 @@ impl LaneSweep {
         let reserve_zero = !self.head_placed;
         let head_wants_zero = reserve_zero && wants_zero;
         let start = if reserve_zero && !head_wants_zero { 1 } else { 0 };
-        let slot = Slot { expects, colour, born_from, branch: None };
+        let slot = Slot { expects, colour, born_from, branch: None, unowned_rows: Vec::new(), unowned_edges: Vec::new() };
         if head_wants_zero {
             if self.slots.is_empty() {
                 self.slots.push(None);
@@ -227,10 +236,22 @@ impl LaneSweep {
             } else {
                 EdgeKind::Pass
             };
+            if slot.branch.is_none() {
+                slot.unowned_edges.push(self.edges.len());
+            }
             self.edges.push(Edge { from_lane: from, to_lane: to, colour: slot.colour, kind });
         }
         for (from_dot, target) in prev.extra {
-            let colour = self.slots.get(target as usize).and_then(|s| s.as_ref()).map(|s| s.colour).unwrap_or(0);
+            let edge = self.edges.len();
+            let colour = match self.slots.get_mut(target as usize).and_then(|s| s.as_mut()) {
+                Some(slot) => {
+                    if slot.branch.is_none() {
+                        slot.unowned_edges.push(edge);
+                    }
+                    slot.colour
+                }
+                None => 0,
+            };
             let to = if arriving.contains(&target) { lane_c.unwrap_or(target) } else { target };
             self.edges.push(Edge { from_lane: from_dot, to_lane: to, colour, kind: EdgeKind::MergeInto });
         }
@@ -241,11 +262,12 @@ impl LaneSweep {
     }
 
     pub fn push(&mut self, oid: Oid, parents: &[Oid]) -> RowLayout {
-        self.push_row(oid, parents, None)
+        self.push_row(oid, parents, None, None)
     }
 
-    /// `tip` is the ref index of a branch that points at `oid`, when one does.
-    pub fn push_row(&mut self, oid: Oid, parents: &[Oid], tip: Option<u32>) -> RowLayout {
+    /// `tip` is the ref index of a branch that points at `oid`, when one does, and `chosen` the
+    /// colour the user chose for that branch (a hue, 0 to 5), if any.
+    pub fn push_row(&mut self, oid: Oid, parents: &[Oid], tip: Option<u32>, chosen: Option<u8>) -> RowLayout {
         let mut arriving: SmallVec<[u16; 2]> = self.expecting.remove(&oid).unwrap_or_default();
         arriving.sort_unstable();
         let lane_c = arriving.first().copied();
@@ -268,9 +290,28 @@ impl LaneSweep {
         // colour takes effect from this row's dot down.
         let lane_colour = self.slots[lane_c as usize].as_ref().map(|s| s.colour).unwrap_or(0);
         let below_a_tip = self.slots[lane_c as usize].as_ref().is_some_and(|s| s.branch.is_some());
-        let tip_colour = (tip.is_some() && below_a_tip).then(|| self.pick_tip_colour(lane_colour));
+        let chosen = chosen.filter(|c| *c < HUE_COUNT).filter(|_| tip.is_some());
+        let tip_colour = (tip.is_some() && below_a_tip).then(|| chosen.unwrap_or_else(|| self.pick_tip_colour(lane_colour)));
+        // The top-most tip on its lane with a chosen colour: the whole lane takes it, from where
+        // it started, so the rows and edges drawn before the tip are recoloured.
+        if let (Some(c), false) = (chosen, below_a_tip) {
+            if let Some(s) = self.slots[lane_c as usize].as_mut() {
+                s.colour = c;
+                for row in std::mem::take(&mut s.unowned_rows) {
+                    self.rows[row].colour = c;
+                    self.rows[row].ref_colour = c;
+                }
+                for edge in std::mem::take(&mut s.unowned_edges) {
+                    self.edges[edge].colour = c;
+                }
+            }
+        }
         if let Some(s) = self.slots[lane_c as usize].as_mut() {
             s.branch = tip.or(s.branch);
+            if s.branch.is_some() {
+                s.unowned_rows.clear();
+                s.unowned_edges.clear();
+            }
             if let (Some(c), CommitLaneColours::ChangeAtEachTip) = (tip_colour, self.lane_colours) {
                 s.colour = c;
             }
@@ -318,6 +359,12 @@ impl LaneSweep {
             edge_len: 0,
         };
         self.max_lanes = self.max_lanes.max(self.active_count()).max(lane_c + 1);
+        // The lane is gone after a root commit, which needs no recolouring later.
+        if branch.is_none() {
+            if let Some(Some(s)) = self.slots.get_mut(lane_c as usize) {
+                s.unowned_rows.push(self.rows.len());
+            }
+        }
         self.rows.push(row);
         self.pending = Some(Pending { row: self.rows.len() - 1, dot_lane: lane_c, extra });
         row
@@ -453,12 +500,51 @@ mod tests {
     }
 
     /// Three branch tips on one first-parent line (4, 2 and 1), with a plain commit (3) between.
+    #[test]
+    fn a_chosen_colour_on_the_first_tip_recolours_the_lane_above_it_too() {
+        // The Working Tree row above HEAD is drawn before any branch reaches the lane.
+        let mut s = LaneSweep::new(Some(o(3)), 4);
+        s.push(Oid::WORKTREE, &[o(3)]);
+        s.push_row(o(3), &[o(2)], Some(0), Some(4));
+        s.push(o(2), &[o(1)]);
+        s.push(o(1), &[]);
+        s.finish();
+        assert!(s.rows.iter().all(|r| r.colour == 4 && r.ref_colour == 4), "{:?}", s.rows);
+        assert!(s.edges.iter().all(|e| e.colour == 4), "{:?}", s.edges);
+    }
+
+    #[test]
+    fn a_chosen_colour_on_a_lower_tip_follows_the_lane_colour_mode() {
+        for mode in [CommitLaneColours::KeepLane, CommitLaneColours::ChangeAtEachTip] {
+            let mut s = LaneSweep::new(Some(o(4)), 4).with_lane_colours(mode);
+            s.push_row(o(4), &[o(3)], Some(4), None);
+            s.push_row(o(3), &[o(2)], Some(3), Some(5));
+            s.push(o(2), &[]);
+            s.finish();
+            let top = s.rows[0].colour;
+            assert_eq!(s.rows[1].ref_colour, 5, "the pill takes the chosen colour");
+            match mode {
+                CommitLaneColours::KeepLane => assert_eq!((s.rows[1].colour, s.rows[2].colour), (top, top), "the lane keeps its colour"),
+                CommitLaneColours::ChangeAtEachTip => assert_eq!((s.rows[1].colour, s.rows[2].colour), (5, 5), "the lane changes from the tip down"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_colour_outside_the_six_hues_is_ignored() {
+        let mut s = LaneSweep::new(Some(o(2)), 2);
+        s.push_row(o(2), &[o(1)], Some(0), Some(9));
+        s.push(o(1), &[]);
+        s.finish();
+        assert_eq!(s.rows[0].colour, 0, "the lane keeps its picked colour");
+    }
+
     fn stacked_tips(lane_colours: CommitLaneColours) -> LaneSweep {
         let mut s = LaneSweep::new(Some(o(4)), 4).with_lane_colours(lane_colours);
-        s.push_row(o(4), &[o(3)], Some(4));
-        s.push_row(o(3), &[o(2)], None);
-        s.push_row(o(2), &[o(1)], Some(2));
-        s.push_row(o(1), &[], Some(1));
+        s.push_row(o(4), &[o(3)], Some(4), None);
+        s.push_row(o(3), &[o(2)], None, None);
+        s.push_row(o(2), &[o(1)], Some(2), None);
+        s.push_row(o(1), &[], Some(1), None);
         s.finish();
         s
     }
@@ -498,9 +584,9 @@ mod tests {
     fn a_tip_on_a_new_lane_keeps_that_lanes_colour() {
         // Two unrelated tips, each the first on its own lane.
         let mut s = LaneSweep::new(Some(o(4)), 3);
-        s.push_row(o(5), &[o(3)], Some(5));
-        s.push_row(o(4), &[o(3)], Some(4));
-        s.push_row(o(3), &[], None);
+        s.push_row(o(5), &[o(3)], Some(5), None);
+        s.push_row(o(4), &[o(3)], Some(4), None);
+        s.push_row(o(3), &[], None, None);
         s.finish();
         assert_eq!(s.rows[0].ref_colour, s.rows[0].colour);
         assert_eq!(s.rows[1].ref_colour, s.rows[1].colour);
@@ -510,20 +596,20 @@ mod tests {
     fn each_row_belongs_to_the_nearest_branch_tip_on_its_lane() {
         // master (10) -> 9 -> 3; feature (8) started from 3; lanes 0 and 1 meet at 3.
         let mut s = LaneSweep::new(Some(o(10)), 4);
-        s.push_row(o(10), &[o(9)], Some(100));
-        s.push_row(o(8), &[o(3)], Some(200));
-        s.push_row(o(9), &[o(3)], None);
-        s.push_row(o(3), &[], None);
+        s.push_row(o(10), &[o(9)], Some(100), None);
+        s.push_row(o(8), &[o(3)], Some(200), None);
+        s.push_row(o(9), &[o(3)], None, None);
+        s.push_row(o(3), &[], None, None);
         s.finish();
         let branches: Vec<Option<u32>> = s.rows.iter().map(|r| r.branch).collect();
         assert_eq!(branches, vec![Some(100), Some(200), Some(100), Some(100)], "the fork point stays master's");
 
         // A merge on master (20) whose second parent (18) is on a lane no branch tip reached.
         let mut s = LaneSweep::new(Some(o(20)), 4);
-        s.push_row(o(20), &[o(19), o(18)], Some(100));
-        s.push_row(o(19), &[o(1)], None);
-        s.push_row(o(18), &[o(1)], None);
-        s.push_row(o(1), &[], None);
+        s.push_row(o(20), &[o(19), o(18)], Some(100), None);
+        s.push_row(o(19), &[o(1)], None, None);
+        s.push_row(o(18), &[o(1)], None, None);
+        s.push_row(o(1), &[], None, None);
         s.finish();
         let branches: Vec<Option<u32>> = s.rows.iter().map(|r| r.branch).collect();
         assert_eq!(branches, vec![Some(100), Some(100), None, Some(100)]);

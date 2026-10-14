@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEventListener } from "@vueuse/core";
 import { FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
@@ -54,6 +54,7 @@ import {
 } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
+import { useLibraryStore } from "@/stores/library";
 import { useSessionsStore } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
@@ -62,6 +63,16 @@ const settings = useSettingsStore();
 const uiState = useUiStateStore();
 const host = useHostStore();
 const sessions = useSessionsStore();
+const library = useLibraryStore();
+
+// The active repository's colour, when it has one, is the interface's accent: `data-accent` on
+// <html> redefines --primary and its relatives from that hue (index.css).
+watchEffect(() => {
+  const colour = sessions.activeKey ? library.repoByKey.get(sessions.activeKey)?.colour : null;
+  const root = document.documentElement;
+  if (colour !== null && colour !== undefined) root.dataset.accent = String(colour);
+  else delete root.dataset.accent;
+});
 const dialogs = useDialogsStore();
 /** Loaded the first time it opens, with CodeMirror, so the editor adds nothing to starting up. */
 const MergeEditorDialog = defineAsyncComponent(() => import("@/components/merge/MergeEditorDialog.vue"));

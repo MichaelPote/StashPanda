@@ -2,9 +2,11 @@
 import { FolderGit2Icon, XIcon } from "@lucide/vue";
 import { transportLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useLibraryStore } from "@/stores/library";
 import { useSessionsStore } from "@/stores/sessions";
 
 const sessions = useSessionsStore();
+const library = useLibraryStore();
 
 function onAuxClick(event: MouseEvent, key: string): void {
   // Button 1 is the middle button; closing on it matches browser and IDE tab strips.
@@ -42,7 +44,11 @@ function onAuxClick(event: MouseEvent, key: string): void {
       @mousedown.middle.prevent
       @keydown.enter="sessions.setActive(session.key)"
     >
-      <FolderGit2Icon :class="cn('size-3.5 shrink-0', session.key === sessions.activeKey && 'text-primary')" />
+      <!-- The active tab's icon is the accent, which is its repository's colour when it has one. -->
+      <FolderGit2Icon
+        :class="cn('size-3.5 shrink-0', session.key === sessions.activeKey && 'text-primary')"
+        :style="session.key !== sessions.activeKey && library.repoByKey.get(session.key)?.colour != null ? { color: `var(--graph-lane-${library.repoByKey.get(session.key)?.colour})` } : undefined"
+      />
       <span class="truncate">{{ session.info.displayName }}</span>
       <button
         type="button"

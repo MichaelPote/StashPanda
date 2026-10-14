@@ -543,6 +543,43 @@
 }
 
 /* Selected commit, branch and repository row: a flat solid colour. */
+/* A repository's colour as the interface's accent, while its tab is active: App.vue puts the hue
+   (palette index 0 to 5, lib/hues.ts) in `data-accent` on <html>, and these redefine --primary
+   and its relatives from that lane colour, which each theme draws in its own way. The active tab,
+   filled buttons, toggles, focus rings and selected rows all follow. */
+:root[data-accent="0"] { --accent-hue: var(--graph-lane-0); --accent-ink: var(--graph-lane-ink-0); }
+:root[data-accent="1"] { --accent-hue: var(--graph-lane-1); --accent-ink: var(--graph-lane-ink-1); }
+:root[data-accent="2"] { --accent-hue: var(--graph-lane-2); --accent-ink: var(--graph-lane-ink-2); }
+:root[data-accent="3"] { --accent-hue: var(--graph-lane-3); --accent-ink: var(--graph-lane-ink-3); }
+:root[data-accent="4"] { --accent-hue: var(--graph-lane-4); --accent-ink: var(--graph-lane-ink-4); }
+:root[data-accent="5"] { --accent-hue: var(--graph-lane-5); --accent-ink: var(--graph-lane-ink-5); }
+/* Light theme: the hues are mid-tones, so filled buttons darken them under white text. */
+:root[data-accent] {
+  --primary: var(--accent-hue);
+  --primary-foreground: #ffffff;
+  --ring: var(--accent-hue);
+  --sidebar-primary: var(--accent-hue);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-ring: var(--accent-hue);
+  --primary-fill: color-mix(in oklch, var(--accent-hue) 80%, black);
+  --primary-fill-foreground: #ffffff;
+  --primary-tint: color-mix(in oklch, var(--accent-hue) 75%, black);
+  --primary-lip: color-mix(in oklch, var(--accent-hue) 65%, black);
+  --primary-edge: color-mix(in oklch, var(--accent-hue) 55%, black);
+  --row-selected: color-mix(in oklch, var(--accent-hue) 20%, var(--background));
+}
+/* Dark theme: the hues are bright, so filled buttons keep them under the hue's dark ink. */
+.dark[data-accent] {
+  --primary-foreground: var(--accent-ink);
+  --sidebar-primary-foreground: var(--accent-ink);
+  --primary-fill: color-mix(in oklch, var(--accent-hue) 88%, black);
+  --primary-fill-foreground: var(--accent-ink);
+  --primary-tint: color-mix(in oklch, var(--accent-hue) 75%, white);
+  --primary-lip: color-mix(in oklch, var(--accent-hue) 55%, black);
+  --primary-edge: color-mix(in oklch, var(--accent-hue) 42%, black);
+  --row-selected: color-mix(in oklch, var(--accent-hue) 30%, var(--background));
+}
+
 @utility row-selected {
   color: var(--row-selected-text);
   background-color: var(--row-selected);

@@ -95,6 +95,10 @@ pub struct GraphMeta {
 /// Full names of the refs (branches, remote branches, tags) switched off in the graph.
 pub type HiddenRefs = FxHashSet<String>;
 
+/// Colours the user chose for refs, by full name: a hue, palette index 0 to 5. Kept in the app's
+/// UI state (`perRepo[key].refColours`), never in the repository.
+pub type RefColours = FxHashMap<String, u8>;
+
 pub struct GraphSnapshot {
     pub version: u64,
     /// Row index -> commit index in `store` (u32::MAX for the Working Tree row).
@@ -111,6 +115,8 @@ pub struct GraphSnapshot {
     refs_by_target: FxHashMap<Oid, Vec<u32>>,
     /// Remote branch full name -> index in `refs.refs` of a shown local branch that tracks it.
     tracked_by: FxHashMap<String, u32>,
+    /// The colours the user chose for refs; see `RefColours`.
+    chosen: RefColours,
     pub head: Option<Oid>,
     pub worktree: Option<WorktreeSummary>,
     pub complete: bool,
@@ -120,6 +126,7 @@ pub struct GraphSnapshot {
 }
 
 impl GraphSnapshot {
+    /// `build_coloured` with no colours chosen.
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         store: Arc<CommitStore>,
@@ -130,6 +137,24 @@ impl GraphSnapshot {
         complete: bool,
         truncated: bool,
         hidden: &HiddenRefs,
+    ) -> GraphSnapshot {
+        Self::build_coloured(store, refs, worktree, options, version, complete, truncated, hidden, &RefColours::default())
+    }
+
+    /// Lays out the graph. `hidden` refs are left out, with the commits only they reach, and the
+    /// refs in `chosen` take the colours the user gave them: a branch colours its lane (see
+    /// `LaneSweep::push_row`), and any ref its own pill.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_coloured(
+        store: Arc<CommitStore>,
+        refs: Arc<RefsSnapshot>,
+        worktree: Option<WorktreeSummary>,
+        options: GraphOptions,
+        version: u64,
+        complete: bool,
+        truncated: bool,
+        hidden: &HiddenRefs,
+        chosen: &RefColours,
     ) -> GraphSnapshot {
         let full = order(&store, options.order);
         // With refs hidden, show only commits reachable from the refs still shown. HEAD counts
@@ -200,7 +225,9 @@ impl GraphSnapshot {
         }
         for ci in commit_order {
             let c = &store.commits[ci as usize];
-            sweep.push_row(c.oid, &c.parents, branch_tip(&c.oid));
+            let tip = branch_tip(&c.oid);
+            let colour = tip.and_then(|i| chosen.get(&refs.refs[i as usize].full_name).copied());
+            sweep.push_row(c.oid, &c.parents, tip, colour);
             row_by_oid.insert(c.oid, order_rows.len() as u32);
             order_rows.push(ci);
         }
@@ -218,6 +245,7 @@ impl GraphSnapshot {
             refs,
             refs_by_target,
             tracked_by,
+            chosen: chosen.iter().filter(|(_, c)| **c < crate::graph::lanes::HUE_COUNT).map(|(k, c)| (k.clone(), *c)).collect(),
             head,
             worktree,
             complete,
@@ -267,8 +295,11 @@ impl GraphSnapshot {
         self.layout.get(row as usize)
     }
 
-    /// Pill colour of a shown ref; see `RefLabel::colour`.
+    /// Pill colour of a shown ref; see `RefLabel::colour`. A colour the user chose comes first.
     fn colour_of(&self, r: &crate::git::queries::refs::RefEntry) -> Option<u8> {
+        if let Some(c) = self.chosen.get(&r.full_name) {
+            return self.layout_at(&r.target).map(|_| *c);
+        }
         let local = self.tracked_by.get(&r.full_name).map(|i| &self.refs.refs[*i as usize]);
         if let Some(layout) = local.and_then(|l| self.layout_at(&l.target)) {
             return Some(layout.ref_colour);
@@ -643,6 +674,32 @@ mod tests {
         assert_eq!(rows[1].colour, rows[0].colour, "the tag row stays on feature's stretch");
         assert_ne!(rows[2].colour % 6, rows[0].colour % 6, "the lane changes colour at dev");
         assert!(rows.iter().all(|r| r.ref_colour == r.colour));
+    }
+
+    #[test]
+    fn chosen_colours_go_on_branches_lanes_and_any_refs_pill() {
+        let mut store = CommitStore::new();
+        store.insert(&rec("a", &[], 1));
+        store.insert(&rec("b", &["a"], 2));
+        let refs = RefsSnapshot {
+            refs: vec![
+                r("refs/heads/main", "main", "b", RefKind::LocalBranch, None, true),
+                r("refs/tags/v1", "v1", "a", RefKind::Tag { annotated: false }, None, false),
+            ],
+            head: Some(format!("{:0>40}", "b")),
+            head_ref: Some("refs/heads/main".into()),
+            detached: false,
+            remotes: vec![],
+        };
+        let mut chosen = RefColours::default();
+        chosen.insert("refs/heads/main".into(), 3);
+        chosen.insert("refs/tags/v1".into(), 5);
+        let snap = GraphSnapshot::build_coloured(Arc::new(store), Arc::new(refs), None, GraphOptions::default(), 1, true, false, &HiddenRefs::default(), &chosen);
+        let colours = snap.meta().ref_colours;
+        assert_eq!((colours["refs/heads/main"], colours["refs/tags/v1"]), (3, 5));
+        let rows: Vec<GraphRow> = (0..snap.total()).filter_map(|i| snap.row(i)).collect();
+        assert!(rows.iter().all(|row| row.colour == 3), "main's lane runs in its colour");
+        assert_eq!(rows[1].refs[0].colour, 5, "the tag's pill");
     }
 
     /// A line a-b-c-d with `feature` and its upstream at `feature_at` and `remote_at`, and `base` at a.

@@ -78,11 +78,17 @@ pub struct RepoHandle {
     pub activity: tokio::sync::watch::Sender<crate::watch::Activity>,
     /// Refs switched off in the graph; read by every snapshot build.
     pub hidden: std::sync::RwLock<Arc<HiddenRefs>>,
+    /// Colours the user chose for refs; read by every snapshot build.
+    pub colours: std::sync::RwLock<Arc<crate::graph::snapshot::RefColours>>,
 }
 
 impl RepoHandle {
     pub fn hidden_refs(&self) -> Arc<HiddenRefs> {
         self.hidden.read().expect("hidden refs lock").clone()
+    }
+
+    pub fn ref_colours(&self) -> Arc<crate::graph::snapshot::RefColours> {
+        self.colours.read().expect("ref colours lock").clone()
     }
 
     /// Register a cancellable operation under `op_id` until the returned guard drops.

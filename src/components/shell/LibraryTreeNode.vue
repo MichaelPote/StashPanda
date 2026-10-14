@@ -16,6 +16,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import HueSubmenu from "@/components/ui/HueSubmenu.vue";
 import { transportLabel } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { repoDisplayName, useLibraryStore, type LibraryNode } from "@/stores/library";
@@ -103,9 +104,12 @@ function toggleGroup(): void {
         @dblclick.prevent
       >
         <LoaderCircleIcon v-if="isOpening" class="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+        <!-- A repository with a colour shows it here, open or not. -->
         <FolderGit2Icon
           v-else
           :class="cn('size-3.5 shrink-0', isOpen ? 'text-foreground' : 'text-muted-foreground')"
+          :style="node.repo.colour != null ? { color: `var(--graph-lane-${node.repo.colour})` } : undefined"
+          :data-repo-colour="node.repo.colour ?? undefined"
         />
         <span class="truncate">{{ repoDisplayName(node.repo) }}</span>
         <Badge
@@ -120,6 +124,8 @@ function toggleGroup(): void {
     <ContextMenuContent class="min-w-44">
       <ContextMenuItem class="text-base" @select="emit('open', node.id)">Open</ContextMenuItem>
       <ContextMenuItem class="text-base" @select="emit('edit', node.id)">Edit…</ContextMenuItem>
+      <!-- Its icon here, and the interface's accent while its tab is active. -->
+      <HueSubmenu :chosen="node.repo.colour ?? null" @choose="(c) => library.setRepoColour(node.id, c)" />
       <ContextMenuSeparator />
       <ContextMenuItem class="text-base" variant="destructive" @select="emit('remove', node.id)">
         Remove from library
