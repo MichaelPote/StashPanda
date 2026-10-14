@@ -86,7 +86,7 @@ pub fn start(app: &AppHandle, db: &Arc<Db>, handle: &Arc<RepoHandle>, settings: 
     if let Ok(mut slot) = handle.watcher.lock() {
         *slot = Some(watcher);
     }
-    let _ = WatcherStateEvent { repo_id: handle.key.clone(), kind, detail }.emit(app);
+    emit_state(app, handle, kind, detail);
 
     coalesce::spawn(
         app.clone(),
@@ -111,8 +111,14 @@ fn remote_name(handle: &RepoHandle) -> String {
     }
 }
 
+/// Announces the watcher in use, and keeps it for `repo_open` to announce again to a frontend that
+/// reloaded.
 fn emit_state(app: &AppHandle, handle: &RepoHandle, kind: WatcherKind, detail: Option<String>) {
-    let _ = WatcherStateEvent { repo_id: handle.key.clone(), kind, detail }.emit(app);
+    let ev = WatcherStateEvent { repo_id: handle.key.clone(), kind, detail };
+    if let Ok(mut last) = handle.watcher_state.lock() {
+        *last = Some(ev.clone());
+    }
+    let _ = ev.emit(app);
 }
 
 /// Puts `next` in the repository's watcher slot and stops the one it replaces. False, and `next`

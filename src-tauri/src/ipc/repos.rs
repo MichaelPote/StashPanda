@@ -287,6 +287,11 @@ pub async fn repo_remove(app: AppHandle, state: State<'_, AppState>, key: String
 #[specta::specta]
 pub async fn repo_open(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<RepoInfo> {
     if let Some(existing) = state.repos.read().await.get(&key) {
+        // A frontend that reloaded has lost the watcher state; announce it again.
+        let last = existing.watcher_state.lock().ok().and_then(|s| s.clone());
+        if let Some(ev) = last {
+            let _ = ev.emit(&app);
+        }
         return Ok(existing.info.clone());
     }
     let mut settings = state.settings();

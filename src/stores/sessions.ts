@@ -347,9 +347,19 @@ export const useSessionsStore = defineStore("sessions", () => {
     session.graph.loading = true;
   }
 
+  /**
+   * Watcher states that arrived before their session existed: `repo_open` starts the watcher and
+   * announces it before it returns, so the first state always comes early. The session takes it
+   * up when `openTab` creates it.
+   */
+  const earlyWatcherStates = new Map<string, WatcherStateEvent>();
+
   function onWatcherState(ev: WatcherStateEvent): void {
     const session = sessions.get(ev.repoId);
-    if (!session) return;
+    if (!session) {
+      earlyWatcherStates.set(ev.repoId, ev);
+      return;
+    }
     session.watcherKind = ev.kind;
     session.watcherDetail = ev.detail;
   }
@@ -481,11 +491,12 @@ export const useSessionsStore = defineStore("sessions", () => {
         hiddenRefs: new Set(uiState.state?.perRepo?.[key]?.hiddenRefs ?? []),
         scrollTop: 0,
         reveal: null,
-        watcherKind: null,
-        watcherDetail: null,
+        watcherKind: earlyWatcherStates.get(key)?.kind ?? null,
+        watcherDetail: earlyWatcherStates.get(key)?.detail ?? null,
         operation: null,
       });
       sessions.set(key, session);
+      earlyWatcherStates.delete(key);
       setActive(key);
       bootstrap(session);
       return session;

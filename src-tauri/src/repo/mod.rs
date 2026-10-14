@@ -70,6 +70,8 @@ pub struct RepoHandle {
     pub graph_version: AtomicU64,
     pub last_status: RwLock<Option<StatusSnapshot>>,
     pub watcher: std::sync::Mutex<Option<Box<dyn WatcherHandle>>>,
+    /// The watcher state last announced, for a frontend that reloaded to hear again.
+    pub watcher_state: std::sync::Mutex<Option<crate::watch::WatcherStateEvent>>,
     /// The long-lived `cat-file` that blob reads go through.
     pub catfile: Arc<crate::git::catfile::CatFile>,
     /// Whether the user is looking at this repository; polling slows down when not.
