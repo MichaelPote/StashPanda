@@ -163,7 +163,14 @@ function paneTheme(): Extension {
     {
       "&": { height: "100%", backgroundColor: "transparent", color: "var(--foreground)" },
       "&.cm-focused": { outline: "none" },
-      ".cm-scroller": { fontFamily: "inherit", lineHeight: "var(--diff-row-h)", overflow: "auto" },
+      // The app's thin scroll bars (the `scrollbar-thin` utility), not the system's wide ones.
+      ".cm-scroller": {
+        fontFamily: "inherit",
+        lineHeight: "var(--diff-row-h)",
+        overflow: "auto",
+        scrollbarWidth: "thin",
+        scrollbarColor: "color-mix(in oklch, var(--foreground) 25%, transparent) transparent",
+      },
       ".cm-content": { caretColor: "var(--foreground)", padding: "0" },
       ".cm-line": { padding: "0 8px" },
       ".cm-gutters": { backgroundColor: "var(--color-diff-gutter)", color: "var(--color-gutter-fg)", border: "none" },
