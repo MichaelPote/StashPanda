@@ -49,7 +49,7 @@ async function submit(): Promise<void> {
   submitting.value = true;
   error.value = null;
   try {
-    const result = await runOp(r.key, commands.opStashPush(r.key, text.length > 0 ? text : null, includeUntracked.value));
+    const result = await runOp(r.key, () => commands.opStashPush(r.key, text.length > 0 ? text : null, includeUntracked.value));
     if (!result.ok) {
       error.value = opFailureText(result, "Stashing the changes");
       return;

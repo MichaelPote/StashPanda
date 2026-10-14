@@ -24,6 +24,8 @@ const props = defineProps<{
   hasRepo: boolean;
   /** Files the Commit dialog would list, badged on the Commit button; hidden at 0. */
   commitCount: number;
+  /** Why a button cannot act right now; a button with a reason is disabled and shows it as its tooltip. */
+  reasons?: Partial<Record<ToolbarEvent, string | null>>;
 }>();
 
 const emit = defineEmits<{
@@ -35,9 +37,12 @@ const emit = defineEmits<{
   fetch: [];
   push: [];
   sync: [];
+  stage: [];
+  unstage: [];
+  discard: [];
 }>();
 
-type ToolbarEvent = "commit" | "stashSave" | "pull" | "fetch" | "push" | "sync";
+type ToolbarEvent = "commit" | "stashSave" | "pull" | "fetch" | "push" | "sync" | "stage" | "unstage" | "discard";
 
 interface ToolbarAction {
   label: string;
@@ -52,7 +57,6 @@ interface ToolbarAction {
   primary?: boolean;
 }
 
-const M2 = "Coming in milestone 2";
 const M3 = "Coming in milestone 3";
 
 const groups: ToolbarAction[][] = [
@@ -64,9 +68,9 @@ const groups: ToolbarAction[][] = [
     { label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, event: "commit", primary: true },
   ],
   [
-    { label: "Stage", caption: "Stage", icon: ListPlusIcon, coming: M2 },
-    { label: "Unstage", caption: "Unstage", icon: ListMinusIcon, coming: M2 },
-    { label: "Discard", caption: "Discard", icon: Undo2Icon, coming: M2 },
+    { label: "Stage the Selected Files", caption: "Stage", icon: ListPlusIcon, event: "stage" },
+    { label: "Unstage the Selected Files", caption: "Unstage", icon: ListMinusIcon, event: "unstage" },
+    { label: "Discard Changes to the Selected Files…", caption: "Discard", icon: Undo2Icon, event: "discard" },
   ],
   [
     // No Apply Stash key: applying means choosing which stash, which the menus and the
@@ -86,6 +90,16 @@ function run(action: ToolbarAction): void {
   else if (action.event === "fetch") emit("fetch");
   else if (action.event === "push") emit("push");
   else if (action.event === "sync") emit("sync");
+  else if (action.event === "stage") emit("stage");
+  else if (action.event === "unstage") emit("unstage");
+  else if (action.event === "discard") emit("discard");
+}
+
+/** Why the button cannot be used: not built yet, or the reason its event gives. Null when it can. */
+function blocked(action: ToolbarAction): string | null {
+  if (action.coming) return action.coming;
+  if (!props.hasRepo || !action.event) return null;
+  return props.reasons?.[action.event] ?? null;
 }
 
 /**
@@ -134,7 +148,7 @@ const CAPTION_CLASS = "block max-w-[59px] truncate text-[9px] font-medium tracki
       <Separator orientation="vertical" class="mx-[5px] h-[32px] bg-(--key) data-[orientation=vertical]:self-center" />
       <template v-for="action in group" :key="action.label">
         <button
-          v-if="!action.coming"
+          v-if="!blocked(action)"
           type="button"
           :class="buttonClass(action)"
           :title="badge(action) ? `${action.label} (${badge(action)} ${props.commitCount === 1 ? 'file' : 'files'})` : action.label"
@@ -155,7 +169,7 @@ const CAPTION_CLASS = "block max-w-[59px] truncate text-[9px] font-medium tracki
               </button>
             </span>
           </TooltipTrigger>
-          <TooltipContent side="bottom">{{ action.coming }}</TooltipContent>
+          <TooltipContent side="bottom" class="max-w-72">{{ action.label }}: {{ blocked(action) }}</TooltipContent>
         </Tooltip>
       </template>
     </template>

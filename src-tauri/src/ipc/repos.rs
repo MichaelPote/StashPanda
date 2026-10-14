@@ -157,6 +157,27 @@ pub async fn repo_clone(
     Ok(CloneResult { entry, outcome })
 }
 
+/// Trust a repository that Git refused to open because another user owns it (`unsafeRepository`,
+/// Git's "dubious ownership"): adds `path`, exactly as the error gave it, to `safe.directory` in
+/// the global config of the Git that refused. It runs through the library entry's own connection,
+/// so a WSL or SSH repository gets the setting in that system's Git config. Call `repoOpen` again
+/// afterwards.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_fix_safe_directory(app: AppHandle, state: State<'_, AppState>, key: String, path: String) -> Result<crate::git::ops::OpResult> {
+    let settings = state.settings();
+    let entry = settings.library.find(&key).cloned().ok_or_else(|| GitError::RepoNotOpen { repo_id: key.clone() })?;
+    let res = resolve(&entry, &settings, &state.host, Some(&state.ssh))?;
+    let info = res.transport.probe().await?;
+    let client = GitClient {
+        transport: res.transport.clone(),
+        repo: res.native_path.clone(),
+        caps: Capabilities::for_version(info.git_version),
+        console: Arc::new(ConsoleRecorder::new(Some(app), key, settings.console.output_cap_bytes as usize)),
+    };
+    crate::git::ops::add_safe_directory(&client, &path).await
+}
+
 /// Stop a clone started with `opId`. Resolves false when it has finished or is writing the files
 /// out, which always runs to the end.
 #[tauri::command]

@@ -13,6 +13,7 @@ import {
   isDetached,
   mergeInto,
   removeTag,
+  renameBranch,
   requestCheckout,
   stripRemote,
 } from "@/lib/repoActions";
@@ -96,6 +97,7 @@ const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch c
 
       <template v-if="kind.type === 'localBranch'">
         <ContextMenuSeparator />
+        <ActionMenuItem @select="renameBranch(sessionKey, short)">Rename Branch…</ActionMenuItem>
         <ActionMenuItem destructive :reason="deleteReason" @select="deleteBranch(sessionKey, short)">Delete Branch…</ActionMenuItem>
       </template>
       <template v-else-if="kind.type === 'tag'">

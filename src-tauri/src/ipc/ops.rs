@@ -10,7 +10,8 @@ use tauri_specta::Event;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{GitError, Result};
-use crate::git::ops::{self, OpResult, PullMode, PushTarget, SyncResult};
+use crate::git::ops::{self, OpResult, PullMode, PushTarget, ResetMode, SyncResult};
+use crate::git::ops::lines::{LineAction, SelectedLine};
 use crate::graph::loader::refresh_if_changed;
 use crate::ipc::events::OperationProgress;
 use crate::ipc::query::repo;
@@ -76,6 +77,18 @@ pub async fn op_unstage(app: AppHandle, state: State<'_, AppState>, key: String,
 #[specta::specta]
 pub async fn op_discard(app: AppHandle, state: State<'_, AppState>, key: String, tracked: Vec<String>, untracked: Vec<String>, to_head: bool) -> Result<OpResult> {
     write_op!(app, state, key, |c| ops::discard(c, &tracked, &untracked, to_head).await)
+}
+
+/// Stage, unstage or discard some lines of `path`: the lines the diff viewer showed as selected,
+/// each named by its number (in the new file for an addition, the old file for a removal) and
+/// its text. Stage and discard work on the unstaged diff, unstage on the staged one; `untracked`
+/// says the file is not in the index yet. Fails with `invalidPath` when the file has changed
+/// since the diff was shown, or when the lines cannot be changed without a neighbouring line.
+/// Discard cannot be undone; confirm with the user first.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_apply_lines(app: AppHandle, state: State<'_, AppState>, key: String, action: LineAction, path: String, untracked: bool, lines: Vec<SelectedLine>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::lines::apply_lines(c, action, &path, untracked, &lines).await)
 }
 
 /// Commit the index, or with `paths` stage exactly those paths and commit only
@@ -406,6 +419,50 @@ pub async fn op_stash_pop(app: AppHandle, state: State<'_, AppState>, key: Strin
 #[specta::specta]
 pub async fn op_stash_drop(app: AppHandle, state: State<'_, AppState>, key: String, index: u32, oid: String) -> Result<OpResult> {
     write_op!(app, state, key, |c| ops::stash_drop(c, index, &oid).await)
+}
+
+/// Rename local branch `oldName` to `newName`, keeping its upstream.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_branch_rename(app: AppHandle, state: State<'_, AppState>, key: String, old_name: String, new_name: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::branch_rename(c, &old_name, &new_name).await)
+}
+
+/// Move the current branch to `target`. `hard` also throws away every uncommitted change, so the
+/// frontend confirms first.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_reset(app: AppHandle, state: State<'_, AppState>, key: String, mode: ResetMode, target: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::reset(c, mode, &target).await)
+}
+
+/// Apply `commit`'s change as a new commit on the current branch. Pass `mainline` (1 for the
+/// branch merged into) for a merge commit, and null otherwise. When the result is not `ok`
+/// and stderr mentions `--abort`, the cherry-pick is still open: `opCherryPickAbort` ends it.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_cherry_pick(app: AppHandle, state: State<'_, AppState>, key: String, commit: String, mainline: Option<u32>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::cherry_pick(c, &commit, mainline).await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn op_cherry_pick_abort(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::cherry_pick_abort(c).await)
+}
+
+/// Make a new commit that undoes `commit`. `mainline` and an unfinished revert work as for
+/// `opCherryPick`; `opRevertAbort` ends one.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_revert(app: AppHandle, state: State<'_, AppState>, key: String, commit: String, mainline: Option<u32>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::revert(c, &commit, mainline).await)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn op_revert_abort(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::revert_abort(c).await)
 }
 
 #[tauri::command]

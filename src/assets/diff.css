@@ -50,6 +50,32 @@
     @apply w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none;
   }
 
+  /* A changed line picked for staging, unstaging or discarding: the left border every row keeps
+     for it turns the accent colour, and the line numbers are tinted. */
+  .diff-line-picked {
+    @apply border-primary;
+  }
+  .diff-line-picked .diff-num {
+    @apply bg-primary/25 text-foreground;
+  }
+  /* A changed line's number in a working tree diff: clicking it picks the line. */
+  .diff-num-pick {
+    @apply cursor-pointer hover:text-foreground;
+  }
+
+  /* A hunk header's Stage, Unstage and Discard buttons. Sticky, so they stay in view while the
+     unified layout scrolls sideways. */
+  .diff-hunk-actions {
+    @apply sticky left-2 z-[1] mr-2 inline-flex shrink-0 gap-1 bg-diff-hunk font-sans;
+  }
+  /* A small button in the diff panel (the hunk headers and the picked-lines strip). */
+  .diff-action {
+    @apply inline-flex h-[16px] items-center rounded-sm border border-border-soft bg-background/60 px-1.5 text-[0.7rem] leading-none font-medium text-foreground hover:bg-row-hover disabled:opacity-50;
+  }
+  .diff-action-destructive {
+    @apply text-destructive;
+  }
+
   /* The `+`, `-` or space after the line numbers. */
   .diff-sign {
     @apply diff-glyphs w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none;

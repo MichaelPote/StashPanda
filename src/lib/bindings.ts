@@ -53,6 +53,14 @@ export const commands = {
 	repoUpdate: (key: string, path: string, connection: Connection, displayName: string | null) => typedError<RepoEntry, GitError>(__TAURI_INVOKE("repo_update", { key, path, connection, displayName })),
 	repoRemove: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("repo_remove", { key })),
 	repoOpen: (key: string) => typedError<RepoInfo, GitError>(__TAURI_INVOKE("repo_open", { key })),
+	/**
+	 *  Trust a repository that Git refused to open because another user owns it (`unsafeRepository`,
+	 *  Git's "dubious ownership"): adds `path`, exactly as the error gave it, to `safe.directory` in
+	 *  the global config of the Git that refused. It runs through the library entry's own connection,
+	 *  so a WSL or SSH repository gets the setting in that system's Git config. Call `repoOpen` again
+	 *  afterwards.
+	 */
+	repoFixSafeDirectory: (key: string, path: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("repo_fix_safe_directory", { key, path })),
 	repoClose: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("repo_close", { key })),
 	repoListOpen: () => typedError<RepoInfo[], GitError>(__TAURI_INVOKE("repo_list_open")),
 	wslListDistros: () => typedError<string[], GitError>(__TAURI_INVOKE("wsl_list_distros")),
@@ -62,6 +70,12 @@ export const commands = {
 	/**  Remember a password for `user@host:port` for this session. */
 	sshSetPassword: (host: string, port: number, user: string, password: string) => typedError<null, GitError>(__TAURI_INVOKE("ssh_set_password", { host, port, user, password })),
 	getRepoStatus: (key: string) => typedError<StatusSnapshot, GitError>(__TAURI_INVOKE("get_repo_status", { key })),
+	/**
+	 *  Where the app can open or reveal `path` (relative to the top of the working tree), as this
+	 *  computer sees it: `\\wsl.localhost\…` for a WSL repository from Windows, `/mnt/c/…` for a
+	 *  Windows folder from WSL. Null for an SSH repository, whose files are on another machine.
+	 */
+	getHostPath: (key: string, path: string) => typedError<string | null, GitError>(__TAURI_INVOKE("get_host_path", { key, path })),
 	getRepoRefs: (key: string) => typedError<RefsSnapshot, GitError>(__TAURI_INVOKE("get_repo_refs", { key })),
 	getCommitChanges: (key: string, commit: string, parent: string | null) => typedError<FileChange[], GitError>(__TAURI_INVOKE("get_commit_changes", { key, commit, parent })),
 	getCommitMessage: (key: string, commit: string) => typedError<string, GitError>(__TAURI_INVOKE("get_commit_message", { key, commit })),
@@ -120,6 +134,26 @@ export const commands = {
 	opCheckout: (key: string, target: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_checkout", { key, target })),
 	opBranchCreate: (key: string, name: string, startPoint: string, checkout: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_create", { key, name, startPoint, checkout })),
 	opBranchDelete: (key: string, name: string, force: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_delete", { key, name, force })),
+	/**  Rename local branch `oldName` to `newName`, keeping its upstream. */
+	opBranchRename: (key: string, oldName: string, newName: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_rename", { key, oldName, newName })),
+	/**
+	 *  Move the current branch to `target`. `hard` also throws away every uncommitted change, so the
+	 *  frontend confirms first.
+	 */
+	opReset: (key: string, mode: ResetMode, target: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_reset", { key, mode, target })),
+	/**
+	 *  Apply `commit`'s change as a new commit on the current branch. Pass `mainline` (1 for the
+	 *  branch merged into) for a merge commit, and null otherwise. When the result is not `ok`
+	 *  and stderr mentions `--abort`, the cherry-pick is still open: `opCherryPickAbort` ends it.
+	 */
+	opCherryPick: (key: string, commit: string, mainline: number | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_cherry_pick", { key, commit, mainline })),
+	opCherryPickAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_cherry_pick_abort", { key })),
+	/**
+	 *  Make a new commit that undoes `commit`. `mainline` and an unfinished revert work as for
+	 *  `opCherryPick`; `opRevertAbort` ends one.
+	 */
+	opRevert: (key: string, commit: string, mainline: number | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_revert", { key, commit, mainline })),
+	opRevertAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_revert_abort", { key })),
 	/**
 	 *  Merge `target` into the current branch. `conflicts` in the result means
 	 *  the merge stopped and the working tree has unmerged paths.
@@ -151,6 +185,15 @@ export const commands = {
 	 *  `untracked` deleted. Cannot be undone; confirm with the user first.
 	 */
 	opDiscard: (key: string, tracked: string[], untracked: string[], toHead: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_discard", { key, tracked, untracked, toHead })),
+	/**
+	 *  Stage, unstage or discard some lines of `path`: the lines the diff viewer showed as selected,
+	 *  each named by its number (in the new file for an addition, the old file for a removal) and
+	 *  its text. Stage and discard work on the unstaged diff, unstage on the staged one; `untracked`
+	 *  says the file is not in the index yet. Fails with `invalidPath` when the file has changed
+	 *  since the diff was shown, or when the lines cannot be changed without a neighbouring line.
+	 *  Discard cannot be undone; confirm with the user first.
+	 */
+	opApplyLines: (key: string, action: LineAction, path: string, untracked: boolean, lines: SelectedLine[]) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_apply_lines", { key, action, path, untracked, lines })),
 	/**
 	 *  Commit the index, or with `paths` stage exactly those paths and commit only
 	 *  them (other staged paths stay staged). Pass both paths of a rename. An
@@ -285,6 +328,8 @@ export type CacheSettings = {
 
 /**  Who asked for a command. The console can hide `Internal` and `Watcher`. */
 export type Category = "userAction" | "internal" | "watcher";
+
+export type ChangeKind = "add" | "del";
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged" | "unmerged" | "unknown";
 
@@ -706,6 +751,15 @@ export type LibraryGroup = {
 	collapsed?: boolean,
 };
 
+/**  What to do with the selected lines. */
+export type LineAction = 
+/**  Add the selected working tree changes to the index (from the unstaged diff). */
+"stage" | 
+/**  Take the selected changes out of the index, back to HEAD (from the staged diff). */
+"unstage" | 
+/**  Throw away the selected working tree changes, back to the index (from the unstaged diff). */
+"discard";
+
 export type MenuActionEvent = {
 	/**  Dotted id such as `file.open`, `view.toggle_console`, `repo.create_branch`. */
 	id: string,
@@ -921,6 +975,18 @@ export type RepoUiState = {
 	pullMode?: PullMode | null,
 };
 
+/**  How much `reset` puts back besides moving the branch. */
+export type ResetMode = 
+/**
+ *  Move the branch only: the index and the files keep their content, so the undone commits'
+ *  changes show as staged.
+ */
+"soft" | 
+/**  Move the branch and reset the index: the undone changes show as unstaged. */
+"mixed" | 
+/**  Move the branch and reset the index and the files: every uncommitted change is lost. */
+"hard";
+
 /**
  *  The transport `Auto` resolved to last time; shown in the UI and used to key
  *  the cache.
@@ -928,6 +994,15 @@ export type RepoUiState = {
 export type ResolvedTransport = { type: "local"; gitExecutable: string } | { type: "wsl"; distro: string } | { type: "ssh"; host: string; user: string | null; port: number | null };
 
 export type RowKind = "commit" | "workingTree";
+
+/**  One changed line as the diff viewer showed it. */
+export type SelectedLine = {
+	kind: ChangeKind,
+	/**  The line's number in the new file for an addition, in the old file for a removal. */
+	line: number,
+	/**  The line's text without the leading `+` or `-` and without a trailing `\r`. */
+	text: string,
+};
 
 export type Session = {
 	/**  Repository keys in tab order. */

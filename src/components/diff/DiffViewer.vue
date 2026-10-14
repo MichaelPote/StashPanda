@@ -2,16 +2,18 @@
 import { computed, ref, shallowRef, watch } from "vue";
 import { useDebounceFn, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon } from "@lucide/vue";
-import { commands, type DiffText } from "@/lib/bindings";
+import { commands, type DiffText, type LineAction, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
-import { errorMessage, unwrap } from "@/lib/ipc";
+import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
+import { opFailureText, runOp } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
-import type { RepoSession } from "@/stores/sessions";
+import { useDialogsStore } from "@/stores/dialogs";
+import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
@@ -21,6 +23,8 @@ const props = defineProps<{
 
 const settings = useSettingsStore();
 const uiState = useUiStateStore();
+const sessions = useSessionsStore();
+const dialogs = useDialogsStore();
 
 /** Font, size, line height, tab width and ligatures from the `diff` section of settings.json. */
 const font = computed(() => resolveDiffFont(settings.settings?.diff));
@@ -410,6 +414,123 @@ function marker(kind: DiffLine["kind"] | undefined): string {
   }
 }
 
+// ---- Staging, unstaging and discarding lines and hunks --------------------------------------
+//
+// Only for the working tree's diffs: an unstaged or untracked file's lines can be staged or
+// discarded, a staged file's lines unstaged. Clicking a changed line's number picks it (Shift-click
+// picks the range from the last one); each hunk header has buttons for its whole hunk. The backend
+// recomputes the diff itself and checks every picked line against it, so the context and
+// whitespace settings here do not matter.
+
+/** What can be done to this diff's lines: stage (and discard) them, unstage them, or nothing. */
+const lineMode = computed<"stage" | "unstage" | null>(() => {
+  switch (selected.value?.target.type) {
+    case "unstaged":
+    case "untracked":
+      return "stage";
+    case "staged":
+      return "unstage";
+    default:
+      return null;
+  }
+});
+
+/** The picked lines, as `a<new line number>` for an addition and `d<old line number>` for a removal. */
+const picked = shallowRef<Set<string>>(new Set());
+let lastPicked: string | null = null;
+const busy = ref(false);
+
+function pickKey(line: DiffLine | undefined): string | null {
+  if (line?.kind === "add" && line.newNo !== undefined) return `a${line.newNo}`;
+  if (line?.kind === "del" && line.oldNo !== undefined) return `d${line.oldNo}`;
+  return null;
+}
+
+/** Every changed line in diff order, for Shift-click ranges and for finding picked lines. */
+const changeLines = computed<DiffLine[]>(() => (file.value?.hunks ?? []).flatMap((h) => h.lines.filter((l) => l.kind === "add" || l.kind === "del")));
+
+watch(diff, () => {
+  picked.value = new Set();
+  lastPicked = null;
+});
+
+function isPicked(line: DiffLine | undefined): boolean {
+  const key = pickKey(line);
+  return key !== null && picked.value.has(key);
+}
+
+function canPick(line: DiffLine | undefined): boolean {
+  return lineMode.value !== null && pickKey(line) !== null && !busy.value;
+}
+
+function onPick(line: DiffLine | undefined, event: MouseEvent): void {
+  const key = pickKey(line);
+  if (event.button !== 0 || key === null || !canPick(line)) return;
+  const next = new Set(picked.value);
+  const keys = changeLines.value.map((l) => pickKey(l));
+  if (event.shiftKey && lastPicked !== null && keys.includes(lastPicked)) {
+    const [a, b] = [keys.indexOf(lastPicked), keys.indexOf(key)].sort((x, y) => x - y);
+    for (const k of keys.slice(a, b + 1)) if (k !== null) next.add(k);
+  } else if (next.has(key)) {
+    next.delete(key);
+  } else {
+    next.add(key);
+  }
+  lastPicked = key;
+  picked.value = next;
+  // A click on a number would otherwise start selecting the line's text.
+  event.preventDefault();
+}
+
+const pickedLines = computed(() => changeLines.value.filter((l) => picked.value.has(pickKey(l) ?? "")));
+
+function hunkLines(hunk: number): DiffLine[] {
+  return (file.value?.hunks[hunk]?.lines ?? []).filter((l) => l.kind === "add" || l.kind === "del");
+}
+
+function linesLabel(n: number): string {
+  return n === 1 ? "1 line" : `${n} lines`;
+}
+
+/** Stages, unstages or discards `lines` of the shown file, then reloads the diff. */
+async function applyLines(action: LineAction, lines: DiffLine[], what: string): Promise<void> {
+  const f = selected.value;
+  if (!f || lines.length === 0 || busy.value) return;
+  const key = props.session.key;
+  if (action === "discard") {
+    const confirmed = await dialogs.open("confirm", {
+      title: `Discard ${what}?`,
+      message: `${f.path}\n\nThe ${what === "this hunk" ? "hunk's changes go" : "picked changes go"} back to the staged version of the file, or to the last commit when nothing is staged. This cannot be undone.`,
+      confirmLabel: "Discard",
+      destructive: true,
+    });
+    if (!confirmed) return;
+  }
+  const chosen: SelectedLine[] = lines.map((l) => ({
+    kind: l.kind === "add" ? "add" : "del",
+    line: (l.kind === "add" ? l.newNo : l.oldNo) ?? 0,
+    text: l.text,
+  }));
+  const [done, doing] = action === "stage" ? ["Staged", "Staging"] : action === "unstage" ? ["Unstaged", "Unstaging"] : ["Discarded", "Discarding"];
+  busy.value = true;
+  try {
+    const result = await runOp(key, () => commands.opApplyLines(key, action, f.path, f.target.type === "untracked", chosen));
+    if (result.ok) {
+      sessions.notifySuccess(`${done} ${what} of ${f.path}.`);
+      picked.value = new Set();
+    } else {
+      sessions.notify(opFailureText(result, `${doing} ${what} of ${f.path}`));
+    }
+  } catch (e) {
+    // A refused selection explains itself; the generic wording ("The path … is not valid") would not.
+    if (e instanceof IpcError && e.error.kind === "invalidPath") sessions.notify(e.error.reason.charAt(0).toUpperCase() + e.error.reason.slice(1) + ".");
+    else sessions.notify(errorMessage(e));
+  } finally {
+    busy.value = false;
+    await load();
+  }
+}
+
 function toggleContext(value: string): void {
   const n = Number(value);
   if (Number.isFinite(n) && n > 0) contextLines.value = n;
@@ -495,6 +616,21 @@ function toggleContext(value: string): void {
         This diff was truncated by the backend ({{ diff.bytes.toLocaleString() }} bytes); the rows below are incomplete.
       </div>
 
+      <!-- Picking lines: what is picked, and what can be done with it. -->
+      <div v-if="lineMode && changeLines.length > 0" class="flex h-[22px] shrink-0 items-center gap-1.5 border-b border-border-soft bg-muted px-2 text-[0.7rem] text-muted-foreground">
+        <template v-if="pickedLines.length === 0">Click the line numbers of changed lines to pick them; Shift-click picks a range.</template>
+        <template v-else>
+          <span class="text-foreground tabular-nums">{{ linesLabel(pickedLines.length) }} picked</span>
+          <template v-if="lineMode === 'stage'">
+            <button type="button" class="diff-action" :disabled="busy" @click="applyLines('stage', pickedLines, linesLabel(pickedLines.length))">Stage</button>
+            <button type="button" class="diff-action diff-action-destructive" :disabled="busy" @click="applyLines('discard', pickedLines, linesLabel(pickedLines.length))">Discard…</button>
+          </template>
+          <button v-else type="button" class="diff-action" :disabled="busy" @click="applyLines('unstage', pickedLines, linesLabel(pickedLines.length))">Unstage</button>
+          <button type="button" class="diff-action" :disabled="busy" @click="picked = new Set()">Clear</button>
+        </template>
+        <LoaderCircleIcon v-if="busy" class="size-3 animate-spin" />
+      </div>
+
       <div class="relative flex min-h-0 flex-1 flex-col" :style="mode === 'side' ? sideStyle : undefined">
       <div
         ref="scroller"
@@ -511,11 +647,18 @@ function toggleContext(value: string): void {
             <template v-if="mode === 'unified'">
               <template v-for="(row, k) in visibleUnified" :key="virtual.start.value + k">
                 <div v-if="row.kind === 'hunk'" class="diff-hunk">
+                  <span v-if="lineMode" class="diff-hunk-actions">
+                    <template v-if="lineMode === 'stage'">
+                      <button type="button" class="diff-action" :disabled="busy" @click="applyLines('stage', hunkLines(row.hunk), 'this hunk')">Stage hunk</button>
+                      <button type="button" class="diff-action diff-action-destructive" :disabled="busy" @click="applyLines('discard', hunkLines(row.hunk), 'this hunk')">Discard…</button>
+                    </template>
+                    <button v-else type="button" class="diff-action" :disabled="busy" @click="applyLines('unstage', hunkLines(row.hunk), 'this hunk')">Unstage hunk</button>
+                  </span>
                   <span class="diff-glyphs"> {{ row.header }}</span>
                 </div>
-                <div v-else :class="['diff-line', lineClass(row.line?.kind)]">
-                  <span class="diff-num"><span class="diff-glyphs">{{ row.line?.oldNo ?? "" }}</span></span>
-                  <span class="diff-num"><span class="diff-glyphs">{{ row.line?.newNo ?? "" }}</span></span>
+                <div v-else :class="['diff-line', lineClass(row.line?.kind), isPicked(row.line) && 'diff-line-picked']">
+                  <span :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.oldNo ?? "" }}</span></span>
+                  <span :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.newNo ?? "" }}</span></span>
                   <span class="diff-sign">{{ marker(row.line?.kind) }}</span>
                   <span class="diff-code">
                     <template v-for="(seg, i) in segments(row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
@@ -531,14 +674,21 @@ function toggleContext(value: string): void {
             <template v-else>
               <template v-for="(row, k) in visibleSide" :key="virtual.start.value + k">
                 <div v-if="row.kind === 'hunk'" class="diff-hunk overflow-hidden">
+                  <span v-if="lineMode" class="diff-hunk-actions">
+                    <template v-if="lineMode === 'stage'">
+                      <button type="button" class="diff-action" :disabled="busy" @click="applyLines('stage', hunkLines(row.hunk), 'this hunk')">Stage hunk</button>
+                      <button type="button" class="diff-action diff-action-destructive" :disabled="busy" @click="applyLines('discard', hunkLines(row.hunk), 'this hunk')">Discard…</button>
+                    </template>
+                    <button v-else type="button" class="diff-action" :disabled="busy" @click="applyLines('unstage', hunkLines(row.hunk), 'this hunk')">Unstage hunk</button>
+                  </span>
                   <span class="diff-glyphs"> {{ row.header }}</span>
                 </div>
                 <div v-else-if="row.kind === 'meta'" class="diff-side-meta">
                   <span class="diff-glyphs"> \ {{ row.text }}</span>
                 </div>
                 <div v-else class="diff-side-row h-(--diff-row-h)">
-                  <div :class="['diff-line min-w-0 overflow-hidden', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'diff-line-empty']">
-                    <span class="diff-num"><span class="diff-glyphs">{{ row.left?.oldNo ?? "" }}</span></span>
+                  <div :class="['diff-line min-w-0 overflow-hidden', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'diff-line-empty', row.left?.kind === 'del' && isPicked(row.left) && 'diff-line-picked']">
+                    <span :class="['diff-num', row.left?.kind === 'del' && canPick(row.left) && 'diff-num-pick']" @mousedown="row.left?.kind === 'del' && onPick(row.left, $event)"><span class="diff-glyphs">{{ row.left?.oldNo ?? "" }}</span></span>
                     <span class="diff-sign">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
                     <span class="diff-side-code diff-text-left"><span>
                       <template v-if="row.left">
@@ -549,8 +699,8 @@ function toggleContext(value: string): void {
                       </template>
                     </span></span>
                   </div>
-                  <div :class="['diff-line min-w-0 overflow-hidden', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'diff-line-empty']">
-                    <span class="diff-num"><span class="diff-glyphs">{{ row.right?.newNo ?? "" }}</span></span>
+                  <div :class="['diff-line min-w-0 overflow-hidden', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'diff-line-empty', row.right?.kind === 'add' && isPicked(row.right) && 'diff-line-picked']">
+                    <span :class="['diff-num', row.right?.kind === 'add' && canPick(row.right) && 'diff-num-pick']" @mousedown="row.right?.kind === 'add' && onPick(row.right, $event)"><span class="diff-glyphs">{{ row.right?.newNo ?? "" }}</span></span>
                     <span class="diff-sign">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
                     <span class="diff-side-code diff-text-right"><span>
                       <template v-if="row.right">

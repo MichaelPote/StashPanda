@@ -8,8 +8,9 @@ const dialogs = useDialogsStore();
 
 const request = computed(() => dialogs.current("confirm"));
 
+// Resolve rather than cancel: a confirmation shown on top of another dialog closes alone.
 function onOpenChange(open: boolean): void {
-  if (!open) dialogs.cancel();
+  if (!open) dialogs.resolve("confirm", false);
 }
 </script>
 

@@ -292,3 +292,65 @@ export function arrangeSections(
   }
   return sections.map((s) => ({ ...s, items: sorted(s.items) }));
 }
+
+/** The paths the Files panel's Stage, Unstage and Discard act on, from the selected working tree rows. */
+export interface WorktreeActionPaths {
+  /** For `opStage`: unstaged and untracked rows. */
+  stage: string[];
+  /** For `opUnstage`: staged rows, with both paths of a rename. */
+  unstage: string[];
+  /** For `opDiscard` back to the index: unstaged rows whose file has no staged row selected too. */
+  discardToIndex: string[];
+  /** For `opDiscard` back to HEAD: staged rows (their unstaged changes go too), with both paths of a rename. */
+  discardToHead: string[];
+  /** Untracked rows, which discarding deletes. */
+  discardUntracked: string[];
+  /** Distinct files each action touches, for its label and confirmation. */
+  stageFiles: string[];
+  unstageFiles: string[];
+  discardFiles: string[];
+}
+
+/**
+ * Sorts the selected working tree rows into what each action would do. Conflicted rows are left
+ * out of all three: staging one marks the conflict resolved, which belongs to resolving it.
+ */
+export function worktreeActionPaths(status: StatusSnapshot | null, selectedIds: ReadonlySet<string>): WorktreeActionPaths {
+  const out: WorktreeActionPaths = {
+    stage: [],
+    unstage: [],
+    discardToIndex: [],
+    discardToHead: [],
+    discardUntracked: [],
+    stageFiles: [],
+    unstageFiles: [],
+    discardFiles: [],
+  };
+  const withOld = (i: FileItem): string[] => (i.oldPath && i.oldPath !== i.path ? [i.path, i.oldPath] : [i.path]);
+  const stagedPaths = new Set<string>();
+  const unstagedRows: FileItem[] = [];
+  for (const section of worktreeSections(status)) {
+    for (const i of section.items) {
+      if (!selectedIds.has(i.id)) continue;
+      if (section.key === "staged") {
+        out.unstage.push(...withOld(i));
+        out.unstageFiles.push(i.path);
+        out.discardToHead.push(...withOld(i));
+        stagedPaths.add(i.path);
+      } else if (section.key === "unstaged") {
+        out.stage.push(...withOld(i));
+        out.stageFiles.push(i.path);
+        unstagedRows.push(i);
+      } else if (section.key === "untracked") {
+        out.stage.push(i.path);
+        out.stageFiles.push(i.path);
+        out.discardUntracked.push(i.path);
+      }
+    }
+  }
+  for (const i of unstagedRows) {
+    if (!stagedPaths.has(i.path)) out.discardToIndex.push(...withOld(i));
+  }
+  out.discardFiles = [...new Set([...stagedPaths, ...unstagedRows.map((i) => i.path), ...out.discardUntracked])];
+  return out;
+}

@@ -6,6 +6,20 @@ import { commands, type DiffTarget, type FileChange, type MergeInfo } from "@/li
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import MessageToggle from "@/components/files/MessageToggle.vue";
+import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
+import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import {
+  copyFullPath,
+  copyText,
+  discardSelected,
+  fileActionReason,
+  openFileReason,
+  openWorktreeFile,
+  revealWorktreeFile,
+  selectedWorktreePaths,
+  stageSelected,
+  unstageSelected,
+} from "@/lib/repoActions";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import {
@@ -362,6 +376,38 @@ function rowId(item: FileItem): string {
 
 const totalCount = computed(() => flat.value.length);
 
+// ---- Right-click menu ----------------------------------------------------------------------
+//
+// One menu for the whole list. Right-clicking a row that is not selected selects just that row
+// first, so the menu always acts on what is highlighted; right-clicking inside a selection keeps it.
+
+/** The row the menu was opened on, for Open, Show in Folder and the Copy items. */
+const menuItem = ref<FileItem | null>(null);
+
+function onRowContextMenu(item: FileItem): void {
+  menuItem.value = item;
+  if (!list.isSelected(item.id)) list.selectOnly(item.id);
+}
+
+function onListContextMenu(event: MouseEvent): void {
+  if (!(event.target as HTMLElement | null)?.closest("[data-file-row]")) menuItem.value = null;
+}
+
+const menuPaths = computed(() => selectedWorktreePaths(props.session));
+const stageReason = computed(() => fileActionReason(props.session, "stage"));
+const unstageReason = computed(() => fileActionReason(props.session, "unstage"));
+const discardReason = computed(() => fileActionReason(props.session, "discard"));
+function countLabel(files: string[]): string {
+  return files.length > 1 ? ` ${files.length} Files` : "";
+}
+/** Open and Show in Folder use the file on disk; a deleted file is not there. */
+const openReason = computed(() => {
+  const item = menuItem.value;
+  if (!item) return "Right-click a file.";
+  if (item.state === "deleted" && mode.value === "worktree") return "The file has been deleted from the working tree.";
+  return openFileReason(props.session);
+});
+
 // ---- Name and path columns -----------------------------------------------------------------
 //
 // Unless the list is grouped by folder (where the heading has the path), each row shows the file
@@ -471,79 +517,102 @@ function pathText(item: FileItem): string {
         </div>
       </div>
 
-      <div ref="listEl" class="min-h-0 flex-1 overflow-auto scrollbar-thin select-none">
-        <div v-if="mode === 'commit' && changesLoading && changes.length === 0" class="flex h-(--row-h) items-center gap-1.5 px-2 text-base text-muted-foreground">
-          <LoaderCircleIcon class="size-3 animate-spin" /> Loading changes…
-        </div>
-        <p v-else-if="changesError" class="px-2 py-1 text-base text-destructive">{{ changesError }}</p>
-        <EmptyState v-else-if="flat.length === 0 && mode === 'worktree'" message="The working tree is clean. Nothing to commit." />
-        <p v-else-if="flat.length === 0" class="px-2 py-2 text-base text-muted-foreground italic">No files changed.</p>
-
-        <template v-for="section in sections" :key="section.key">
-          <template v-if="section.items.length > 0">
-            <div
-              v-if="groupBy !== 'none'"
-              :class="
-                cn(
-                  'sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 select-none',
-                  // Folder names keep their case; only the fixed status headings use small capitals.
-                  groupBy === 'folder' ? 'font-mono text-xs text-muted-foreground' : 'smallcaps',
-                )
-              "
-            >
-              {{ section.title }}
-              <span class="tabular-nums">({{ section.items.length }})</span>
+      <ContextMenu>
+        <ContextMenuTrigger as-child>
+          <div ref="listEl" class="min-h-0 flex-1 overflow-auto scrollbar-thin select-none" @contextmenu="onListContextMenu">
+            <div v-if="mode === 'commit' && changesLoading && changes.length === 0" class="flex h-(--row-h) items-center gap-1.5 px-2 text-base text-muted-foreground">
+              <LoaderCircleIcon class="size-3 animate-spin" /> Loading changes…
             </div>
-            <button
-              v-for="item in section.items"
-              :id="rowId(item)"
-              :key="item.id"
-              type="button"
-              :class="
-                cn(
-                  'flex h-(--row-h) w-full items-center gap-1.5 px-2 text-left text-base outline-none',
-                  isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
-                  multiple && isFocus(item) && 'shadow-[inset_2px_0_0_var(--ring)]',
-                )
-              "
-              :aria-selected="isSelected(item)"
-              :title="item.oldPath ? `${item.oldPath} → ${item.path}` : item.path"
-              @mousedown="list.onMousedown"
-              @click="list.onClick(item.id, $event)"
-            >
-              <span
-                :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"
-              >
-                {{ item.letter }}
-              </span>
-              <template v-if="tabular">
-                <span class="shrink-0 truncate" :style="{ width: `${nameColumnPx}px` }">{{ splitPath(item.path).name }}</span>
-                <!-- Truncates from the start, so the end of the path, nearest the file, stays visible. -->
-                <span :class="cn('files-path min-w-0 flex-1 truncate text-[0.85em]', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">
-                  <span dir="ltr">{{ pathText(item) }}</span>
-                </span>
+            <p v-else-if="changesError" class="px-2 py-1 text-base text-destructive">{{ changesError }}</p>
+            <EmptyState v-else-if="flat.length === 0 && mode === 'worktree'" message="The working tree is clean. Nothing to commit." />
+            <p v-else-if="flat.length === 0" class="px-2 py-2 text-base text-muted-foreground italic">No files changed.</p>
+
+            <template v-for="section in sections" :key="section.key">
+              <template v-if="section.items.length > 0">
+                <div
+                  v-if="groupBy !== 'none'"
+                  :class="
+                    cn(
+                      'sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 select-none',
+                      // Folder names keep their case; only the fixed status headings use small capitals.
+                      groupBy === 'folder' ? 'font-mono text-xs text-muted-foreground' : 'smallcaps',
+                    )
+                  "
+                >
+                  {{ section.title }}
+                  <span class="tabular-nums">({{ section.items.length }})</span>
+                </div>
+                <button
+                  v-for="item in section.items"
+                  :id="rowId(item)"
+                  :key="item.id"
+                  type="button"
+                  :class="
+                    cn(
+                      'flex h-(--row-h) w-full items-center gap-1.5 px-2 text-left text-base outline-none',
+                      isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
+                      multiple && isFocus(item) && 'shadow-[inset_2px_0_0_var(--ring)]',
+                    )
+                  "
+                  :aria-selected="isSelected(item)"
+                  :title="item.oldPath ? `${item.oldPath} → ${item.path}` : item.path"
+                  data-file-row
+                  @mousedown="list.onMousedown"
+                  @click="list.onClick(item.id, $event)"
+                  @contextmenu="onRowContextMenu(item)"
+                >
+                  <span
+                    :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"
+                  >
+                    {{ item.letter }}
+                  </span>
+                  <template v-if="tabular">
+                    <span class="shrink-0 truncate" :style="{ width: `${nameColumnPx}px` }">{{ splitPath(item.path).name }}</span>
+                    <!-- Truncates from the start, so the end of the path, nearest the file, stays visible. -->
+                    <span :class="cn('files-path min-w-0 flex-1 truncate text-[0.85em]', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">
+                      <span dir="ltr">{{ pathText(item) }}</span>
+                    </span>
+                  </template>
+                  <span v-else class="min-w-0 flex-1 truncate">
+                    <template v-if="item.oldPath && item.oldPath !== item.path">
+                      <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
+                      <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
+                    </template>
+                    <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
+                    <span v-if="item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
+                  </span>
+                  <span v-if="isStagedRow(item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
+                  <span v-if="sortingByDate && modifiedText(item)" class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" :title="modifiedTitle(item)">
+                    {{ modifiedText(item) }}
+                  </span>
+                  <span v-if="item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
+                  <span v-else-if="item.added !== null || item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">
+                    <span class="text-diff-add-fg">+{{ item.added ?? 0 }}</span>
+                    <span class="ml-1 text-diff-del-fg">−{{ item.deleted ?? 0 }}</span>
+                  </span>
+                </button>
               </template>
-              <span v-else class="min-w-0 flex-1 truncate">
-                <template v-if="item.oldPath && item.oldPath !== item.path">
-                  <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
-                  <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
-                </template>
-                <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
-                <span v-if="item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
-              </span>
-              <span v-if="isStagedRow(item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
-              <span v-if="sortingByDate && modifiedText(item)" class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" :title="modifiedTitle(item)">
-                {{ modifiedText(item) }}
-              </span>
-              <span v-if="item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
-              <span v-else-if="item.added !== null || item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">
-                <span class="text-diff-add-fg">+{{ item.added ?? 0 }}</span>
-                <span class="ml-1 text-diff-del-fg">−{{ item.deleted ?? 0 }}</span>
-              </span>
-            </button>
+            </template>
+          </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent class="min-w-56">
+          <template v-if="mode === 'worktree'">
+            <ActionMenuItem :reason="stageReason" @select="stageSelected(session)">Stage{{ countLabel(menuPaths.stageFiles) }}</ActionMenuItem>
+            <ActionMenuItem :reason="unstageReason" @select="unstageSelected(session)">Unstage{{ countLabel(menuPaths.unstageFiles) }}</ActionMenuItem>
+            <ActionMenuItem :reason="discardReason" destructive @select="discardSelected(session)">
+              Discard Changes{{ countLabel(menuPaths.discardFiles) }}…
+            </ActionMenuItem>
+            <ContextMenuSeparator />
           </template>
-        </template>
-      </div>
+          <ActionMenuItem :reason="openReason" @select="menuItem && openWorktreeFile(session.key, menuItem.path)">
+            {{ mode === "commit" ? "Open the Working Tree Version" : "Open" }}
+          </ActionMenuItem>
+          <ActionMenuItem :reason="openReason" @select="menuItem && revealWorktreeFile(session.key, menuItem.path)">Show in Folder</ActionMenuItem>
+          <ContextMenuSeparator />
+          <ActionMenuItem :reason="menuItem ? null : 'Right-click a file.'" @select="menuItem && copyText(menuItem.path, 'the path')">Copy Path</ActionMenuItem>
+          <ActionMenuItem :reason="menuItem ? null : 'Right-click a file.'" @select="menuItem && copyFullPath(session, menuItem.path)">Copy Full Path</ActionMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     </template>
   </section>
 </template>

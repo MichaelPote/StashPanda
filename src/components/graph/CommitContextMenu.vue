@@ -21,8 +21,12 @@ import {
   dirtyTreeReason,
   isDetached,
   mergeInto,
+  pickCommit,
+  pickReason,
   removeTag,
   requestCheckout,
+  resetReason,
+  resetTo,
 } from "@/lib/repoActions";
 import type { RepoSession } from "@/stores/sessions";
 
@@ -83,6 +87,22 @@ const mergeReason = computed(() => {
       <ActionMenuItem :reason="mergeReason" @select="mergeInto(session.key, mergeSource, mergeLabel)">
         Merge {{ mergeLabel }} into {{ branch ?? "current branch" }}
       </ActionMenuItem>
+
+      <ActionMenuItem :reason="pickReason(session, row, 'cherry-pick')" @select="pickCommit(session.key, row, 'cherry-pick')">
+        Cherry-pick {{ sha }} onto {{ branch ?? "HEAD" }}
+      </ActionMenuItem>
+      <ActionMenuItem :reason="pickReason(session, row, 'revert')" @select="pickCommit(session.key, row, 'revert')">
+        Revert {{ sha }}
+      </ActionMenuItem>
+
+      <ContextMenuSub>
+        <ContextMenuSubTrigger class="text-base" :disabled="resetReason(session) !== null">Reset {{ branch ?? "HEAD" }} to {{ sha }}</ContextMenuSubTrigger>
+        <ContextMenuSubContent class="min-w-64">
+          <ActionMenuItem :reason="resetReason(session)" @select="resetTo(session.key, row.oid, sha, 'soft')">Soft: keep the changes staged…</ActionMenuItem>
+          <ActionMenuItem :reason="resetReason(session)" @select="resetTo(session.key, row.oid, sha, 'mixed')">Mixed: keep the changes unstaged…</ActionMenuItem>
+          <ActionMenuItem :reason="resetReason(session)" destructive @select="resetTo(session.key, row.oid, sha, 'hard')">Hard: discard every change…</ActionMenuItem>
+        </ContextMenuSubContent>
+      </ContextMenuSub>
 
       <ContextMenuSeparator />
 

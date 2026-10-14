@@ -152,6 +152,17 @@ pub async fn get_worktree_file_content(state: State<'_, AppState>, key: String, 
     with_read_slot!(h, get_worktree_file(&h.client, &path).await)
 }
 
+/// Where the app can open or reveal `path` (relative to the top of the working tree), as this
+/// computer sees it: `\\wsl.localhost\…` for a WSL repository from Windows, `/mnt/c/…` for a
+/// Windows folder from WSL. Null for an SSH repository, whose files are on another machine.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_host_path(state: State<'_, AppState>, key: String, path: String) -> Result<Option<String>> {
+    let h = repo(&state, &key).await?;
+    let native = join_repo_path(&crate::transport::paths::NativePath(h.info.toplevel.clone()), &path);
+    Ok(h.transport.paths().to_host(&native).ok().map(|p| p.0))
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_repo_stashes(state: State<'_, AppState>, key: String) -> Result<Vec<StashEntry>> {

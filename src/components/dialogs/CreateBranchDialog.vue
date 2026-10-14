@@ -46,7 +46,7 @@ async function submit(): Promise<void> {
   submitting.value = true;
   error.value = null;
   try {
-    const result = await runOp(r.key, commands.opBranchCreate(r.key, branch, r.startPoint, checkout.value));
+    const result = await runOp(r.key, () => commands.opBranchCreate(r.key, branch, r.startPoint, checkout.value));
     if (!result.ok) {
       error.value = opFailureText(result, `Creating branch ${branch}`);
       return;

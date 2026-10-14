@@ -50,7 +50,7 @@ async function submit(): Promise<void> {
   submitting.value = true;
   error.value = null;
   try {
-    const result = await runOp(r.key, commands.opTagCreate(r.key, tag, r.target, text.length > 0 ? text : null, force.value));
+    const result = await runOp(r.key, () => commands.opTagCreate(r.key, tag, r.target, text.length > 0 ? text : null, force.value));
     if (!result.ok) {
       error.value = opFailureText(result, `Creating tag ${tag}`);
       return;

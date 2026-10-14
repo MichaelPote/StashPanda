@@ -11,6 +11,12 @@ export interface CreateBranchPayload {
   startLabel: string;
 }
 
+export interface RenameBranchPayload {
+  key: string;
+  /** The local branch to rename. */
+  name: string;
+}
+
 export interface CreateTagPayload {
   key: string;
   target: string;
@@ -108,6 +114,7 @@ export type AddRepoTab = "existing" | "clone";
 export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
+  renameBranch: { payload: RenameBranchPayload; result: OpResult | null };
   commit: { payload: CommitPayload; result: OpResult | null };
   stashPush: { payload: StashPushPayload; result: OpResult | null };
   stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
@@ -125,6 +132,7 @@ export type DialogKind = keyof DialogSpecs;
 const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createBranch: null,
   createTag: null,
+  renameBranch: null,
   commit: null,
   stashPush: null,
   stashApply: null,
@@ -143,10 +151,14 @@ interface ActiveDialog<K extends DialogKind = DialogKind> {
 
 /**
  * One dialog at a time, opened from anywhere (the native menu bar, a context menu, a panel) and
- * rendered once in `App.vue`. `open()` resolves when the dialog closes.
+ * rendered once in `App.vue`. `open()` resolves when the dialog closes. The one exception is a
+ * confirmation asked for while another dialog is open (a stale lock found while committing): it
+ * opens on top, and the dialog behind it stays open.
  */
 export const useDialogsStore = defineStore("dialogs", () => {
   const active = shallowRef<ActiveDialog | null>(null);
+  /** A confirmation shown on top of `active`. */
+  const overlay = shallowRef<ActiveDialog<"confirm"> | null>(null);
   /** The Add Repository dialog keeps its own flag: it has no result and several openers. */
   const addRepoOpen = ref(false);
   /** Set while the same dialog edits an existing library entry rather than adding one. */
@@ -166,6 +178,12 @@ export const useDialogsStore = defineStore("dialogs", () => {
   }
 
   function open<K extends DialogKind>(kind: K, payload: DialogSpecs[K]["payload"]): Promise<DialogSpecs[K]["result"]> {
+    if (kind === "confirm" && active.value !== null && active.value.kind !== "confirm") {
+      closeOverlay(false);
+      return new Promise<DialogSpecs[K]["result"]>((resolve) => {
+        overlay.value = { kind: "confirm", payload: payload as ConfirmPayload, resolve: resolve as (r: boolean) => void };
+      });
+    }
     // A dialog still open when the next one is requested counts as cancelled.
     cancel();
     return new Promise<DialogSpecs[K]["result"]>((resolve) => {
@@ -173,27 +191,38 @@ export const useDialogsStore = defineStore("dialogs", () => {
     });
   }
 
+  function closeOverlay(result: boolean): boolean {
+    const o = overlay.value;
+    if (!o) return false;
+    overlay.value = null;
+    o.resolve(result);
+    return true;
+  }
+
   /** The payload of the open dialog when it is of `kind`, else null. Dialog components watch this. */
   function current<K extends DialogKind>(kind: K): DialogSpecs[K]["payload"] | null {
+    if (kind === "confirm" && overlay.value) return overlay.value.payload as DialogSpecs[K]["payload"];
     const a = active.value;
     return a && a.kind === kind ? (a.payload as DialogSpecs[K]["payload"]) : null;
   }
 
   /** Closes the open dialog of `kind` with a result. Ignored when another dialog is open. */
   function resolve<K extends DialogKind>(kind: K, result: DialogSpecs[K]["result"]): void {
+    if (kind === "confirm" && closeOverlay(result as boolean)) return;
     const a = active.value;
     if (!a || a.kind !== kind) return;
     active.value = null;
     (a.resolve as (r: DialogSpecs[K]["result"]) => void)(result);
   }
 
-  /** Closes whatever dialog is open as if the user had pressed Cancel or Escape. */
+  /** Closes whatever dialog is open, and a confirmation on top of it, as if the user had pressed Cancel or Escape. */
   function cancel(): void {
+    closeOverlay(false);
     const a = active.value;
     if (!a) return;
     active.value = null;
     (a.resolve as (r: unknown) => void)(CANCEL_RESULTS[a.kind]);
   }
 
-  return { active, addRepoOpen, editRepoKey, addRepoTab, editRepo, cloneRepo, open, current, resolve, cancel };
+  return { active, overlay, addRepoOpen, editRepoKey, addRepoTab, editRepo, cloneRepo, open, current, resolve, cancel };
 });

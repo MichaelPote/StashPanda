@@ -6,11 +6,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import EmptyState from "@/components/shell/EmptyState.vue";
 import LibraryTreeNode from "@/components/shell/LibraryTreeNode.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
-import { errorMessage } from "@/lib/ipc";
-import { removeFromLibrary } from "@/lib/repoActions";
+import { openRepository, removeFromLibrary } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useLibraryStore } from "@/stores/library";
-import { useSessionsStore } from "@/stores/sessions";
 
 const emit = defineEmits<{
   addRepo: [];
@@ -18,14 +16,9 @@ const emit = defineEmits<{
 
 const dialogs = useDialogsStore();
 const library = useLibraryStore();
-const sessions = useSessionsStore();
 
 async function open(key: string): Promise<void> {
-  try {
-    await sessions.openTab(key);
-  } catch (e) {
-    sessions.notify(errorMessage(e));
-  }
+  await openRepository(key);
 }
 
 </script>

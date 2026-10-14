@@ -4,7 +4,8 @@ Status as of 2026-10-14. Written on 2026-09-18, with the Windows workflow update
 milestone 2 planned on 2026-09-23, the commit dialog and a round of interface and graph work
 added on 2026-09-30, and stashes, a second round of interface work and pull added on 2026-10-01
 (see "Interface, merge and checkout work" and "Milestone 3" below), and the first run in the real
-app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"). Everything not listed here is done and tested; see
+app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"), and the rest of
+milestone 2 the same day. Everything not listed here is done and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
@@ -321,15 +322,30 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       Before apply, pop or drop, `stash_selector` checks that `stash@{index}` still points at the
       commit the list showed, and refuses the command when a stash was made elsewhere in the
       meantime. Test: `stash_push_apply_pop_drop_and_stale_index`.
-- [ ] **d. `branch_rename`, `reset(mode, target)`, `cherry_pick`, `revert`**. Cherry-pick and
-      revert reuse `OpResult.conflicts` and get an abort; full conflict resolution stays in
-      milestone 3.
-- [ ] **e. `fix_safe_directory`** (moved here from milestone 1): on `UnsafeRepository`, run
-      `git config --global --add safe.directory <path>` through the repository's own transport, so
-      the right Git gets the setting.
-- [ ] **f. Hunk and line staging**: `apply --cached` with a patch built in Rust from the diff the
-      viewer already has, `--unidiff-zero` for single lines. Largest and riskiest item, so last.
-      Test against no newline at end of file, CRLF, and a new file.
+- [x] **d. Rename, reset, cherry-pick, revert** (2026-10-14; commands `op_branch_rename`,
+      `op_reset` with `ResetMode` soft, mixed or hard, `op_cherry_pick` and `op_revert` with an
+      optional `mainline` for a merge commit, `op_cherry_pick_abort`, `op_revert_abort`).
+      Conflicts come back as `OpResult.conflicts`; full conflict resolution stays in milestone 3.
+      `reset` ends its arguments with `--`, so a target that is also a file name means the
+      revision. Test: `rename_reset_cherry_pick_and_revert`.
+- [x] **e. `safe.directory`** (2026-10-14; command `repo_fix_safe_directory(key, path)` in
+      `ipc/repos.rs`). Runs `git config --global --add safe.directory <path>` through the library
+      entry's own connection, with the path exactly as Git's "dubious ownership" message gave it,
+      before the repository is open. Git runs that command even inside the folder it refuses.
+      Test: `safe_directory_lets_git_open_a_repository_it_refused`, which uses Git's
+      `GIT_TEST_ASSUME_DIFFERENT_OWNER` and a scratch global config through the new
+      `GitReq::env`.
+- [x] **f. Hunk and line staging** (2026-10-14; `git/ops/lines.rs`, command `op_apply_lines`).
+      The frontend sends the picked lines by number (new file for an addition, old file for a
+      removal) and text; the backend recomputes the diff with fixed options, refuses a selection
+      whose text no longer matches, and builds a patch for `git apply` (`--cached` to stage or
+      unstage, the working tree to discard) that always applies forwards to the version it
+      changes. A selection that covers every changed line runs the whole-file command instead,
+      which handles new and deleted files and modes. A patch that would put a line after one with
+      no final newline is refused: `git apply` accepts it and joins the two lines into one.
+      Partly staging an untracked file creates it with mode 100644. Tests:
+      `stage_unstage_and_discard_single_lines` (CRLF, no final newline, new file, stale
+      selection, whole-file fallback) and the patch unit tests in `lines.rs`.
 
 ### Step 3: frontend
 
@@ -339,8 +355,14 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       `Listbox` was checked first and not used: its mouse clicks ignore Shift and Ctrl. The diff
       shows the last file clicked, not the whole selection. Ctrl+A outside a text field never
       selects page text (`App.vue`) and selects every file in the active tab.
-- [ ] **Files panel**: context menu (stage, unstage, discard, open, reveal, copy path) and the
-      Stage, Unstage and Discard toolbar groups.
+- [x] **Files panel** (2026-10-14): a right-click menu with Stage, Unstage, Discard Changes…,
+      Open, Show in Folder, Copy Path and Copy Full Path, and the toolbar's Stage, Unstage and
+      Discard buttons, all acting on the selected working tree rows (`worktreeActionPaths` in
+      `lib/files.ts`). Right-clicking a row outside the selection selects just that row. Discard
+      sends unstaged rows back to the index, staged rows back to HEAD and deletes untracked
+      files, after one confirmation that lists them. A toolbar button that cannot act is greyed
+      out with the reason as its tooltip. Open and Show in Folder use the new `get_host_path`
+      command and the `opener:allow-open-path` permission; neither works over SSH.
 - [x] **Commit dialog** (2026-09-30, `src/components/dialogs/CommitDialog.vue`, opened by the
       toolbar's Commit button). Lists every outstanding file with a checkbox. The files selected
       in the Files panel start ticked; with no selection, the `commit.preselect` setting decides
@@ -361,21 +383,36 @@ gets an end-to-end test against a throwaway repository in the `e2e` module of `g
       Tree row (`WorkingTreeContextMenu.vue`), which greys out an item and gives the reason when it
       cannot run. A stash that applied with conflicts is reported as conflicts to resolve, not as a
       failure.
-- [ ] **Apply Stash dialog loses the chosen stash** (flagged 2026-10-01,
-      `src/components/dialogs/ApplyStashDialog.vue:29`). If the stash that is picked disappears
-      while the dialog is open (dropped or popped elsewhere), `picked` quietly falls back to the
-      newest stash. No option then shows as selected, but Apply would apply that newest stash.
-      It should keep nothing picked and disable Apply until the user chooses again.
-- [ ] **Commit context menu additions**: reset (soft, mixed or hard), cherry-pick, revert.
-- [ ] **Stale lock and `safe.directory` prompts** driven by `IndexLocked` and `UnsafeRepository`:
-      confirm, then call `opRemoveStaleLock` or the `fix_safe_directory` command and retry.
-- [ ] **Hunk and line staging buttons** in `DiffViewer.vue`, once step 2f is done.
+- [x] **Apply Stash dialog lost the chosen stash** (fixed 2026-10-14). When the picked stash
+      disappears while the dialog is open, nothing is picked, Apply is disabled, and the dialog
+      says so; it no longer falls back to the newest stash.
+- [x] **Commit menu additions** (2026-10-14): Cherry-pick onto the current branch, Revert, and a
+      Reset submenu (soft, mixed, hard), each asking first; a merge commit is measured against
+      its first parent. A conflict leaves a notice with Abort; a cherry-pick whose change is
+      already on the branch is aborted at once and said so. Branch menus gained Rename Branch…
+      (`RenameBranchDialog.vue`).
+- [x] **Stale lock and `safe.directory` prompts** (2026-10-14). `runOp` now takes a function
+      that starts the command: on `indexLocked` it asks whether to remove the lock, removes it
+      and runs the command once more. A confirmation asked for while another dialog is open
+      shows on top of it (`overlay` in `stores/dialogs.ts`), so the Commit dialog stays. An
+      `unsafeRepository` failure to open becomes a notice with "Trust this folder…"
+      (`openRepository` and `reportOpenFailure` in `lib/repoActions.ts`).
+- [x] **Hunk and line buttons in `DiffViewer.vue`** (2026-10-14). In an unstaged or untracked
+      file's diff each hunk header has Stage hunk and Discard…, in a staged file's diff Unstage
+      hunk. Clicking a changed line's number picks it (Shift-click picks a range), and a strip
+      under the header offers Stage, Discard… or Unstage for the picked lines.
 
 ### Done when
 
 `cargo test`, `cargo clippy --all-targets` and `npm run build` pass, and in the running app on a
 real repository you can stage part of a file, commit, amend, stash and pop, and reset, with one
 refresh per action in the console and the result matching the `git` command line.
+
+Met on 2026-10-14 in the Linux build, driven through WebDriver against throwaway repositories
+(see "Checked in the running app"): a hunk, a single removed line and two of an untracked file's
+three lines staged, a hunk unstaged, a line discarded, the Files panel's menu and the toolbar
+buttons, a stale `index.lock` during a commit, revert, cherry-pick (twice), a soft reset, a
+rename, the Apply Stash fix and the `safe.directory` prompt, each checked with `git`.
 
 ### Left for the phase after this one
 

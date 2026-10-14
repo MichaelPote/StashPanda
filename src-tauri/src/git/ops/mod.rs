@@ -9,6 +9,8 @@ use crate::error::{classify_git_failure, GitError, Result};
 use crate::git::{GitClient, GitReq};
 use crate::transport::TransportKind;
 
+pub mod lines;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OpResult {
@@ -389,6 +391,98 @@ pub async fn branch_delete(client: &GitClient, name: &str, force: bool) -> Resul
     let flag = if force { "-D" } else { "-d" };
     let out = client.exec_allow_failure(GitReq::new("branch", ["branch", flag, name]).user()).await?;
     Ok(result(out))
+}
+
+/// Rename local branch `old` to `new`. Git moves its upstream setting and its reflog with it,
+/// and refuses when `new` already exists.
+pub async fn branch_rename(client: &GitClient, old: &str, new: &str) -> Result<OpResult> {
+    valid_ref_name(old)?;
+    valid_ref_name(new)?;
+    let out = client.exec_allow_failure(GitReq::new("branch", ["branch", "-m", old, new]).user()).await?;
+    Ok(result(out))
+}
+
+/// How much `reset` puts back besides moving the branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ResetMode {
+    /// Move the branch only: the index and the files keep their content, so the undone commits'
+    /// changes show as staged.
+    Soft,
+    /// Move the branch and reset the index: the undone changes show as unstaged.
+    Mixed,
+    /// Move the branch and reset the index and the files: every uncommitted change is lost.
+    Hard,
+}
+
+/// Move the current branch (or a detached HEAD) to `target`.
+pub async fn reset(client: &GitClient, mode: ResetMode, target: &str) -> Result<OpResult> {
+    valid_revision(target)?;
+    let flag = match mode {
+        ResetMode::Soft => "--soft",
+        ResetMode::Mixed => "--mixed",
+        ResetMode::Hard => "--hard",
+    };
+    // `--` keeps a target that is also a file name from being read as a path.
+    let out = client.exec_allow_failure(GitReq::new("reset", ["reset", "-q", flag, target, "--"]).user()).await?;
+    Ok(result(out))
+}
+
+/// `-m <n>` for a merge commit: which parent its changes are measured against (1 is the branch
+/// that was merged into). Git refuses a merge commit without it, and a plain commit with it.
+fn mainline_args(mainline: Option<u32>) -> Vec<String> {
+    match mainline {
+        Some(n) => vec!["-m".into(), n.to_string()],
+        None => Vec::new(),
+    }
+}
+
+/// Apply the change `commit` made as a new commit on the current branch. When it stops on
+/// conflicts (`conflicts` in the result) or because the change is already there (Git then
+/// leaves the cherry-pick open and says so in stderr), `cherry_pick_abort` puts the branch back.
+pub async fn cherry_pick(client: &GitClient, commit: &str, mainline: Option<u32>) -> Result<OpResult> {
+    valid_revision(commit)?;
+    let mut args: Vec<String> = vec!["cherry-pick".into()];
+    args.extend(mainline_args(mainline));
+    args.push(commit.to_string());
+    let out = client.exec_allow_failure(GitReq::new("cherry-pick", args).user().timeout(Some(COMMIT_TIMEOUT))).await?;
+    Ok(result(out))
+}
+
+pub async fn cherry_pick_abort(client: &GitClient) -> Result<OpResult> {
+    let out = client.exec_allow_failure(GitReq::new("cherry-pick", ["cherry-pick", "--abort"]).user()).await?;
+    Ok(result(out))
+}
+
+/// Make a new commit that undoes `commit`, with Git's own "Revert …" message. Stops on
+/// conflicts like `cherry_pick`; `revert_abort` puts the branch back.
+pub async fn revert(client: &GitClient, commit: &str, mainline: Option<u32>) -> Result<OpResult> {
+    valid_revision(commit)?;
+    let mut args: Vec<String> = vec!["revert".into(), "--no-edit".into()];
+    args.extend(mainline_args(mainline));
+    args.push(commit.to_string());
+    let out = client.exec_allow_failure(GitReq::new("revert", args).user().timeout(Some(COMMIT_TIMEOUT))).await?;
+    Ok(result(out))
+}
+
+pub async fn revert_abort(client: &GitClient) -> Result<OpResult> {
+    let out = client.exec_allow_failure(GitReq::new("revert", ["revert", "--abort"]).user()).await?;
+    Ok(result(out))
+}
+
+/// `git config --global --add safe.directory <path>`, which tells Git to trust a repository owned
+/// by another user. Run through the repository's own transport with the path exactly as Git
+/// printed it in its "dubious ownership" message, so the Git that refused gets the setting.
+/// Git runs this even inside the repository it refuses.
+pub fn safe_directory_req(path: &str) -> GitReq {
+    GitReq::new("config", ["config", "--global", "--add", "safe.directory", path]).user()
+}
+
+pub async fn add_safe_directory(client: &GitClient, path: &str) -> Result<OpResult> {
+    if path.is_empty() || path.chars().any(char::is_control) {
+        return Err(GitError::InvalidPath { path: path.to_string(), reason: "not a valid folder".into() });
+    }
+    Ok(result(client.exec_allow_failure(safe_directory_req(path)).await?))
 }
 
 /// `stash@{index}`, after checking that it still names the stash whose commit is `oid`. The list
@@ -924,6 +1018,207 @@ mod e2e {
         assert_eq!(body("HEAD").await, "reworded\n\nSigned-off-by: T <t@t>");
         let count = Command::new("git").arg("-C").arg(&dir).args(["rev-list", "--count", "HEAD"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "1", "amend did not add a commit");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn out(dir: &Path, args: &[&str]) -> String {
+        String::from_utf8(Command::new("git").arg("-C").arg(dir).args(args).output().unwrap().stdout).unwrap().trim().to_string()
+    }
+
+    #[tokio::test]
+    async fn rename_reset_cherry_pick_and_revert() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-history-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&dir, &["config", k, v]);
+        }
+        let commit = |file: &str, text: &str, msg: &str| {
+            std::fs::write(dir.join(file), text).unwrap();
+            git(&dir, &["add", "-A"]);
+            git(&dir, &["commit", "-qm", msg]);
+        };
+        commit("a.txt", "1\n", "one");
+        commit("a.txt", "2\n", "two");
+        let client = client_for(&dir);
+
+        // Rename: the branch keeps its commits; a taken name and a bad name are refused.
+        git(&dir, &["branch", "topic"]);
+        assert!(branch_rename(&client, "topic", "feature/x").await.unwrap().ok);
+        assert_eq!(out(&dir, &["branch", "--list", "feature/x"]), "feature/x");
+        assert!(!branch_rename(&client, "feature/x", "main").await.unwrap().ok);
+        assert!(matches!(branch_rename(&client, "feature/x", "bad name").await, Err(GitError::InvalidPath { .. })));
+
+        // Reset: soft keeps the change staged, mixed unstaged, hard drops it.
+        let two = out(&dir, &["rev-parse", "HEAD"]);
+        assert!(reset(&client, ResetMode::Soft, "HEAD~1").await.unwrap().ok);
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "M  a.txt");
+        git(&dir, &["reset", "-q", "--hard", &two]);
+        assert!(reset(&client, ResetMode::Mixed, "HEAD~1").await.unwrap().ok);
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "M a.txt");
+        assert!(reset(&client, ResetMode::Hard, &two).await.unwrap().ok);
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "2\n");
+        // A target that is also a file name still means the revision.
+        git(&dir, &["tag", "b.txt", "HEAD~1"]);
+        std::fs::write(dir.join("b.txt"), "file\n").unwrap();
+        assert!(reset(&client, ResetMode::Mixed, "b.txt").await.unwrap().ok);
+        assert_eq!(out(&dir, &["log", "-1", "--format=%s"]), "one");
+        git(&dir, &["reset", "-q", "--hard", &two]);
+        std::fs::remove_file(dir.join("b.txt")).unwrap();
+
+        // Cherry-pick a commit from another branch, then one that is already there.
+        git(&dir, &["checkout", "-q", "-b", "side", "HEAD~1"]);
+        commit("c.txt", "c\n", "add c");
+        let add_c = out(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        let picked = cherry_pick(&client, &add_c, None).await.unwrap();
+        assert!(picked.ok, "{picked:?}");
+        assert_eq!(out(&dir, &["log", "-1", "--format=%s"]), "add c");
+        let again = cherry_pick(&client, &add_c, None).await.unwrap();
+        assert!(!again.ok && !again.conflicts, "{again:?}");
+        assert!(cherry_pick_abort(&client).await.unwrap().ok);
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "");
+
+        // A conflicting cherry-pick reports conflicts, and abort puts the branch back.
+        git(&dir, &["checkout", "-q", "side"]);
+        commit("a.txt", "side\n", "side edit");
+        let side_edit = out(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        let head = out(&dir, &["rev-parse", "HEAD"]);
+        let clash = cherry_pick(&client, &side_edit, None).await.unwrap();
+        assert!(!clash.ok && clash.conflicts, "{clash:?}");
+        assert!(cherry_pick_abort(&client).await.unwrap().ok);
+        assert_eq!(out(&dir, &["rev-parse", "HEAD"]), head);
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "");
+
+        // A merge commit needs a mainline for both.
+        git(&dir, &["merge", "-q", "--no-ff", "--no-edit", "-X", "theirs", "side"]);
+        let merge = out(&dir, &["rev-parse", "HEAD"]);
+        assert!(!revert(&client, &merge, None).await.unwrap().ok);
+        let reverted = revert(&client, &merge, Some(1)).await.unwrap();
+        assert!(reverted.ok, "{reverted:?}");
+        assert!(out(&dir, &["log", "-1", "--format=%s"]).starts_with("Revert \"Merge branch 'side'"));
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "2\n");
+
+        // Reverting a commit whose lines changed again later conflicts; abort restores HEAD.
+        commit("a.txt", "3\n", "three");
+        let clash = revert(&client, &two, None).await.unwrap();
+        assert!(!clash.ok && clash.conflicts, "{clash:?}");
+        assert!(revert_abort(&client).await.unwrap().ok);
+        assert_eq!(out(&dir, &["log", "-1", "--format=%s"]), "three");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn safe_directory_lets_git_open_a_repository_it_refused() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-safe-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let global = dir.join("global.gitconfig");
+        std::fs::write(&global, "").unwrap();
+        let client = client_for(&dir);
+        // Git's own test switch makes it treat the folder as owned by someone else, and the
+        // scratch global config keeps the real one untouched.
+        let as_other = |req: GitReq| req.env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1").env("GIT_CONFIG_GLOBAL", &global.to_string_lossy());
+        let refused = client.exec(as_other(GitReq::new("rev-parse", ["rev-parse", "--git-dir"]))).await;
+        let Err(GitError::UnsafeRepository { path }) = refused else { panic!("{refused:?}") };
+        assert!(!path.is_empty());
+        let added = client.exec_allow_failure(as_other(safe_directory_req(&path))).await.unwrap();
+        assert!(added.success(), "{added:?}");
+        assert!(client.exec(as_other(GitReq::new("rev-parse", ["rev-parse", "--git-dir"]))).await.is_ok());
+        assert!(std::fs::read_to_string(&global).unwrap().contains("directory ="));
+        assert!(matches!(add_safe_directory(&client, "").await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stage_unstage_and_discard_single_lines() {
+        use super::lines::{apply_lines, ChangeKind, LineAction, SelectedLine};
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-lines-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "core.autocrlf", "false"]);
+        let numbered: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("f.txt"), &numbered).unwrap();
+        std::fs::write(dir.join("tail.txt"), "a\nb").unwrap();
+        std::fs::write(dir.join("crlf.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+        let add = |line: u32, text: &str| SelectedLine { kind: ChangeKind::Add, line, text: text.into() };
+        let del = |line: u32, text: &str| SelectedLine { kind: ChangeKind::Del, line, text: text.into() };
+        let index = |p: &str| out(&dir, &["show", &format!(":{p}")]);
+
+        // Two separate edits; stage only the second, as a removal and an addition.
+        let edited = numbered.replace("line 2\n", "line two\n").replace("line 15\n", "line fifteen\n");
+        std::fs::write(dir.join("f.txt"), &edited).unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "f.txt", false, &[del(15, "line 15"), add(15, "line fifteen")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        let staged = index("f.txt");
+        assert!(staged.contains("line fifteen") && staged.contains("line 2\n") && !staged.contains("line two"), "{staged}");
+        // Only the addition of the first edit: the old line stays next to the new one.
+        let r = apply_lines(&client, LineAction::Stage, "f.txt", false, &[add(2, "line two")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert!(index("f.txt").starts_with("line 1\nline 2\nline two\nline 3\n"));
+
+        // Unstage the second edit's addition only: the index keeps "line 15" and loses "line fifteen".
+        let r = apply_lines(&client, LineAction::Unstage, "f.txt", false, &[add(16, "line fifteen")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        let staged = index("f.txt");
+        assert!(!staged.contains("line fifteen") && !staged.contains("line 15\n"), "{staged}");
+        let r = apply_lines(&client, LineAction::Unstage, "f.txt", false, &[del(15, "line 15")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert!(index("f.txt").contains("line 15\n"));
+
+        // A selection that no longer matches the file is refused, and nothing changes.
+        let before = index("f.txt");
+        assert!(matches!(apply_lines(&client, LineAction::Stage, "f.txt", false, &[add(15, "something else")]).await, Err(GitError::InvalidPath { .. })));
+        assert_eq!(index("f.txt"), before);
+
+        // Discard the unstaged "line fifteen" edit from the working tree; the staged edit stays.
+        let r = apply_lines(&client, LineAction::Discard, "f.txt", false, &[del(16, "line 15"), add(15, "line fifteen")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        let disk = std::fs::read_to_string(dir.join("f.txt")).unwrap();
+        assert!(disk.contains("line 15\n") && !disk.contains("fifteen") && disk.contains("line two"), "{disk}");
+
+        // No newline at the end: add a line after the last one and stage both changes (the
+        // whole file, so the whole-file stage runs); then stage just a middle edit of tail.txt.
+        std::fs::write(dir.join("tail.txt"), "a\nb\nc").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "tail.txt", false, &[del(2, "b"), add(2, "b"), add(3, "c")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("tail.txt"), "a\nb\nc");
+        std::fs::write(dir.join("tail.txt"), "A\nb\nc").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "tail.txt", false, &[del(1, "a"), add(1, "A")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("tail.txt"), "A\nb\nc");
+        // Adding the newline and a new last line, staging only the new line, cannot work alone.
+        std::fs::write(dir.join("tail.txt"), "A\nb\nc\nd").unwrap();
+        // `git apply` would take that patch and join "c" and "d" into one line.
+        let r = apply_lines(&client, LineAction::Stage, "tail.txt", false, &[add(4, "d")]).await;
+        assert!(matches!(&r, Err(GitError::InvalidPath { reason, .. }) if reason.contains("Select the neighbouring lines")), "{r:?}");
+        assert_eq!(index("tail.txt"), "A\nb\nc");
+
+        // CRLF lines keep their \r in the index.
+        std::fs::write(dir.join("crlf.txt"), "one\r\nTWO\r\nthree\r\nfour\r\n").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "crlf.txt", false, &[del(2, "two"), add(2, "TWO")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("crlf.txt"), "one\r\nTWO\r\nthree");
+
+        // An untracked file: stage two of its three lines, then discard the third from disk.
+        std::fs::write(dir.join("new.txt"), "x\ny\nz\n").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "new.txt", true, &[add(1, "x"), add(3, "z")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("new.txt"), "x\nz");
+        let r = apply_lines(&client, LineAction::Discard, "new.txt", false, &[add(2, "y")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("new.txt")).unwrap(), "x\nz\n");
+        // Every line of a new untracked file selected: the whole-file stage runs.
+        std::fs::write(dir.join("all.txt"), "1\n2\n").unwrap();
+        assert!(apply_lines(&client, LineAction::Stage, "all.txt", true, &[add(1, "1"), add(2, "2")]).await.unwrap().ok);
+        assert_eq!(out(&dir, &["status", "--porcelain", "--", "all.txt"]), "A  all.txt");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

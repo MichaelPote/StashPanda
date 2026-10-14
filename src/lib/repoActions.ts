@@ -3,8 +3,9 @@
  * panel and the native menu bar, plus removing a repository from the library. Every function
  * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
-import { commands, type OpResult, type PullMode, type PushTarget, type StashEntry, type SyncResult } from "@/lib/bindings";
-import { commitFiles } from "@/lib/files";
+import { commands, type GraphRow, type OpResult, type PullMode, type PushTarget, type ResetMode, type StashEntry, type SyncResult } from "@/lib/bindings";
+import { commitFiles, worktreeActionPaths, type WorktreeActionPaths } from "@/lib/files";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
 import { useDialogsStore, type PullSource } from "@/stores/dialogs";
@@ -13,14 +14,39 @@ import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
-/** Runs one write operation and refetches refs and status once it has finished, whatever the outcome. */
-export async function runOp<T = OpResult>(key: string, op: Promise<IpcResult<T>>): Promise<T> {
+/**
+ * Runs one write operation and refetches refs and status once it has finished, whatever the
+ * outcome. `op` starts the command. When Git finds `index.lock` still there (the backend has
+ * already waited and tried once more), asks whether to remove it; if the user agrees, removes it
+ * and runs the command once more. Otherwise the `indexLocked` error is thrown as it came.
+ */
+export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResult<T>>): Promise<T> {
   const sessions = useSessionsStore();
   try {
-    return await unwrap(op);
+    try {
+      return await unwrap(op());
+    } catch (e) {
+      if (!(e instanceof IpcError && e.error.kind === "indexLocked")) throw e;
+      if (!(await confirmRemoveLock(e.error.lockPath))) throw e;
+      await unwrap(commands.opRemoveStaleLock(key));
+      return await unwrap(op());
+    }
   } finally {
     void sessions.refetchRefsAndStatus(key);
   }
+}
+
+/** Asks whether to delete a lock file Git left behind. */
+function confirmRemoveLock(lockPath: string): Promise<boolean> {
+  return useDialogsStore().open("confirm", {
+    title: "Remove Git's lock file?",
+    message:
+      `Git did not run because its lock file is there: ${lockPath}\n\n` +
+      "Git leaves it behind when one of its commands crashes or is killed. If no other program is running Git in this repository right now, " +
+      "removing it is safe, and the command runs again. If another Git command is still running, wait for it instead: removing its lock can damage the index.",
+    confirmLabel: "Remove lock and try again",
+    destructive: true,
+  });
 }
 
 /** One line for a Git command that ran but exited non-zero: `<what> failed (exit 1): <stderr>`. */
@@ -114,13 +140,13 @@ export async function requestCheckout(key: string, target: CheckoutTarget): Prom
 
   try {
     if (plan.kind === "remote") {
-      const result = await runOp(key, commands.opBranchCreate(key, plan.local, plan.remote, true));
+      const result = await runOp(key, () => commands.opBranchCreate(key, plan.local, plan.remote, true));
       if (result.ok) sessions.notifySuccess(`Created branch ${plan.local} tracking ${plan.remote}, and checked it out.`);
       else sessions.notify(opFailureText(result, `Creating branch ${plan.local} from ${plan.remote}`));
       return;
     }
     const revision = plan.kind === "local" ? plan.name : plan.revision;
-    const result = await runOp(key, commands.opCheckout(key, revision));
+    const result = await runOp(key, () => commands.opCheckout(key, revision));
     if (result.ok) sessions.notifySuccess(`Checked out ${name}.`);
     else sessions.notify(opFailureText(result, `Checking out ${name}`));
   } catch (e) {
@@ -132,7 +158,7 @@ export async function requestCheckout(key: string, target: CheckoutTarget): Prom
 export async function abortMerge(key: string): Promise<void> {
   const sessions = useSessionsStore();
   try {
-    const result = await runOp(key, commands.opMergeAbort(key));
+    const result = await runOp(key, () => commands.opMergeAbort(key));
     if (result.ok) sessions.notifySuccess("The merge was aborted.");
     else sessions.notify(opFailureText(result, "Aborting the merge"));
   } catch (e) {
@@ -144,7 +170,7 @@ export async function abortMerge(key: string): Promise<void> {
 export async function abortRebase(key: string): Promise<void> {
   const sessions = useSessionsStore();
   try {
-    const result = await runOp(key, commands.opRebaseAbort(key));
+    const result = await runOp(key, () => commands.opRebaseAbort(key));
     if (result.ok) sessions.notifySuccess("The rebase was aborted. The branch is back where it was before the pull.");
     else sessions.notify(opFailureText(result, "Aborting the rebase"));
   } catch (e) {
@@ -316,7 +342,7 @@ export async function runOperation<T = OpResult>(
   const opId = crypto.randomUUID();
   if (session) session.operation = { opId, title, line: "", cancellable: true, stopping: false };
   try {
-    return await runOp(key, start(opId));
+    return await runOp(key, () => start(opId));
   } finally {
     if (session && session.operation?.opId === opId) session.operation = null;
   }
@@ -522,7 +548,7 @@ export async function mergeInto(key: string, target: string, label: string = tar
   const sessions = useSessionsStore();
   const into = currentBranch(sessions.sessions.get(key)) ?? "the current branch";
   try {
-    const result = await runOp(key, commands.opMerge(key, target, false));
+    const result = await runOp(key, () => commands.opMerge(key, target, false));
     if (result.ok) {
       sessions.notifySuccess(`Merged ${label} into ${into}.`);
     } else if (result.conflicts) {
@@ -536,6 +562,123 @@ export async function mergeInto(key: string, target: string, label: string = tar
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
+}
+
+/** Where HEAD points, as messages name it: the checked-out branch, or "HEAD" when detached. */
+function headName(session: RepoSession | null | undefined): string {
+  return currentBranch(session) ?? "HEAD";
+}
+
+/** Why the branch cannot be reset right now, or null when it can. */
+export function resetReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.isBare) return "A bare repository has no checked-out branch to reset.";
+  if (session.status?.headOid === null) return "This branch has no commits yet.";
+  return null;
+}
+
+const RESET_EFFECT: Record<ResetMode, string> = {
+  soft: "Their changes stay staged, so committing again puts them back in one commit.",
+  mixed: "Their changes, and anything staged now, become unstaged changes in the working tree. Nothing in the files is lost.",
+  hard:
+    "Every uncommitted change in the working tree and the index is lost, and so are the commits after it unless another branch or tag has them.",
+};
+
+/** Asks first, then runs `git reset --soft|--mixed|--hard <oid>`. */
+export async function resetTo(key: string, oid: string, label: string, mode: ResetMode): Promise<void> {
+  const sessions = useSessionsStore();
+  const session = sessions.sessions.get(key);
+  const reason = resetReason(session);
+  if (reason) {
+    sessions.notify(reason);
+    return;
+  }
+  const name = headName(session);
+  const head = session?.status?.headOid === oid;
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: `${mode === "hard" ? "Hard reset" : mode === "soft" ? "Soft reset" : "Reset"} ${name} to ${label}?`,
+    message: head
+      ? `${name} stays at ${label}. ${mode === "hard" ? "Every uncommitted change in the working tree and the index is lost." : mode === "mixed" ? "Everything staged becomes unstaged. Nothing in the files is lost." : "Nothing changes."}`
+      : `${name} moves to ${label}, and the commits after it are no longer on ${name}. ${RESET_EFFECT[mode]}`,
+    confirmLabel: mode === "hard" ? "Reset and discard changes" : "Reset",
+    destructive: mode === "hard",
+  });
+  if (!confirmed) return;
+  try {
+    const result = await runOp(key, () => commands.opReset(key, mode, oid));
+    if (result.ok) sessions.notifySuccess(`Reset ${name} to ${label} (${mode}).`);
+    else sessions.notify(opFailureText(result, `Resetting ${name} to ${label}`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Why a commit cannot be cherry-picked or reverted onto HEAD right now, or null when it can. */
+export function pickReason(session: RepoSession | null | undefined, row: GraphRow, verb: "cherry-pick" | "revert"): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.isBare) return "A bare repository has no checked-out branch.";
+  if (!session.status) return "The working tree status is still loading.";
+  if (session.status.headOid === null) return "This branch has no commits yet.";
+  if (session.status.conflictedCount > 0) return "Resolve the conflicted files first.";
+  if (verb === "cherry-pick" && row.isHead) return "This commit is HEAD: its change is already there.";
+  return null;
+}
+
+/**
+ * Cherry-picks or reverts the commit on `row` onto HEAD. A merge commit is measured against its
+ * first parent (`-m 1`). When Git stops on conflicts, the notice offers the abort; when the
+ * change is already on the branch, the half-open cherry-pick is aborted and that is said instead.
+ */
+export async function pickCommit(key: string, row: GraphRow, verb: "cherry-pick" | "revert"): Promise<void> {
+  const sessions = useSessionsStore();
+  const session = sessions.sessions.get(key);
+  const reason = pickReason(session, row, verb);
+  if (reason) {
+    sessions.notify(reason);
+    return;
+  }
+  const label = shortSha(row.oid);
+  const name = headName(session);
+  const mainline = row.parents.length > 1 ? 1 : null;
+  const pick = verb === "cherry-pick";
+  const abort = pick ? () => commands.opCherryPickAbort(key) : () => commands.opRevertAbort(key);
+  const what = pick ? `Cherry-picking ${label} onto ${name}` : `Reverting ${label} on ${name}`;
+  try {
+    const result = await runOp(key, () => (pick ? commands.opCherryPick(key, row.oid, mainline) : commands.opRevert(key, row.oid, mainline)));
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (result.ok) {
+      sessions.notifySuccess(pick ? `Cherry-picked ${label} onto ${name}.` : `Reverted ${label} with a new commit on ${name}.`);
+    } else if (/is now empty|nothing to commit/i.test(output)) {
+      await runOp(key, abort);
+      sessions.notify(pick ? `${name} already has the change ${label} made, so there was nothing to cherry-pick.` : `${name} no longer has the change ${label} made, so there was nothing to revert.`);
+    } else if (result.conflicts || /--abort/.test(output)) {
+      sessions.notify(`${what} stopped on conflicts. Resolve them and commit, or abort.`, {
+        label: pick ? "Abort cherry-pick" : "Abort revert",
+        run: () => abortPick(key, verb),
+      });
+    } else {
+      sessions.notify(opFailureText(result, what));
+    }
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Runs `git cherry-pick --abort` or `git revert --abort` and reports the outcome. */
+export async function abortPick(key: string, verb: "cherry-pick" | "revert"): Promise<void> {
+  const sessions = useSessionsStore();
+  try {
+    const result = await runOp(key, () => (verb === "cherry-pick" ? commands.opCherryPickAbort(key) : commands.opRevertAbort(key)));
+    if (result.ok) sessions.notifySuccess(`The ${verb} was aborted. The branch is back where it was.`);
+    else sessions.notify(opFailureText(result, `Aborting the ${verb}`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Opens the Rename Branch dialog for local branch `name`. The dialog runs the command itself. */
+export async function renameBranch(key: string, name: string): Promise<void> {
+  await useDialogsStore().open("renameBranch", { key, name });
 }
 
 /** Opens the Create Branch dialog starting at `startPoint`. The dialog runs the command itself. */
@@ -584,7 +727,7 @@ export async function removeTag(key: string, name: string): Promise<void> {
   });
   if (!confirmed) return;
   try {
-    const result = await runOp(key, commands.opTagDelete(key, name));
+    const result = await runOp(key, () => commands.opTagDelete(key, name));
     if (result.ok) sessions.notifySuccess(`Removed tag ${name}.`);
     else sessions.notify(opFailureText(result, `Removing tag ${name}`));
   } catch (e) {
@@ -607,7 +750,7 @@ export async function deleteBranch(key: string, name: string): Promise<void> {
   });
   if (!confirmed) return;
   try {
-    let result = await runOp(key, commands.opBranchDelete(key, name, false));
+    let result = await runOp(key, () => commands.opBranchDelete(key, name, false));
     if (!result.ok && /not fully merged/i.test(result.stderr)) {
       const force = await dialogs.open("confirm", {
         title: `Force delete ${name}?`,
@@ -616,10 +759,62 @@ export async function deleteBranch(key: string, name: string): Promise<void> {
         destructive: true,
       });
       if (!force) return;
-      result = await runOp(key, commands.opBranchDelete(key, name, true));
+      result = await runOp(key, () => commands.opBranchDelete(key, name, true));
     }
     if (result.ok) sessions.notifySuccess(`Deleted branch ${name}.`);
     else sessions.notify(opFailureText(result, `Deleting branch ${name}`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/**
+ * Opens a library entry in a tab, or makes it the active tab. A failure becomes a notice; when Git
+ * refused the folder because another user owns it, the notice offers to trust it. Resolves true
+ * once the tab is open.
+ */
+export async function openRepository(key: string): Promise<boolean> {
+  try {
+    await useSessionsStore().openTab(key);
+    return true;
+  } catch (e) {
+    reportOpenFailure(key, e);
+    return false;
+  }
+}
+
+/** Reports why a repository did not open, offering "Trust this folder…" for an unsafe repository. */
+export function reportOpenFailure(key: string, e: unknown): void {
+  const sessions = useSessionsStore();
+  if (e instanceof IpcError && e.error.kind === "unsafeRepository") {
+    const path = e.error.path;
+    sessions.notify(`Git refuses to open ${path} because another user owns the folder.`, {
+      label: "Trust this folder…",
+      run: () => trustFolder(key, path),
+    });
+    return;
+  }
+  sessions.notify(errorMessage(e));
+}
+
+/** Asks, then adds `path` to `safe.directory` in the global Git config and opens the repository. */
+async function trustFolder(key: string, path: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: "Trust this folder?",
+    message:
+      `${path}\n\nGit only works in a repository owned by another user once you say you trust it, because a repository's settings can run programs. ` +
+      "Trusting it adds the folder to safe.directory in your global Git config (git config --global --add safe.directory), for the Git that opens this repository. Only do this for a folder you know.",
+    confirmLabel: "Trust and open",
+  });
+  if (!confirmed) return;
+  try {
+    const result = await unwrap(commands.repoFixSafeDirectory(key, path));
+    if (!result.ok) {
+      sessions.notify(opFailureText(result, "Adding the folder to safe.directory"));
+      return;
+    }
+    if (await openRepository(key)) sessions.notifySuccess(`Git now trusts ${path}.`);
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
@@ -709,7 +904,7 @@ export async function openApplyStashDialog(session: RepoSession | null): Promise
  */
 async function stashOp(
   key: string,
-  op: Promise<IpcResult<OpResult>>,
+  op: () => Promise<IpcResult<OpResult>>,
   what: string,
   done: string,
   conflictNote: string,
@@ -730,7 +925,7 @@ export async function applyStash(key: string, stash: StashEntry): Promise<void> 
   const name = stash.selector;
   await stashOp(
     key,
-    commands.opStashApply(key, stash.index, stash.oid),
+    () => commands.opStashApply(key, stash.index, stash.oid),
     `Applying ${name}`,
     `Applied ${name}. The stash is kept.`,
     `Applied ${name} with conflicts. Resolve them in the working tree; the stash is kept.`,
@@ -742,7 +937,7 @@ export async function popStash(key: string, stash: StashEntry): Promise<void> {
   const name = stash.selector;
   await stashOp(
     key,
-    commands.opStashPop(key, stash.index, stash.oid),
+    () => commands.opStashPop(key, stash.index, stash.oid),
     `Popping ${name}`,
     `Applied and dropped ${name}.`,
     `Applying ${name} caused conflicts, so Git kept the stash. Resolve them, then drop it.`,
@@ -760,7 +955,173 @@ export async function dropStash(key: string, stash: StashEntry, label: string): 
     destructive: true,
   });
   if (!confirmed) return;
-  await stashOp(key, commands.opStashDrop(key, stash.index, stash.oid), `Dropping ${name}`, `Dropped ${name}.`, "");
+  await stashOp(key, () => commands.opStashDrop(key, stash.index, stash.oid), `Dropping ${name}`, `Dropped ${name}.`, "");
+}
+
+/** The working tree rows selected in the Files panel, sorted into what each file action would do. */
+export function selectedWorktreePaths(session: RepoSession | null | undefined): WorktreeActionPaths {
+  const ids = session?.selectedRow?.kind === "workingTree" ? session.fileSelection.ids : new Set<string>();
+  return worktreeActionPaths(session?.status ?? null, ids);
+}
+
+/** "notes.txt" for one file, "3 files" for more. */
+function filesLabel(paths: string[]): string {
+  return paths.length === 1 ? (paths[0] ?? "1 file") : `${paths.length} files`;
+}
+
+/** Why the selected files cannot be staged, unstaged or discarded, or null when they can. */
+export function fileActionReason(session: RepoSession | null | undefined, action: "stage" | "unstage" | "discard"): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.isBare) return "A bare repository has no working tree.";
+  if (session.selectedRow?.kind !== "workingTree") return "Select the Working Tree row, then the files.";
+  const p = selectedWorktreePaths(session);
+  const files = action === "stage" ? p.stageFiles : action === "unstage" ? p.unstageFiles : p.discardFiles;
+  if (files.length > 0) return null;
+  if (session.fileSelection.ids.size === 0) return "Select files in the Files panel first.";
+  return action === "stage"
+    ? "None of the selected files has unstaged changes."
+    : action === "unstage"
+      ? "None of the selected files is staged."
+      : "None of the selected files has changes to discard.";
+}
+
+/** Stages the selected unstaged and untracked files. */
+export async function stageSelected(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = fileActionReason(session, "stage");
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const p = selectedWorktreePaths(session);
+  const key = session.key;
+  try {
+    const result = await runOp(key, () => commands.opStage(key, p.stage));
+    if (result.ok) sessions.notifySuccess(`Staged ${filesLabel(p.stageFiles)}.`);
+    else sessions.notify(opFailureText(result, `Staging ${filesLabel(p.stageFiles)}`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Unstages the selected staged files; their changes stay in the working tree. */
+export async function unstageSelected(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = fileActionReason(session, "unstage");
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const p = selectedWorktreePaths(session);
+  const key = session.key;
+  try {
+    const result = await runOp(key, () => commands.opUnstage(key, p.unstage));
+    if (result.ok) sessions.notifySuccess(`Unstaged ${filesLabel(p.unstageFiles)}. The changes are still in the working tree.`);
+    else sessions.notify(opFailureText(result, `Unstaging ${filesLabel(p.unstageFiles)}`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/**
+ * Asks first, then throws away the selected files' changes: an unstaged row goes back to the
+ * staged version, a staged row back to the last commit (its unstaged changes go too), and an
+ * untracked file is deleted.
+ */
+export async function discardSelected(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = fileActionReason(session, "discard");
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const p = selectedWorktreePaths(session);
+  const key = session.key;
+  const shown = p.discardFiles.slice(0, 8).join("\n");
+  const more = p.discardFiles.length > 8 ? `\n…and ${p.discardFiles.length - 8} more` : "";
+  const parts: string[] = [];
+  if (p.discardToIndex.length > 0) parts.push("Unstaged changes go back to the staged version, or to the last commit when nothing is staged.");
+  if (p.discardToHead.length > 0) parts.push("Staged files go back to the last commit, together with any unstaged changes to them.");
+  if (p.discardUntracked.length > 0) parts.push("Untracked files are deleted.");
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: `Discard changes to ${filesLabel(p.discardFiles)}?`,
+    message: `${shown}${more}\n\n${parts.join(" ")} This cannot be undone.`,
+    confirmLabel: "Discard changes",
+    destructive: true,
+  });
+  if (!confirmed) return;
+  const what = `Discarding changes to ${filesLabel(p.discardFiles)}`;
+  try {
+    if (p.discardToHead.length > 0) {
+      const r = await runOp(key, () => commands.opDiscard(key, p.discardToHead, [], true));
+      if (!r.ok) {
+        sessions.notify(opFailureText(r, what));
+        return;
+      }
+    }
+    if (p.discardToIndex.length > 0 || p.discardUntracked.length > 0) {
+      const r = await runOp(key, () => commands.opDiscard(key, p.discardToIndex, p.discardUntracked, false));
+      if (!r.ok) {
+        sessions.notify(opFailureText(r, what));
+        return;
+      }
+    }
+    sessions.notifySuccess(`Discarded the changes to ${filesLabel(p.discardFiles)}.`);
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Where the app can open `path` (relative to the top of the working tree), or null over SSH. */
+async function hostPathOf(key: string, path: string): Promise<string | null> {
+  return unwrap(commands.getHostPath(key, path));
+}
+
+/** Why a file of this repository cannot be opened or revealed on this computer, or null. */
+export function openFileReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.transport.type === "ssh") return "The file is on another computer, reached over SSH.";
+  return null;
+}
+
+/** Opens a working tree file with the program the system uses for its type. */
+export async function openWorktreeFile(key: string, path: string): Promise<void> {
+  const sessions = useSessionsStore();
+  try {
+    const host = await hostPathOf(key, path);
+    if (host === null) {
+      sessions.notify("The file is on another computer, reached over SSH, so it cannot be opened here.");
+      return;
+    }
+    await openPath(host);
+  } catch (e) {
+    sessions.notify(`Could not open ${path}: ${errorMessage(e)}`);
+  }
+}
+
+/** Shows a working tree file in the system's file manager. */
+export async function revealWorktreeFile(key: string, path: string): Promise<void> {
+  const sessions = useSessionsStore();
+  try {
+    const host = await hostPathOf(key, path);
+    if (host === null) {
+      sessions.notify("The file is on another computer, reached over SSH, so it cannot be shown here.");
+      return;
+    }
+    await revealItemInDir(host);
+  } catch (e) {
+    sessions.notify(`Could not show ${path} in its folder: ${errorMessage(e)}`);
+  }
+}
+
+/** Copies the file's full path as this computer sees it (the path inside the repository over SSH). */
+export async function copyFullPath(session: RepoSession, path: string): Promise<void> {
+  try {
+    const host = await hostPathOf(session.key, path);
+    await copyText(host ?? `${session.info.toplevel.replace(/[/\\]+$/, "")}/${path}`, "the path");
+  } catch (e) {
+    useSessionsStore().notify(errorMessage(e));
+  }
 }
 
 /** Writes `text` to the clipboard; `what` names it in the failure notice ("the SHA", "the message"). */

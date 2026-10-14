@@ -25,8 +25,13 @@ watch(request, (r) => {
   drop.value = false;
 });
 
-/** The picked stash, falling back to the newest when the picked one has gone from the list. */
-const picked = computed(() => stashes.value.find((s) => s.oid === pickedOid.value) ?? stashes.value[0] ?? null);
+/**
+ * The picked stash, or null when nothing is picked or the picked stash has gone from the list
+ * (dropped or popped elsewhere while the dialog was open). It never falls back to another stash,
+ * which Apply would then apply without the user having chosen it.
+ */
+const picked = computed(() => stashes.value.find((s) => s.oid === pickedOid.value) ?? null);
+const pickedGone = computed(() => pickedOid.value !== null && picked.value === null);
 
 function onOpenChange(open: boolean): void {
   if (!open) dialogs.cancel();
@@ -74,6 +79,8 @@ function submit(): void {
             <span class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
           </label>
         </div>
+
+        <p v-if="pickedGone" class="text-base text-destructive">The stash you picked is no longer there. Choose one from the list.</p>
 
         <div class="grid gap-1">
           <label class="flex items-center gap-2 text-base select-none">

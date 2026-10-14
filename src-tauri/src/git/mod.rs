@@ -28,6 +28,8 @@ pub struct GitReq {
     pub config: Vec<(String, String)>,
     /// See `Cmd::own_session`.
     pub own_session: bool,
+    /// Environment variables for this call only, after the ones every call carries.
+    pub env: Vec<(String, String)>,
 }
 
 impl GitReq {
@@ -44,6 +46,7 @@ impl GitReq {
             timeout: Some(Duration::from_secs(120)),
             config: Vec::new(),
             own_session: false,
+            env: Vec::new(),
         }
     }
     /// Run in a session of its own, so cancelling reaches Git's children and Git has no terminal.
@@ -65,6 +68,10 @@ impl GitReq {
     }
     pub fn timeout(mut self, t: Option<Duration>) -> GitReq {
         self.timeout = t;
+        self
+    }
+    pub fn env(mut self, key: &str, value: &str) -> GitReq {
+        self.env.push((key.to_string(), value.to_string()));
         self
     }
 }
@@ -113,6 +120,7 @@ impl GitClient {
             .category(req.category)
             .timeout(req.timeout);
         cmd.env = common_env();
+        cmd.env.extend(req.env.iter().cloned());
         cmd.own_session = req.own_session;
         cmd.summary = Some(req.args.clone());
         if let Some(b) = &req.stdin {

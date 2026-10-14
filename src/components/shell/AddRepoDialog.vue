@@ -30,7 +30,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pathBasename, transportLabel } from "@/lib/format";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { removeFromLibrary } from "@/lib/repoActions";
+import { removeFromLibrary, reportOpenFailure } from "@/lib/repoActions";
 import { useDialogsStore, type AddRepoTab } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
@@ -305,7 +305,15 @@ async function submit(): Promise<void> {
       displayName.value.trim() || null,
     );
     if (!entry.key) throw new Error("The backend returned a library entry without a key.");
-    await sessions.openTab(entry.key);
+    try {
+      await sessions.openTab(entry.key);
+    } catch (e) {
+      if (!(e instanceof IpcError && e.error.kind === "unsafeRepository")) throw e;
+      // The entry is in the library; the notice offers to trust the folder and open it.
+      open.value = false;
+      reportOpenFailure(entry.key, e);
+      return;
+    }
     open.value = false;
   } catch (e) {
     submitError.value = errorMessage(e);

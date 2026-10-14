@@ -12,6 +12,7 @@ import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
 import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
+import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
 import PullDialog from "@/components/dialogs/PullDialog.vue";
 import PushDialog from "@/components/dialogs/PushDialog.vue";
 import StashDialog from "@/components/dialogs/StashDialog.vue";
@@ -28,7 +29,18 @@ import StatusBar from "@/components/shell/StatusBar.vue";
 import { commitFileCount, isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
-import { fetchAll, openCommitDialog, openPullDialog, openStashDialog, pushCurrentBranch, syncCurrentBranch } from "@/lib/repoActions";
+import {
+  discardSelected,
+  fetchAll,
+  fileActionReason,
+  openCommitDialog,
+  openPullDialog,
+  openStashDialog,
+  pushCurrentBranch,
+  stageSelected,
+  syncCurrentBranch,
+  unstageSelected,
+} from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { useSessionsStore } from "@/stores/sessions";
@@ -104,6 +116,12 @@ async function refresh(): Promise<void> {
 
 /** Files the Commit dialog would list for the active repository, shown on the toolbar's Commit button. */
 const commitCount = computed(() => commitFileCount(sessions.active?.status ?? null));
+/** Stage, Unstage and Discard act on the files selected in the Files panel. */
+const toolbarReasons = computed(() => ({
+  stage: fileActionReason(sessions.active, "stage"),
+  unstage: fileActionReason(sessions.active, "unstage"),
+  discard: fileActionReason(sessions.active, "discard"),
+}));
 </script>
 
 <template>
@@ -112,7 +130,8 @@ const commitCount = computed(() => commitFileCount(sessions.active?.status ?? nu
       <AppToolbar :has-repo="sessions.active !== null" :commit-count="commitCount" @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" @commit="openCommitDialog(sessions.active)"
         @stash-save="openStashDialog(sessions.active)" @pull="openPullDialog(sessions.active)"
         @fetch="fetchAll(sessions.active)" @push="pushCurrentBranch(sessions.active)"
-        @sync="syncCurrentBranch(sessions.active)"
+        @sync="syncCurrentBranch(sessions.active)" @stage="stageSelected(sessions.active)"
+        @unstage="unstageSelected(sessions.active)" @discard="discardSelected(sessions.active)" :reasons="toolbarReasons"
       />
 
       <!-- An error notice: red, with a warning icon. Success messages show in the status bar instead. -->
@@ -219,6 +238,7 @@ const commitCount = computed(() => commitFileCount(sessions.active?.status ?? nu
     <AddRepoDialog v-model:open="dialogs.addRepoOpen" />
     <CreateBranchDialog />
     <CreateTagDialog />
+    <RenameBranchDialog />
     <CommitDialog />
     <StashDialog />
     <ApplyStashDialog />
