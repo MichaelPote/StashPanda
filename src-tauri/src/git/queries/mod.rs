@@ -186,23 +186,35 @@ mod e2e {
         std::fs::write(dir.join("b ü.txt"), "one\ntwo\tTAB\nthree\nfünf\nsix\n").unwrap();
         git(&dir, &["commit", "-qam", "main change"]);
         git(&dir, &["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
+        // Two merges that do not change the file, which the history leaves out: one of a branch
+        // that never touched it, and one that takes it unchanged from the branch that changed it.
+        git(&dir, &["checkout", "-qb", "docs"]);
+        std::fs::write(dir.join("notes.txt"), "n\n").unwrap();
+        git(&dir, &["add", "notes.txt"]);
+        commit("notes");
+        git(&dir, &["checkout", "-q", "main"]);
+        git(&dir, &["merge", "-q", "--no-ff", "docs", "-m", "merge docs"]);
+        git(&dir, &["checkout", "-qb", "side2"]);
+        std::fs::write(dir.join("b ü.txt"), "ONE\ntwo\tTAB\nthree\nfünf\nsix\nseven\n").unwrap();
+        git(&dir, &["commit", "-qam", "side2 change"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        git(&dir, &["merge", "-q", "--no-ff", "side2", "-m", "merge side2"]);
         git(&dir, &["rm", "-q", "bin.dat"]);
         commit("drop the binary");
         // Uncommitted: a changed line, a staged new file, an untracked file.
-        std::fs::write(dir.join("b ü.txt"), "ONE\ntwo\tTAB\nthree\nfünf\nsix\nwip\n").unwrap();
+        std::fs::write(dir.join("b ü.txt"), "ONE\ntwo\tTAB\nthree\nfünf\nsix\nseven\nwip\n").unwrap();
         std::fs::write(dir.join("staged.txt"), "s\n").unwrap();
         git(&dir, &["add", "staged.txt"]);
         std::fs::write(dir.join("untracked.txt"), "u\n").unwrap();
         let client = client_for(&dir).await;
 
         let history = get_file_history(&client, "b ü.txt", None, 100).await.unwrap();
-        // The commits share one second, so only the merge's place at the top is certain.
+        // The commits share one second, so their order is not certain.
         let mut subjects: Vec<&str> = history.entries.iter().map(|e| e.subject.as_str()).collect();
-        assert_eq!(subjects[0], "merge side", "{history:?}");
         subjects.sort_unstable();
-        assert_eq!(subjects, ["add a", "main change", "merge side", "rename", "side change", "tab"]);
+        assert_eq!(subjects, ["add a", "main change", "merge side", "rename", "side change", "side2 change", "tab"], "{history:?}");
         assert!(!history.more);
-        let merge = &history.entries[0];
+        let merge = history.entries.iter().find(|e| e.subject == "merge side").unwrap();
         assert_eq!((merge.parents.len(), merge.path.as_str()), (2, "b ü.txt"));
         let rename = history.entries.iter().find(|e| e.subject == "rename").unwrap();
         assert_eq!((rename.status, rename.old_path.as_deref()), (ChangeStatus::Renamed, Some("a.txt")));
@@ -243,7 +255,7 @@ mod e2e {
 
         let blame = get_blame(&client, None, "b ü.txt", None).await.unwrap();
         assert_eq!(blame.content, BlameContent::Lines);
-        assert_eq!(blame.lines, ["ONE", "two\tTAB", "three", "fünf", "six", "wip"]);
+        assert_eq!(blame.lines, ["ONE", "two\tTAB", "three", "fünf", "six", "seven", "wip"]);
         let summary_of = |b: &super::blame::FileBlame, line: u32| {
             let g = b.groups.iter().find(|g| g.start <= line && line < g.start + g.count).unwrap();
             let o = &b.origins[g.origin as usize];
@@ -252,7 +264,8 @@ mod e2e {
         assert_eq!(summary_of(&blame, 0).0.summary, "side change");
         let (tab_commit, tab_origin) = summary_of(&blame, 1);
         assert_eq!((tab_commit.summary.as_str(), tab_origin.path.as_str()), ("tab", "a.txt"), "blame follows the rename");
-        assert!(summary_of(&blame, 5).0.uncommitted);
+        assert_eq!(summary_of(&blame, 5).0.summary, "side2 change", "not the merge that took it unchanged");
+        assert!(summary_of(&blame, 6).0.uncommitted);
         let (root, root_origin) = summary_of(&blame, 2);
         assert!(root.boundary && root_origin.previous.is_none(), "{root:?}");
 

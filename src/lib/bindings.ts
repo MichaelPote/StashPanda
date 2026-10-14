@@ -841,10 +841,7 @@ export type FileHistoryEntry = {
 	path: string,
 	/**  Where the file came from when this commit renamed or copied it. */
 	oldPath: string | null,
-	/**
-	 *  What this commit did to the file. A merge that Git lists without a file change is
-	 *  `modified`.
-	 */
+	/**  What this commit did to the file. */
 	status: ChangeStatus,
 };
 

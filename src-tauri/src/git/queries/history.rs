@@ -27,8 +27,7 @@ pub struct FileHistoryEntry {
     pub path: String,
     /// Where the file came from when this commit renamed or copied it.
     pub old_path: Option<String>,
-    /// What this commit did to the file. A merge that Git lists without a file change is
-    /// `modified`.
+    /// What this commit did to the file.
     pub status: ChangeStatus,
 }
 
@@ -41,15 +40,23 @@ pub struct FileHistory {
     pub more: bool,
 }
 
-/// Parses the output of `log --follow -z --name-status --format=HISTORY_FORMAT`. Each record is
-/// `0x1E` and the commit fields separated by `0x1F`, a NUL, a newline, then the file's status
-/// letter (with a similarity score for a rename or copy), a NUL, and its path or old and new
-/// paths, each followed by a NUL. A merge (listed through `--cc`) has two NULs and a letter for
-/// each parent (`MM`). `path` is the file's path at the newest commit; a merge listed without a
-/// file change is given the path the newer commits had led to.
-pub fn parse_file_history(bytes: &[u8], path: &str) -> Vec<FileHistoryEntry> {
+/// Parses the output of `log --follow -z --name-status --cc --format=HISTORY_FORMAT`, reading at
+/// most `limit` commits. Each record is `0x1E` and the commit fields separated by `0x1F`, a NUL,
+/// a newline, then the file's status letter (with a similarity score for a rename or copy), a
+/// NUL, and its path or old and new paths, each followed by a NUL. A merge has two NULs and a
+/// letter for each parent (`MM`). `path` is the file's path at the newest commit.
+///
+/// A merge with no file list is left out: it did not change the file. `--follow` turns off the
+/// history simplification that `git log -- <path>` uses to drop such merges, so Git lists every
+/// merge on the way, but `--cc` gives a file list only to a merge whose file differs from every
+/// parent's. One that took the file unchanged from one side has the commit that changed it on
+/// that side listed already. `more` counts the commits Git printed, not the entries kept, so
+/// asking for more still reaches past a stretch of left-out merges.
+pub fn parse_file_history(bytes: &[u8], path: &str, limit: usize) -> FileHistory {
     let mut current = path.to_string();
     let mut out = Vec::new();
+    let mut commits = 0;
+    let mut more = false;
     for record in bytes.split(|b| *b == 0x1e) {
         if record.is_empty() {
             continue;
@@ -62,6 +69,11 @@ pub fn parse_file_history(bytes: &[u8], path: &str) -> Vec<FileHistoryEntry> {
         if f.len() < 6 {
             continue;
         }
+        if commits == limit {
+            more = true;
+            break;
+        }
+        commits += 1;
         let tokens: Vec<&[u8]> = files
             .split(|b| *b == 0)
             .map(|t| t.trim_ascii())
@@ -76,7 +88,8 @@ pub fn parse_file_history(bytes: &[u8], path: &str) -> Vec<FileHistoryEntry> {
                     (status, None, tokens.get(1).map(|t| lossy(t)).unwrap_or_else(|| current.clone()))
                 }
             }
-            None => (ChangeStatus::Modified, None, current.clone()),
+            // A merge that did not change the file.
+            None => continue,
         };
         // Older commits know the file by the name it had before this one renamed it.
         current = old_path.clone().unwrap_or_else(|| file_path.clone());
@@ -93,12 +106,16 @@ pub fn parse_file_history(bytes: &[u8], path: &str) -> Vec<FileHistoryEntry> {
             status,
         });
     }
-    out
+    FileHistory { entries: out, more }
 }
 
 /// The commits that changed `path`, newest first, starting from `rev` (HEAD when None), up to
 /// `max_count`. `git log --follow` prints nothing at all when given `--skip`, so a longer history
 /// is read by asking again with a larger `max_count`, not by paging.
+///
+/// Merges that did not change the file are left out (see `parse_file_history`), so the first
+/// `max_count` commits Git prints can hold fewer entries than that, or none. Git is then asked
+/// again for twice as many commits, until there are enough entries or the history ends.
 pub async fn get_file_history(client: &GitClient, path: &str, rev: Option<&str>, max_count: u32) -> Result<FileHistory> {
     if path.is_empty() || path.contains(['\n', '\r', '\0']) {
         return Err(GitError::InvalidPath { path: path.to_string(), reason: "not a valid file path".into() });
@@ -107,18 +124,34 @@ pub async fn get_file_history(client: &GitClient, path: &str, rev: Option<&str>,
         valid_revision(r)?;
     }
     let max_count = max_count.max(1);
+    let mut commits = max_count;
+    loop {
+        let mut history = read_file_history(client, path, rev, commits).await?;
+        if history.entries.len() >= max_count as usize || !history.more || commits == u32::MAX {
+            if history.entries.len() > max_count as usize {
+                history.entries.truncate(max_count as usize);
+                history.more = true;
+            }
+            return Ok(history);
+        }
+        commits = commits.saturating_mul(2);
+    }
+}
+
+/// The entries among the first `commits` commits `git log --follow` prints for `path`.
+async fn read_file_history(client: &GitClient, path: &str, rev: Option<&str>, commits: u32) -> Result<FileHistory> {
     let mut args = vec![
         "log".to_string(),
         "--follow".into(),
         "-z".into(),
         "--name-status".into(),
-        // Without a merge diff, `--follow` shows no merges at all, since it lists only commits
-        // with a diff; with `--cc`, a merge is listed when its file differs from every parent's,
-        // as `git log -- <path>` lists it.
+        // Without a merge diff, `--follow` shows no merge with a file list, not even one that
+        // resolved a conflict in the file; with `--cc`, a merge whose file differs from every
+        // parent's gets one. Merges without one are left out by `parse_file_history`.
         "--cc".into(),
         "--no-ext-diff".into(),
         // One more than asked for, to learn whether there are more.
-        format!("--max-count={}", max_count.saturating_add(1)),
+        format!("--max-count={}", commits.saturating_add(1)),
         format!("--format={HISTORY_FORMAT}"),
     ];
     args.push(rev.unwrap_or("HEAD").to_string());
@@ -133,10 +166,7 @@ pub async fn get_file_history(client: &GitClient, path: &str, rev: Option<&str>,
         }
         return Err(crate::error::classify_git_failure("log", vec![], out.exit_code, &out.stderr, &client.transport.kind()));
     }
-    let mut entries = parse_file_history(&out.stdout, path);
-    let more = entries.len() > max_count as usize;
-    entries.truncate(max_count as usize);
-    Ok(FileHistory { entries, more })
+    Ok(parse_file_history(&out.stdout, path, commits as usize))
 }
 
 #[cfg(test)]
@@ -153,7 +183,7 @@ A\x00old.txt\x00";
 
     #[test]
     fn follows_the_file_back_through_a_rename() {
-        let h = parse_file_history(FOLLOW, "new name.txt");
+        let h = parse_file_history(FOLLOW, "new name.txt", usize::MAX).entries;
         assert_eq!(h.len(), 3);
         let rename = &h[0];
         assert_eq!(rename.status, ChangeStatus::Renamed);
@@ -168,18 +198,23 @@ A\x00old.txt\x00";
     }
 
     #[test]
-    fn a_merge_without_a_file_change_keeps_the_path_reached_so_far() {
+    fn a_merge_without_a_file_change_is_left_out() {
         // A merge as `--cc` lists it (captured from a merge that resolved a conflict): two NULs,
         // then a status letter for each parent.
         let merge = b"\x1e166be4f\x1fp1 p2\x1fAnn Example\x1fa@x\x1f6\x1fconflict merge\x00\x00MM\x00g.txt\x00";
-        let h = parse_file_history(merge, "g.txt");
+        let h = parse_file_history(merge, "g.txt", usize::MAX).entries;
         assert_eq!((h[0].status, h[0].path.as_str(), h[0].parents.len()), (ChangeStatus::Modified, "g.txt", 2));
+        // A merge with no file list did not change the file; the path is still followed past it.
         let bytes = b"\x1em1\x1fp1 p2\x1fA\x1fa@x\x1f5\x1fmerge\x00\x1ec1\x1fp0\x1fA\x1fa@x\x1f4\x1frename\x00\nR100\x00a.txt\x00b.txt\x00\x1ec0\x1f\x1fA\x1fa@x\x1f3\x1fadd\x00\nA\x00a.txt\x00";
-        let h = parse_file_history(bytes, "b.txt");
-        assert_eq!(h.len(), 3);
-        assert_eq!((h[0].status, h[0].path.as_str(), h[0].parents.len()), (ChangeStatus::Modified, "b.txt", 2));
-        assert_eq!(h[1].old_path.as_deref(), Some("a.txt"));
-        assert_eq!(h[2].path, "a.txt");
-        assert!(parse_file_history(b"", "x").is_empty());
+        let all = parse_file_history(bytes, "b.txt", usize::MAX);
+        let h = &all.entries;
+        assert_eq!(h.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(), ["rename", "add"]);
+        assert_eq!((h[0].path.as_str(), h[0].old_path.as_deref()), ("b.txt", Some("a.txt")));
+        assert_eq!(h[1].path, "a.txt");
+        assert!(!all.more);
+        // The limit counts the commits Git printed, the left-out merge included.
+        let capped = parse_file_history(bytes, "b.txt", 2);
+        assert_eq!((capped.entries.len(), capped.more), (1, true));
+        assert!(parse_file_history(b"", "x", usize::MAX).entries.is_empty());
     }
 }
