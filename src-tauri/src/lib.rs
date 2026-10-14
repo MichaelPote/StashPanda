@@ -57,6 +57,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::query::get_repo_status,
             ipc::query::get_host_path,
             ipc::query::set_repo_activity,
+            ipc::query::get_pending_message,
             ipc::query::get_repo_refs,
             ipc::query::get_commit_changes,
             ipc::query::get_commit_message,

@@ -35,6 +35,11 @@ export interface CommitPayload {
   branch: string | null;
   /** False on an unborn branch, where there is no commit to amend. */
   hasHead: boolean;
+  /**
+   * A merge, cherry-pick or revert is in progress, and this commit finishes it: with every staged
+   * change (Git refuses a partial commit then), and `message` as Git prepared it in MERGE_MSG.
+   */
+  finishing?: { what: string; message: string | null };
 }
 
 export interface StashPushPayload {

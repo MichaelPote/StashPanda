@@ -18,6 +18,7 @@ use crate::git::queries::full_status;
 use crate::git::queries::status::StatusSnapshot;
 use crate::repo::RepoHandle;
 use crate::state::AppState;
+use crate::transport::paths::NativePath;
 
 /// Look up an open repository and take a read slot on it.
 pub async fn repo(state: &AppState, key: &str) -> Result<Arc<RepoHandle>> {
@@ -178,6 +179,23 @@ pub async fn get_file_blame(state: State<'_, AppState>, key: String, path: Strin
 pub async fn get_worktree_file_content(state: State<'_, AppState>, key: String, path: String) -> Result<BlobContent> {
     let h = repo(&state, &key).await?;
     with_read_slot!(h, get_worktree_file(&h.client, &path).await)
+}
+
+/// The message Git has prepared for the commit that finishes a merge, cherry-pick or revert
+/// (`MERGE_MSG` in the git directory), without its comment lines; null when there is none.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_pending_message(state: State<'_, AppState>, key: String) -> Result<Option<String>> {
+    let h = repo(&state, &key).await?;
+    let path = NativePath(format!("{}/MERGE_MSG", h.info.git_dir.trim_end_matches(['/', '\\'])));
+    let bytes = match h.transport.read_file(&path, 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let message: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+    let message = message.join("\n").trim().to_string();
+    Ok((!message.is_empty()).then_some(message))
 }
 
 /// Whether the user is looking at the repository: the active tab in the focused window, the

@@ -453,7 +453,7 @@ fn send_progress(segment: &[u8], progress: &(dyn Fn(String) + Send + Sync)) {
 
 /// Remove ANSI escape sequences such as the `\x1b[K` (clear to end of line) that `rebase`
 /// writes before "Successfully rebased".
-fn strip_ansi(text: &str) -> String {
+pub(crate) fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(c) = chars.next() {

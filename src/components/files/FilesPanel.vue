@@ -355,14 +355,19 @@ function isSelected(item: FileItem): boolean {
   return list.isSelected(item.id);
 }
 
-// Drop rows that are no longer in the list after a status refresh, and the diff with them.
-watch(flat, (items) => {
+// Drop rows that are no longer in the list after a status refresh, and the diff with them. A
+// conflicted file that was just resolved leaves its section: the next conflicted file, if any,
+// takes its place, so resolving one after another needs no clicking in between.
+watch(flat, (items, before) => {
   list.prune();
   const sel = props.session.selectedFile;
   if (!sel || mode.value === "none") return;
-  if (!items.some((i) => i.path === sel.path && i.target.type === sel.target.type)) {
-    props.session.selectedFile = null;
-  }
+  const same = (i: FileItem) => i.path === sel.path && i.target.type === sel.target.type;
+  if (items.some(same)) return;
+  const wasConflicted = (before ?? []).find(same)?.id.startsWith("conflicted:") ?? false;
+  const next = wasConflicted ? items.find((i) => i.id.startsWith("conflicted:")) : undefined;
+  if (next) list.selectOnly(next.id);
+  else props.session.selectedFile = null;
 });
 
 // Selecting a commit or the Working Tree row selects the first file of its list, which shows its

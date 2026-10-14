@@ -96,7 +96,10 @@ fn kept_output(
     }
     let (stdout, stdout_truncated) = lossy_capped(&out.stdout, cap);
     let (stderr, stderr_truncated) = lossy_capped(&out.stderr, cap);
-    (stdout, stdout_truncated, stderr, stderr_truncated, false)
+    // Git writes terminal codes such as `\x1b[K` (clear to the end of the line) even into a pipe
+    // in places; the console shows text, where they would come out as stray characters.
+    let clean = |t: String| if t.contains('\x1b') { crate::transport::strip_ansi(&t) } else { t };
+    (clean(stdout), stdout_truncated, clean(stderr), stderr_truncated, false)
 }
 
 fn now_ms() -> u64 {
@@ -209,6 +212,12 @@ mod tests {
 
     fn out(code: i32, stdout: &str, stderr: &str) -> Output {
         Output { exit_code: Some(code), stdout: stdout.as_bytes().to_vec(), stderr: stderr.as_bytes().to_vec() }
+    }
+
+    #[test]
+    fn terminal_codes_are_removed_from_kept_output() {
+        let (stdout, _, stderr, _, _) = kept_output(Category::UserAction, Some(&out(0, "a\x1b[Kb", "\x1b[KSuccessfully rebased.")), false, 1024);
+        assert_eq!((stdout.as_str(), stderr.as_str()), ("ab", "Successfully rebased."));
     }
 
     #[test]

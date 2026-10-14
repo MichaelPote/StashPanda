@@ -1019,6 +1019,37 @@ export async function openCommitDialog(session: RepoSession | null): Promise<voi
   const preselect = useSettingsStore().settings?.commit?.preselect ?? "all";
   const { files, ticked, fromSelection } = commitFiles(session.status, session.fileSelection.ids, preselect);
   const hasHead = (session.status?.headOid ?? null) !== null;
+  const op = session.status?.inProgress ?? null;
+  if (op) {
+    // A commit now finishes the operation, so it takes the index as it is.
+    if (op.kind === "rebase") {
+      sessions.notify("A rebase is in progress. Use Continue in the bar above to commit this step and go on.");
+      return;
+    }
+    const conflictedCount = session.status?.conflictedCount ?? 0;
+    if (conflictedCount > 0) {
+      sessions.notify(`Resolve the conflicted files first (${conflictedCount} left), then commit or press Continue in the bar above.`);
+      return;
+    }
+    const what = op.kind === "merge" ? "the merge" : op.kind === "cherryPick" ? "the cherry-pick" : "the revert";
+    let message: string | null = null;
+    try {
+      message = await unwrap(commands.getPendingMessage(session.key));
+    } catch {
+      // Without Git's prepared message the user writes one.
+    }
+    const staged = files.filter((f) => f.staged);
+    await dialogs.open("commit", {
+      key: session.key,
+      files: staged,
+      ticked: staged.map((f) => f.path),
+      fromSelection: false,
+      branch: currentBranch(session),
+      hasHead,
+      finishing: { what, message },
+    });
+    return;
+  }
   await dialogs.open("commit", { key: session.key, files, ticked, fromSelection, branch: currentBranch(session), hasHead });
 }
 

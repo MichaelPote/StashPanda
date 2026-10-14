@@ -86,6 +86,11 @@ export const commands = {
 	 *  repository less often the less it is looked at; watchers that are told about changes ignore it.
 	 */
 	setRepoActivity: (key: string, activity: Activity) => typedError<null, GitError>(__TAURI_INVOKE("set_repo_activity", { key, activity })),
+	/**
+	 *  The message Git has prepared for the commit that finishes a merge, cherry-pick or revert
+	 *  (`MERGE_MSG` in the git directory), without its comment lines; null when there is none.
+	 */
+	getPendingMessage: (key: string) => typedError<string | null, GitError>(__TAURI_INVOKE("get_pending_message", { key })),
 	getRepoRefs: (key: string) => typedError<RefsSnapshot, GitError>(__TAURI_INVOKE("get_repo_refs", { key })),
 	getCommitChanges: (key: string, commit: string, parent: string | null) => typedError<FileChange[], GitError>(__TAURI_INVOKE("get_commit_changes", { key, commit, parent })),
 	getCommitMessage: (key: string, commit: string) => typedError<string, GitError>(__TAURI_INVOKE("get_commit_message", { key, commit })),

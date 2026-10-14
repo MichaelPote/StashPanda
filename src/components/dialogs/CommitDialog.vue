@@ -37,7 +37,7 @@ const messageBox = ref<InstanceType<typeof Textarea> | null>(null);
 
 watch(request, (r) => {
   if (!r) return;
-  message.value = session.value?.commitDraft ?? "";
+  message.value = r.finishing?.message ?? session.value?.commitDraft ?? "";
   ticked.value = new Set(r.ticked);
   rows.value = { ids: new Set(), anchorId: null };
   list.cursorId.value = null;
@@ -84,7 +84,8 @@ async function onAmendChange(): Promise<void> {
 const files = computed(() => request.value?.files ?? []);
 const tickedFiles = computed(() => files.value.filter((f) => ticked.value.has(f.path)));
 /** Null commits the index as it is; see `commitPaths`. */
-const paths = computed(() => commitPaths(files.value, ticked.value));
+// Finishing a merge, cherry-pick or revert commits the index as it is: Git refuses a partial commit then.
+const paths = computed(() => (request.value?.finishing ? null : commitPaths(files.value, ticked.value)));
 /** Ticked files whose unstaged changes are committed too, because the commit names paths. */
 const partlyStaged = computed(() => (paths.value === null ? [] : tickedFiles.value.filter((f) => f.staged && f.unstaged)));
 const conflicted = computed(() => tickedFiles.value.filter((f) => f.state === "conflict"));
@@ -93,6 +94,7 @@ const allTicked = computed(() => files.value.length > 0 && tickedFiles.value.len
 const someTicked = computed(() => tickedFiles.value.length > 0 && !allTicked.value);
 
 function toggleFile(path: string): void {
+  if (request.value?.finishing) return;
   const next = new Set(ticked.value);
   if (next.has(path)) next.delete(path);
   else next.add(path);
@@ -269,7 +271,7 @@ async function submit(push = false): Promise<void> {
                 class="size-3.5 accent-primary"
                 :checked="allTicked"
                 :indeterminate="someTicked"
-                :disabled="files.length === 0"
+                :disabled="files.length === 0 || !!request.finishing"
                 aria-label="Tick every file"
                 @change="toggleAll"
               />
@@ -278,6 +280,9 @@ async function submit(push = false): Promise<void> {
             <span class="text-xs text-muted-foreground">{{ listCaption }}</span>
           </div>
           <p v-if="request.fromSelection" class="text-xs text-muted-foreground">Ticked from your selection in the file list.</p>
+          <p v-if="request.finishing" class="text-xs text-muted-foreground">
+            This commit finishes {{ request.finishing.what }}, with every staged change; the message is the one Git prepared.
+          </p>
           <ul
             ref="listEl"
             role="listbox"
@@ -315,6 +320,7 @@ async function submit(push = false): Promise<void> {
                 tabindex="-1"
                 class="size-3.5 shrink-0 accent-primary"
                 :checked="ticked.has(file.path)"
+                :disabled="!!request.finishing"
                 :aria-label="`Include ${file.path}`"
                 @click.stop
                 @change="toggleFile(file.path)"
@@ -363,7 +369,7 @@ async function submit(push = false): Promise<void> {
             @keydown="onMessageKeydown"
           />
           <div class="flex items-center gap-2">
-            <label class="flex shrink-0 items-center gap-2 text-base whitespace-nowrap select-none" :class="!request.hasHead && 'opacity-50'">
+            <label v-if="!request.finishing" class="flex shrink-0 items-center gap-2 text-base whitespace-nowrap select-none" :class="!request.hasHead && 'opacity-50'">
               <input v-model="amend" type="checkbox" class="size-3.5 accent-primary" :disabled="!request.hasHead" @change="onAmendChange" />
               Amend the last commit
             </label>
