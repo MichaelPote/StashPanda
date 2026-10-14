@@ -110,13 +110,16 @@ function blocked(action: ToolbarAction): string | null {
  * 1.67px line (Lucide's 2 units at 20px) where the app's other icons draw 1px.
  */
 const BUTTON_CLASS =
-  "relative inline-flex h-[42px] w-[63px] shrink-0 flex-col items-center justify-between rounded-[4px] px-[2px] pt-[6px] pb-[5px] text-[10px] leading-none font-medium whitespace-nowrap text-foreground/90 transition-colors duration-[120ms] outline-none enabled:hover:bg-foreground/6 enabled:hover:text-foreground enabled:active:bg-foreground/10 focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-38 [&_svg]:size-5 [&_svg]:shrink-0 [&_svg]:[stroke-width:1.67px]";
+  "relative inline-flex h-[42px] w-[63px] shrink-0 flex-col items-center justify-between rounded-[4px] px-[2px] pt-[6px] pb-[5px] text-[10px] leading-none font-medium whitespace-nowrap transition-colors duration-[120ms] outline-none enabled:active:bg-foreground/10 focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-38 [&_svg]:size-5 [&_svg]:shrink-0 [&_svg]:[stroke-width:1.67px]";
+/** A flat button's ink and hover. Kept off the primary button: `cn` does not take the primary
+    fill's text colour for one that replaces `text-foreground`, so both stayed and the flat one won. */
+const FLAT_CLASS = "text-foreground/90 enabled:hover:bg-foreground/6 enabled:hover:text-foreground";
 /** The primary button: solid primary fill, a step towards the primary colour on hover, darker pressed. */
 const PRIMARY_CLASS =
   "bg-primary-fill text-primary-fill-foreground enabled:hover:bg-[color-mix(in_srgb,var(--primary-fill)_40%,var(--primary))] enabled:hover:text-primary-fill-foreground enabled:active:bg-[color-mix(in_srgb,var(--primary-fill)_85%,black)]";
 
 function buttonClass(action?: ToolbarAction): string {
-  return cn(BUTTON_CLASS, action?.primary && PRIMARY_CLASS);
+  return cn(BUTTON_CLASS, action?.primary ? PRIMARY_CLASS : FLAT_CLASS);
 }
 
 /** Count badge in a button's top right corner, in the primary fill. */

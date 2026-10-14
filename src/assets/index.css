@@ -81,8 +81,9 @@
     --color-dim: var(--dim);
     --color-faint: var(--faint);
 
-    /* The action colour as a solid fill (white text on it) and as text on graphite. */
+    /* The action colour as a solid fill, the text on it, and the colour as text on graphite. */
     --color-primary-fill: var(--primary-fill);
+    --color-primary-fill-foreground: var(--primary-fill-foreground);
     --color-primary-tint: var(--primary-tint);
 
     /* The six Git hues, for the few places that use a hue directly rather than a role. */
