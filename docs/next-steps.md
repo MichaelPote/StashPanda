@@ -1206,6 +1206,9 @@ and anything over WSL or SSH.
       Tried in the running Linux build on 2026-10-14: an insertion, a deletion, three lines
       changed into one, picking a line by its number, Stage hunk, hunk navigation and switching
       to Unified. Not yet looked at in the Windows window.
+      An added or deleted file (every line of its diff on one side, untracked files included) is
+      always shown unified, since side by side one side would be empty; the Side by side button
+      is disabled for it, and the chosen layout comes back with the next file.
 - [x] **Find in a diff view and in Blame** (2026-10-14). Ctrl+F with the keyboard focus in a
       diff view (the main panel's, or the File History dialog's), or anywhere in the Blame
       dialog, opens a Find box in its top right corner. The two share `useFind`

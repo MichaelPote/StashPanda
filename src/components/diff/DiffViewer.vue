@@ -59,7 +59,8 @@ const ALL_CONTEXT = 99999;
 
 type Mode = "unified" | "side";
 // The header's choices and the divider position, remembered in the UI state.
-const mode = uiState.pref<Mode>((s) => s.diff?.layout, "unified", (layout) => ({ diff: { layout } }));
+/** The layout the user chose with the Unified and Side by side buttons, remembered in the UI state. */
+const chosenLayout = uiState.pref<Mode>((s) => s.diff?.layout, "unified", (layout) => ({ diff: { layout } }));
 const contextLines = uiState.pref<number>((s) => s.diff?.contextLines, 3, (contextLines) => ({ diff: { contextLines } }));
 const ignoreWhitespace = uiState.pref<boolean>((s) => s.diff?.ignoreWhitespace, false, (ignoreWhitespace) => ({ diff: { ignoreWhitespace } }));
 const ignoreCrAtEol = uiState.pref<boolean>((s) => s.diff?.ignoreCrAtEol, false, (ignoreCrAtEol) => ({ diff: { ignoreCrAtEol } }));
@@ -295,6 +296,17 @@ const built = computed<Built>(() => {
   });
   return done();
 });
+
+/**
+ * Every line of the diff is added, or every line removed: an added or deleted file (an
+ * untracked one included). Side by side, one of its sides would be empty.
+ */
+const oneSided = computed(() => {
+  const kinds = new Set((file.value?.hunks ?? []).flatMap((h) => h.lines.map((l) => l.kind)).filter((k) => k !== "meta"));
+  return kinds.size === 1 && (kinds.has("add") || kinds.has("del"));
+});
+/** The layout drawn: Unified for an added or deleted file whatever was chosen, else the choice. */
+const mode = computed<Mode>(() => (oneSided.value ? "unified" : chosenLayout.value));
 
 const rowCount = computed(() => (mode.value === "unified" ? built.value.unified.length : built.value.sideRows));
 
@@ -1019,15 +1031,19 @@ function toggleContext(value: string): void {
               type="button"
               :aria-pressed="mode === 'unified'"
               class="toggle h-[18px] px-2 leading-none font-medium rounded-none border-0"
-              @click="mode = 'unified'"
+              @click="chosenLayout = 'unified'"
             >
               Unified
             </button>
+            <!-- An added or deleted file is always unified; the choice is kept for the next file. -->
             <button
               type="button"
               :aria-pressed="mode === 'side'"
-              class="toggle h-[18px] px-2 leading-none font-medium rounded-none border-0 border-l border-l-border-soft"
-              @click="mode = 'side'"
+              :disabled="oneSided"
+              :title="oneSided ? 'An added or deleted file is shown unified: side by side, one side would be empty' : undefined"
+              class="toggle h-[18px] px-2 leading-none font-medium rounded-none border-0 border-l border-l-border-soft disabled:opacity-50"
+              data-layout-side
+              @click="chosenLayout = 'side'"
             >
               Side by side
             </button>
