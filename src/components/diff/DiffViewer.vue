@@ -531,12 +531,22 @@ interface Curve {
 }
 
 /**
- * The top and bottom of a band's end on one side. Edges sit on the half pixel, so each 1px edge
- * fills one row of pixels instead of two half rows. A side with no lines comes to a point on
- * the half pixel too, where the line marking the insertion is drawn, so the two meet exactly.
+ * The top and bottom of a band's outline on one side. They sit on the half pixel, so each 1px
+ * edge fills one row of pixels instead of two half rows. A side with no lines comes to a point
+ * on the half pixel too, where the line marking the insertion is drawn, so the two meet exactly.
  */
 function sideEdges(y: number, height: number): [number, number] {
   return height === 0 ? [y + 0.5, y + 0.5] : [y + 0.5, y + height - 0.5];
+}
+
+/**
+ * The top and bottom of a band's fill on one side: exactly its lines, so neighbouring bands of
+ * one block meet with no gap between them. An outlined band's point sits on the half pixel, on
+ * the line marking where its lines would go.
+ */
+function sideFill(y: number, height: number, outline: boolean): [number, number] {
+  if (height === 0) return outline ? [y + 0.5, y + 0.5] : [y, y];
+  return [y, y + height];
 }
 
 /** The bands to draw in the gap, in the gap's own coordinates (0 is the top of the view). */
@@ -548,11 +558,16 @@ const curves = computed<Curve[]>(() => {
   const out: Curve[] = [];
   built.value.bands.forEach((b, i) => {
     if (b.kind === "same") return;
-    const [lt, lb] = sideEdges(left + b.l * px - top, b.lh * px);
-    const [rt, rb] = sideEdges(right + b.r * px - top, b.rh * px);
+    const outline = b.outline === true;
+    const ly = left + b.l * px - top;
+    const ry = right + b.r * px - top;
+    const [lt, lb] = sideFill(ly, b.lh * px, outline);
+    const [rt, rb] = sideFill(ry, b.rh * px, outline);
     if (Math.max(lb, rb) < 0 || Math.min(lt, rt) > view) return;
     const kind = b.kind === "hunk" ? "hunk" : b.lh === 0 ? "add" : b.rh === 0 ? "del" : "both";
-    out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, lt, lb, rt, rb), kind, outline: b.outline === true });
+    const [elt, elb] = sideEdges(ly, b.lh * px);
+    const [ert, erb] = sideEdges(ry, b.rh * px);
+    out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, elt, elb, ert, erb), kind, outline });
   });
   return out;
 });
