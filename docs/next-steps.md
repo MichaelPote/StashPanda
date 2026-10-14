@@ -1,9 +1,10 @@
 # StashPanda: what is left to build
 
-Status as of 2026-10-01. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
+Status as of 2026-10-14. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
 milestone 2 planned on 2026-09-23, the commit dialog and a round of interface and graph work
 added on 2026-09-30, and stashes, a second round of interface work and pull added on 2026-10-01
-(see "Interface, merge and checkout work" and "Milestone 3" below). Everything not listed here is done and tested; see
+(see "Interface, merge and checkout work" and "Milestone 3" below), and the first run in the real
+app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"). Everything not listed here is done and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
@@ -593,13 +594,37 @@ none of it has been checked in the running app yet.
       posts errors only, to the red strip under the toolbar. A new error clears the success
       message and a new success message clears the error. The "Loading N commits…" message
       shows in the status bar too, with a spinner, in place of the strip that used to sit above
-      the Commits table header (`GraphLoadingBar.vue`, now deleted). Not yet tried in the
-      running app.
+      the Commits table header (`GraphLoadingBar.vue`, now deleted). Tried in the running
+      Linux build on 2026-10-14.
 - [x] **Text selection off** everywhere except commit IDs, the Files panel's commit message, the
       repository path and diff code. Shift-click in the Commits table does not extend a text
       selection. The pointer cursor is gone from list rows.
 - [x] **Diff highlight**: the dark theme's changed-word highlight in added lines is
       `rgba(94, 196, 98, 0.36)`, from the design system.
+
+## Checked in the running app (2026-10-14)
+
+The Linux build was driven through WebDriver (`tauri-driver` with WebKitWebDriver, on an
+invisible Xvfb display, with its own config folder) against throwaway repositories: a bare
+remote, a clone one commit behind and one ahead, and two clone targets. Each result was compared
+with `git` on the command line. Open repository, Fetch, Sync (a merge, then the push), Push, Pull
+through its dialog, Commit & Push, Stash, and Clone into a missing folder and into a folder with
+files of its own all did what the sections above describe. Fixed on the way:
+
+- [x] **Dialogs filled the window height on Linux.** WebKit ignores `h-fit` on an absolutely
+      placed `display: grid` box and stretches it to the full height, so `m-auto` had nothing
+      to centre; Chromium does not do this, which is why the Windows build looked right.
+      `DialogContent.vue` is now a flex column (a resized dialog already was one), and the
+      Settings dialog's body takes `flex-1` in place of its `grid-rows` row.
+- [x] **Unreadable `<select>` boxes on Linux.** WebKitGTK drew them as white GTK controls under
+      the field's light text, because the page never declared a colour scheme. `index.css` now
+      sets `color-scheme` to `light` on `:root` and `dark` on `.dark`.
+- [x] **A plain clone posted no message**, so the status bar kept the last message from another
+      repository's tab. It now says "Cloned <url> into <folder>.", and the success message is
+      cleared when another tab is shown (`stores/sessions.ts`).
+
+Not covered: the Windows build's look (ClearType, font smoothing), dialog resizing by mouse,
+and anything over WSL or SSH.
 
 ## Milestone 3: remote and history operations
 
@@ -634,7 +659,7 @@ none of it has been checked in the running app yet.
       latest progress line with a bar from its percentage, and Stop. Closing the dialog leaves
       the pull running; the outcome then shows as a notice. Conflicts offer Abort rebase
       or Abort merge; an autostash that conflicts on the way back (Git exits 0) is reported as
-      needing attention. Not yet tried in the running app.
+      needing attention. Tried in the running Linux build on 2026-10-14.
 - [x] **Stopping a command properly** (2026-10-01, for the pull's fetch). `Cmd::own_session`
       (`GitReq::own_session`) runs a command so that `Process::terminate` reaches it and every
       process it starts, and `run_streaming` returns `Cancelled` only once it has exited, or
@@ -646,9 +671,8 @@ none of it has been checked in the running app yet.
         which lets Git remove its lock files.
       - Windows: `taskkill /T /F` on the process tree. Git for Windows' `cmd\git.exe` is a
         launcher for `mingw64\bin\git.exe`, so killing only the first left the real Git and its
-        `git-remote-https.exe` or `ssh.exe` running. Compiled and clean under clippy on Windows,
-        not yet run there: the Windows test binary exits with `STATUS_ENTRYPOINT_NOT_FOUND`
-        before any test starts (see Packaging and CI).
+        `git-remote-https.exe` or `ssh.exe` running. The tests run on Windows since 2026-10-14
+        (see Packaging and CI), and `own_session_on_the_local_transport` passes there.
       - WSL (`transport/wsl.rs`): `wsl.exe -d <distro> -e setsid -w sh -c 'echo $$; exec "$@"'
         sh <command>`. `PidLine` takes the pid off stdout; terminate runs `kill -TERM -- -<pid>`
         through a second `wsl.exe` (87 ms). Measured 2026-10-01: killing `wsl.exe` alone does end
@@ -692,7 +716,7 @@ none of it has been checked in the running app yet.
         with a notice while one runs.
       - Credential failures (`GIT_TERMINAL_PROMPT=0`) get one explanation for all three
         (`networkFailureText`); a `GIT_ASKPASS` helper is still to be designed.
-      Not yet tried in the running app.
+      Tried in the running Linux build on 2026-10-14.
 - [x] **Sync** (2026-10-01): the toolbar's Sync button and the new Repository › Sync (Pull,
       then Push) run `syncCurrentBranch`, in one click. It pulls the upstream with the mode last
       chosen in the Pull dialog (else the Git config, else Merge), then pushes back. With
@@ -707,8 +731,8 @@ none of it has been checked in the running app yet.
       entry now carries a cancellable flag (`OperationGuard::set_cancellable`), which
       `op_cancel` respects. A push refused because the remote moved on meanwhile offers "Sync
       again". Test: `sync_pulls_then_pushes_and_stops_where_it_should`, which goes through a
-      real `RepoHandle` from `open_repo` and fails if the merge step can be stopped. Not yet
-      tried in the running app.
+      real `RepoHandle` from `open_repo` and fails if the merge step can be stopped. Tried in
+      the running Linux build on 2026-10-14.
 - [x] **Clone** (2026-10-01): File › Clone Repository… opens the Add Repository dialog on its
       new Clone From tab; the other tab, Add Existing, is the dialog as it was. Editing a library
       entry shows no tabs. The two tabs share the path field and the Advanced connection
@@ -738,8 +762,9 @@ none of it has been checked in the running app yet.
       use). Stop is refused once files are being written: from `Updating files` in a plain
       clone, and after the fetch in the other case. While a clone runs the dialog cannot be
       closed, only stopped. `Transport` gained `list_dir` and `remove_dir_all`. Test:
-      `clones_into_missing_empty_and_non_empty_folders`. There is no toolbar button yet. Not yet
-      tried in the running app, nor over WSL or SSH.
+      `clones_into_missing_empty_and_non_empty_folders`. There is no toolbar button yet. Tried
+      in the running Linux build on 2026-10-14, into a missing folder and a folder with files;
+      not yet over WSL or SSH.
 - [ ] **Merge, rebase, cherry-pick, revert** with conflict detection (`u` entries in status), a
       conflict list using the `:1:`, `:2:`, `:3:` blob stages (`get_blob_content` already accepts
       those specs), and continue / abort actions.
@@ -760,6 +785,18 @@ none of it has been checked in the running app yet.
       Disconnected) and no backoff schedule.
 
 ## Packaging and CI
+
+- [x] **Tests on Windows** (fixed 2026-10-14). The Windows test binary exited with
+      `STATUS_ENTRYPOINT_NOT_FOUND` before any test ran: it imports `TaskDialogIndirect`, which
+      only version 6 of `comctl32.dll` exports, and Windows loads version 6 only for a program
+      whose manifest asks for it. tauri-build embedded the manifest in the app binary only
+      (`rustc-link-arg-bins`). `src-tauri/build.rs` now passes
+      `src-tauri/windows-app-manifest.xml` to the MSVC linker for every binary, test binaries
+      included, and tells tauri-build not to embed its own copy. One test,
+      `stage_unstage_and_discard`, used `:colon.txt` and `*.txt`, which Windows does not allow;
+      there it uses `a.txt` and `[ab].txt`. All 73 tests pass on Windows and Linux. Run them
+      from WSL with `cmd.exe /c "cd /d C:\src\stashpanda\src-tauri && cargo test"` after
+      `npm run win:sync`.
 
 - [ ] **Windows installer** through `npm run win:build` from WSL, which runs `npm run tauri build`
       in the Windows mirror (NSIS and MSI targets are enabled in `tauri.conf.json` by

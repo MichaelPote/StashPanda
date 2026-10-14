@@ -402,6 +402,11 @@ export const useSessionsStore = defineStore("sessions", () => {
     activeKey.value !== null ? (sessions.get(activeKey.value) ?? null) : null,
   );
 
+  // A success message describes an action in one repository, so it goes when another tab is shown.
+  watch(activeKey, () => {
+    successMessage.value = null;
+  });
+
   function setActive(key: string | null): void {
     if (key !== null && !sessions.has(key)) return;
     activeKey.value = key;

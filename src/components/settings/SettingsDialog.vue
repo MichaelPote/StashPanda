@@ -137,7 +137,7 @@ async function save(): Promise<void> {
 <template>
   <Dialog :open="request !== null" @update:open="onOpenChange">
     <!-- The dialog opens at 80% of the window each way; its body takes the height between the header and footer. -->
-    <DialogContent v-if="request" class="h-[80vh] grid-rows-[auto_minmax(0,1fr)_auto] sm:max-w-[80vw]" size-key="settings" :close-on-outside-click="false" @open-auto-focus="focusCurrentPage">
+    <DialogContent v-if="request" class="h-[80vh] sm:max-w-[80vw]" size-key="settings" :close-on-outside-click="false" @open-auto-focus="focusCurrentPage">
       <DialogHeader>
         <DialogTitle>Settings</DialogTitle>
         <DialogDescription>Saved to settings.json, which you can also edit by hand.</DialogDescription>
@@ -146,7 +146,7 @@ async function save(): Promise<void> {
       <p v-if="original === null" class="text-base text-muted-foreground">The settings have not loaded yet.</p>
 
       <!-- The negative margins run the page list's border from the header border to the footer. -->
-      <div v-else class="-mx-6 -my-5 grid min-h-0 grid-cols-[12rem_minmax(0,1fr)]" data-dialog-grow>
+      <div v-else class="-mx-6 -my-5 grid min-h-0 flex-1 grid-cols-[12rem_minmax(0,1fr)]" data-dialog-grow>
         <nav ref="nav" aria-label="Settings pages" class="flex flex-col gap-0.5 overflow-y-auto border-r border-border px-3 py-4 scrollbar-thin">
           <button
             v-for="s in SETTINGS_SECTIONS"

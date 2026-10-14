@@ -327,9 +327,10 @@ async function submitClone(): Promise<void> {
     );
     if (!result.entry.key) throw new Error("The backend returned a library entry without a key.");
     progress.value = null;
+    const cloned = `Cloned ${url.value.trim()} into ${result.entry.path ?? path.value.trim()}.`;
     open.value = false;
     await sessions.openTab(result.entry.key);
-    const notice = cloneNotice(result.outcome);
+    const notice = cloneNotice(result.outcome) ?? { kind: "success", message: cloned };
     if (notice?.kind === "success") sessions.notifySuccess(notice.message);
     else if (notice) sessions.notify(notice.message);
   } catch (e) {

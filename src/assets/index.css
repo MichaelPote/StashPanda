@@ -127,6 +127,10 @@
    the earlier palette. It defines every variable the dark theme does, so the utilities below work
    in both. */
 :root {
+    /* Tells the web view which theme native controls (`<select>`, scrollbars) are drawn in.
+       Without it WebKitGTK draws a `<select>` as a white GTK box in the dark theme too, with the
+       light text the field sets on top, so its value cannot be read. */
+    color-scheme: light;
     --background: #f4f2ed;
     --foreground: #25282e;
     --text-2: #3e4249;              /* secondary text; the design system has no light theme yet, so a third of the way to --muted-foreground */
@@ -290,6 +294,7 @@
 
 /* Dark theme: the Blender pass palette (Stashpanda design system, tokens.json). */
 .dark {
+    color-scheme: dark;
     --background: #2b2d32;          /* area: editor area body, top of its gradient */
     --foreground: #eeece7;          /* ink */
     --text-2: #dcdad4;              /* design system `text-2`: secondary text, code lines */
@@ -665,8 +670,8 @@
 }
 
 /*
- * A dialog dragged bigger than its natural size (`DialogContent.vue` sets data-resized). It
- * becomes a column whose extra height goes to the parts marked `data-dialog-grow`, each starting
+ * A dialog dragged bigger than its natural size (`DialogContent.vue` sets data-resized). The
+ * dialog is always a flex column; once resized, its extra height goes to the parts marked `data-dialog-grow`, each starting
  * from `--grow-basis` (its usual height) when it sets one, with the footer kept at the bottom.
  * A marked part that holds another marked part becomes a column too, so the height reaches it.
  * Dialogs without a marked part keep their layout and gain space above the footer.

@@ -161,6 +161,9 @@ function resetSize(): void {
        a layer of its own, because it is drawn over the panels' composited scrollers, and
        Chromium drops ClearType for the whole of such a layer when its element has a
        box-shadow (a translucent border does the same).
+     - A flex column, not a grid: WebKit (the Linux and macOS builds) ignores `h-fit` on an
+       absolutely placed grid and stretches it to the window's full height, so `m-auto` had
+       nothing to centre. A flex column takes its content's height in both engines.
      See DialogOverlay.vue. -->
 <template>
   <DialogPortal>
@@ -170,7 +173,7 @@ function resetSize(): void {
       v-bind="{ ...$attrs, ...forwarded }"
       :data-resized="size ? '' : undefined"
       @interact-outside="onInteractOutside"
-      :class="cn('bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 grid max-w-[calc(100%-2rem)] gap-5 rounded-xl p-6 text-sm duration-100 sm:max-w-sm absolute inset-0 m-auto z-50 h-fit w-full outline-none', props.class)"
+      :class="cn('bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 flex flex-col max-w-[calc(100%-2rem)] gap-5 rounded-xl p-6 text-sm duration-100 sm:max-w-sm absolute inset-0 m-auto z-50 h-fit w-full outline-none', props.class)"
     >
       <slot />
 

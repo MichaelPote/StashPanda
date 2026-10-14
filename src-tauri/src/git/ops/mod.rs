@@ -815,8 +815,11 @@ mod e2e {
         let dir = std::env::temp_dir().join(format!("stashpanda-stage-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
-        // Names that would be pathspec magic, an option, a glob or split on a space.
-        let odd = [":colon.txt", "-dash.txt", "*.txt", "sp ace.txt"];
+        // Names that would be pathspec magic, an option, a glob or split on a space. Windows
+        // forbids `:` and `*` in file names, so there the glob is `[ab].txt` and the other name
+        // is `a.txt`, which that glob would match if Git read it as one.
+        let (glob, magic) = if cfg!(windows) { ("[ab].txt", "a.txt") } else { ("*.txt", ":colon.txt") };
+        let odd = [magic, "-dash.txt", glob, "sp ace.txt"];
         for name in odd.iter().chain(["keep.txt", "old.txt"].iter()) {
             std::fs::write(dir.join(name), "base\n").unwrap();
         }
@@ -830,14 +833,14 @@ mod e2e {
         std::fs::write(dir.join("new.txt"), "new\n").unwrap();
         std::fs::rename(dir.join("old.txt"), dir.join("renamed.txt")).unwrap();
 
-        // Staging `*.txt` stages only that file, not every .txt.
-        assert!(stage(&client, &strs(&["*.txt"])).await.unwrap().ok);
+        // Staging the glob name stages only that file, not every file it would match.
+        assert!(stage(&client, &strs(&[glob])).await.unwrap().ok);
         let st = status_of(&client).await;
-        assert!(st.contains(&("*.txt".into(), true, false, false)), "{st:?}");
-        assert!(st.contains(&(":colon.txt".into(), false, true, false)), "{st:?}");
+        assert!(st.contains(&(glob.into(), true, false, false)), "{st:?}");
+        assert!(st.contains(&(magic.into(), false, true, false)), "{st:?}");
 
         // Stage the rest, including the rename as a pair and the untracked file.
-        let all = strs(&[":colon.txt", "-dash.txt", "sp ace.txt", "new.txt", "renamed.txt", "old.txt"]);
+        let all = strs(&[magic, "-dash.txt", "sp ace.txt", "new.txt", "renamed.txt", "old.txt"]);
         assert!(stage(&client, &all).await.unwrap().ok);
         let st = status_of(&client).await;
         assert!(st.iter().all(|(_, staged, unstaged, untracked)| *staged && !unstaged && !untracked), "{st:?}");
@@ -852,16 +855,16 @@ mod e2e {
         assert_eq!(std::fs::read_to_string(dir.join("-dash.txt")).unwrap(), "changed\n");
 
         // Discard to the index: the unstaged change goes, the staged one stays.
-        std::fs::write(dir.join(":colon.txt"), "changed again\n").unwrap();
-        assert!(discard(&client, &strs(&[":colon.txt", "-dash.txt"]), &[], false).await.unwrap().ok);
-        assert_eq!(std::fs::read_to_string(dir.join(":colon.txt")).unwrap(), "changed\n");
+        std::fs::write(dir.join(magic), "changed again\n").unwrap();
+        assert!(discard(&client, &strs(&[magic, "-dash.txt"]), &[], false).await.unwrap().ok);
+        assert_eq!(std::fs::read_to_string(dir.join(magic)).unwrap(), "changed\n");
         assert_eq!(std::fs::read_to_string(dir.join("-dash.txt")).unwrap(), "base\n");
 
         // Discard to HEAD: staged and unstaged both go; a staged new file is removed.
-        let r = discard(&client, &strs(&[":colon.txt", "sp ace.txt", "*.txt", "new.txt", "old.txt"]), &strs(&["renamed.txt"]), true).await.unwrap();
+        let r = discard(&client, &strs(&[magic, "sp ace.txt", glob, "new.txt", "old.txt"]), &strs(&["renamed.txt"]), true).await.unwrap();
         assert!(r.ok, "{r:?}");
         assert_eq!(status_of(&client).await, vec![], "clean tree");
-        assert_eq!(std::fs::read_to_string(dir.join(":colon.txt")).unwrap(), "base\n");
+        assert_eq!(std::fs::read_to_string(dir.join(magic)).unwrap(), "base\n");
         assert!(!dir.join("new.txt").exists() && !dir.join("renamed.txt").exists());
 
         // Enough untracked files to need more than one `clean` call.
