@@ -380,6 +380,15 @@ interface Curve {
   kind: "del" | "add" | "both" | "hunk";
 }
 
+/**
+ * The top and bottom of a band's end on one side. Edges sit on the half pixel, so each 1px edge
+ * fills one row of pixels instead of two half rows. A side with no lines comes to a point on
+ * the half pixel too, where the line marking the insertion is drawn, so the two meet exactly.
+ */
+function sideEdges(y: number, height: number): [number, number] {
+  return height === 0 ? [y + 0.5, y + 0.5] : [y + 0.5, y + height - 0.5];
+}
+
 /** The bands to draw in the gap, in the gap's own coordinates (0 is the top of the view). */
 const curves = computed<Curve[]>(() => {
   const px = rowPx.value;
@@ -389,14 +398,11 @@ const curves = computed<Curve[]>(() => {
   const out: Curve[] = [];
   built.value.bands.forEach((b, i) => {
     if (b.kind === "same") return;
-    const lt = left + b.l * px - top;
-    const lb = lt + b.lh * px;
-    const rt = right + b.r * px - top;
-    const rb = rt + b.rh * px;
+    const [lt, lb] = sideEdges(left + b.l * px - top, b.lh * px);
+    const [rt, rb] = sideEdges(right + b.r * px - top, b.rh * px);
     if (Math.max(lb, rb) < 0 || Math.min(lt, rt) > view) return;
     const kind = b.kind === "hunk" ? "hunk" : b.lh === 0 ? "add" : b.rh === 0 ? "del" : "both";
-    // Edges on the half pixel, so a 1px line covers one row of pixels instead of two half rows.
-    out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, lt + 0.5, lb - 0.5, rt + 0.5, rb - 0.5), kind });
+    out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, lt, lb, rt, rb), kind });
   });
   return out;
 });
@@ -1064,11 +1070,12 @@ function toggleContext(value: string): void {
       </div>
 
       <!-- Side by side: the curves joining each change's old lines to its new lines, over the rows
-           so they line up with them. Inline SVG rather than a canvas: a canvas gets a compositor
+           so they line up with them, and clipped to the rows so a band scrolled above them does
+           not draw over the diff panel's header. Inline SVG rather than a canvas: a canvas gets a compositor
            layer of its own, which would stop Chromium drawing ClearType on the text near it. -->
       <svg
         v-if="mode === 'side' && rowsWidth > 0"
-        class="pointer-events-none absolute top-0 left-0 overflow-visible"
+        class="pointer-events-none absolute top-0 left-0 overflow-hidden"
         :width="rowsWidth"
         :height="virtual.viewportHeight.value"
         aria-hidden="true"
