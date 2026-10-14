@@ -32,6 +32,9 @@ pub struct UiState {
 pub struct DialogSize {
     pub width: u32,
     pub height: u32,
+    /// The dialog fills the whole window (its maximise button); the size above is kept for
+    /// when it is restored.
+    pub maximised: bool,
 }
 
 /// The Console header's Log button, which switches the other three off and shows the standard

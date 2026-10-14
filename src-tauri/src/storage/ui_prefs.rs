@@ -135,7 +135,7 @@ mod tests {
         state.files.group_by = FilesGroupBy::Flat;
         state.diff.layout = DiffLayout::Side;
         state.diff.split = 0.62;
-        state.dialog_sizes.insert("commit".into(), crate::ui_state::DialogSize { width: 900, height: 640 });
+        state.dialog_sizes.insert("commit".into(), crate::ui_state::DialogSize { width: 900, height: 640, ..Default::default() });
         state.per_repo.insert(
             "repo-1".into(),
             RepoUiState { last_selected_oid: Some("abc".into()), hidden_refs: vec!["refs/remotes/origin/old".into()], pull_mode: None, ref_colours: Default::default() },

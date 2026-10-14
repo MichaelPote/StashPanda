@@ -1209,6 +1209,9 @@ and anything over WSL or SSH.
       An added or deleted file (every line of its diff on one side, untracked files included) is
       always shown unified, since side by side one side would be empty; the Side by side button
       is disabled for it, and the chosen layout comes back with the next file.
+      Switching files no longer recolours the old diff in the new file's language for a moment:
+      the syntax colours follow the path of the diff on screen (`diffPath`), not the file just
+      selected, whose diff is still loading.
 - [x] **Find in a diff view and in Blame** (2026-10-14). Ctrl+F with the keyboard focus in a
       diff view (the main panel's, or the File History dialog's), or anywhere in the Blame
       dialog, opens a Find box in its top right corner. The two share `useFind`
@@ -1233,6 +1236,15 @@ and anything over WSL or SSH.
         coloured as one run, and follow the "Syntax Highlighting" setting.
       Tried in the running Linux build on 2026-10-14, in both diff layouts and in Blame: wrapping
       both ways, a match on one side only, and a match at the end of a 300-character line.
+- [x] **Dialogs can fill the window** (2026-10-14). Every resizable dialog has a maximise button
+      beside its close button (`DialogContent.vue`). It makes the dialog cover the whole window
+      with no rounded corners or margin, and turns into a restore button; resize handles are
+      off meanwhile. The state is remembered with the dialog's size
+      (`dialogSizes.<name>.maximised`), so a dialog opens as it was left, and the size dragged
+      to comes back on restore. Double-clicking an edge now clears only the size. The dialog
+      header keeps its title clear of both buttons (`pr-24`). Tried in the running Linux build
+      on the Settings dialog: 1120×700 with 8px corners, then exactly the window with square
+      corners, the same on reopening, and back again.
 - [x] **Colours chosen for branches, tags and repositories** (2026-10-14). A "Colour" submenu
       (`components/ui/HueSubmenu.vue`) offers Automatic and the palette's six hues, palette
       indices 0 to 5 (`lib/hues.ts`): the dark theme repeats them as 6 to 11 and the light theme's

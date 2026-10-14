@@ -803,6 +803,11 @@ export type DateFormat = "relative" | "absolute";
 export type DialogSize = {
 	width?: number,
 	height?: number,
+	/**
+	 *  The dialog fills the whole window (its maximise button); the size above is kept for
+	 *  when it is restored.
+	 */
+	maximised?: boolean,
 };
 
 export type DiffLayout = "unified" | 

@@ -2,7 +2,7 @@
 import type { DialogContentEmits, DialogContentProps } from 'reka-ui'
 
 import type { HTMLAttributes } from 'vue'
-import { XIcon } from '@lucide/vue'
+import { Maximize2Icon, Minimize2Icon, XIcon } from '@lucide/vue'
 import { reactiveOmit } from '@vueuse/core'
 import {
   DialogClose,
@@ -65,6 +65,22 @@ const size = computed<DialogSize | null>(() => {
   return saved && (saved.width ?? 0) > 0 && (saved.height ?? 0) > 0 ? saved : null
 })
 
+// ---- Filling the window --------------------------------------------------------------------
+//
+// The button beside the close button makes a resizable dialog cover the whole window, with no
+// rounded corners or margin, and back. It is remembered with the dialog's size
+// (`dialogSizes.<name>.maximised`), and the size dragged to is kept for when it is restored.
+
+/** Whether a dialog without a `sizeKey` fills the window; one with a key reads the UI state. */
+const localMaximised = ref(false)
+const maximised = computed(() => (props.sizeKey ? uiState.state?.dialogSizes?.[props.sizeKey]?.maximised === true : localMaximised.value))
+
+function toggleMaximised(): void {
+  const next = !maximised.value
+  if (props.sizeKey) uiState.patchDebounced({ dialogSizes: { [props.sizeKey]: { maximised: next } } })
+  else localMaximised.value = next
+}
+
 /**
  * The resize handles, whose parent is the dialog element. The element is taken from them rather
  * than from a ref on reka-ui's DialogContent: that ref forwards an element reka-ui works out once
@@ -79,7 +95,8 @@ watchEffect(() => {
   // No handles while the dialog is closed, or when it is not resizable (then it has no size).
   const el = handleEls.value[0]?.parentElement
   if (!el) return
-  const s = size.value
+  // Filling the window, the dialog's size is the window's.
+  const s = maximised.value ? null : size.value
   el.style.minWidth = s ? `min(${s.width}px, calc(100vw - 2rem))` : ''
   el.style.minHeight = s ? `min(${s.height}px, calc(100vh - 2rem))` : ''
 })
@@ -149,7 +166,7 @@ function onInteractOutside(event: Event): void {
 /** Double-clicking an edge goes back to the natural size. */
 function resetSize(): void {
   localSize.value = null
-  if (props.sizeKey) uiState.patchDebounced({ dialogSizes: { [props.sizeKey]: null } })
+  if (props.sizeKey) uiState.patchDebounced({ dialogSizes: { [props.sizeKey]: { width: 0, height: 0 } } })
 }
 </script>
 
@@ -171,11 +188,33 @@ function resetSize(): void {
     <DialogContent
       data-slot="dialog-content"
       v-bind="{ ...$attrs, ...forwarded }"
-      :data-resized="size ? '' : undefined"
+      :data-resized="size || maximised ? '' : undefined"
+      :data-maximised="maximised ? '' : undefined"
       @interact-outside="onInteractOutside"
-      :class="cn('bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 flex flex-col max-w-[calc(100%-2rem)] gap-5 rounded-xl p-6 text-sm duration-100 sm:max-w-sm absolute inset-0 m-auto z-50 h-fit w-full outline-none', props.class)"
+      :class="cn(
+        'bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 flex flex-col max-w-[calc(100%-2rem)] gap-5 rounded-xl p-6 text-sm duration-100 sm:max-w-sm absolute inset-0 m-auto z-50 h-fit w-full outline-none',
+        props.class,
+        // Last, so it wins over the width and height a dialog asks for.
+        maximised && 'm-0 h-full w-full max-w-none sm:max-w-none rounded-none',
+      )"
     >
       <slot />
+
+      <!-- Fill the window, or go back to the dialog's own size; beside the close button. -->
+      <Button
+        v-if="resizable"
+        variant="ghost"
+        size="icon"
+        :class="cn('absolute top-4', showCloseButton ? 'right-14' : 'right-4')"
+        :title="maximised ? 'Restore the dialog to its own size' : 'Fill the window'"
+        :aria-pressed="maximised"
+        data-dialog-maximise
+        @click="toggleMaximised"
+      >
+        <Minimize2Icon v-if="maximised" class="size-4" />
+        <Maximize2Icon v-else class="size-4" />
+        <span class="sr-only">{{ maximised ? 'Restore' : 'Maximise' }}</span>
+      </Button>
 
       <DialogClose
         v-if="showCloseButton"
@@ -188,7 +227,7 @@ function resetSize(): void {
         </Button>
       </DialogClose>
 
-      <template v-if="resizable">
+      <template v-if="resizable && !maximised">
         <div
           v-for="h in EDGES"
           :key="h.edge"
