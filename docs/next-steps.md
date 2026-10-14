@@ -935,11 +935,17 @@ and anything over WSL or SSH.
       - `npm test` runs Vitest (pinned at 5.0.3) on `lib/merge/chunks`, `lib/merge/blocks`,
         `lib/diff/find`, `lib/diff/pairLines` and `lib/diff/sideLayout`.
 
-      **Left:** a look at the editor in the Windows window. CodeMirror's only animation, the
-      blinking cursor, belongs to `drawSelection`, which the panes do not use; but its line
-      number gutter is `position: sticky`, which Chromium may give a compositor layer, so the
-      line numbers could lose ClearType. If they do, `gutters({ fixed: false })` makes them
-      scroll with the text instead.
+      **Checked in the running Windows app on 2026-10-14**, through WebView2's DevTools protocol
+      (scripts `merge-open.mjs`, `regions.mjs` and `merge-save.mjs` in `C:\src\stashpanda-debug`),
+      on a merge-style conflict in a WSL repository:
+      - ClearType holds everywhere. Counting colour-fringed pixels in grey or white text: the
+        dialog title 295, the toolbar 265, each pane's line numbers 856 to 992, a fold row 335.
+        CodeMirror's sticky gutter costs nothing; its only animation, the blinking cursor,
+        belongs to `drawSelection`, which the panes do not use. The layer tree adds only the
+        panes' scroll bars and the caret.
+      - Taking a side with an arrow, typing into a placeholder, and Save and Mark Resolved
+        worked over WSL: the file came out as expected, LF only, no markers, and staged.
+      - The panes had Windows' wide scroll bars; they now have the app's thin ones.
 
       **Layout.** Three panes side by side, all in the diff font
       (`resolveDiffFont`, with ligatures, tab width and font smoothing) and with syntax colours
