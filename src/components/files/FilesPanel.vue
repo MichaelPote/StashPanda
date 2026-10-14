@@ -23,7 +23,7 @@ import {
   takeVersion,
   unstageSelected,
 } from "@/lib/repoActions";
-import { fileViewReason, fileViewRev, openBlame, openFileHistory } from "@/lib/fileViews";
+import { fileViewReason, fileViewRev, mergeEditorReason, openBlame, openFileHistory, openMergeEditor } from "@/lib/fileViews";
 import { conflictStages, operationNames } from "@/lib/conflicts";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
@@ -437,6 +437,17 @@ function countLabel(files: string[]): string {
 }
 /** The selected conflicted rows, and the names of the two sides they can be resolved to. */
 const menuConflicts = computed(() => selectedConflictItems(props.session));
+/** Why the merge editor cannot open on the files the menu is for: it takes one file both sides still have. */
+const mergeMenuReason = computed(() => {
+  const items = menuConflicts.value;
+  if (items.length !== 1) return "Select one conflicted file to resolve in the merge editor.";
+  return mergeEditorReason((items[0] as FileItem).letter);
+});
+
+/** Double-clicking a conflicted file opens it in the merge editor, when both sides still have it. */
+function onRowDoubleClick(item: FileItem): void {
+  if (mode.value === "worktree" && item.state === "conflict" && mergeEditorReason(item.letter) === null) openMergeEditor(props.session.key, item.path);
+}
 const sideNames = computed(() => operationNames(props.session.status, props.session.refs));
 /** "Take the Version from main", noting when every selected file was deleted on that side. */
 function takeLabel(side: ResolveSide): string {
@@ -609,6 +620,7 @@ function pathText(item: FileItem): string {
                   @mousedown="list.onMousedown"
                   @click="list.onClick(item.id, $event)"
                   @contextmenu="onRowContextMenu(item)"
+                  @dblclick="onRowDoubleClick(item)"
                 >
                   <span
                     :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"
@@ -646,6 +658,7 @@ function pathText(item: FileItem): string {
         </ContextMenuTrigger>
         <ContextMenuContent class="min-w-56">
           <template v-if="mode === 'worktree' && menuConflicts.length > 0">
+            <ActionMenuItem :reason="mergeMenuReason" data-resolve="editor" @select="openMergeEditor(session.key, menuConflicts[0]!.path)">Resolve in Merge Editor…</ActionMenuItem>
             <ActionMenuItem :reason="null" data-resolve="ours" @select="takeVersion(session, menuConflicts, 'ours')">{{ takeLabel("ours") }}</ActionMenuItem>
             <ActionMenuItem :reason="null" data-resolve="theirs" @select="takeVersion(session, menuConflicts, 'theirs')">{{ takeLabel("theirs") }}</ActionMenuItem>
             <ActionMenuItem :reason="null" data-resolve="mark" @select="markResolved(session, menuConflicts)">

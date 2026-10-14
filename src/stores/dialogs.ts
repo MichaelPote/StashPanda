@@ -201,6 +201,12 @@ export interface BlamePayload {
   line?: number;
 }
 
+export interface MergeEditorPayload {
+  key: string;
+  /** The conflicted file to resolve. */
+  path: string;
+}
+
 /** The Add Repository dialog's tabs: add a folder that is a repository already, or clone one. */
 export type AddRepoTab = "existing" | "clone";
 
@@ -219,6 +225,7 @@ export interface DialogSpecs {
   confirm: { payload: ConfirmPayload; result: boolean };
   fileHistory: { payload: FileHistoryPayload; result: null };
   blame: { payload: BlamePayload; result: null };
+  mergeEditor: { payload: MergeEditorPayload; result: null };
   passphrase: { payload: PassphrasePayload; result: PassphraseResult | null };
   /** Resolves true once the host key has been recorded in known_hosts. */
   sshHostKey: { payload: SshHostKeyPayload; result: boolean };
@@ -246,6 +253,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   confirm: false,
   fileHistory: null,
   blame: null,
+  mergeEditor: null,
   passphrase: null,
   sshHostKey: false,
   sshPassword: false,

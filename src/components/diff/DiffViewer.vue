@@ -5,7 +5,7 @@ import { ChevronDownIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanText
 import { commands, type DiffText, type Eol, type LineAction, type ResolveSide, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { fileViewReason, fileViewRev, openBlame, openFileHistory } from "@/lib/fileViews";
+import { fileViewReason, fileViewRev, mergeEditorReason, openBlame, openFileHistory, openMergeEditor } from "@/lib/fileViews";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import FindBox from "@/components/diff/FindBox.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
@@ -1090,6 +1090,16 @@ function toggleContext(value: string): void {
         </button>
       </div>
       <span class="ml-auto flex flex-wrap items-center gap-1">
+        <button
+          type="button"
+          :class="cn('diff-action', mergeEditorReason(conflictFile.letters) && 'opacity-50')"
+          :title="mergeEditorReason(conflictFile.letters) ?? 'Resolve this file block by block in the three-pane merge editor'"
+          :aria-disabled="mergeEditorReason(conflictFile.letters) !== null"
+          data-resolve="editor"
+          @click="!mergeEditorReason(conflictFile.letters) && openMergeEditor(session.key, conflictFile.item.path)"
+        >
+          Merge Editor…
+        </button>
         <button type="button" class="diff-action" :title="takeTitle('ours')" data-resolve="ours" @click="takeVersion(session, [conflictFile.item], 'ours')">
           Take the version from {{ sideNames.ours }}
         </button>

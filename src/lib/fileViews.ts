@@ -33,6 +33,20 @@ export function openBlame(key: string, path: string, rev: string | null, line?: 
   void useDialogsStore().open("blame", { key, path, rev, line });
 }
 
+/** Conflict letters of a file both sides still have, which the merge editor can open. */
+const MERGEABLE = new Set(["UU", "AA"]);
+
+/** Why the merge editor cannot open a conflicted file with these status letters, or null. */
+export function mergeEditorReason(letters: string): string | null {
+  if (MERGEABLE.has(letters)) return null;
+  return "One side deleted this file, so there is no text to merge: take one side's version instead.";
+}
+
+/** Opens the three-pane merge editor on conflicted file `path` of repository `key`. */
+export function openMergeEditor(key: string, path: string): void {
+  void useDialogsStore().open("mergeEditor", { key, path });
+}
+
 /**
  * Closes the open dialog, then selects `oid` in the commit graph of repository `key` and scrolls
  * to it. Says so when the graph does not show that commit.

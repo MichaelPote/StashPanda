@@ -1,0 +1,663 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { usePreferredDark } from "@vueuse/core";
+import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon, RotateCcwIcon } from "@lucide/vue";
+import { EditorState, Text, type Extension } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers, type ViewUpdate } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import type { Chunk } from "@codemirror/merge";
+import { commands, type ConflictFile } from "@/lib/bindings";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import EmptyState from "@/components/shell/EmptyState.vue";
+import { operationNames } from "@/lib/conflicts";
+import { diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
+import { bandPath } from "@/lib/diff/sideLayout";
+import { themeFor } from "@/lib/diff/syntax";
+import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
+import { blocksField, initialBlocks, saveText, setTaken, type MergeBlock } from "@/lib/merge/blocks";
+import { buildChunks, chunkLines, mapLine, updateChunks, type LineChunk } from "@/lib/merge/chunks";
+import { lineMarks, lineMarksEffect, type LineMark } from "@/lib/merge/lines";
+import { syntaxColours } from "@/lib/merge/syntax";
+import { openWorktreeFile, runOp } from "@/lib/repoActions";
+import { cn } from "@/lib/utils";
+import { useDialogsStore } from "@/stores/dialogs";
+import { useSessionsStore } from "@/stores/sessions";
+import { useSettingsStore } from "@/stores/settings";
+
+/**
+ * The three-pane merge editor for one conflicted file. The left pane is the version on the
+ * branch being built on and the right pane the incoming version, both read-only; the middle pane
+ * is the result, editable, which is saved to the working tree. The gaps between the panes draw
+ * each difference from the result as a curved band, with an arrow that copies that side's lines
+ * into the result. The panes scroll together.
+ *
+ * The result starts as the working tree file with each conflict's markers taken out (see
+ * `get_conflict_file`); a conflict still unresolved when the file is saved is written back with
+ * the markers, so nothing is lost.
+ */
+
+const dialogs = useDialogsStore();
+const sessions = useSessionsStore();
+const settings = useSettingsStore();
+
+const request = computed(() => dialogs.current("mergeEditor"));
+/** The file shown; "Save, Resolve and Open Next" moves on to another without closing. */
+const path = ref<string | null>(null);
+const session = computed(() => (request.value ? (sessions.sessions.get(request.value.key) ?? null) : null));
+const names = computed(() => operationNames(session.value?.status ?? null, session.value?.refs ?? null));
+
+const file = shallowRef<ConflictFile | null>(null);
+const loading = ref(false);
+const saving = ref(false);
+const error = ref<string | null>(null);
+/** The working tree file's hash when it was read or last saved, to notice a change on disk. */
+let fileHash = "";
+let loadTicket = 0;
+
+const leftHost = ref<HTMLElement | null>(null);
+const middleHost = ref<HTMLElement | null>(null);
+const rightHost = ref<HTMLElement | null>(null);
+const leftGap = ref<HTMLElement | null>(null);
+const rightGap = ref<HTMLElement | null>(null);
+
+interface Panes {
+  left: EditorView;
+  middle: EditorView;
+  right: EditorView;
+  blocks: ReturnType<typeof blocksField>["field"];
+}
+let panes: Panes | null = null;
+/** Redraws the gaps when the panes change size. Declared up here: the first load runs during setup. */
+let resizeObserver: ResizeObserver | null = null;
+
+/** The result's conflict blocks, the differences of each side from the result, and unsaved edits. */
+const blocks = shallowRef<MergeBlock[]>([]);
+const leftChunks = shallowRef<readonly Chunk[]>([]);
+const rightChunks = shallowRef<readonly Chunk[]>([]);
+const leftLines = shallowRef<LineChunk[]>([]);
+const rightLines = shallowRef<LineChunk[]>([]);
+const dirty = ref(false);
+const syncScroll = ref(true);
+
+const unresolved = computed(() => blocks.value.filter((b) => !b.resolved));
+
+const preferredDark = usePreferredDark();
+const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
+const font = computed(() => resolveDiffFont(settings.settings?.diff));
+const textStyle = computed(() => diffTextStyle(font.value));
+const syntaxOn = computed(() => settings.settings?.diff?.syntaxHighlight !== false);
+
+/** Width of each gap between two panes, where the curves and arrows are. */
+const GAP_PX = 40;
+
+// ---- Loading -------------------------------------------------------------------------------
+
+watch(
+  request,
+  (r) => {
+    path.value = r?.path ?? null;
+  },
+  { immediate: true },
+);
+// Immediate too: the watcher above has already set the path by the time this one starts.
+watch(path, () => void load(), { immediate: true });
+
+async function load(): Promise<void> {
+  const r = request.value;
+  const p = path.value;
+  const ticket = (loadTicket += 1);
+  destroyPanes();
+  file.value = null;
+  error.value = null;
+  dirty.value = false;
+  if (!r || !p) return;
+  loading.value = true;
+  try {
+    const f = await unwrap(commands.getConflictFile(r.key, p));
+    if (ticket !== loadTicket) return;
+    file.value = f;
+    fileHash = f.hash;
+    if (f.refused === null) {
+      await nextTick();
+      if (ticket === loadTicket) createPanes(f);
+    }
+  } catch (e) {
+    if (ticket === loadTicket) error.value = errorMessage(e);
+  } finally {
+    if (ticket === loadTicket) loading.value = false;
+  }
+}
+
+const REFUSALS: Record<NonNullable<ConflictFile["refused"]>, string> = {
+  notConflicted: "This file has no conflict any more.",
+  deletedOnOneSide: "One side deleted this file, so there is no text to merge. Take one side's version instead.",
+  binary: "This is a binary file, which the merge editor cannot show.",
+  notUtf8: "This file is not UTF-8 text, which the merge editor cannot edit.",
+  tooLarge: "This file is too large for the merge editor.",
+};
+
+const refusal = computed(() => (file.value?.refused ? REFUSALS[file.value.refused] : null));
+
+// ---- The three panes ---------------------------------------------------------------------
+
+function paneTheme(): Extension {
+  return EditorView.theme(
+    {
+      "&": { height: "100%", backgroundColor: "transparent", color: "var(--foreground)" },
+      "&.cm-focused": { outline: "none" },
+      ".cm-scroller": { fontFamily: "inherit", lineHeight: "var(--diff-row-h)", overflow: "auto" },
+      ".cm-content": { caretColor: "var(--foreground)", padding: "0" },
+      ".cm-line": { padding: "0 8px" },
+      ".cm-gutters": { backgroundColor: "var(--color-diff-gutter)", color: "var(--color-gutter-fg)", border: "none" },
+      ".cm-lineNumbers .cm-gutterElement": { padding: "0 6px 0 8px", minWidth: "4ch" },
+    },
+    { dark: dark.value },
+  );
+}
+
+/** What every pane has: line numbers, the diff font, tabs, colours and line backgrounds. */
+function paneExtensions(readOnly: boolean): Extension[] {
+  const p = path.value ?? "";
+  return [
+    lineNumbers(),
+    paneTheme(),
+    EditorState.tabSize.of(font.value.tabWidth),
+    EditorState.readOnly.of(readOnly),
+    syntaxOn.value ? syntaxColours(p, themeFor(dark.value)) : [],
+    lineMarks(),
+    keymap.of(editorKeys),
+  ];
+}
+
+function createPanes(f: ConflictFile): void {
+  if (!leftHost.value || !middleHost.value || !rightHost.value) return;
+  const tracked = blocksField(initialBlocks(Text.of(f.result.split("\n")), f.blocks));
+  const middle = new EditorView({
+    parent: middleHost.value,
+    state: EditorState.create({
+      doc: f.result,
+      extensions: [
+        ...paneExtensions(false),
+        history(),
+        keymap.of([...historyKeymap, ...defaultKeymap]),
+        tracked.extension,
+        EditorView.updateListener.of(onMiddleUpdate),
+      ],
+    }),
+  });
+  const left = new EditorView({ parent: leftHost.value, state: EditorState.create({ doc: f.ours ?? "", extensions: paneExtensions(true) }) });
+  const right = new EditorView({ parent: rightHost.value, state: EditorState.create({ doc: f.theirs ?? "", extensions: paneExtensions(true) }) });
+  panes = { left, middle, right, blocks: tracked.field };
+  blocks.value = middle.state.field(tracked.field);
+  leftChunks.value = buildChunks(left.state.doc, middle.state.doc);
+  rightChunks.value = buildChunks(right.state.doc, middle.state.doc);
+  refreshLines();
+  for (const [name, view] of [["left", left], ["middle", middle], ["right", right]] as const) {
+    view.scrollDOM.addEventListener("scroll", () => onPaneScroll(name), { passive: true });
+  }
+  resizeObserver = new ResizeObserver(() => scheduleDraw());
+  resizeObserver.observe(middle.dom);
+  scheduleDraw();
+}
+
+function destroyPanes(): void {
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+  if (!panes) return;
+  panes.left.destroy();
+  panes.middle.destroy();
+  panes.right.destroy();
+  panes = null;
+  blocks.value = [];
+  leftChunks.value = [];
+  rightChunks.value = [];
+  leftLines.value = [];
+  rightLines.value = [];
+}
+
+onBeforeUnmount(destroyPanes);
+
+function onMiddleUpdate(update: ViewUpdate): void {
+  if (!panes) return;
+  if (update.docChanged) {
+    dirty.value = true;
+    leftChunks.value = updateChunks(leftChunks.value, panes.left.state.doc, update.state.doc, update.changes);
+    rightChunks.value = updateChunks(rightChunks.value, panes.right.state.doc, update.state.doc, update.changes);
+  }
+  const next = update.state.field(panes.blocks);
+  if (next !== blocks.value || update.docChanged) {
+    blocks.value = next;
+    refreshLines();
+  }
+}
+
+/** A block's lines in the result, end exclusive. */
+function blockLines(b: MergeBlock): [number, number] {
+  if (!panes) return [0, 0];
+  const doc = panes.middle.state.doc;
+  const first = doc.lineAt(b.from).number - 1;
+  if (b.to <= b.from) return [first, first];
+  return [first, doc.lineAt(Math.max(b.from, b.to - 1)).number];
+}
+
+/** True when a difference's result lines meet a conflict block that is still unresolved. */
+function isConflict(c: LineChunk): boolean {
+  return unresolved.value.some((b) => {
+    const [s, e] = blockLines(b);
+    return s === e || c.b0 === c.b1 ? c.b0 <= e && c.b1 >= s : c.b0 < e && c.b1 > s;
+  });
+}
+
+/** Recomputes the line ranges of the differences and every pane's line backgrounds. */
+function refreshLines(): void {
+  if (!panes) return;
+  const { left, middle, right } = panes;
+  leftLines.value = leftChunks.value.map((c) => chunkLines(c, left.state.doc, middle.state.doc));
+  rightLines.value = rightChunks.value.map((c) => chunkLines(c, right.state.doc, middle.state.doc));
+  const kind = (c: LineChunk): LineMark["kind"] => (isConflict(c) ? "conflict" : "change");
+  const leftMarks = leftLines.value.map((c) => ({ from: c.a0, to: c.a1, kind: kind(c) }));
+  const rightMarks = rightLines.value.map((c) => ({ from: c.a0, to: c.a1, kind: kind(c) }));
+  const middleMarks: LineMark[] = [
+    ...[...leftLines.value, ...rightLines.value].map((c) => ({ from: c.b0, to: c.b1, kind: kind(c) })),
+    ...unresolved.value.map((b) => {
+      const [from, to] = blockLines(b);
+      return { from, to, kind: "conflict" as const };
+    }),
+  ];
+  // Conflict last, so it wins where a line has both.
+  middleMarks.sort((x, y) => (x.kind === y.kind ? 0 : x.kind === "conflict" ? 1 : -1));
+  left.dispatch({ effects: lineMarksEffect(left.state.doc, leftMarks) });
+  right.dispatch({ effects: lineMarksEffect(right.state.doc, rightMarks) });
+  middle.dispatch({ effects: lineMarksEffect(middle.state.doc, dedupeMarks(middleMarks)) });
+  scheduleDraw();
+}
+
+/** One mark per line: a conflict wins over a plain difference. */
+function dedupeMarks(marks: LineMark[]): LineMark[] {
+  const kinds = new Map<number, LineMark["kind"]>();
+  for (const m of marks) for (let line = m.from; line < m.to; line += 1) if (kinds.get(line) !== "conflict") kinds.set(line, m.kind);
+  return [...kinds.entries()].sort((a, b) => a[0] - b[0]).map(([line, kind]) => ({ from: line, to: line + 1, kind }));
+}
+
+// ---- Curves and arrows in the gaps ---------------------------------------------------------
+
+interface GapShape {
+  key: string;
+  d: string;
+  kind: LineMark["kind"];
+  /** Where the arrow sits, from the top of the gap, and which difference it takes. */
+  arrowY: number;
+  index: number;
+}
+
+const leftShapes = shallowRef<GapShape[]>([]);
+const rightShapes = shallowRef<GapShape[]>([]);
+const gapHeight = ref(0);
+let drawFrame = 0;
+
+function scheduleDraw(): void {
+  if (drawFrame !== 0) return;
+  drawFrame = requestAnimationFrame(() => {
+    drawFrame = 0;
+    draw();
+  });
+}
+
+/** The top of line `line` (counted from 0) of a pane, from the top of `gap`. */
+function lineY(view: EditorView, line: number, gapTop: number): number {
+  return view.documentTop + line * view.defaultLineHeight - gapTop;
+}
+
+function draw(): void {
+  if (!panes || !leftGap.value || !rightGap.value) return;
+  const { left, middle, right } = panes;
+  const lg = leftGap.value.getBoundingClientRect();
+  const rg = rightGap.value.getBoundingClientRect();
+  gapHeight.value = lg.height;
+  const shapes = (lines: LineChunk[], side: EditorView, sideOnLeft: boolean, gapTop: number, height: number): GapShape[] => {
+    const out: GapShape[] = [];
+    lines.forEach((c, index) => {
+      const st = lineY(side, c.a0, gapTop);
+      const sb = lineY(side, c.a1, gapTop);
+      const mt = lineY(middle, c.b0, gapTop);
+      const mb = lineY(middle, c.b1, gapTop);
+      if (Math.max(sb, mb) < -40 || Math.min(st, mt) > height + 40) return;
+      const kind: LineMark["kind"] = isConflict(c) ? "conflict" : "change";
+      const d = sideOnLeft ? bandPath(GAP_PX, st, sb, mt, mb) : bandPath(GAP_PX, mt, mb, st, sb);
+      out.push({ key: `${index}`, d, kind, arrowY: st, index });
+    });
+    return out;
+  };
+  leftShapes.value = shapes(leftLines.value, left, true, lg.top, lg.height);
+  rightShapes.value = shapes(rightLines.value, right, false, rg.top, rg.height);
+}
+
+// ---- Taking a side's lines -----------------------------------------------------------------
+
+type Side = "left" | "right";
+
+/** Copies one side's lines of difference `index` into the result, over the result's lines, or below them. */
+function take(side: Side, index: number, below = false): void {
+  if (!panes) return;
+  const chunk = (side === "left" ? leftChunks.value : rightChunks.value)[index];
+  if (!chunk) return;
+  const source = side === "left" ? panes.left : panes.right;
+  const text = source.state.doc.sliceString(chunk.fromA, chunk.toA);
+  const changes = below ? { from: chunk.toB, insert: text } : { from: chunk.fromB, to: chunk.toB, insert: text };
+  // Every conflict block the difference meets counts as taken, even when its text stays the same.
+  const met = blocks.value.filter((b) => (b.from === b.to ? chunk.fromB <= b.from && chunk.toB >= b.from : chunk.fromB < b.to && chunk.toB > b.from));
+  panes.middle.dispatch({ changes, effects: met.map((b) => setTaken.of({ id: b.id, taken: true })), userEvent: "input.take" });
+  panes.middle.focus();
+}
+
+/** Resolves every unresolved block with one side's version. */
+function takeAll(side: Side): void {
+  if (!panes) return;
+  const list = unresolved.value;
+  if (list.length === 0) return;
+  panes.middle.dispatch({
+    changes: list.map((b) => ({ from: b.from, to: b.to, insert: side === "left" ? b.source.ours : b.source.theirs })),
+    effects: list.map((b) => setTaken.of({ id: b.id, taken: true })),
+    userEvent: "input.take",
+  });
+}
+
+/** The difference of one side that holds the result line the cursor is on. */
+function chunkAtCursor(side: Side): number {
+  if (!panes) return -1;
+  const line = panes.middle.state.doc.lineAt(panes.middle.state.selection.main.head).number - 1;
+  const lines = side === "left" ? leftLines.value : rightLines.value;
+  return lines.findIndex((c) => (c.b0 === c.b1 ? c.b0 === line : c.b0 <= line && line < c.b1));
+}
+
+function takeAtCursor(side: Side): boolean {
+  const index = chunkAtCursor(side);
+  if (index >= 0) take(side, index);
+  return true;
+}
+
+/** Moves the cursor to the next (1) or previous (-1) unresolved conflict, wrapping around. */
+function goToConflict(direction: 1 | -1): boolean {
+  if (!panes) return true;
+  const list = [...unresolved.value].sort((a, b) => a.from - b.from);
+  if (list.length === 0) return true;
+  const head = panes.middle.state.selection.main.head;
+  const target =
+    direction === 1 ? (list.find((b) => b.from > head) ?? list[0]) : ([...list].reverse().find((b) => b.from < head) ?? list[list.length - 1]);
+  if (!target) return true;
+  panes.middle.dispatch({ selection: { anchor: target.from }, effects: EditorView.scrollIntoView(target.from, { y: "center" }) });
+  panes.middle.focus();
+  return true;
+}
+
+/** Keys in every pane. Alt+Up and Alt+Down are left to CodeMirror, which moves lines with them. */
+const editorKeys = [
+  { key: "F7", run: () => goToConflict(1) },
+  { key: "Shift-F7", run: () => goToConflict(-1) },
+  { key: "Alt-Shift-ArrowLeft", run: () => takeAtCursor("left") },
+  { key: "Alt-Shift-ArrowRight", run: () => takeAtCursor("right") },
+  {
+    key: "Mod-s",
+    run: () => {
+      void save(false);
+      return true;
+    },
+  },
+];
+
+// ---- Scrolling together --------------------------------------------------------------------
+
+/** Panes this code just scrolled, whose own scroll event must not lead the others. */
+const following = new Set<string>();
+
+function onPaneScroll(name: "left" | "middle" | "right"): void {
+  scheduleDraw();
+  if (following.delete(name) || !syncScroll.value || !panes) return;
+  const view = panes[name];
+  const rect = view.scrollDOM.getBoundingClientRect();
+  const lh = view.defaultLineHeight;
+  // The line at the middle of the pane scrolled; the others are brought level with it there.
+  const line = (rect.top + view.scrollDOM.clientHeight / 2 - view.documentTop) / lh;
+  let middleLine = line;
+  if (name === "left") middleLine = mapLine(leftLines.value, line, true);
+  if (name === "right") middleLine = mapLine(rightLines.value, line, true);
+  const targets: [string, EditorView, number][] = [];
+  if (name !== "middle") targets.push(["middle", panes.middle, middleLine]);
+  if (name !== "left") targets.push(["left", panes.left, mapLine(leftLines.value, middleLine, false)]);
+  if (name !== "right") targets.push(["right", panes.right, mapLine(rightLines.value, middleLine, false)]);
+  for (const [target, other, otherLine] of targets) {
+    const el = other.scrollDOM;
+    const otherRect = el.getBoundingClientRect();
+    const delta = other.documentTop + otherLine * other.defaultLineHeight - (otherRect.top + el.clientHeight / 2);
+    const before = el.scrollTop;
+    const top = Math.max(0, before + delta);
+    if (Math.abs(top - before) > 0.5) {
+      following.add(target);
+      el.scrollTop = top;
+      if (el.scrollTop === before) following.delete(target);
+    }
+    if (Math.abs(el.scrollLeft - view.scrollDOM.scrollLeft) > 0.5) {
+      following.add(target);
+      el.scrollLeft = view.scrollDOM.scrollLeft;
+    }
+  }
+}
+
+// ---- Saving --------------------------------------------------------------------------------
+
+/** Writes the result to the working tree; with `resolve`, then marks the file resolved (git add). */
+async function save(resolve: boolean, openNext = false): Promise<void> {
+  const r = request.value;
+  const p = path.value;
+  const f = file.value;
+  if (!panes || !r || !p || !f || saving.value) return;
+  if (resolve && unresolved.value.length > 0) return;
+  saving.value = true;
+  try {
+    const content = saveText(panes.middle.state, blocks.value, { crlf: f.eol === "crLf", bom: f.bom });
+    try {
+      fileHash = await unwrap(commands.writeWorktreeFile(r.key, p, content, fileHash));
+    } catch (e) {
+      if (e instanceof IpcError && e.error.kind === "changedOnDisk") {
+        const reload = await dialogs.open("confirm", {
+          title: "The file changed on disk",
+          message: `${p} changed since the merge editor read it. Reload it, losing the edits made here, or keep editing and save again later?`,
+          confirmLabel: "Reload",
+          destructive: true,
+        });
+        if (reload) await load();
+        return;
+      }
+      throw e;
+    }
+    dirty.value = false;
+    if (!resolve) {
+      sessions.notifySuccess(`Saved ${p}.`);
+      return;
+    }
+    const result = await runOp(r.key, () => commands.opStage(r.key, [p]));
+    if (!result.ok) {
+      sessions.notify(`Saved ${p}, but marking it resolved failed.`);
+      return;
+    }
+    sessions.notifySuccess(`Saved ${p} and marked it as resolved.`);
+    const next = openNext ? nextConflicted(p) : null;
+    if (next) path.value = next;
+    else close();
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  } finally {
+    saving.value = false;
+  }
+}
+
+/** Another conflicted file both sides still have, to open after this one. */
+function nextConflicted(current: string): string | null {
+  const entries = session.value?.status?.entries ?? [];
+  const candidates = entries.filter((e) => e.conflicted && e.path !== current && ["UU", "AA"].includes(`${e.x}${e.y}`)).map((e) => e.path);
+  return candidates.sort()[0] ?? null;
+}
+
+async function restoreGitMerge(): Promise<void> {
+  const r = request.value;
+  const p = path.value;
+  if (!r || !p) return;
+  const ok = await dialogs.open("confirm", {
+    title: "Start again from Git's merge?",
+    message: `This writes Git's merge of ${p} again, with its conflict markers, and throws away every change made to the file since the conflict, here or in another editor.`,
+    confirmLabel: "Start Again",
+    destructive: true,
+  });
+  if (!ok) return;
+  try {
+    const result = await runOp(r.key, () => commands.opRestoreConflict(r.key, p));
+    if (result.ok) await load();
+    else sessions.notify(`Starting ${p} again from Git's merge failed.`);
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+// ---- Closing -------------------------------------------------------------------------------
+
+function close(): void {
+  destroyPanes();
+  dialogs.resolve("mergeEditor", null);
+}
+
+async function onOpenChange(open: boolean): Promise<void> {
+  if (open) return;
+  if (dirty.value) {
+    const discard = await dialogs.open("confirm", {
+      title: "Discard the edits?",
+      message: `The result for ${path.value ?? "this file"} has changes that are not saved.`,
+      confirmLabel: "Discard",
+      destructive: true,
+    });
+    if (!discard) return;
+  }
+  close();
+}
+
+const conflictCount = computed(() => {
+  const n = unresolved.value.length;
+  const total = blocks.value.length;
+  if (total === 0) return "No conflict blocks";
+  return n === 0 ? `All ${total} resolved` : `${n} of ${total} ${total === 1 ? "conflict" : "conflicts"} left`;
+});
+
+const resolveBlocked = computed(() => {
+  if (!file.value || file.value.refused !== null) return "There is no result to save.";
+  return unresolved.value.length > 0 ? "Resolve every conflict first, or save it with its markers and finish later." : null;
+});
+</script>
+
+<template>
+  <Dialog :open="request !== null" @update:open="onOpenChange">
+    <DialogContent v-if="request && path" class="h-[90vh] sm:max-w-[95vw]" size-key="mergeEditor">
+      <DialogHeader>
+        <DialogTitle>Merge {{ path }}</DialogTitle>
+        <DialogDescription>
+          {{ names.title || "Resolve the conflict" }}. Copy lines from either side with the arrows between the panes, or edit the result in the middle.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div class="-mx-6 -my-5 flex min-h-0 flex-1 flex-col bg-window p-1.5" data-dialog-grow>
+        <EmptyState v-if="error" :message="error" class="text-destructive" />
+        <EmptyState v-else-if="loading && !file" message="Reading the conflict…" />
+        <EmptyState v-else-if="refusal" :message="refusal">
+          <Button type="button" variant="outline" size="sm" @click="openWorktreeFile(request.key, path)">Open in Your Editor</Button>
+        </EmptyState>
+
+        <section v-else-if="file" class="area flex min-h-0 flex-1 flex-col" :style="textStyle" data-merge-editor>
+          <!-- Toolbar -->
+          <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border-soft px-2 py-1 font-sans text-[0.7rem]">
+            <button type="button" class="diff-action" title="Previous conflict (Shift+F7)" :disabled="unresolved.length === 0" @click="goToConflict(-1)">
+              <ChevronUpIcon class="size-3" />
+            </button>
+            <button type="button" class="diff-action" title="Next conflict (F7)" :disabled="unresolved.length === 0" @click="goToConflict(1)">
+              <ChevronDownIcon class="size-3" />
+            </button>
+            <span :class="cn('tabular-nums', unresolved.length > 0 ? 'text-foreground' : 'text-muted-foreground')" data-merge-count>{{ conflictCount }}</span>
+            <span class="mx-1 h-3 w-px bg-border-soft" aria-hidden="true" />
+            <button type="button" class="diff-action" :disabled="unresolved.length === 0" @click="takeAll('left')">Take {{ names.ours }} for All Conflicts</button>
+            <button type="button" class="diff-action" :disabled="unresolved.length === 0" @click="takeAll('right')">Take {{ names.theirs }} for All Conflicts</button>
+            <span class="ml-auto flex items-center gap-1.5">
+              <label class="inline-flex items-center gap-1 text-muted-foreground">
+                <input v-model="syncScroll" type="checkbox" class="size-3 accent-primary" />
+                Scroll together
+              </label>
+              <button type="button" class="diff-action" title="Write Git's merge of this file again, with its conflict markers" @click="restoreGitMerge">
+                <RotateCcwIcon class="mr-1 size-3" />
+                Start Again from Git's Merge
+              </button>
+            </span>
+          </div>
+
+          <!-- Pane headers -->
+          <div class="merge-columns shrink-0 border-b border-border-soft font-sans text-xs" :style="{ '--merge-gap': `${GAP_PX}px` }">
+            <div class="truncate px-2 py-1" :title="names.ours" data-merge-side="left"><span class="font-semibold">{{ names.ours }}</span></div>
+            <div />
+            <div class="truncate px-2 py-1"><span class="font-semibold">Result</span> <span class="text-muted-foreground">saved to the working tree</span></div>
+            <div />
+            <div class="truncate px-2 py-1" :title="names.theirs" data-merge-side="right"><span class="font-semibold">{{ names.theirs }}</span></div>
+          </div>
+
+          <!-- Panes and gaps -->
+          <div class="merge-columns min-h-0 flex-1" :style="{ '--merge-gap': `${GAP_PX}px` }">
+            <div ref="leftHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="left" />
+            <div ref="leftGap" class="relative min-h-0 overflow-hidden" data-merge-gap="left">
+              <svg class="pointer-events-none absolute inset-0" :width="GAP_PX" :height="gapHeight" aria-hidden="true">
+                <path v-for="s in leftShapes" :key="s.key" :d="s.d" :class="`merge-curve-${s.kind}`" />
+              </svg>
+              <button
+                v-for="s in leftShapes"
+                :key="`a${s.key}`"
+                type="button"
+                class="merge-arrow left-0.5"
+                :style="{ top: `${s.arrowY}px` }"
+                :title="`Copy these lines from ${names.ours} into the result (Ctrl+click to add them below)`"
+                data-merge-take="left"
+                @click="take('left', s.index, $event.ctrlKey || $event.metaKey)"
+              >
+                »
+              </button>
+            </div>
+            <div ref="middleHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="middle" />
+            <div ref="rightGap" class="relative min-h-0 overflow-hidden" data-merge-gap="right">
+              <svg class="pointer-events-none absolute inset-0" :width="GAP_PX" :height="gapHeight" aria-hidden="true">
+                <path v-for="s in rightShapes" :key="s.key" :d="s.d" :class="`merge-curve-${s.kind}`" />
+              </svg>
+              <button
+                v-for="s in rightShapes"
+                :key="`a${s.key}`"
+                type="button"
+                class="merge-arrow right-0.5"
+                :style="{ top: `${s.arrowY}px` }"
+                :title="`Copy these lines from ${names.theirs} into the result (Ctrl+click to add them below)`"
+                data-merge-take="right"
+                @click="take('right', s.index, $event.ctrlKey || $event.metaKey)"
+              >
+                «
+              </button>
+            </div>
+            <div ref="rightHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="right" />
+          </div>
+        </section>
+      </div>
+
+      <DialogFooter>
+        <LoaderCircleIcon v-if="saving" class="mr-auto size-4 animate-spin text-muted-foreground" />
+        <Button type="button" variant="outline" @click="onOpenChange(false)">Cancel</Button>
+        <Button type="button" variant="outline" :disabled="!file || file.refused !== null" @click="save(false)">Save</Button>
+        <span :title="resolveBlocked ?? ''">
+          <Button type="button" variant="outline" :disabled="resolveBlocked !== null" @click="save(true, true)">Save, Resolve and Open Next</Button>
+        </span>
+        <span :title="resolveBlocked ?? ''">
+          <Button type="button" :disabled="resolveBlocked !== null" @click="save(true)">Save and Mark Resolved</Button>
+        </span>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+</template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEventListener } from "@vueuse/core";
 import { FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
@@ -63,6 +63,8 @@ const uiState = useUiStateStore();
 const host = useHostStore();
 const sessions = useSessionsStore();
 const dialogs = useDialogsStore();
+/** Loaded the first time it opens, with CodeMirror, so the editor adds nothing to starting up. */
+const MergeEditorDialog = defineAsyncComponent(() => import("@/components/merge/MergeEditorDialog.vue"));
 
 const ready = ref(false);
 let unlistenMenu: UnlistenFn | null = null;
@@ -293,6 +295,7 @@ const toolbarReasons = computed(() => ({
     <PushDialog />
     <FileHistoryDialog />
     <BlameDialog />
+    <MergeEditorDialog v-if="dialogs.current('mergeEditor')" />
     <MergeDialog />
     <RebaseDialog />
     <ConfirmDialog />

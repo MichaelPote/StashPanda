@@ -175,6 +175,31 @@
     width: calc(2px + var(--diff-num-w) + var(--diff-mark-w));
   }
 
+  /* The merge editor (components/merge/MergeEditorDialog.vue): three panes with a gap between
+     each two, where the curves and arrows are. */
+  .merge-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--merge-gap) minmax(0, 1fr) var(--merge-gap) minmax(0, 1fr);
+  }
+  /* A pane's lines that differ from the other side of their gap: green for a plain difference,
+     the conflict colour for a conflict not resolved yet. The bands in the gaps match. */
+  .merge-line-change {
+    background-color: var(--diff-add-bg);
+  }
+  .merge-line-conflict {
+    background-color: color-mix(in srgb, var(--state-conflict) 22%, transparent);
+  }
+  .merge-curve-change {
+    fill: var(--diff-add-bg);
+  }
+  .merge-curve-conflict {
+    fill: color-mix(in srgb, var(--state-conflict) 22%, transparent);
+  }
+  /* The arrow beside a difference that copies that side's lines into the result. */
+  .merge-arrow {
+    @apply absolute z-[1] flex h-(--diff-row-h) w-4 items-center justify-center rounded-sm font-sans text-sm leading-none font-bold text-foreground hover:bg-primary hover:text-primary-foreground;
+  }
+
   /* The Blame dialog's rows (`components/dialogs/BlameDialog.vue`): the commit column and the
      line number, which stay in place while the text scrolls sideways, then the line itself. */
   .blame-row {

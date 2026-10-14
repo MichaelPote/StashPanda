@@ -106,6 +106,8 @@ export function GitErrorMessage(error: GitError): string {
       return `The requested data (version ${error.requested}) is out of date; the current version is ${error.current}.`;
     case "io":
       return `A file system error occurred: ${error.detail}`;
+    case "changedOnDisk":
+      return `${error.path} changed on disk since it was read, so it was not saved over.`;
     case "internal":
       return `Internal error: ${error.detail}`;
     default:
