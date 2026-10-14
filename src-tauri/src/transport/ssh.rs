@@ -213,6 +213,9 @@ impl Transport for SshTransport {
         }
         Ok(out.stdout)
     }
+    async fn write_file(&self, path: &NativePath, bytes: &[u8]) -> Result<()> {
+        super::shell_write_file(self, path, bytes).await
+    }
     async fn remove_file(&self, path: &NativePath) -> Result<()> {
         let mut cmd = Cmd::git("rm", vec!["-f".into(), "--".into(), path.0.clone()]);
         cmd.program = Program::Other("rm".into());
@@ -455,6 +458,9 @@ mod e2e {
         let bytes = transport.read_file(&NativePath(repo.join("a.txt").to_string_lossy().into_owned()), 1024).await.unwrap();
         assert_eq!(bytes, b"hello\nworld\n");
         assert!(matches!(transport.read_file(&NativePath(repo.join("a.txt").to_string_lossy().into_owned()), 3).await, Err(GitError::TooLarge { .. })));
+        let written = dir.join("written");
+        std::fs::create_dir_all(&written).unwrap();
+        crate::transport::check_write_file(transport.as_ref(), &written).await;
         let times = transport
             .modified_times(&[
                 NativePath(repo.join("a.txt").to_string_lossy().into_owned()),

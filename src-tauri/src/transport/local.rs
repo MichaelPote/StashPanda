@@ -250,6 +250,11 @@ impl Transport for LocalTransport {
         }
         Ok(tokio::fs::read(&host.0).await?)
     }
+    async fn write_file(&self, path: &NativePath, bytes: &[u8]) -> Result<()> {
+        // `fs::write` opens the existing file with truncation, which keeps its mode.
+        let host = self.mapper.to_host(path)?;
+        Ok(tokio::fs::write(&host.0, bytes).await?)
+    }
     async fn remove_file(&self, path: &NativePath) -> Result<()> {
         let host = self.mapper.to_host(path)?;
         match tokio::fs::remove_file(&host.0).await {

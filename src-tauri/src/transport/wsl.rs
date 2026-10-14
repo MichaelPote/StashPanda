@@ -221,6 +221,11 @@ impl Transport for WslTransport {
         }
         Ok(tokio::fs::read(&host.0).await?)
     }
+    async fn write_file(&self, path: &NativePath, bytes: &[u8]) -> Result<()> {
+        // Inside the distro rather than through the UNC view, so the file is written by the
+        // distro's own user with Linux file semantics, not through the Windows file sharing layer.
+        super::shell_write_file(self, path, bytes).await
+    }
     async fn remove_file(&self, path: &NativePath) -> Result<()> {
         // Through the UNC view, like read_file.
         let host = self.mapper.to_host(path)?;

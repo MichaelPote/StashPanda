@@ -183,6 +183,19 @@ pub(crate) async fn host_list_dir(mapper: &dyn PathMapper, path: &NativePath) ->
     Ok(Some(names))
 }
 
+/// `write_file` for transports that reach the file through a shell on the machine that holds it
+/// (WSL, SSH): `cat > "$1"` with the bytes on standard input. The redirection truncates the
+/// existing file rather than making a new one, which is what keeps its mode.
+pub(crate) async fn shell_write_file(transport: &dyn Transport, path: &NativePath, bytes: &[u8]) -> Result<()> {
+    let mut cmd = Cmd::git("write", vec!["-c".into(), r#"cat > "$1""#.into(), "sh".into(), path.0.clone()]).stdin_bytes(bytes.to_vec());
+    cmd.program = Program::Other("sh".into());
+    let out = transport.run(cmd).await?;
+    if !out.success() {
+        return Err(GitError::Io { detail: String::from_utf8_lossy(&out.stderr).trim().to_string() });
+    }
+    Ok(())
+}
+
 /// `remove_dir_all` through the host filesystem, as for `host_list_dir`.
 pub(crate) async fn host_remove_dir_all(mapper: &dyn PathMapper, path: &NativePath) -> Result<()> {
     let host = mapper.to_host(path)?;
@@ -202,6 +215,10 @@ pub trait Transport: Send + Sync {
     async fn probe(&self) -> Result<TransportInfo>;
     /// Bytes of a working-tree file, capped at `limit`.
     async fn read_file(&self, path: &NativePath, limit: usize) -> Result<Vec<u8>>;
+    /// Replace the contents of file `path` with `bytes`, creating it when it does not exist. The
+    /// file is truncated and written in place, not replaced by a new file renamed over it, so it
+    /// keeps its mode (the executable bit), its owner and any hard links to it.
+    async fn write_file(&self, path: &NativePath, bytes: &[u8]) -> Result<()>;
     /// Delete one file. A file that does not exist is not an error.
     async fn remove_file(&self, path: &NativePath) -> Result<()>;
     /// Last-modified time of each working-tree file, in milliseconds since 1970, one result per
@@ -488,6 +505,36 @@ pub fn collapse_progress(stderr: &[u8]) -> Vec<u8> {
 
 pub type SharedTransport = Arc<dyn Transport>;
 
+/// Checks `write_file` on `transport`, in folder `dir` of this machine, which the transport must
+/// reach under the same path (Local, WSL from inside the same distro, SSH to this machine). An
+/// executable file keeps its executable bit through a write that makes it shorter, and the bytes
+/// arrive exactly as given (a NUL byte, CRLF, a quote); a file that does not exist is created; a
+/// folder that does not exist is an error.
+#[cfg(test)]
+pub(crate) async fn check_write_file(transport: &dyn Transport, dir: &std::path::Path) {
+    let native = |name: &str| NativePath(dir.join(name).to_string_lossy().into_owned());
+    let script = dir.join("run me.sh");
+    std::fs::write(&script, "#!/bin/sh\necho a long first version\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let bytes = b"#!/bin/sh\r\necho 'it\"s'\0\n";
+    transport.write_file(&native("run me.sh"), bytes).await.unwrap();
+    assert_eq!(std::fs::read(&script).unwrap(), bytes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&script).unwrap().permissions().mode() & 0o777, 0o755, "the mode survives the write");
+    }
+    transport.write_file(&native("new.txt"), b"new\n").await.unwrap();
+    assert_eq!(std::fs::read(dir.join("new.txt")).unwrap(), b"new\n");
+    transport.write_file(&native("new.txt"), b"").await.unwrap();
+    assert_eq!(std::fs::read(dir.join("new.txt")).unwrap(), b"");
+    assert!(transport.write_file(&native("no such folder/x.txt"), b"x").await.is_err());
+}
+
 /// Shell-quote for display in the console (POSIX style, good enough on Windows
 /// for reading). Not used to execute anything.
 pub fn display_command(argv: &[String]) -> String {
@@ -618,6 +665,33 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "a b'c\n");
         cancel_reaches_the_whole_group(&wsl, 3211).await;
         drop_reaches_the_whole_group(&wsl, 3213).await;
+    }
+
+    #[tokio::test]
+    async fn write_file_on_the_local_transport() {
+        use crate::transport::local::LocalTransport;
+        use crate::transport::paths::IdentityMapper;
+        let dir = std::env::temp_dir().join(format!("stashpanda-write-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = LocalTransport { git: "git".into(), mapper: Box::new(IdentityMapper), windows_git_from_linux: false };
+        check_write_file(&local, &dir).await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `write_file` through `wsl.exe` into the distro the tests run in. Skips outside WSL.
+    #[tokio::test]
+    async fn write_file_on_the_wsl_transport() {
+        use crate::transport::paths::WslMapper;
+        use crate::transport::wsl::WslTransport;
+        let Ok(distro) = std::env::var("WSL_DISTRO_NAME") else { return };
+        if !std::path::Path::new("/mnt/c/Windows/System32/wsl.exe").exists() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("stashpanda-write-wsl-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wsl = WslTransport { distro: distro.clone(), git: "git".into(), mapper: WslMapper { distro, automount_root: "/mnt/".into() } };
+        check_write_file(&wsl, &dir).await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
