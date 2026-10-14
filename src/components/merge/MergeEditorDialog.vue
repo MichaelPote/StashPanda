@@ -10,6 +10,9 @@ import { commands, type ConflictFile } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import EmptyState from "@/components/shell/EmptyState.vue";
+import FindBox from "@/components/diff/FindBox.vue";
+import { useFind, type FindHit } from "@/composables/useFind";
+import { findInText } from "@/lib/diff/find";
 import { operationNames } from "@/lib/conflicts";
 import { diffRowPx, diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { bandPath } from "@/lib/diff/sideLayout";
@@ -18,7 +21,7 @@ import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { blocksField, dismissedChunks, initialBlocks, placeholders, saveText, setChunkDismissed, setDismissed, setTaken, type MergeBlock } from "@/lib/merge/blocks";
 import { buildChunks, chunkLines, mapLine, updateChunks, type LineChunk } from "@/lib/merge/chunks";
 import { folds, foldsEffect, lineAbove, lineAtHeight, lineTop, type FoldRange } from "@/lib/merge/folds";
-import { lineMarks, lineMarksEffect, type LineMark } from "@/lib/merge/lines";
+import { findMarks, findMarksEffect, lineMarks, lineMarksEffect, type FindMark, type LineMark } from "@/lib/merge/lines";
 import { syntaxColours } from "@/lib/merge/syntax";
 import { openWorktreeFile, runOp } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
@@ -85,6 +88,8 @@ const rightChunks = shallowRef<readonly Chunk[]>([]);
 const leftLines = shallowRef<LineChunk[]>([]);
 const rightLines = shallowRef<LineChunk[]>([]);
 const dirty = ref(false);
+/** Counts edits to the result, so that Find looks again after one. */
+const docVersion = ref(0);
 const syncScroll = ref(true);
 /** The differences dismissed with "×", by `chunkKey`, as the result pane's state holds them. */
 const dismissed = shallowRef<ReadonlySet<string>>(new Set());
@@ -179,6 +184,7 @@ function paneExtensions(readOnly: boolean): Extension[] {
     syntaxOn.value ? syntaxColours(p, themeFor(dark.value)) : [],
     lineMarks(),
     folds(),
+    findMarks(),
     keymap.of(editorKeys),
   ];
 }
@@ -213,6 +219,8 @@ function createPanes(f: ConflictFile): void {
   resizeObserver = new ResizeObserver(() => scheduleDraw());
   resizeObserver.observe(middle.dom);
   scheduleDraw();
+  // Start at the first conflict, with the keyboard in the result.
+  if (unresolved.value.length > 0) void nextTick(() => goToConflict(1));
 }
 
 function destroyPanes(): void {
@@ -236,6 +244,7 @@ function onMiddleUpdate(update: ViewUpdate): void {
   if (!panes) return;
   if (update.docChanged) {
     dirty.value = true;
+    docVersion.value += 1;
     leftChunks.value = updateChunks(leftChunks.value, panes.left.state.doc, update.state.doc, update.changes);
     rightChunks.value = updateChunks(rightChunks.value, panes.right.state.doc, update.state.doc, update.changes);
   }
@@ -301,6 +310,9 @@ function refreshLines(): void {
 
 // ---- Folding unchanged lines -------------------------------------------------------------
 
+/** The folds each pane has now, to open one that hides a Find match. */
+let lastFolds: Record<PaneName, FoldRange[]> = { left: [], middle: [], right: [] };
+
 /** Lines kept on show around every difference and conflict. */
 const FOLD_CONTEXT = 3;
 /** The fewest lines worth folding: a shorter run stays on show. */
@@ -343,6 +355,7 @@ function refreshFolds(): void {
       }
     }
   }
+  lastFolds = ranges;
   const row = diffRowPx(font.value);
   for (const [view, list] of [[left, ranges.left], [middle, ranges.middle], [right, ranges.right]] as const) {
     view.dispatch({ effects: foldsEffect(view.state.doc, list, row, showFold) });
@@ -620,6 +633,76 @@ function onPaneScroll(name: "left" | "middle" | "right"): void {
   }
 }
 
+// ---- Find (Ctrl+F) -------------------------------------------------------------------------
+//
+// The Find box of the diff view and Blame (`useFind`, `FindBox.vue`), over all three panes at
+// once: the matches are stepped through from the top of the file down, a side's lines placed by
+// the result line they match, and the pane holding the current one scrolls to it.
+
+const PANE_ORDER: Record<PaneName, number> = { left: 0, middle: 1, right: 2 };
+
+interface MergeFindHit extends FindHit {
+  pane: PaneName;
+  line: number;
+}
+
+function collectMatches(query: string, max: number): MergeFindHit[] {
+  void docVersion.value;
+  if (!panes) return [];
+  const out: MergeFindHit[] = [];
+  for (const pane of ["left", "middle", "right"] as const) {
+    const doc = panes[pane].state.doc;
+    for (let i = 0; i < doc.lines && out.length < max; i += 1) {
+      for (const [start, end] of findInText(doc.line(i + 1).text, query)) {
+        if (out.length >= max) break;
+        const row = pane === "middle" ? i : mapLine(pane === "left" ? leftLines.value : rightLines.value, i, true);
+        out.push({ key: `${pane}:${i}`, start, end, row, pane, line: i });
+      }
+    }
+  }
+  return out.sort((x, y) => x.row - y.row || PANE_ORDER[x.pane] - PANE_ORDER[y.pane] || x.start - y.start);
+}
+
+/** Scrolls the pane holding a match to it, first opening the fold that hides it, if any. */
+function revealMatch(hit: MergeFindHit): void {
+  const fold = lastFolds[hit.pane].find((f) => f.from <= hit.line && hit.line < f.to);
+  if (fold) showFold(fold.key);
+  void nextTick(() => {
+    const view = panes?.[hit.pane];
+    if (!view) return;
+    const pos = view.state.doc.line(hit.line + 1).from + hit.start;
+    view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center", x: "center" }) });
+  });
+}
+
+const find = useFind<MergeFindHit>({
+  collect: collectMatches,
+  topRow: () => {
+    const view = panes?.middle;
+    if (!view) return 0;
+    return lineAtHeight(view, view.scrollDOM.getBoundingClientRect().top - view.documentTop);
+  },
+  reveal: revealMatch,
+  refocus: () => panes?.middle.focus(),
+  resetOn: [file],
+});
+
+// Draw the matches in their panes whenever they or the current one change.
+watch([find.matches, find.current], () => {
+  const p = panes;
+  if (!p) return;
+  const marks: Record<PaneName, FindMark[]> = { left: [], middle: [], right: [] };
+  find.matches.value.forEach((m, n) => {
+    const from = p[m.pane].state.doc.line(m.line + 1).from;
+    marks[m.pane].push({ from: from + m.start, to: from + m.end, current: n === find.current.value });
+  });
+  for (const pane of ["left", "middle", "right"] as const) p[pane].dispatch({ effects: findMarksEffect(marks[pane]) });
+});
+
+function onEditorKeydown(event: KeyboardEvent): void {
+  if (panes) find.onKeydown(event);
+}
+
 // ---- Saving --------------------------------------------------------------------------------
 
 /** Writes the result to the working tree; with `resolve`, then marks the file resolved (git add). */
@@ -746,7 +829,7 @@ const resolveBlocked = computed(() => {
           <Button type="button" variant="outline" size="sm" @click="openWorktreeFile(request.key, path)">Open in Your Editor</Button>
         </EmptyState>
 
-        <section v-else-if="file" class="area flex min-h-0 flex-1 flex-col" :style="textStyle" data-merge-editor>
+        <section v-else-if="file" class="area flex min-h-0 flex-1 flex-col" :style="textStyle" data-merge-editor @keydown="onEditorKeydown">
           <!-- Toolbar -->
           <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border-soft px-2 py-1 font-sans text-[0.7rem]">
             <button type="button" class="diff-action" title="Previous conflict (Shift+F7)" :disabled="unresolved.length === 0" @click="goToConflict(-1)">
@@ -785,7 +868,19 @@ const resolveBlocked = computed(() => {
           </div>
 
           <!-- Panes and gaps -->
-          <div class="merge-columns min-h-0 flex-1" :style="{ '--merge-gap': `${GAP_PX}px` }">
+          <div class="merge-columns relative min-h-0 flex-1" :style="{ '--merge-gap': `${GAP_PX}px` }">
+            <!-- The Find box (Ctrl+F), over the result pane's top right corner. -->
+            <FindBox
+              v-if="find.open.value"
+              :ref="(el) => (find.box.value = el as InstanceType<typeof FindBox> | null)"
+              v-model="find.query.value"
+              class="absolute top-1.5 right-5 z-20"
+              :summary="find.summary.value"
+              :can-step="find.matches.value.length > 0"
+              placeholder="Find in all three versions"
+              @step="find.step"
+              @close="find.close"
+            />
             <div class="relative min-h-0 min-w-0">
               <div ref="leftHost" class="h-full overflow-hidden" data-merge-pane="left" />
               <!-- Marks for the pane's differences and conflicts, beside its scroll bar: click one to go there. -->

@@ -43,3 +43,37 @@ export function lineMarksEffect(doc: Text, marks: readonly LineMark[]) {
   }
   return setLineMarks.of(Decoration.set(ranges, true));
 }
+
+// ---- Find matches --------------------------------------------------------------------------
+
+/** One Find match in a pane: document positions, and whether it is the current one. */
+export interface FindMark {
+  from: number;
+  to: number;
+  current: boolean;
+}
+
+const setFindMarks = StateEffect.define<DecorationSet>();
+
+const findMarkField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(set, tr) {
+    let next = set.map(tr.changes);
+    for (const e of tr.effects) if (e.is(setFindMarks)) next = e.value;
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+const FIND = Decoration.mark({ class: "diff-find" });
+const FIND_CURRENT = Decoration.mark({ class: "diff-find diff-find-current", attributes: { "data-find-current": "" } });
+
+/** The extension a pane needs for `findMarksEffect` to draw. */
+export function findMarks(): Extension {
+  return findMarkField;
+}
+
+/** The effect that replaces a pane's Find highlights with `marks`, in the diff view's purple. */
+export function findMarksEffect(marks: readonly FindMark[]) {
+  return setFindMarks.of(Decoration.set(marks.map((m) => (m.current ? FIND_CURRENT : FIND).range(m.from, m.to)), true));
+}
