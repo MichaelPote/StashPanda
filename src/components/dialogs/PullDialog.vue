@@ -83,7 +83,7 @@ async function submit(): Promise<void> {
     const result = await runOperation(r.key, `Pulling ${from.short} into ${r.into}`, (opId) =>
       commands.opPull(r.key, opId, from.remote, from.branch, chosen, r.autostash),
     );
-    const outcome = pullOutcome(r.key, result, from.short, r.into, chosen);
+    const outcome = pullOutcome(result, from.short, r.into, chosen);
     if (outcome.failed && showing()) {
       error.value = outcome.message;
       return;

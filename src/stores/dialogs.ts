@@ -81,6 +81,33 @@ export interface PullPayload {
   autostash: boolean;
 }
 
+/** A branch the Merge and Rebase dialogs offer. */
+export interface BranchChoice {
+  /** `dev`, or `origin/dev` for a remote branch. */
+  short: string;
+  remote: boolean;
+  /** The commit it points at. */
+  target: string;
+}
+
+export interface MergePayload {
+  key: string;
+  /** The checked-out branch the chosen branch is merged into. */
+  into: string;
+  /** Local branches other than `into`, then remote branches. */
+  branches: BranchChoice[];
+}
+
+export interface RebasePayload {
+  key: string;
+  /** The checked-out branch whose own commits are replayed. */
+  branch: string;
+  /** Local branches other than `branch`, then remote branches. */
+  branches: BranchChoice[];
+  /** The remote branch `branch` tracks (`origin/main`), picked first; null when it tracks none. */
+  upstream: string | null;
+}
+
 export interface PushPayload {
   key: string;
   /** The checked-out branch, which tracks no remote branch yet. */
@@ -181,6 +208,8 @@ export interface DialogSpecs {
   stashPush: { payload: StashPushPayload; result: OpResult | null };
   stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
   pull: { payload: PullPayload; result: OpResult | null };
+  merge: { payload: MergePayload; result: OpResult | null };
+  rebase: { payload: RebasePayload; result: OpResult | null };
   push: { payload: PushPayload; result: PushChoice | null };
   confirm: { payload: ConfirmPayload; result: boolean };
   fileHistory: { payload: FileHistoryPayload; result: null };
@@ -206,6 +235,8 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   stashPush: null,
   stashApply: null,
   pull: null,
+  merge: null,
+  rebase: null,
   push: null,
   confirm: false,
   fileHistory: null,

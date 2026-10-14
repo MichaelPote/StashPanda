@@ -23,6 +23,34 @@ pub enum DiffTarget {
     WorktreeVsHead,
     /// A file Git does not know yet; rendered as all added.
     Untracked,
+    /// A conflicted file: one of its versions against another. A version the conflict lacks (the
+    /// side that deleted the file, or the base when both sides added it) counts as empty.
+    Conflict { from: ConflictVersion, to: ConflictVersion },
+}
+
+/// One version of a conflicted file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ConflictVersion {
+    /// Stage 1: the common ancestor both sides started from.
+    Base,
+    /// Stage 2: the branch being merged into (for a rebase, the branch being rebased onto).
+    Ours,
+    /// Stage 3: what is coming in (for a rebase, the commit being replayed).
+    Theirs,
+    /// The file on disk, with Git's conflict markers until it is resolved by hand.
+    WorkingTree,
+}
+
+impl ConflictVersion {
+    fn stage(self) -> Option<u8> {
+        match self {
+            ConflictVersion::Base => Some(1),
+            ConflictVersion::Ours => Some(2),
+            ConflictVersion::Theirs => Some(3),
+            ConflictVersion::WorkingTree => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -120,9 +148,19 @@ fn common_flags(opts: &DiffOptions) -> Vec<String> {
 
 /// A unified diff for a brand-new file, built from its bytes.
 pub fn synthesize_untracked(path: &str, content: &[u8]) -> DiffText {
+    synthesize_whole(path, content, true)
+}
+
+/// A unified diff that adds every line of `content` (`added`), or removes every line of it.
+pub fn synthesize_whole(path: &str, content: &[u8], added: bool) -> DiffText {
+    let (mode, old, new) = if added {
+        ("new file mode 100644", "/dev/null".to_string(), format!("b/{path}"))
+    } else {
+        ("deleted file mode 100644", format!("a/{path}"), "/dev/null".to_string())
+    };
     if looks_binary(content) {
         return DiffText {
-            text: format!("diff --git a/{path} b/{path}\nnew file mode 100644\nBinary files /dev/null and b/{path} differ\n"),
+            text: format!("diff --git a/{path} b/{path}\n{mode}\nBinary files {old} and {new} differ\n"),
             is_binary: true,
             truncated: false,
             bytes: content.len() as u64,
@@ -133,17 +171,88 @@ pub fn synthesize_untracked(path: &str, content: &[u8]) -> DiffText {
     let text = String::from_utf8_lossy(content);
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let mut out = String::new();
-    out.push_str(&format!("diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"));
-    out.push_str(&format!("@@ -0,0 +1,{} @@\n", lines.len()));
-    for l in &lines {
-        out.push('+');
-        out.push_str(l.trim_end_matches('\n'));
-        out.push('\n');
+    out.push_str(&format!("diff --git a/{path} b/{path}\n{mode}\n--- {old}\n+++ {new}\n"));
+    // An empty file has no hunk at all, as in Git's own diff.
+    if !lines.is_empty() {
+        let (sign, header) = if added { ('+', format!("@@ -0,0 +1,{} @@\n", lines.len())) } else { ('-', format!("@@ -1,{} +0,0 @@\n", lines.len())) };
+        out.push_str(&header);
+        for l in &lines {
+            out.push(sign);
+            out.push_str(l.trim_end_matches('\n'));
+            out.push('\n');
+        }
+        if !text.ends_with('\n') {
+            out.push_str("\\ No newline at end of file\n");
+        }
     }
-    if !text.is_empty() && !text.ends_with('\n') {
-        out.push_str("\\ No newline at end of file\n");
+    let eol = detect_eol(content);
+    let (old_eol, new_eol) = if added { (Eol::None, eol) } else { (eol, Eol::None) };
+    DiffText { text: out, is_binary: false, truncated: false, bytes: content.len() as u64, old_eol, new_eol }
+}
+
+/// Bytes of one version of a conflicted file, or None when that version does not exist: a stage
+/// the conflict lacks, or a working tree file that has been deleted.
+async fn conflict_version(client: &GitClient, path: &str, version: ConflictVersion, stages: &[u8]) -> Result<Option<Vec<u8>>> {
+    match version.stage() {
+        Some(n) if !stages.contains(&n) => Ok(None),
+        Some(n) => {
+            let out = client.exec(GitReq::new("cat-file", ["cat-file".to_string(), "blob".into(), format!(":{n}:{path}")])).await?;
+            Ok(Some(out.stdout))
+        }
+        None => {
+            let full = join_repo_path(&client.repo, path);
+            match client.transport.read_file(&full, DIFF_CAP).await {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(GitError::Io { .. }) => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
     }
-    DiffText { text: out, is_binary: false, truncated: false, bytes: content.len() as u64, old_eol: Eol::None, new_eol: detect_eol(content) }
+}
+
+/// The diff between two versions of a conflicted file. When both are stages, `git diff` compares
+/// the two blobs (`:2:<path>` and so on); a stage against the working tree is `git diff -1`, `-2`
+/// or `-3`. When one version does not exist, the other is shown as wholly added or removed.
+async fn conflict_diff(client: &GitClient, path: &str, from: ConflictVersion, to: ConflictVersion, opts: &DiffOptions) -> Result<DiffText> {
+    if from == ConflictVersion::WorkingTree {
+        return Err(GitError::InvalidPath { path: path.to_string(), reason: "the working tree can only be compared with, not from".into() });
+    }
+    let out = client.exec(GitReq::new("ls-files", ["--literal-pathspecs", "ls-files", "-u", "-z", "--", path])).await?;
+    let stages: Vec<u8> = crate::git::ops::parse_unmerged(&out.stdout).remove(path).unwrap_or_default();
+    if let (Some(a), Some(b)) = (from.stage(), to.stage()) {
+        if stages.contains(&a) && stages.contains(&b) {
+            let mut args = vec!["diff".to_string()];
+            args.extend(common_flags(opts));
+            args.push(format!(":{a}:{path}"));
+            args.push(format!(":{b}:{path}"));
+            let out = client.exec(GitReq::new("diff", args)).await?;
+            return Ok(finish(out.stdout));
+        }
+    }
+    let (from_bytes, to_bytes) =
+        tokio::try_join!(conflict_version(client, path, from, &stages), conflict_version(client, path, to, &stages))?;
+    match (from_bytes, to_bytes) {
+        (Some(_), Some(_)) => {
+            let stage = from.stage().expect("from is a stage");
+            let mut args = vec!["--literal-pathspecs".to_string(), "diff".into(), format!("-{stage}")];
+            args.extend(common_flags(opts));
+            args.push("--".into());
+            args.push(path.to_string());
+            let out = client.exec(GitReq::new("diff", args)).await?;
+            // Git starts the output with `* Unmerged path <path>`, which is not part of the diff.
+            let text: Vec<u8> = out
+                .stdout
+                .split_inclusive(|b| *b == b'\n')
+                .filter(|l| !l.starts_with(b"* Unmerged path "))
+                .flatten()
+                .copied()
+                .collect();
+            Ok(finish(text))
+        }
+        (None, Some(bytes)) => Ok(synthesize_whole(path, &bytes, true)),
+        (Some(bytes), None) => Ok(synthesize_whole(path, &bytes, false)),
+        (None, None) => Ok(finish(Vec::new())),
+    }
 }
 
 pub async fn get_diff(
@@ -192,6 +301,7 @@ pub async fn get_diff(
             let bytes = client.transport.read_file(&full, DIFF_CAP).await?;
             return Ok(synthesize_untracked(path, &bytes));
         }
+        DiffTarget::Conflict { from, to } => return conflict_diff(client, path, *from, *to, opts).await,
     }
     args.push("--".into());
     args.push(path.to_string());

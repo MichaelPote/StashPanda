@@ -14,7 +14,8 @@ use crate::git::queries::commit_files::{get_commit_files, FileChange};
 use crate::git::queries::diff::{get_diff, join_repo_path, DiffOptions, DiffTarget, DiffText};
 use crate::git::queries::log::{get_commit_body, get_stashes, get_unchanged_parents as unchanged_parents, StashEntry};
 use crate::git::queries::refs::{get_refs, RefsSnapshot};
-use crate::git::queries::status::{get_status, StatusSnapshot};
+use crate::git::queries::full_status;
+use crate::git::queries::status::StatusSnapshot;
 use crate::repo::RepoHandle;
 use crate::state::AppState;
 
@@ -45,7 +46,7 @@ macro_rules! with_read_slot {
 #[specta::specta]
 pub async fn get_repo_status(state: State<'_, AppState>, key: String) -> Result<StatusSnapshot> {
     let h = repo(&state, &key).await?;
-    with_read_slot!(h, get_status(&h.client).await)
+    with_read_slot!(h, full_status(&h.client, &h.info.git_dir).await)
 }
 
 /// Last-modified time of each working-tree path (repository-relative), in milliseconds since

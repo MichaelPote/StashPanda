@@ -99,6 +99,9 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .text("repo.push", "Pus&h")
         .text("repo.sync", "S&ync (Pull, then Push)")
         .separator()
+        .text("repo.merge", "&Merge into the Current Branch…")
+        .text("repo.rebase", "R&ebase the Current Branch…")
+        .separator()
         .text("repo.remove", "&Remove from Library")
         .build()?;
 

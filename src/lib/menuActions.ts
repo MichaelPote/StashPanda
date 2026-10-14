@@ -12,7 +12,9 @@ import {
   createTagAt,
   fetchAll,
   openApplyStashDialog,
+  openMergeDialog,
   openPullDialog,
+  openRebaseDialog,
   openStashDialog,
   pushCurrentBranch,
   removeFromLibrary,
@@ -128,6 +130,12 @@ export async function dispatch(id: string): Promise<void> {
       return;
     case "repo.push":
       await pushCurrentBranch(sessions.active);
+      return;
+    case "repo.merge":
+      await openMergeDialog(sessions.active);
+      return;
+    case "repo.rebase":
+      await openRebaseDialog(sessions.active);
       return;
     case "repo.sync":
       await syncCurrentBranch(sessions.active);

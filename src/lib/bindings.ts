@@ -274,6 +274,30 @@ export const commands = {
 	opRemoveStaleLock: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("op_remove_stale_lock", { key })),
 	opRebaseAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase_abort", { key })),
 	/**
+	 *  Rebase the current branch onto `onto` (a branch name or commit), not interactively.
+	 *  `conflicts` in the result means the rebase stopped on a commit and is still open: the status's
+	 *  `inProgress` then describes it, and `opContinue`, `opSkip` or `opRebaseAbort` go on.
+	 */
+	opRebase: (key: string, onto: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase", { key, onto })),
+	/**
+	 *  Finish the merge, cherry-pick or revert in progress, or go on with the rebase, once no file is
+	 *  conflicted: `git <command> --continue`, keeping the message Git prepared. A rebase that stops
+	 *  on the next commit's conflicts reports `conflicts` again.
+	 */
+	opContinue: (key: string, kind: InProgressKind) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_continue", { key, kind })),
+	/**
+	 *  Leave out the commit the rebase or cherry-pick in progress stopped at, and go on with the next
+	 *  one (`--skip`). Fails with `invalidPath` for a merge or revert.
+	 */
+	opSkip: (key: string, kind: InProgressKind) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_skip", { key, kind })),
+	/**
+	 *  Resolve conflicted `paths` by keeping one side's whole version (`ours` is the branch being
+	 *  merged into, `theirs` what comes in; a rebase swaps the two, see `ResolveSide`), and mark them
+	 *  resolved. A side that deleted the file deletes it. Fails with `invalidPath` when a path is not
+	 *  conflicted any more. To mark a file resolved as it is on disk, stage it with `opStage`.
+	 */
+	opResolveConflicts: (key: string, paths: string[], side: ResolveSide) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_resolve_conflicts", { key, paths, side })),
+	/**
 	 *  Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
 	 *  `git rebase` (see `ops::pull_fetch` and `ops::pull_integrate`). `opId` is chosen by the
 	 *  caller: each progress update arrives as an `operationProgress` event carrying it, and
@@ -562,6 +586,17 @@ export type CommitSettings = {
 	preselect?: CommitPreselect,
 };
 
+/**  One version of a conflicted file. */
+export type ConflictVersion = 
+/**  Stage 1: the common ancestor both sides started from. */
+"base" | 
+/**  Stage 2: the branch being merged into (for a rebase, the branch being rebased onto). */
+"ours" | 
+/**  Stage 3: what is coming in (for a rebase, the commit being replayed). */
+"theirs" | 
+/**  The file on disk, with Git's conflict markers until it is resolved by hand. */
+"workingTree";
+
 /**  How a repository is reached. `Auto` resolves from the path on every open. */
 export type Connection = { type: "auto" } | { type: "local" } | { type: "wsl"; distro: string } | { type: "ssh"; host: string; user: string | null; port: number | null; identityFile: string | null; remoteGit: string | null };
 
@@ -696,7 +731,12 @@ export type DiffTarget =
 /**  Working tree vs HEAD. */
 { type: "worktreeVsHead" } | 
 /**  A file Git does not know yet; rendered as all added. */
-{ type: "untracked" };
+{ type: "untracked" } | 
+/**
+ *  A conflicted file: one of its versions against another. A version the conflict lacks (the
+ *  side that deleted the file, or the base when both sides added it) counts as empty.
+ */
+{ type: "conflict"; from: ConflictVersion; to: ConflictVersion };
 
 export type DiffText = {
 	text: string,
@@ -947,6 +987,34 @@ export type GraphSnapshotEvent = {
 
 /**  Which OS this build runs on, so the UI can phrase paths and options. */
 export type HostInfo = { type: "windows" } | { type: "linuxWsl"; distro: string } | { type: "linux" } | { type: "macOs" };
+
+export type InProgress = {
+	kind: InProgressKind,
+	/**
+	 *  The commit being merged (the first line of `MERGE_HEAD`), cherry-picked
+	 *  (`CHERRY_PICK_HEAD`) or reverted (`REVERT_HEAD`), or the commit a rebase stopped at
+	 *  (`REBASE_HEAD`). None when Git has not written it, as for a rebase stopped by `exec`.
+	 */
+	commit: string | null,
+	/**
+	 *  The first line of the message the commit will get (`MERGE_MSG`), or of the message of the
+	 *  commit a rebase is applying.
+	 */
+	subject: string | null,
+	/**
+	 *  Rebase only: the branch being rebased, such as `refs/heads/main`. None when the rebase
+	 *  started from a detached HEAD.
+	 */
+	branch: string | null,
+	/**  Rebase only: the commit the branch is being rebased onto. */
+	onto: string | null,
+	/**  Rebase only: which of the commits being replayed is being applied now, counting from 1. */
+	step: number | null,
+	/**  Rebase only: how many commits the rebase replays. */
+	total: number | null,
+};
+
+export type InProgressKind = "merge" | "rebase" | "cherryPick" | "revert";
 
 export type KeyFormat = "ppkV2" | "ppkV3" | "openSsh" | 
 /**  `BEGIN RSA PRIVATE KEY` (PKCS#1), possibly OpenSSL-encrypted. */
@@ -1243,6 +1311,13 @@ export type ResetMode =
 "hard";
 
 /**
+ *  Which version of a conflicted file to keep. In Git's terms: `Ours` is stage 2, the branch
+ *  being merged into (for a rebase, the branch being rebased onto, with the commits already
+ *  replayed); `Theirs` is stage 3, what is coming in (for a rebase, the commit being replayed).
+ */
+export type ResolveSide = "ours" | "theirs";
+
+/**
  *  The transport `Auto` resolved to last time; shown in the UI and used to key
  *  the cache.
  */
@@ -1330,6 +1405,12 @@ export type StatusSnapshot = {
 	unstagedCount: number,
 	untrackedCount: number,
 	conflictedCount: number,
+	/**
+	 *  A merge, rebase, cherry-pick or revert that has stopped part way. `git status` does not
+	 *  report it in this format: `queries::full_status` and `queries::refs_and_status` fill it in,
+	 *  and `get_status` leaves it None.
+	 */
+	inProgress: InProgress | null,
 };
 
 /**  What a sync did: the pull, then the push if it got that far. */

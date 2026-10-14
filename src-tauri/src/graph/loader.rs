@@ -124,7 +124,7 @@ pub async fn refresh_full(
     let client = &handle.client;
     let _shared = handle.lock.read().await;
 
-    let (refs_res, status_res) = crate::git::queries::refs_and_status(client).await;
+    let (refs_res, status_res) = crate::git::queries::refs_and_status(client, &handle.info.git_dir).await;
     rebuild(app, db, handle, options, cache, reason, refs_res?, status_res?, force_full).await
 }
 
@@ -159,10 +159,10 @@ pub async fn refresh_if_changed(
     let _shared = handle.lock.read().await;
 
     let (refs_snap, status_snap) = if check_refs {
-        let (r, s) = crate::git::queries::refs_and_status(client).await;
+        let (r, s) = crate::git::queries::refs_and_status(client, &handle.info.git_dir).await;
         (Some(r?), s?)
     } else {
-        (None, status::get_status(client).await?)
+        (None, crate::git::queries::full_status(client, &handle.info.git_dir).await?)
     };
     let status_changed = handle.last_status.read().await.as_ref() != Some(&status_snap);
 
@@ -514,7 +514,7 @@ pub async fn refresh_status_only(
     };
     let status_snap = {
         let _shared = handle.lock.read().await;
-        status::get_status(&handle.client).await?
+        crate::git::queries::full_status(&handle.client, &handle.info.git_dir).await?
     };
     if status_snap.head_oid.as_deref() != current.refs.head.as_deref() {
         // HEAD moved: refs are stale too.

@@ -42,6 +42,10 @@ pub struct StatusSnapshot {
     pub unstaged_count: u32,
     pub untracked_count: u32,
     pub conflicted_count: u32,
+    /// A merge, rebase, cherry-pick or revert that has stopped part way. `git status` does not
+    /// report it in this format: `queries::full_status` and `queries::refs_and_status` fill it in,
+    /// and `get_status` leaves it None.
+    pub in_progress: Option<super::in_progress::InProgress>,
 }
 
 impl StatusSnapshot {

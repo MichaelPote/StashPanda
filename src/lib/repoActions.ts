@@ -3,13 +3,25 @@
  * panel and the native menu bar, plus removing a repository from the library. Every function
  * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
-import { commands, type GitError, type GraphRow, type OpResult, type PullMode, type PushTarget, type ResetMode, type StashEntry, type SyncResult } from "@/lib/bindings";
+import {
+  commands,
+  type GitError,
+  type GraphRow,
+  type OpResult,
+  type PullMode,
+  type PushTarget,
+  type ResetMode,
+  type ResolveSide,
+  type StashEntry,
+  type SyncResult,
+} from "@/lib/bindings";
+import { hasConflictMarkers, OPERATION_VERBS, operationNames } from "@/lib/conflicts";
 import { pathBasename } from "@/lib/format";
-import { commitFiles, worktreeActionPaths, type WorktreeActionPaths } from "@/lib/files";
+import { commitFiles, selectedConflicts, worktreeActionPaths, type FileItem, type WorktreeActionPaths } from "@/lib/files";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
-import { useDialogsStore, type PullSource } from "@/stores/dialogs";
+import { useDialogsStore, type BranchChoice, type PullSource } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
@@ -71,11 +83,25 @@ export function uncommittedSummary(session: RepoSession | null | undefined): str
   return parts.length === 0 ? null : parts.join(", ");
 }
 
-/** Why a merge is blocked right now, or null when the working tree is clean. */
+/**
+ * Why a merge is blocked right now: a merge, rebase, cherry-pick or revert is still in progress,
+ * or the working tree has uncommitted changes. Null when neither.
+ */
 export function dirtyTreeReason(session: RepoSession | null | undefined): string | null {
   const summary = uncommittedSummary(session);
-  return summary === null ? null : `The working tree has uncommitted changes (${summary}). Commit or stash them first.`;
+  return operationReason(session) ?? (summary === null ? null : `The working tree has uncommitted changes (${summary}). Commit or stash them first.`);
 }
+
+/** Why nothing else can start: a merge, rebase, cherry-pick or revert is in progress. Null when none is. */
+export function operationReason(session: RepoSession | null | undefined): string | null {
+  const op = session?.status?.inProgress;
+  if (!op) return null;
+  return `A ${OPERATION_VERBS[op.kind]} is in progress. Continue or abort it first, in the bar above the commits.`;
+}
+
+/** Where a notice about conflicts sends the user. */
+const RESOLVE_HINT =
+  "Resolve the files in the Conflicted section of the Files panel, then press Continue in the bar above the commits, or Abort there.";
 
 /** Name of the checked-out branch, or null when HEAD is detached or status is not loaded yet. */
 export function currentBranch(session: RepoSession | null | undefined): string | null {
@@ -172,7 +198,7 @@ export async function abortRebase(key: string): Promise<void> {
   const sessions = useSessionsStore();
   try {
     const result = await runOp(key, () => commands.opRebaseAbort(key));
-    if (result.ok) sessions.notifySuccess("The rebase was aborted. The branch is back where it was before the pull.");
+    if (result.ok) sessions.notifySuccess("The rebase was aborted. The branch is back where it was before the rebase started.");
     else sessions.notify(opFailureText(result, "Aborting the rebase"));
   } catch (e) {
     sessions.notify(errorMessage(e));
@@ -186,7 +212,7 @@ export function pullReason(session: RepoSession | null | undefined): string | nu
   if (!session.status || !session.refs) return "The repository is still loading.";
   if (isDetached(session) || currentBranch(session) === null) return "HEAD is detached. Check out a branch before pulling.";
   if (session.status.conflictedCount > 0) return "Resolve the conflicted files first: Git cannot pull while files are unmerged.";
-  return busyReason(session);
+  return operationReason(session) ?? busyReason(session);
 }
 
 /**
@@ -271,7 +297,7 @@ export interface PullOutcome {
 }
 
 /** Turns a finished pull into the notice to show. `from` is `origin/dev`, `into` the local branch. */
-export function pullOutcome(key: string, result: OpResult, from: string, into: string, mode: PullMode): PullOutcome {
+export function pullOutcome(result: OpResult, from: string, into: string, mode: PullMode): PullOutcome {
   const output = `${result.stdout}\n${result.stderr}`;
   if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
     return {
@@ -291,21 +317,12 @@ export function pullOutcome(key: string, result: OpResult, from: string, into: s
           : `Pulled ${from} into ${into}.`;
     return { message, kind: "success", action: null, failed: false };
   }
+  // The bar above the commits now shows the rebase or merge, with Continue and Abort.
   if (result.conflicts && mode === "rebase") {
-    return {
-      message: `The pull stopped on conflicts while rebasing ${into} onto ${from}. Resolve them, or abort the rebase.`,
-      kind: "error",
-      action: { label: "Abort rebase", run: () => abortRebase(key) },
-      failed: false,
-    };
+    return { message: `The pull stopped on conflicts while rebasing ${into} onto ${from}. ${RESOLVE_HINT}`, kind: "error", action: null, failed: false };
   }
   if (result.conflicts) {
-    return {
-      message: `The pull stopped on conflicts while merging ${from} into ${into}. Resolve them, or abort the merge.`,
-      kind: "error",
-      action: { label: "Abort merge", run: () => abortMerge(key) },
-      failed: false,
-    };
+    return { message: `The pull stopped on conflicts while merging ${from} into ${into}. ${RESOLVE_HINT}`, kind: "error", action: null, failed: false };
   }
   return { message: networkFailureText(result, `Pulling ${from} into ${into}`), kind: "error", action: null, failed: true };
 }
@@ -547,7 +564,7 @@ export async function syncCurrentBranch(session: RepoSession | null): Promise<vo
 export function syncOutcome(key: string, result: SyncResult, branch: string, mode: PullMode): PullOutcome {
   const sessions = useSessionsStore();
   const to = `${result.target.remote}/${result.target.branch}`;
-  const pulled = pullOutcome(key, result.pull, to, branch, mode);
+  const pulled = pullOutcome(result.pull, to, branch, mode);
   if (!result.pull.ok) {
     // Failed, or stopped on conflicts: the pull's own notice, which offers the abort.
     const suffix = pulled.failed ? "" : " Nothing was pushed.";
@@ -583,27 +600,36 @@ export function syncOutcome(key: string, result: SyncResult, branch: string, mod
 }
 
 /**
- * Merges `target` (a branch name or an oid) into the checked-out branch. A conflicted merge
- * leaves the notice with an "Abort merge" button.
+ * Merges `target` (a branch name or an oid) into the checked-out branch; `noFf` makes a merge
+ * commit even when a fast-forward would do. A conflicted merge stays open, and the bar above the
+ * commits offers Continue and Abort.
  */
-export async function mergeInto(key: string, target: string, label: string = target): Promise<void> {
+export async function mergeInto(key: string, target: string, label: string = target, noFf = false): Promise<void> {
   const sessions = useSessionsStore();
   const into = currentBranch(sessions.sessions.get(key)) ?? "the current branch";
   try {
-    const result = await runOp(key, () => commands.opMerge(key, target, false));
-    if (result.ok) {
-      sessions.notifySuccess(`Merged ${label} into ${into}.`);
-    } else if (result.conflicts) {
-      sessions.notify("Merge stopped on conflicts. Resolve them or abort.", {
-        label: "Abort merge",
-        run: () => abortMerge(key),
-      });
-    } else {
-      sessions.notify(opFailureText(result, `Merging ${label} into ${into}`));
-    }
+    const result = await runOp(key, () => commands.opMerge(key, target, noFf));
+    const outcome = mergeOutcome(result, label, into);
+    if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
+    else sessions.notify(outcome.message);
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
+}
+
+/** What to report after a merge of `label` into `into` ran; `failed` is a plain failure, with nothing left open. */
+export function mergeOutcome(result: OpResult, label: string, into: string): { message: string; kind: "success" | "error"; failed: boolean } {
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (result.ok) {
+    const message = /Already up to date/i.test(output)
+      ? `${into} already has every commit on ${label}.`
+      : /Fast-forward/.test(output)
+        ? `Fast-forwarded ${into} to ${label}.`
+        : `Merged ${label} into ${into}.`;
+    return { message, kind: "success", failed: false };
+  }
+  if (result.conflicts) return { message: `Merging ${label} into ${into} stopped on conflicts. ${RESOLVE_HINT}`, kind: "error", failed: false };
+  return { message: opFailureText(result, `Merging ${label} into ${into}`), kind: "error", failed: true };
 }
 
 /** Where HEAD points, as messages name it: the checked-out branch, or "HEAD" when detached. */
@@ -661,6 +687,8 @@ export function pickReason(session: RepoSession | null | undefined, row: GraphRo
   if (session.info.isBare) return "A bare repository has no checked-out branch.";
   if (!session.status) return "The working tree status is still loading.";
   if (session.status.headOid === null) return "This branch has no commits yet.";
+  const busy = operationReason(session);
+  if (busy) return busy;
   if (session.status.conflictedCount > 0) return "Resolve the conflicted files first.";
   if (verb === "cherry-pick" && row.isHead) return "This commit is HEAD: its change is already there.";
   return null;
@@ -668,8 +696,9 @@ export function pickReason(session: RepoSession | null | undefined, row: GraphRo
 
 /**
  * Cherry-picks or reverts the commit on `row` onto HEAD. A merge commit is measured against its
- * first parent (`-m 1`). When Git stops on conflicts, the notice offers the abort; when the
- * change is already on the branch, the half-open cherry-pick is aborted and that is said instead.
+ * first parent (`-m 1`). When Git stops on conflicts, the bar above the commits takes over with
+ * Continue and Abort; when the change is already on the branch, the half-open cherry-pick is
+ * aborted and that is said instead.
  */
 export async function pickCommit(key: string, row: GraphRow, verb: "cherry-pick" | "revert"): Promise<void> {
   const sessions = useSessionsStore();
@@ -694,10 +723,7 @@ export async function pickCommit(key: string, row: GraphRow, verb: "cherry-pick"
       await runOp(key, abort);
       sessions.notify(pick ? `${name} already has the change ${label} made, so there was nothing to cherry-pick.` : `${name} no longer has the change ${label} made, so there was nothing to revert.`);
     } else if (result.conflicts || /--abort/.test(output)) {
-      sessions.notify(`${what} stopped on conflicts. Resolve them and commit, or abort.`, {
-        label: pick ? "Abort cherry-pick" : "Abort revert",
-        run: () => abortPick(key, verb),
-      });
+      sessions.notify(`${what} stopped on conflicts. ${RESOLVE_HINT}`);
     } else {
       sessions.notify(opFailureText(result, what));
     }
@@ -716,6 +742,251 @@ export async function abortPick(key: string, verb: "cherry-pick" | "revert"): Pr
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
+}
+
+// ---- The merge, rebase, cherry-pick or revert in progress ---------------------------------
+
+/** Why Continue cannot run: files are still conflicted. Null when it can. */
+export function continueReason(session: RepoSession | null | undefined): string | null {
+  const status = session?.status;
+  if (!status?.inProgress) return "No merge, rebase, cherry-pick or revert is in progress.";
+  const n = status.conflictedCount;
+  if (n === 0) return null;
+  return `${n === 1 ? "1 file is" : `${n} files are`} still conflicted. Resolve ${n === 1 ? "it" : "each one"} first: take one side's version, or edit the file and mark it as resolved.`;
+}
+
+/**
+ * Runs `git <merge|rebase|cherry-pick|revert> --continue`, which commits with the message Git
+ * prepared. A rebase goes on to its next commit and may stop on conflicts again.
+ */
+export async function continueOperation(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const op = session?.status?.inProgress ?? null;
+  const reason = continueReason(session);
+  if (reason || !session || !op) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const key = session.key;
+  const names = operationNames(session.status, session.refs);
+  const verb = OPERATION_VERBS[op.kind];
+  try {
+    const result = await runOp(key, () => commands.opContinue(key, op.kind));
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (result.ok) {
+      sessions.notifySuccess(
+        op.kind === "merge"
+          ? `Merged ${names.theirs} into ${names.ours}.`
+          : op.kind === "rebase"
+            ? `Finished rebasing onto ${names.ours}.`
+            : op.kind === "cherryPick"
+              ? `Cherry-picked ${names.theirs} onto ${names.ours}.`
+              : `Reverted ${op.commit === null ? "the commit" : shortSha(op.commit)} with a new commit on ${names.ours}.`,
+      );
+    } else if (result.conflicts) {
+      sessions.notify(`The rebase went on to the next commit, which conflicts too. ${RESOLVE_HINT}`);
+    } else if (/nothing to commit|No changes|is now empty/i.test(output)) {
+      const way = op.kind === "rebase" || op.kind === "cherryPick" ? "Skip leaves the commit out." : `Abort the ${verb} to stop it.`;
+      sessions.notify(`${opFailureText(result, `Continuing the ${verb}`)} After resolving, nothing is left to commit. ${way}`);
+    } else {
+      sessions.notify(opFailureText(result, `Continuing the ${verb}`));
+    }
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Asks first, then leaves out the commit the rebase or cherry-pick stopped at (`--skip`). */
+export async function skipOperation(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const op = session?.status?.inProgress ?? null;
+  if (!session || !op || (op.kind !== "rebase" && op.kind !== "cherryPick")) {
+    sessions.notify("Only a rebase or a cherry-pick in progress can skip a commit.");
+    return;
+  }
+  const names = operationNames(session.status, session.refs);
+  const verb = OPERATION_VERBS[op.kind];
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: `Skip ${names.theirs}?`,
+    message:
+      `The ${verb} leaves this commit out${op.subject ? ` ("${op.subject}")` : ""}, and its changes and any conflicts resolved so far are thrown away. ` +
+      (op.kind === "rebase" ? "The rebase then goes on with the next commit." : "The cherry-pick then ends."),
+    confirmLabel: "Skip commit",
+    destructive: true,
+  });
+  if (!confirmed) return;
+  const key = session.key;
+  try {
+    const result = await runOp(key, () => commands.opSkip(key, op.kind));
+    if (result.ok) sessions.notifySuccess(op.kind === "rebase" ? `Skipped ${names.theirs}; the rebase onto ${names.ours} is finished.` : `Skipped ${names.theirs}.`);
+    else if (result.conflicts) sessions.notify(`Skipped ${names.theirs}. The next commit conflicts too. ${RESOLVE_HINT}`);
+    else sessions.notify(opFailureText(result, `Skipping ${names.theirs}`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Asks first, then aborts the operation in progress, which puts the branch back where it was. */
+export async function abortOperation(session: RepoSession | null): Promise<void> {
+  const op = session?.status?.inProgress ?? null;
+  if (!session || !op) return;
+  const verb = OPERATION_VERBS[op.kind];
+  const head = op.kind === "rebase" ? (op.branch?.replace(/^refs\/heads\//, "") ?? "HEAD") : (currentBranch(session) ?? "HEAD");
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: `Abort the ${verb}?`,
+    message: `${head} goes back to where it was before the ${verb} started, and every conflict resolved so far is thrown away.`,
+    confirmLabel: `Abort ${verb}`,
+    destructive: true,
+  });
+  if (!confirmed) return;
+  if (op.kind === "merge") await abortMerge(session.key);
+  else if (op.kind === "rebase") await abortRebase(session.key);
+  else await abortPick(session.key, op.kind === "cherryPick" ? "cherry-pick" : "revert");
+}
+
+// ---- Resolving conflicted files -------------------------------------------------------------
+
+/** The selected rows of the Files panel's Conflicted section, when the Working Tree row is selected. */
+export function selectedConflictItems(session: RepoSession | null | undefined): FileItem[] {
+  if (!session || session.selectedRow?.kind !== "workingTree") return [];
+  return selectedConflicts(session.status, session.fileSelection.ids);
+}
+
+/** Why conflicted files cannot be resolved from the selection, or null when they can. */
+export function resolveReason(session: RepoSession | null | undefined, items: FileItem[]): string | null {
+  if (!session) return "Open a repository first.";
+  if (items.length === 0) return "Select conflicted files in the Files panel first.";
+  return null;
+}
+
+/**
+ * Resolves `items` by keeping one side's whole version and stages the result. `side` is in Git's
+ * terms; the messages use the names from `operationNames`. A side that deleted a file deletes it.
+ */
+export async function takeVersion(session: RepoSession | null, items: FileItem[], side: ResolveSide): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = resolveReason(session, items);
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const key = session.key;
+  const names = operationNames(session.status, session.refs);
+  const who = side === "ours" ? names.ours : names.theirs;
+  const paths = items.map((i) => i.path);
+  try {
+    const result = await runOp(key, () => commands.opResolveConflicts(key, paths, side));
+    if (result.ok) sessions.notifySuccess(`Resolved ${filesLabel(paths)} with the version from ${who}.`);
+    else sessions.notify(opFailureText(result, `Taking the version from ${who} for ${filesLabel(paths)}`));
+  } catch (e) {
+    if (e instanceof IpcError && e.error.kind === "invalidPath") sessions.notify(`${e.error.path}: ${e.error.reason}.`);
+    else sessions.notify(errorMessage(e));
+  }
+}
+
+/**
+ * Marks `items` as resolved as they are on disk (`git add`), after the user has edited them. When
+ * a file still has Git's conflict markers, asks first.
+ */
+export async function markResolved(session: RepoSession | null, items: FileItem[]): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = resolveReason(session, items);
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const key = session.key;
+  const paths = items.map((i) => i.path);
+  const marked: string[] = [];
+  await Promise.all(
+    paths.map(async (path) => {
+      try {
+        const file = await unwrap(commands.getWorktreeFileContent(key, path));
+        if (!file.isBinary && hasConflictMarkers(file.text)) marked.push(path);
+      } catch {
+        // A file deleted to resolve the conflict has nothing to check.
+      }
+    }),
+  );
+  if (marked.length > 0) {
+    const confirmed = await useDialogsStore().open("confirm", {
+      title: "Mark as resolved with conflict markers?",
+      message:
+        `${marked.sort().slice(0, 8).join("\n")}${marked.length > 8 ? `\n…and ${marked.length - 8} more` : ""}\n\n` +
+        `${marked.length === 1 ? "This file still has" : "These files still have"} lines Git added to mark the conflict (<<<<<<< and >>>>>>>). ` +
+        "Marking it as resolved stages the file exactly as it is, markers included.",
+      confirmLabel: "Mark as resolved",
+      destructive: true,
+    });
+    if (!confirmed) return;
+  }
+  try {
+    const result = await runOp(key, () => commands.opStage(key, paths));
+    if (result.ok) sessions.notifySuccess(`Marked ${filesLabel(paths)} as resolved.`);
+    else sessions.notify(opFailureText(result, `Marking ${filesLabel(paths)} as resolved`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+// ---- Merge and Rebase dialogs ---------------------------------------------------------------
+
+/** Every branch that could be merged into, or rebased onto from, the checked-out branch: local first, then remote. */
+function otherBranches(session: RepoSession): BranchChoice[] {
+  const current = currentBranch(session);
+  const refs = session.refs?.refs ?? [];
+  const local = refs.filter((r) => r.kind.type === "localBranch" && r.short !== current);
+  const remote = refs.filter((r) => r.kind.type === "remoteBranch");
+  return [...local, ...remote].map((r) => ({ short: r.short, remote: r.kind.type === "remoteBranch", target: r.target }));
+}
+
+/** Why the Merge or Rebase dialog cannot open now, or null when it can. */
+export function mergeRebaseReason(session: RepoSession | null | undefined, action: "merge" | "rebase"): string | null {
+  if (!session) return "Open a repository first.";
+  if (session.info.isBare) return "A bare repository has no checked-out branch.";
+  if (!session.status || !session.refs) return "The repository is still loading.";
+  if (isDetached(session) || currentBranch(session) === null) {
+    return action === "merge" ? "HEAD is detached. Check out a branch to merge into first." : "HEAD is detached. Check out the branch to rebase first.";
+  }
+  if (action === "rebase" && session.status.headOid === null) return "This branch has no commits yet, so there is nothing to rebase.";
+  const blocked = dirtyTreeReason(session);
+  if (blocked) return blocked;
+  if (otherBranches(session).length === 0) return `There is no other branch to ${action === "merge" ? "merge" : "rebase onto"}.`;
+  return null;
+}
+
+/** Opens the Merge dialog to pick a branch to merge into the checked-out branch. The dialog runs the merge. */
+export async function openMergeDialog(session: RepoSession | null): Promise<void> {
+  const reason = mergeRebaseReason(session, "merge");
+  const into = currentBranch(session);
+  if (reason || !session || into === null) {
+    useSessionsStore().notify(reason ?? "Open a repository first.");
+    return;
+  }
+  await useDialogsStore().open("merge", { key: session.key, into, branches: otherBranches(session) });
+}
+
+/** Opens the Rebase dialog to pick a branch to rebase the checked-out branch onto. The dialog runs the rebase. */
+export async function openRebaseDialog(session: RepoSession | null): Promise<void> {
+  const reason = mergeRebaseReason(session, "rebase");
+  const branch = currentBranch(session);
+  if (reason || !session || branch === null) {
+    useSessionsStore().notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const upstream = session.refs?.refs.find((r) => r.kind.type === "localBranch" && r.short === branch)?.upstream ?? null;
+  await useDialogsStore().open("rebase", { key: session.key, branch, branches: otherBranches(session), upstream: upstream?.replace(/^refs\/remotes\//, "") ?? null });
+}
+
+/** What to report after `git rebase <onto>` ran; `failed` is a plain failure, with nothing left open. */
+export function rebaseOutcome(result: OpResult, branch: string, onto: string): { message: string; kind: "success" | "error"; failed: boolean } {
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (result.ok) {
+    const message = /is up to date/i.test(output) ? `${branch} already has every commit on ${onto}.` : `Rebased ${branch} onto ${onto}.`;
+    return { message, kind: "success", failed: false };
+  }
+  if (result.conflicts) return { message: `Rebasing ${branch} onto ${onto} stopped on conflicts. ${RESOLVE_HINT}`, kind: "error", failed: false };
+  return { message: opFailureText(result, `Rebasing ${branch} onto ${onto}`), kind: "error", failed: true };
 }
 
 /** Opens the Rename Branch dialog for local branch `name`. The dialog runs the command itself. */

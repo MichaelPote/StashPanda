@@ -40,9 +40,11 @@ const emit = defineEmits<{
   stage: [];
   unstage: [];
   discard: [];
+  merge: [];
+  rebase: [];
 }>();
 
-type ToolbarEvent = "commit" | "stashSave" | "pull" | "fetch" | "push" | "sync" | "stage" | "unstage" | "discard";
+type ToolbarEvent = "commit" | "stashSave" | "pull" | "fetch" | "push" | "sync" | "stage" | "unstage" | "discard" | "merge" | "rebase";
 
 interface ToolbarAction {
   label: string;
@@ -56,8 +58,6 @@ interface ToolbarAction {
   /** The main action: a solid primary button among the flat ones. */
   primary?: boolean;
 }
-
-const M3 = "Coming in milestone 3";
 
 const groups: ToolbarAction[][] = [
   [
@@ -78,8 +78,8 @@ const groups: ToolbarAction[][] = [
     { label: "Stash Changes", caption: "Stash", icon: ArchiveIcon, event: "stashSave" },
   ],
   [
-    { label: "Merge", caption: "Merge", icon: GitMergeIcon, coming: M3 },
-    { label: "Rebase", caption: "Rebase", icon: RotateCcwIcon, coming: M3 },
+    { label: "Merge a Branch into the Current Branch…", caption: "Merge", icon: GitMergeIcon, event: "merge" },
+    { label: "Rebase the Current Branch onto Another…", caption: "Rebase", icon: RotateCcwIcon, event: "rebase" },
   ],
 ];
 
@@ -93,6 +93,8 @@ function run(action: ToolbarAction): void {
   else if (action.event === "stage") emit("stage");
   else if (action.event === "unstage") emit("unstage");
   else if (action.event === "discard") emit("discard");
+  else if (action.event === "merge") emit("merge");
+  else if (action.event === "rebase") emit("rebase");
 }
 
 /** Why the button cannot be used: not built yet, or the reason its event gives. Null when it can. */

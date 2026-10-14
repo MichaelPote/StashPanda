@@ -24,6 +24,7 @@ import {
   type WatcherKind,
   type WatcherStateEvent,
 } from "@/lib/bindings";
+import { DEFAULT_COMPARISON, type ConflictComparison } from "@/lib/conflicts";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { ROW_HEIGHT } from "@/lib/graph/paths";
 import { rowAt } from "@/composables/useGraphPages";
@@ -166,6 +167,8 @@ export interface RepoSession {
   autoFetchFailed: boolean;
   /** The fetch, pull or push running in this repository, shown in the status bar. */
   operation: RunningOperation | null;
+  /** Which two versions of a conflicted file the diff panel compares; kept from one file to the next. */
+  conflictComparison: ConflictComparison;
 }
 
 function toEntry(ev: ConsoleEvent): ConsoleEntry {
@@ -219,7 +222,7 @@ export const useSessionsStore = defineStore("sessions", () => {
   const opening = shallowReactive(new Set<string>());
   /** One-line error shown in the red strip under the toolbar. */
   const notice = ref<string | null>(null);
-  /** Optional button shown next to the notice (for example "Abort merge" after a conflicted merge). */
+  /** Optional button shown next to the notice (for example "Pull…" after a push the remote refused). */
   const noticeAction = ref<NoticeAction | null>(null);
   /** One-line report that an action worked ("Committed …", "Stashed …"), shown in the status bar. */
   const successMessage = ref<string | null>(null);
@@ -602,6 +605,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         lastFetchAt: Date.now(),
         autoFetchFailed: false,
         operation: null,
+        conflictComparison: DEFAULT_COMPARISON,
       });
       sessions.set(key, session);
       earlyWatcherStates.delete(key);

@@ -10,7 +10,8 @@ use tauri_specta::Event;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{GitError, Result};
-use crate::git::ops::{self, OpResult, PullMode, PushTarget, ResetMode, SyncResult};
+use crate::git::ops::{self, OpResult, PullMode, PushTarget, ResetMode, ResolveSide, SyncResult};
+use crate::git::queries::in_progress::InProgressKind;
 use crate::git::ops::lines::{LineAction, SelectedLine};
 use crate::graph::loader::refresh_if_changed;
 use crate::ipc::events::OperationProgress;
@@ -152,6 +153,42 @@ pub async fn op_merge_abort(app: AppHandle, state: State<'_, AppState>, key: Str
 #[specta::specta]
 pub async fn op_rebase_abort(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<OpResult> {
     write_op!(app, state, key, |c| ops::rebase_abort(c).await)
+}
+
+/// Rebase the current branch onto `onto` (a branch name or commit), not interactively.
+/// `conflicts` in the result means the rebase stopped on a commit and is still open: the status's
+/// `inProgress` then describes it, and `opContinue`, `opSkip` or `opRebaseAbort` go on.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_rebase(app: AppHandle, state: State<'_, AppState>, key: String, onto: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::rebase(c, &onto).await)
+}
+
+/// Finish the merge, cherry-pick or revert in progress, or go on with the rebase, once no file is
+/// conflicted: `git <command> --continue`, keeping the message Git prepared. A rebase that stops
+/// on the next commit's conflicts reports `conflicts` again.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_continue(app: AppHandle, state: State<'_, AppState>, key: String, kind: InProgressKind) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::continue_operation(c, kind).await)
+}
+
+/// Leave out the commit the rebase or cherry-pick in progress stopped at, and go on with the next
+/// one (`--skip`). Fails with `invalidPath` for a merge or revert.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_skip(app: AppHandle, state: State<'_, AppState>, key: String, kind: InProgressKind) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::skip_operation(c, kind).await)
+}
+
+/// Resolve conflicted `paths` by keeping one side's whole version (`ours` is the branch being
+/// merged into, `theirs` what comes in; a rebase swaps the two, see `ResolveSide`), and mark them
+/// resolved. A side that deleted the file deletes it. Fails with `invalidPath` when a path is not
+/// conflicted any more. To mark a file resolved as it is on disk, stage it with `opStage`.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_resolve_conflicts(app: AppHandle, state: State<'_, AppState>, key: String, paths: Vec<String>, side: ResolveSide) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::resolve_conflicts(c, &paths, side).await)
 }
 
 /// Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
