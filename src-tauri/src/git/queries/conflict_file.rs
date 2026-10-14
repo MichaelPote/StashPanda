@@ -226,10 +226,11 @@ async fn read_stage(
         return Ok(None);
     };
     if let Some((catfile, cancel)) = helper.filter(|_| client.caps.batch_command) {
-        return match catfile.read(client, cancel, &spec, CONFLICT_FILE_CAP).await? {
-            Some(bytes) => Ok(Some(bytes)),
-            None => Err(GitError::ObjectNotFound { spec }),
-        };
+        if let Some(bytes) = catfile.read(client, cancel, &spec, CONFLICT_FILE_CAP).await? {
+            return Ok(Some(bytes));
+        }
+        // Not found through the long-lived helper, which can lose sight of the repository (its
+        // `.git` folder replaced while it runs): a fresh `cat-file` sees it as it is now.
     }
     let out = client.exec(GitReq::new("cat-file", ["cat-file".to_string(), "blob".into(), spec])).await?;
     if out.stdout.len() > CONFLICT_FILE_CAP {
