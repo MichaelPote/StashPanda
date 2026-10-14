@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri",
     "win:ux": "bash scripts/windows.sh ux",
@@ -48,6 +49,7 @@
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "vite": "^8.0.16",
+    "vitest": "5.0.3",
     "vue-tsc": "^3.3.5"
   }
 }
