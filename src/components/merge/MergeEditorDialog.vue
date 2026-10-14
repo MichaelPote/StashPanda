@@ -236,6 +236,9 @@ function destroyPanes(): void {
   rightChunks.value = [];
   leftLines.value = [];
   rightLines.value = [];
+  // Both are keyed by line numbers, which mean nothing in the next file.
+  dismissed.value = new Set();
+  shownFolds.value = new Set();
 }
 
 onBeforeUnmount(destroyPanes);
