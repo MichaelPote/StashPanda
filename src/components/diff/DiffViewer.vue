@@ -1088,9 +1088,15 @@ function toggleContext(value: string): void {
             <stop offset="0" class="diff-curve-stop-del" />
             <stop offset="1" class="diff-curve-stop-add" />
           </linearGradient>
-          <linearGradient :id="`${gradientId}-edge`" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
-            <stop offset="0" class="diff-curve-edge-stop-del" />
-            <stop offset="1" class="diff-curve-edge-stop-add" />
+          <!-- A band's edges are solid where they meet the line marking an insertion or deletion,
+               and fade out towards the block of lines at the other end, which needs no outline. -->
+          <linearGradient :id="`${gradientId}-edge-add`" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
+            <stop offset="0" class="diff-curve-edge-stop-add" />
+            <stop offset="1" class="diff-curve-edge-stop-add diff-curve-edge-stop-clear" />
+          </linearGradient>
+          <linearGradient :id="`${gradientId}-edge-del`" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
+            <stop offset="0" class="diff-curve-edge-stop-del diff-curve-edge-stop-clear" />
+            <stop offset="1" class="diff-curve-edge-stop-del" />
           </linearGradient>
         </defs>
         <line
@@ -1106,10 +1112,10 @@ function toggleContext(value: string): void {
           <template v-for="c in curves" :key="c.key">
             <path :d="c.d" :class="`diff-curve-${c.kind}`" :style="c.kind === 'both' ? { fill: `url(#${gradientId})` } : undefined" />
             <path
-              v-if="c.kind !== 'hunk'"
+              v-if="c.kind === 'add' || c.kind === 'del'"
               :d="c.edges"
-              :class="`diff-curve-edge diff-curve-edge-${c.kind}`"
-              :style="c.kind === 'both' ? { stroke: `url(#${gradientId}-edge)` } : undefined"
+              class="diff-curve-edge"
+              :style="{ stroke: `url(#${gradientId}-edge-${c.kind})` }"
             />
           </template>
         </g>

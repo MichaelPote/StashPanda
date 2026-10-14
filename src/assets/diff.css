@@ -116,23 +116,22 @@
   .diff-curve-stop-add {
     stop-color: var(--diff-add-bg);
   }
-  /* The band's top and bottom edges, in the changed words' stronger colour, so its shape reads
-     against the panel. A change with lines on both sides takes a gradient instead, set inline. */
+  /* The top and bottom edges of an insertion's or a deletion's band, in the changed words'
+     stronger colour. Each edge is solid where it meets the line marking where the lines would
+     go, and fades out towards the block of lines at the other end (the gradients are in
+     DiffViewer.vue). A change with lines on both sides has a block at each end, and no edges. */
   .diff-curve-edge {
     fill: none;
     stroke-width: 1;
-  }
-  .diff-curve-edge-del {
-    stroke: var(--diff-del-mark);
-  }
-  .diff-curve-edge-add {
-    stroke: var(--diff-add-mark);
   }
   .diff-curve-edge-stop-del {
     stop-color: var(--diff-del-mark);
   }
   .diff-curve-edge-stop-add {
     stop-color: var(--diff-add-mark);
+  }
+  .diff-curve-edge-stop-clear {
+    stop-opacity: 0;
   }
   /* Where a change has no lines on one side: a line across that side where they would go. */
   .diff-curve-mark-add {
