@@ -1262,8 +1262,12 @@ function toggleContext(value: string): void {
         <defs>
           <!-- In the gap's own units: the default units follow each shape's box, which has no
                height for a level edge, and the gradient would then not draw it at all. -->
+          <!-- The ends are the lines' own background, so the band joins them without a seam; the
+               middle is a touch stronger, since this band has no outline. -->
           <linearGradient :id="gradientId" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
             <stop offset="0" class="diff-curve-stop-del" />
+            <stop offset="0.3" class="diff-curve-stop-del-strong" />
+            <stop offset="0.7" class="diff-curve-stop-add-strong" />
             <stop offset="1" class="diff-curve-stop-add" />
           </linearGradient>
           <!-- A band's edges are solid where they meet the line marking an insertion or deletion,
