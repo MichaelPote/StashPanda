@@ -99,6 +99,12 @@ pub struct ConflictFile {
     /// A hash of the working tree file's bytes, opaque to the frontend, passed back to
     /// `write_worktree_file` to detect a change on disk.
     pub hash: String,
+    /// The length of the file's conflict markers, from its `conflict-marker-size` attribute (7
+    /// unless set), for writing an unresolved block back the way Git would.
+    pub marker_size: u32,
+    /// Save the file with CRLF line endings: more of its lines end in CRLF than in LF alone. For a
+    /// file with mixed endings this keeps the one it mostly uses.
+    pub crlf: bool,
 }
 
 impl ConflictFile {
@@ -115,6 +121,8 @@ impl ConflictFile {
             bom: false,
             final_newline: false,
             hash: String::new(),
+            marker_size: DEFAULT_MARKER_SIZE as u32,
+            crlf: false,
         }
     }
 }
@@ -187,6 +195,8 @@ pub async fn get_conflict_file(client: &GitClient, helper: Option<(&Arc<CatFile>
         bom: file.bom || parsed.bom_in_first_block,
         final_newline: worktree.ends_with(b"\n"),
         hash: content_hash(&worktree),
+        marker_size: marker_size as u32,
+        crlf: mostly_crlf(&worktree),
     })
 }
 
@@ -237,6 +247,22 @@ async fn read_stage(
         return Err(GitError::TooLarge { bytes: out.stdout.len() as u64, limit: CONFLICT_FILE_CAP as u64 });
     }
     Ok(Some(out.stdout))
+}
+
+/// True when more lines of `bytes` end in CRLF than in a bare LF.
+pub(crate) fn mostly_crlf(bytes: &[u8]) -> bool {
+    let mut crlf = 0usize;
+    let mut lf = 0usize;
+    for (i, b) in bytes.iter().enumerate() {
+        if *b == b'\n' {
+            if i > 0 && bytes[i - 1] == b'\r' {
+                crlf += 1;
+            } else {
+                lf += 1;
+            }
+        }
+    }
+    crlf > lf
 }
 
 /// The marker length `git check-attr -z conflict-marker-size -- <path>` gives
@@ -576,6 +602,14 @@ mod tests {
         assert_eq!(marker_size_from_check_attr(b"a.txt\0conflict-marker-size\0set\0"), 7);
         assert_eq!(marker_size_from_check_attr(b"a.txt\0conflict-marker-size\x000\0"), 7);
         assert_eq!(marker_size_from_check_attr(b""), 7);
+    }
+
+    #[test]
+    fn mostly_crlf_counts_line_endings() {
+        assert!(mostly_crlf(b"a\r\nb\r\nc\n"));
+        assert!(!mostly_crlf(b"a\r\nb\nc\n"));
+        assert!(!mostly_crlf(b"no newline"));
+        assert!(!mostly_crlf(b"\n"));
     }
 
     #[test]

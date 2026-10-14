@@ -665,6 +665,16 @@ export type ConflictFile = {
 	 *  `write_worktree_file` to detect a change on disk.
 	 */
 	hash: string,
+	/**
+	 *  The length of the file's conflict markers, from its `conflict-marker-size` attribute (7
+	 *  unless set), for writing an unresolved block back the way Git would.
+	 */
+	markerSize: number,
+	/**
+	 *  Save the file with CRLF line endings: more of its lines end in CRLF than in LF alone. For a
+	 *  file with mixed endings this keeps the one it mostly uses.
+	 */
+	crlf: boolean,
 };
 
 /**  Why the merge editor cannot open a conflicted file. */
