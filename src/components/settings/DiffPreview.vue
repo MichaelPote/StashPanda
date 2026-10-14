@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, shallowRef, watch } from "vue";
+import { usePreferredDark } from "@vueuse/core";
 import type { FontSmoothing } from "@/lib/bindings";
 import { diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, type Segment } from "@/lib/diff/parseUnified";
+import { highlightRuns, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
+import type { RawToken } from "@/lib/diff/syntax.worker";
+import { useSettingsStore } from "@/stores/settings";
 import type { FormValue } from "./sections";
 
 /**
@@ -60,6 +64,40 @@ const ROWS: Row[] = [
   { kind: "context", oldNo: 18, newNo: 18, text: "}" },
 ];
 
+const settings = useSettingsStore();
+const preferredDark = usePreferredDark();
+const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
+const syntaxHighlight = computed(() => props.values["diff.syntaxHighlight"] === true);
+
+/** Each row's syntax tokens, by its index in `ROWS`; empty while colouring is off or loading. */
+const rowTokens = shallowRef<(RawToken[] | undefined)[]>([]);
+
+watch(
+  [syntaxHighlight, dark],
+  async () => {
+    rowTokens.value = [];
+    if (!syntaxHighlight.value) return;
+    const newSide = ROWS.flatMap((row, i) => (row.kind === "del" ? [] : [i]));
+    const oldSide = ROWS.flatMap((row, i) => (row.kind === "add" ? [] : [i]));
+    const theme = themeFor(dark.value);
+    try {
+      const tokens = await highlightRuns("preview.js", theme, [newSide, oldSide].map((side) => side.map((i) => (ROWS[i] as Row).text)));
+      if (!tokens || !syntaxHighlight.value || themeFor(dark.value) !== theme) return;
+      const byRow: (RawToken[] | undefined)[] = [];
+      [newSide, oldSide].forEach((side, r) => side.forEach((rowIndex, i) => (byRow[rowIndex] ??= tokens[r]?.[i])));
+      rowTokens.value = byRow;
+    } catch {
+      // The preview stays plain if the language fails to load.
+    }
+  },
+  { immediate: true },
+);
+
+/** A row's text as the viewer draws it: syntax colours and changed-word marks together. */
+function spans(row: Row, index: number): Span[] {
+  return mergeSpans(rowTokens.value[index], segments(row));
+}
+
 function segments(row: Row): Segment[] {
   if (!wordHighlight.value || row.other === undefined) return [{ text: row.text, changed: false }];
   const pair = row.kind === "del" ? highlightPair(row.text, row.other) : highlightPair(row.other, row.text);
@@ -86,9 +124,9 @@ const MARKER: Record<Kind, string> = { context: " ", add: "+", del: "-" };
         <span class="diff-num"><span class="diff-glyphs">{{ row.newNo ?? "" }}</span></span>
         <span class="diff-sign">{{ MARKER[row.kind] }}</span>
         <span class="diff-code">
-          <template v-for="(seg, j) in segments(row)" :key="j">
-            <mark v-if="seg.changed" :class="row.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs">{{ seg.text }}</span></mark>
-            <span v-else class="diff-glyphs">{{ seg.text }}</span>
+          <template v-for="(seg, j) in spans(row, i)" :key="j">
+            <mark v-if="seg.changed" :class="row.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+            <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
           </template>
         </span>
       </div>

@@ -195,6 +195,8 @@ pub struct DiffSettings {
     pub ligatures: bool,
     /// Mark the changed words inside a changed line, not only the whole line.
     pub word_highlight: bool,
+    /// Colour the code by its language, chosen from the file's extension.
+    pub syntax_highlight: bool,
     /// How the diff font's edges are smoothed. Only the diff text follows this; the rest of the
     /// interface keeps the system's own rendering.
     pub font_smoothing: FontSmoothing,
@@ -222,6 +224,7 @@ impl Default for DiffSettings {
             tab_width: 8,
             ligatures: true,
             word_highlight: true,
+            syntax_highlight: true,
             font_smoothing: FontSmoothing::ClearType,
         }
     }

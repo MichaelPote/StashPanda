@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from "vue";
-import { useDebounceFn, useResizeObserver } from "@vueuse/core";
+import { useDebounceFn, usePreferredDark, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanTextIcon } from "@lucide/vue";
 import { commands, type DiffText, type Eol, type LineAction, type ResolveSide, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,8 @@ import EmptyState from "@/components/shell/EmptyState.vue";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
+import { highlightRuns, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
+import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { conflictComparisons, conflictStages, conflictSummary, operationNames, type ConflictComparison } from "@/lib/conflicts";
 import type { FileItem } from "@/lib/files";
@@ -241,6 +243,68 @@ function segments(pair: number | undefined, sideOf: "old" | "new", fallback: str
     segmentCache.set(pair, entry);
   }
   return sideOf === "old" ? entry.old : entry.new;
+}
+
+// ---- Syntax colours ----------------------------------------------------------------------------
+//
+// Each hunk's old side and new side go to the worker as runs of lines, so a string or comment
+// that spans lines inside a hunk is coloured as one. Until the colours arrive, and for a file
+// whose language is not known, the text is plain.
+
+const preferredDark = usePreferredDark();
+const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
+/** The path whose language colours the diff, or null when colouring is switched off. */
+const syntaxPath = computed(() => (settings.settings?.diff?.syntaxHighlight === false ? null : (selected.value?.path ?? null)));
+/** Past this many lines a diff stays plain: colouring it would take longer than it is worth. */
+const MAX_SYNTAX_LINES = 20_000;
+/** Each line's tokens, filled in when the worker answers for the diff on screen. */
+const lineTokens = shallowRef(new WeakMap<DiffLine, RawToken[]>());
+let syntaxRequest = 0;
+
+watch(
+  [file, syntaxPath, dark],
+  async () => {
+    const id = (syntaxRequest += 1);
+    lineTokens.value = new WeakMap();
+    const f = file.value;
+    const path = syntaxPath.value;
+    if (!f || !path) return;
+    const runs: string[][] = [];
+    const owners: DiffLine[][] = [];
+    let total = 0;
+    for (const hunk of f.hunks) {
+      const oldSide = hunk.lines.filter((l) => l.kind === "context" || l.kind === "del");
+      const newSide = hunk.lines.filter((l) => l.kind === "context" || l.kind === "add");
+      for (const side of [newSide, oldSide]) {
+        if (side.length === 0) continue;
+        runs.push(side.map((l) => l.text));
+        owners.push(side);
+        total += side.length;
+      }
+    }
+    if (total === 0 || total > MAX_SYNTAX_LINES) return;
+    try {
+      const tokens = await highlightRuns(path, themeFor(dark.value), runs);
+      if (id !== syntaxRequest || tokens === null) return;
+      const map = new WeakMap<DiffLine, RawToken[]>();
+      tokens.forEach((run, r) =>
+        run.forEach((lineTokensOfRun, i) => {
+          const owner = owners[r]?.[i];
+          // A context line is in both sides' runs; the new side's colours come first and stay.
+          if (owner && !map.has(owner)) map.set(owner, lineTokensOfRun);
+        }),
+      );
+      lineTokens.value = map;
+    } catch {
+      // A language that fails to load leaves the diff plain.
+    }
+  },
+  { immediate: true },
+);
+
+/** A line's text as the rows draw it: syntax colours and changed-word marks together. */
+function spans(line: DiffLine | undefined, pair: number | undefined, sideOf: "old" | "new", fallback: string): Span[] {
+  return mergeSpans(line ? lineTokens.value.get(line) : undefined, segments(pair, sideOf, fallback));
 }
 
 // ---- Virtualisation ------------------------------------------------------------------------
@@ -825,9 +889,9 @@ function toggleContext(value: string): void {
                   <span :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.newNo ?? "" }}</span></span>
                   <span class="diff-sign">{{ marker(row.line?.kind) }}</span>
                   <span class="diff-code">
-                    <template v-for="(seg, i) in segments(row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
-                      <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs">{{ seg.text }}</span></mark>
-                      <span v-else class="diff-glyphs">{{ seg.text }}</span>
+                    <template v-for="(seg, i) in spans(row.line, row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
+                      <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+                      <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
                     </template>
                   </span>
                 </div>
@@ -856,9 +920,9 @@ function toggleContext(value: string): void {
                     <span class="diff-sign">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
                     <span class="diff-side-code diff-text-left"><span>
                       <template v-if="row.left">
-                        <template v-for="(seg, i) in segments(row.pair, 'old', row.left.text)" :key="i">
-                          <mark v-if="seg.changed" class="diff-word-del"><span class="diff-glyphs">{{ seg.text }}</span></mark>
-                          <span v-else class="diff-glyphs">{{ seg.text }}</span>
+                        <template v-for="(seg, i) in spans(row.left, row.pair, 'old', row.left.text)" :key="i">
+                          <mark v-if="seg.changed" class="diff-word-del"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+                          <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
                         </template>
                       </template>
                     </span></span>
@@ -868,9 +932,9 @@ function toggleContext(value: string): void {
                     <span class="diff-sign">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
                     <span class="diff-side-code diff-text-right"><span>
                       <template v-if="row.right">
-                        <template v-for="(seg, i) in segments(row.pair, 'new', row.right.text)" :key="i">
-                          <mark v-if="seg.changed" class="diff-word-add"><span class="diff-glyphs">{{ seg.text }}</span></mark>
-                          <span v-else class="diff-glyphs">{{ seg.text }}</span>
+                        <template v-for="(seg, i) in spans(row.right, row.pair, 'new', row.right.text)" :key="i">
+                          <mark v-if="seg.changed" class="diff-word-add"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+                          <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
                         </template>
                       </template>
                     </span></span>

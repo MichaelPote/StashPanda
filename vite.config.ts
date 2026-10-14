@@ -10,6 +10,10 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [vue(), tailwindcss()],
 
+  // ES module workers can split their code, so the syntax colouring worker loads each language's
+  // grammar on first use instead of carrying all of them.
+  worker: { format: "es" as const },
+
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

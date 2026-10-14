@@ -252,6 +252,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Highlight changed words",
         help: "Mark the words that changed inside a changed line, as well as colouring the whole line.",
       },
+      {
+        kind: "toggle",
+        group: "diff",
+        key: "syntaxHighlight",
+        label: "Colour the code",
+        help: "Colour keywords, strings and comments by the file's language, chosen from its extension. Files without a known extension stay plain.",
+      },
     ],
   },
   {

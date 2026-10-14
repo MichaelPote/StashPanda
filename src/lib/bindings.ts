@@ -718,6 +718,8 @@ export type DiffSettings = {
 	ligatures?: boolean,
 	/**  Mark the changed words inside a changed line, not only the whole line. */
 	wordHighlight?: boolean,
+	/**  Colour the code by its language, chosen from the file's extension. */
+	syntaxHighlight?: boolean,
 	/**
 	 *  How the diff font's edges are smoothed. Only the diff text follows this; the rest of the
 	 *  interface keeps the system's own rendering.
