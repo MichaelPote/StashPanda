@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use tauri::Manager;
 
 use crate::error::{GitError, Result};
+use crate::keys::keychain::OsKeychain;
 use crate::keys::secrets::PassphraseCache;
 use crate::transport::ssh_pool::SshContext;
 use crate::platform::Host;
@@ -92,7 +93,7 @@ impl AppState {
             paths.data_dir.display()
         );
 
-        let passphrases = Arc::new(PassphraseCache::default());
+        let passphrases = Arc::new(PassphraseCache::with_keychain(Arc::new(OsKeychain::default())));
         Ok(AppState {
             paths,
             inner,

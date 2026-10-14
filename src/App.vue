@@ -12,10 +12,13 @@ import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
 import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
+import HostKeyDialog from "@/components/dialogs/HostKeyDialog.vue";
 import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
+import SshPasswordDialog from "@/components/dialogs/SshPasswordDialog.vue";
 import PullDialog from "@/components/dialogs/PullDialog.vue";
 import PushDialog from "@/components/dialogs/PushDialog.vue";
 import StashDialog from "@/components/dialogs/StashDialog.vue";
+import PassphraseDialog from "@/components/settings/PassphraseDialog.vue";
 import SettingsDialog from "@/components/settings/SettingsDialog.vue";
 import AddRepoDialog from "@/components/shell/AddRepoDialog.vue";
 import AppToolbar from "@/components/shell/AppToolbar.vue";
@@ -275,6 +278,9 @@ const toolbarReasons = computed(() => ({
     <PushDialog />
     <ConfirmDialog />
     <SettingsDialog />
+    <PassphraseDialog />
+    <HostKeyDialog />
+    <SshPasswordDialog />
     <AboutDialog />
   </TooltipProvider>
 </template>

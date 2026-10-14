@@ -11,6 +11,8 @@ import {
   type CloneOutcome,
   type CloneTarget,
   type Connection,
+  type GitError,
+  type KeyInfo,
   type RepoEntry,
   type RepoResolution,
 } from "@/lib/bindings";
@@ -30,7 +32,8 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { pathBasename, transportLabel } from "@/lib/format";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { removeFromLibrary, reportOpenFailure } from "@/lib/repoActions";
+import { keyAlgorithmLabel, keyFormatLabel, scanKeys } from "@/lib/keys";
+import { canResolveOpenFailure, removeFromLibrary, reportOpenFailure, resolveSshProblem, sshProblemKind } from "@/lib/repoActions";
 import { useDialogsStore, type AddRepoTab } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
@@ -71,6 +74,11 @@ const resolution = ref<RepoResolution | null>(null);
 const cloneTarget = ref<CloneTarget | null>(null);
 const resolving = ref(false);
 const resolveError = ref<string | null>(null);
+/**
+ * The SSH problem behind `resolveError` when a dialog can fix it: Clone From looks at the folder,
+ * which for an SSH folder means connecting.
+ */
+const resolveProblem = ref<GitError | null>(null);
 const submitError = ref<string | null>(null);
 const submitting = ref(false);
 
@@ -107,6 +115,7 @@ let resolveSerial = 0;
 
 /** Resolves the path. On Clone From it also looks at what is in the folder now. */
 async function resolveNow(): Promise<void> {
+  resolveProblem.value = null;
   const p = path.value.trim();
   if (p.length === 0 || !connectionReady.value) {
     resolution.value = null;
@@ -135,6 +144,7 @@ async function resolveNow(): Promise<void> {
     resolution.value = null;
     cloneTarget.value = null;
     resolveError.value = errorMessage(e);
+    resolveProblem.value = e instanceof IpcError && sshProblemKind(e.error) !== null ? e.error : null;
   } finally {
     if (serial === resolveSerial) resolving.value = false;
   }
@@ -179,11 +189,13 @@ function reset(): void {
   ssh.value = { host: "", user: "", port: "", identityFile: "", remoteGit: "" };
   resolution.value = null;
   resolveError.value = null;
+  resolveProblem.value = null;
   submitError.value = null;
   resolving.value = false;
   submitting.value = false;
   advancedOpen.value = false;
   resolveSerial += 1;
+  keys.value = null;
 }
 
 /** Puts an existing entry's values into the fields for editing. */
@@ -224,6 +236,43 @@ async function browseIdentityFile(): Promise<void> {
   } catch (e) {
     submitError.value = errorMessage(e);
   }
+}
+
+/**
+ * The keys the SSH key list offers: those in `~/.ssh`, the other side of the Windows and WSL
+ * boundary, and the folders added on the SSH Keys page. Scanned the first time the SSH connection
+ * is chosen after the dialog opens; null until then.
+ */
+const keys = ref<KeyInfo[] | null>(null);
+const keysLoading = ref(false);
+const keysError = ref<string | null>(null);
+
+async function loadKeys(): Promise<void> {
+  if (keys.value !== null || keysLoading.value) return;
+  keysLoading.value = true;
+  keysError.value = null;
+  try {
+    keys.value = await scanKeys();
+  } catch (e) {
+    keys.value = [];
+    keysError.value = errorMessage(e);
+  } finally {
+    keysLoading.value = false;
+  }
+}
+
+watch([open, kind], ([isOpen, k]) => {
+  if (isOpen && k === "ssh") void loadKeys();
+});
+
+/** The scan's details for the chosen key, when it is one of the scanned keys. */
+const pickedKey = computed(() => keys.value?.find((k) => k.path === ssh.value.identityFile) ?? null);
+
+/** `id_ed25519 (ED25519, OpenSSH, encrypted) in /home/me/.ssh` */
+function keyOptionLabel(k: KeyInfo): string {
+  const parts = [keyAlgorithmLabel(k), keyFormatLabel(k.format), k.encrypted ? "encrypted" : null].filter((p) => p !== null);
+  const folder = k.path.slice(0, Math.max(0, k.path.length - k.fileName.length - 1));
+  return `${k.fileName} (${parts.join(", ")}) in ${folder}`;
 }
 
 /**
@@ -305,21 +354,51 @@ async function submit(): Promise<void> {
       displayName.value.trim() || null,
     );
     if (!entry.key) throw new Error("The backend returned a library entry without a key.");
-    try {
-      await sessions.openTab(entry.key);
-    } catch (e) {
-      if (!(e instanceof IpcError && e.error.kind === "unsafeRepository")) throw e;
-      // The entry is in the library; the notice offers to trust the folder and open it.
-      open.value = false;
-      reportOpenFailure(entry.key, e);
-      return;
-    }
-    open.value = false;
+    await openAfterSave(entry.key);
   } catch (e) {
     submitError.value = errorMessage(e);
   } finally {
     submitting.value = false;
   }
+}
+
+/**
+ * Opens the saved entry and closes the dialog. When the open fails in a way the user can fix (a
+ * folder another user owns, an unknown SSH host key, a key's passphrase, a password), the dialog
+ * closes and `reportOpenFailure` takes over: the entry is in the library already, and it is
+ * opened again once fixed. Any other failure is thrown, to show in the dialog.
+ */
+async function openAfterSave(key: string): Promise<void> {
+  try {
+    await sessions.openTab(key);
+  } catch (e) {
+    if (!canResolveOpenFailure(e)) throw e;
+    open.value = false;
+    void reportOpenFailure(key, e);
+    return;
+  }
+  open.value = false;
+}
+
+/** The button under a folder check that SSH stopped. */
+const resolveProblemLabel = computed(() => {
+  switch (resolveProblem.value ? sshProblemKind(resolveProblem.value) : null) {
+    case "hostKey":
+      return "Check the host key…";
+    case "passphrase":
+      return "Enter the passphrase…";
+    case "password":
+      return "Enter a password…";
+    default:
+      return null;
+  }
+});
+
+/** Asks for what the SSH connection behind the Clone From folder check was missing, then checks again. */
+async function fixResolveProblem(): Promise<void> {
+  const problem = resolveProblem.value;
+  if (!problem) return;
+  if (await resolveSshProblem(problem, "the folder to clone into")) await resolveNow();
 }
 
 async function submitClone(): Promise<void> {
@@ -398,12 +477,13 @@ async function saveEdit(key: string): Promise<void> {
       entry.path !== before?.path ||
       JSON.stringify(entry.connection) !== JSON.stringify(before?.connection);
     if (moved) {
-      // The open tab talks to the old location, so it is reopened against the new one.
+      // The open tab talks to the old location, so it is reopened against the new one. A new
+      // SSH key can need its passphrase first.
       await sessions.closeTab(key);
-      await sessions.openTab(entry.key);
-    } else {
-      session.info = { ...session.info, displayName: repoDisplayName(entry) };
+      await openAfterSave(entry.key);
+      return;
     }
+    session.info = { ...session.info, displayName: repoDisplayName(entry) };
   }
   open.value = false;
 }
@@ -492,7 +572,12 @@ const selectClass =
               <LoaderCircleIcon class="size-3.5 animate-spin" />
               Resolving…
             </div>
-            <p v-else-if="resolveError" class="text-destructive">{{ resolveError }}</p>
+            <div v-else-if="resolveError" class="grid justify-items-start gap-1.5">
+              <p class="text-destructive">{{ resolveError }}</p>
+              <Button v-if="resolveProblemLabel" type="button" variant="outline" size="sm" @click="fixResolveProblem">
+                {{ resolveProblemLabel }}
+              </Button>
+            </div>
             <div v-else-if="resolution" class="grid gap-1.5">
               <div class="flex items-center gap-2">
                 <Badge variant="secondary" class="h-5 text-xs">
@@ -605,7 +690,7 @@ const selectClass =
                   </p>
                 </div>
 
-                <div v-if="kind === 'ssh'" class="grid grid-cols-2 gap-3">
+                <div v-if="kind === 'ssh'" class="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6rem] gap-3">
                   <div class="grid gap-1.5">
                     <Label for="add-repo-ssh-host" class="text-base">Host</Label>
                     <Input id="add-repo-ssh-host" v-model="ssh.host" class="text-base" placeholder="git.example.com" autocomplete="off" />
@@ -618,10 +703,16 @@ const selectClass =
                     <Label for="add-repo-ssh-port" class="text-base">Port</Label>
                     <Input id="add-repo-ssh-port" v-model="ssh.port" class="text-base" placeholder="22" inputmode="numeric" autocomplete="off" />
                   </div>
-                  <div class="grid gap-1.5">
+                  <div class="col-span-3 grid gap-1.5">
                     <Label for="add-repo-ssh-identity" class="text-base">SSH key</Label>
                     <div class="flex gap-2">
-                      <Input id="add-repo-ssh-identity" v-model="ssh.identityFile" class="font-mono text-base" placeholder="~/.ssh/id_ed25519" autocomplete="off" />
+                      <select id="add-repo-ssh-identity" v-model="ssh.identityFile" :class="selectClass" class="min-w-0">
+                        <option value="">Automatic: ~/.ssh/config, the SSH agent, then id_ed25519, id_ecdsa or id_rsa</option>
+                        <option v-if="keysLoading" disabled value="loading">Looking for keys…</option>
+                        <option v-for="k in keys ?? []" :key="k.path" :value="k.path">{{ keyOptionLabel(k) }}</option>
+                        <!-- A key file chosen with the button, or saved before, that is not in the scanned folders. -->
+                        <option v-if="ssh.identityFile && !pickedKey && !keysLoading" :value="ssh.identityFile">{{ ssh.identityFile }}</option>
+                      </select>
                       <Button
                         type="button"
                         variant="outline"
@@ -634,8 +725,19 @@ const selectClass =
                         <EllipsisIcon />
                       </Button>
                     </div>
+                    <p v-if="keysError" class="text-xs text-destructive">Could not look for keys: {{ keysError }}</p>
+                    <p v-else-if="pickedKey" class="grid gap-0.5 text-xs text-muted-foreground">
+                      <span v-if="pickedKey.fingerprint" class="truncate font-mono" :title="pickedKey.fingerprint">{{ pickedKey.fingerprint }}</span>
+                      <span v-if="pickedKey.error" class="text-destructive">{{ pickedKey.error }}</span>
+                      <span v-else-if="pickedKey.encrypted && pickedKey.passphraseRemembered === 'none'">
+                        This key is encrypted. StashPanda asks for its passphrase when it connects.
+                      </span>
+                    </p>
+                    <p v-else-if="keys !== null && keys.length === 0" class="text-xs text-muted-foreground">
+                      No keys were found in the usual folders. Choose a key file with the button, or add a folder on the SSH Keys page in Settings.
+                    </p>
                   </div>
-                  <div class="col-span-2 grid gap-1.5">
+                  <div class="col-span-3 grid gap-1.5">
                     <Label for="add-repo-ssh-git" class="text-base">Remote git path</Label>
                     <Input id="add-repo-ssh-git" v-model="ssh.remoteGit" class="font-mono text-base" placeholder="/usr/bin/git" autocomplete="off" />
                     <p class="text-xs text-muted-foreground">

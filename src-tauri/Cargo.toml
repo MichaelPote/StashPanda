@@ -54,6 +54,7 @@ des = "0.9.0"
 md-5 = "0.11.0"
 base64 = "0.23.1"
 zeroize = "1.9.0"
+keyring = "4.2.0"
 fontdb = "0.24.0"
 
 [target.'cfg(unix)'.dependencies]

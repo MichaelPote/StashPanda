@@ -67,7 +67,11 @@ export const commands = {
 	hostInfo: () => typedError<HostInfo, GitError>(__TAURI_INVOKE("host_info")),
 	/**  Record the host key a server offered, so the next open succeeds. */
 	sshTrustHost: (host: string, port: number) => typedError<null, GitError>(__TAURI_INVOKE("ssh_trust_host", { host, port })),
-	/**  Remember a password for `user@host:port` for this session. */
+	/**
+	 *  Remember a password for `user@host:port` for this session. `host`, `port` and `user` are the
+	 *  ones an `sshAuthFailed` error gave; call `repoOpen` again afterwards. A password the server
+	 *  refuses is forgotten, and the open fails with `sshAuthFailed` again with `passwordRejected`.
+	 */
 	sshSetPassword: (host: string, port: number, user: string, password: string) => typedError<null, GitError>(__TAURI_INVOKE("ssh_set_password", { host, port, user, password })),
 	getRepoStatus: (key: string) => typedError<StatusSnapshot, GitError>(__TAURI_INVOKE("get_repo_status", { key })),
 	/**
@@ -117,26 +121,59 @@ export const commands = {
 	/**  Reload refs and history (full) or just the working tree row (status only). */
 	graphRefresh: (key: string, full: boolean) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_refresh", { key, full })),
 	keysDefaultDirs: () => typedError<string[], GitError>(__TAURI_INVOKE("keys_default_dirs")),
-	/**  Every key in the default folders plus `extra_dirs`, with agent presence. */
+	/**
+	 *  Every key in the default folders plus `extra_dirs`, with agent presence and where each
+	 *  encrypted key's passphrase is remembered.
+	 */
 	keysScan: (extraDirs: string[]) => typedError<KeyInfo[], GitError>(__TAURI_INVOKE("keys_scan", { extraDirs })),
 	keysInspect: (path: string) => typedError<KeyInfo, GitError>(__TAURI_INVOKE("keys_inspect", { path })),
-	/**  Check a passphrase and optionally remember it for this session. */
-	keysUnlock: (path: string, passphrase: string, remember: boolean) => typedError<KeyInfo, GitError>(__TAURI_INVOKE("keys_unlock", { path, passphrase, remember })),
+	/**
+	 *  Check a passphrase and remember it as `remember` says: not at all, until StashPanda closes, or
+	 *  in the system keychain as well. The returned `passphraseRemembered` says where it ended up: a
+	 *  keychain that cannot store it leaves it remembered for the session only.
+	 */
+	keysUnlock: (path: string, passphrase: string, remember: PassphraseMemory) => typedError<KeyInfo, GitError>(__TAURI_INVOKE("keys_unlock", { path, passphrase, remember })),
+	/**  Forget the passphrase for this session and remove it from the system keychain. */
 	keysForgetPassphrase: (path: string) => typedError<null, GitError>(__TAURI_INVOKE("keys_forget_passphrase", { path })),
+	/**
+	 *  The `authorized_keys` line. Encrypted keys need no passphrase when the file holds its public
+	 *  key in the clear (OpenSSH, PPK) or has a `.pub` beside it.
+	 */
 	keysExportPublic: (path: string, passphrase: string | null) => typedError<string, GitError>(__TAURI_INVOKE("keys_export_public", { path, passphrase })),
 	/**
-	 *  Convert to OpenSSH or PKCS#8 next to the original (or at `out_path`),
-	 *  with an optional new passphrase. Writes a `.pub` alongside. Returns the
-	 *  path written.
+	 *  Convert to OpenSSH or PKCS#8 next to the original (or at `out_path`).
+	 *  `new_passphrase` encrypts the new file: None keeps the original's
+	 *  protection (encrypted with the same passphrase, or not encrypted), an empty
+	 *  string writes it unencrypted. Writes a `.pub` alongside. Returns the path
+	 *  written. Without `out_path` the new file is named after the original
+	 *  (`id_rsa.ppk` becomes `id_rsa`), with `_2`, `_3` and so on added when that
+	 *  name is taken, so the original and other keys are never overwritten.
 	 */
 	keysConvert: (path: string, format: ExportFormat, outPath: string | null, passphrase: string | null, newPassphrase: string | null, overwrite: boolean) => typedError<string, GitError>(__TAURI_INVOKE("keys_convert", { path, format, outPath, passphrase, newPassphrase, overwrite })),
 	keysGenerate: (algorithm: GenerateAlgorithm, comment: string, outPath: string, passphrase: string | null, overwrite: boolean) => typedError<KeyInfo, GitError>(__TAURI_INVOKE("keys_generate", { algorithm, comment, outPath, passphrase, overwrite })),
-	/**  Re-encrypt an OpenSSH-format key in place with a new passphrase (or none). */
+	/**
+	 *  Re-encrypt an OpenSSH-format key in place with a new passphrase (or none). A passphrase that
+	 *  was remembered is replaced by the new one in the same place (session or keychain).
+	 */
 	keysChangePassphrase: (path: string, passphrase: string | null, newPassphrase: string | null) => typedError<KeyInfo, GitError>(__TAURI_INVOKE("keys_change_passphrase", { path, passphrase, newPassphrase })),
 	/**  Import pasted key text into a new OpenSSH file. */
 	keysImport: (text: string, outPath: string, passphrase: string | null, newPassphrase: string | null, overwrite: boolean) => typedError<KeyInfo, GitError>(__TAURI_INVOKE("keys_import", { text, outPath, passphrase, newPassphrase, overwrite })),
 	keysAgentList: () => typedError<string[], GitError>(__TAURI_INVOKE("keys_agent_list")),
 	keysAgentAdd: (path: string, passphrase: string | null, lifetimeSecs: number | null) => typedError<null, GitError>(__TAURI_INVOKE("keys_agent_add", { path, passphrase, lifetimeSecs })),
+	/**  Whether passphrases can be stored in the system keychain on this machine. */
+	keysKeychainStatus: () => typedError<KeychainStatus, GitError>(__TAURI_INVOKE("keys_keychain_status")),
+	/**
+	 *  Delete a private key file, and its `.pub` when `include_public` is set, and forget its
+	 *  passphrase. Refuses a file that is not a private key.
+	 */
+	keysDelete: (path: string, includePublic: boolean) => typedError<null, GitError>(__TAURI_INVOKE("keys_delete", { path, includePublic })),
+	/**
+	 *  The text of a key file dropped on the key manager, to pass to `keys_import`. Only private
+	 *  keys in a format the key manager reads are returned.
+	 */
+	keysReadFile: (path: string) => typedError<string, GitError>(__TAURI_INVOKE("keys_read_file", { path })),
+	/**  The comment the Generate form starts with: `user@machine`. */
+	keysDefaultComment: () => typedError<string, GitError>(__TAURI_INVOKE("keys_default_comment")),
 	opCheckout: (key: string, target: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_checkout", { key, target })),
 	opBranchCreate: (key: string, name: string, startPoint: string, checkout: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_create", { key, name, startPoint, checkout })),
 	opBranchDelete: (key: string, name: string, force: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_delete", { key, name, force })),
@@ -641,7 +678,17 @@ export type FontSmoothing =
 
 export type GenerateAlgorithm = "ed25519" | "rsa4096";
 
-export type GitError = { kind: "gitNotFound"; searched: string[] } | { kind: "gitVersionTooOld"; found: string; required: string } | { kind: "wslNotAvailable" } | { kind: "wslDistroNotFound"; distro: string; available: string[] } | { kind: "sshConnectFailed"; host: string; detail: string } | { kind: "sshAuthFailed"; host: string; methodsTried: string[] } | { kind: "sshHostKeyUnknown"; host: string; fingerprint: string } | { kind: "sshHostKeyChanged"; host: string; fingerprint: string } | { kind: "sshKeyUnsupported"; path: string; detectedHeader: string } | { kind: "sshNeedsPassphrase"; path: string } | { kind: "sshWrongPassphrase"; path: string } | { kind: "keyParseError"; path: string; format: string; detail: string } | { kind: "sshUnsupportedFeature"; feature: string } | { kind: "transportDisconnected"; detail: string } | { kind: "notARepository"; path: string } | { kind: "repoPathNotFound"; path: string } | { kind: "unsafeRepository"; path: string } | { kind: "indexLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
+export type GitError = { kind: "gitNotFound"; searched: string[] } | { kind: "gitVersionTooOld"; found: string; required: string } | { kind: "wslNotAvailable" } | { kind: "wslDistroNotFound"; distro: string; available: string[] } | { kind: "sshConnectFailed"; host: string; detail: string } | 
+/**
+ *  `user` and `port` are known when the built-in SSH client tried; they are None when the
+ *  failure came from Git's own `ssh` (a fetch to an SSH remote). `password_allowed` says the
+ *  server accepts password authentication, so the UI can ask for one and pass it to
+ *  `ssh_set_password`; `password_rejected` says a password supplied that way was tried and
+ *  refused, and has been forgotten.
+ */
+{ kind: "sshAuthFailed"; host: string; port: number | null; user: string | null; methodsTried: string[]; passwordAllowed: boolean; passwordRejected: boolean } | 
+/**  `ssh_trust_host(host, port)` records the key that was offered. */
+{ kind: "sshHostKeyUnknown"; host: string; port: number; fingerprint: string } | { kind: "sshHostKeyChanged"; host: string; port: number; fingerprint: string } | { kind: "sshKeyUnsupported"; path: string; detectedHeader: string } | { kind: "sshNeedsPassphrase"; path: string } | { kind: "sshWrongPassphrase"; path: string } | { kind: "keyParseError"; path: string; format: string; detail: string } | { kind: "sshUnsupportedFeature"; feature: string } | { kind: "transportDisconnected"; detail: string } | { kind: "notARepository"; path: string } | { kind: "repoPathNotFound"; path: string } | { kind: "unsafeRepository"; path: string } | { kind: "indexLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
 
 /**  Which git executable to run when a repository has no override. */
 export type GitSettings = {
@@ -767,6 +814,26 @@ export type KeyInfo = {
 	error: string | null,
 	/**  Filled by the caller from the agent's identity list. */
 	inAgent: boolean,
+	/**  Where its passphrase is remembered, for an encrypted key. Filled by the caller. */
+	passphraseRemembered: PassphraseMemory,
+};
+
+/**  The SSH key manager. */
+export type KeySettings = {
+	/**
+	 *  Folders scanned for keys besides the default ones (`~/.ssh`, and the other side of the
+	 *  Windows and WSL boundary). Added on the Settings dialog's SSH Keys page.
+	 */
+	extraDirs?: string[],
+};
+
+/**  Whether the system keychain can be used, and what it is called on this platform. */
+export type KeychainStatus = {
+	available: boolean,
+	/**  "Windows Credential Manager", "Secret Service" or "macOS Keychain". */
+	name: string,
+	/**  Why it is not available, when it is not. */
+	detail: string | null,
 };
 
 export type LibraryGroup = {
@@ -850,6 +917,12 @@ export type Panels = {
 	consoleHeight?: number | null,
 	consoleCollapsed?: boolean,
 };
+
+/**
+ *  Where a passphrase is remembered: nowhere, in memory until StashPanda closes, or in the
+ *  system keychain (and in memory too, once read).
+ */
+export type PassphraseMemory = "none" | "session" | "keychain";
 
 export type Polling = {
 	statusIntervalMs?: number,
@@ -1044,6 +1117,7 @@ export type Settings = {
 	cache?: CacheSettings,
 	commit?: CommitSettings,
 	diff?: DiffSettings,
+	keys?: KeySettings,
 	library?: RepoLibrary,
 };
 

@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { OpResult, PullMode, PushTarget, StashEntry } from "@/lib/bindings";
+import type { OpResult, PassphraseMemory, PullMode, PushTarget, StashEntry } from "@/lib/bindings";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -107,6 +107,50 @@ export interface ConfirmPayload {
   destructive?: boolean;
 }
 
+export interface PassphrasePayload {
+  /**
+   * The key file. The dialog checks the passphrase against it with `keysUnlock` and remembers it
+   * as chosen. Null for key text that is not in a file yet (an import): the caller checks it.
+   */
+  path: string | null;
+  /** How the dialog names the key: its file name. */
+  keyName: string;
+  /** What the passphrase is for, finishing "StashPanda needs the passphrase …": "to connect to web1". */
+  purpose: string;
+  /** The last passphrase given was wrong. */
+  wrong?: boolean;
+  /**
+   * Opening a connection: the passphrase must be remembered at least until StashPanda closes,
+   * because the connection reconnects by itself, so "only this time" is not offered.
+   */
+  forConnection?: boolean;
+}
+
+/** The passphrase given, and where `keysUnlock` remembered it. */
+export interface PassphraseResult {
+  passphrase: string;
+  remembered: PassphraseMemory;
+}
+
+export interface SshHostKeyPayload {
+  host: string;
+  port: number;
+  fingerprint: string;
+  /** The key differs from the one in known_hosts: a warning with no way to accept it. */
+  changed: boolean;
+  /** What was being opened, such as a repository's name. */
+  subject: string;
+}
+
+export interface SshPasswordPayload {
+  host: string;
+  port: number;
+  user: string;
+  /** The last password given was refused. */
+  rejected: boolean;
+  subject: string;
+}
+
 /** The Add Repository dialog's tabs: add a folder that is a repository already, or clone one. */
 export type AddRepoTab = "existing" | "clone";
 
@@ -121,6 +165,11 @@ export interface DialogSpecs {
   pull: { payload: PullPayload; result: OpResult | null };
   push: { payload: PushPayload; result: PushChoice | null };
   confirm: { payload: ConfirmPayload; result: boolean };
+  passphrase: { payload: PassphrasePayload; result: PassphraseResult | null };
+  /** Resolves true once the host key has been recorded in known_hosts. */
+  sshHostKey: { payload: SshHostKeyPayload; result: boolean };
+  /** Resolves true once the password has been handed to `sshSetPassword`. */
+  sshPassword: { payload: SshPasswordPayload; result: boolean };
   /** Resolves true when the changes were saved. */
   settings: { payload: SettingsPayload; result: boolean };
   about: { payload: null; result: null };
@@ -139,9 +188,18 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   pull: null,
   push: null,
   confirm: false,
+  passphrase: null,
+  sshHostKey: false,
+  sshPassword: false,
   settings: false,
   about: null,
 };
+
+/**
+ * Dialogs that open on top of another open dialog rather than replacing it: a confirmation, and
+ * the SSH prompts, which the SSH Keys page in Settings and an open started from a dialog need.
+ */
+const STACKED: ReadonlySet<DialogKind> = new Set<DialogKind>(["confirm", "passphrase", "sshHostKey", "sshPassword"]);
 
 interface ActiveDialog<K extends DialogKind = DialogKind> {
   kind: K;
@@ -151,14 +209,15 @@ interface ActiveDialog<K extends DialogKind = DialogKind> {
 
 /**
  * One dialog at a time, opened from anywhere (the native menu bar, a context menu, a panel) and
- * rendered once in `App.vue`. `open()` resolves when the dialog closes. The one exception is a
- * confirmation asked for while another dialog is open (a stale lock found while committing): it
- * opens on top, and the dialog behind it stays open.
+ * rendered once in `App.vue`. `open()` resolves when the dialog closes. The exception is a
+ * `STACKED` dialog asked for while another dialog is open (a stale lock found while committing,
+ * a passphrase asked for by the SSH Keys page): it opens on top, and the dialog behind it stays
+ * open.
  */
 export const useDialogsStore = defineStore("dialogs", () => {
   const active = shallowRef<ActiveDialog | null>(null);
-  /** A confirmation shown on top of `active`. */
-  const overlay = shallowRef<ActiveDialog<"confirm"> | null>(null);
+  /** A stacked dialog shown on top of `active`. */
+  const overlay = shallowRef<ActiveDialog | null>(null);
   /** The Add Repository dialog keeps its own flag: it has no result and several openers. */
   const addRepoOpen = ref(false);
   /** Set while the same dialog edits an existing library entry rather than adding one. */
@@ -178,10 +237,10 @@ export const useDialogsStore = defineStore("dialogs", () => {
   }
 
   function open<K extends DialogKind>(kind: K, payload: DialogSpecs[K]["payload"]): Promise<DialogSpecs[K]["result"]> {
-    if (kind === "confirm" && active.value !== null && active.value.kind !== "confirm") {
-      closeOverlay(false);
+    if (STACKED.has(kind) && active.value !== null && !STACKED.has(active.value.kind)) {
+      closeOverlay();
       return new Promise<DialogSpecs[K]["result"]>((resolve) => {
-        overlay.value = { kind: "confirm", payload: payload as ConfirmPayload, resolve: resolve as (r: boolean) => void };
+        overlay.value = { kind, payload, resolve } as ActiveDialog;
       });
     }
     // A dialog still open when the next one is requested counts as cancelled.
@@ -191,33 +250,35 @@ export const useDialogsStore = defineStore("dialogs", () => {
     });
   }
 
-  function closeOverlay(result: boolean): boolean {
+  /** Closes the stacked dialog with `result`, or as cancelled when no result is given. */
+  function closeOverlay(result?: unknown): boolean {
     const o = overlay.value;
     if (!o) return false;
     overlay.value = null;
-    o.resolve(result);
+    (o.resolve as (r: unknown) => void)(result === undefined ? CANCEL_RESULTS[o.kind] : result);
     return true;
   }
 
   /** The payload of the open dialog when it is of `kind`, else null. Dialog components watch this. */
   function current<K extends DialogKind>(kind: K): DialogSpecs[K]["payload"] | null {
-    if (kind === "confirm" && overlay.value) return overlay.value.payload as DialogSpecs[K]["payload"];
+    const o = overlay.value;
+    if (o && o.kind === kind) return o.payload as DialogSpecs[K]["payload"];
     const a = active.value;
     return a && a.kind === kind ? (a.payload as DialogSpecs[K]["payload"]) : null;
   }
 
   /** Closes the open dialog of `kind` with a result. Ignored when another dialog is open. */
   function resolve<K extends DialogKind>(kind: K, result: DialogSpecs[K]["result"]): void {
-    if (kind === "confirm" && closeOverlay(result as boolean)) return;
+    if (overlay.value?.kind === kind && closeOverlay(result)) return;
     const a = active.value;
     if (!a || a.kind !== kind) return;
     active.value = null;
     (a.resolve as (r: DialogSpecs[K]["result"]) => void)(result);
   }
 
-  /** Closes whatever dialog is open, and a confirmation on top of it, as if the user had pressed Cancel or Escape. */
+  /** Closes whatever dialog is open, and a stacked dialog on top of it, as if the user had pressed Cancel or Escape. */
   function cancel(): void {
-    closeOverlay(false);
+    closeOverlay();
     const a = active.value;
     if (!a) return;
     active.value = null;

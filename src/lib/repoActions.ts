@@ -3,7 +3,8 @@
  * panel and the native menu bar, plus removing a repository from the library. Every function
  * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
-import { commands, type GraphRow, type OpResult, type PullMode, type PushTarget, type ResetMode, type StashEntry, type SyncResult } from "@/lib/bindings";
+import { commands, type GitError, type GraphRow, type OpResult, type PullMode, type PushTarget, type ResetMode, type StashEntry, type SyncResult } from "@/lib/bindings";
+import { pathBasename } from "@/lib/format";
 import { commitFiles, worktreeActionPaths, type WorktreeActionPaths } from "@/lib/files";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
@@ -769,22 +770,27 @@ export async function deleteBranch(key: string, name: string): Promise<void> {
 }
 
 /**
- * Opens a library entry in a tab, or makes it the active tab. A failure becomes a notice; when Git
- * refused the folder because another user owns it, the notice offers to trust it. Resolves true
- * once the tab is open.
+ * Opens a library entry in a tab, or makes it the active tab. A failure goes to
+ * `reportOpenFailure`, which may ask the user to fix it and then open the repository again.
+ * Resolves true once the tab is open.
  */
 export async function openRepository(key: string): Promise<boolean> {
   try {
     await useSessionsStore().openTab(key);
     return true;
   } catch (e) {
-    reportOpenFailure(key, e);
-    return false;
+    return reportOpenFailure(key, e);
   }
 }
 
-/** Reports why a repository did not open, offering "Trust this folder…" for an unsafe repository. */
-export function reportOpenFailure(key: string, e: unknown): void {
+/**
+ * Reports why a repository did not open. When Git refused the folder because another user owns
+ * it, the notice offers "Trust this folder…". When SSH stopped it, a dialog asks for what is
+ * missing (trust for an unknown host key, a key's passphrase, a password) and the repository is
+ * opened again; a changed host key is shown as a warning with no way past it. Resolves true when
+ * the repository opened after all.
+ */
+export async function reportOpenFailure(key: string, e: unknown): Promise<boolean> {
   const sessions = useSessionsStore();
   if (e instanceof IpcError && e.error.kind === "unsafeRepository") {
     const path = e.error.path;
@@ -792,9 +798,81 @@ export function reportOpenFailure(key: string, e: unknown): void {
       label: "Trust this folder…",
       run: () => trustFolder(key, path),
     });
-    return;
+    return false;
+  }
+  if (e instanceof IpcError) {
+    const entry = useLibraryStore().repoByKey.get(key);
+    const fixed = await resolveSshProblem(e.error, entry ? repoDisplayName(entry) : "the repository");
+    if (fixed) return openRepository(key);
+    if (fixed === false) {
+      // Cancelled: the notice keeps the reason, and a way back to the same question.
+      const retry = e.error.kind === "sshHostKeyChanged" ? null : { label: "Try again…", run: () => void openRepository(key) };
+      sessions.notify(errorMessage(e), retry);
+      return false;
+    }
   }
   sessions.notify(errorMessage(e));
+  return false;
+}
+
+/** True when `reportOpenFailure` has a dialog or a notice button for `e`, rather than only its message. */
+export function canResolveOpenFailure(e: unknown): boolean {
+  if (!(e instanceof IpcError)) return false;
+  return e.error.kind === "unsafeRepository" || sshProblemKind(e.error) !== null;
+}
+
+/** Which SSH dialog fixes `error`, or null when none does. */
+export function sshProblemKind(error: GitError): "hostKey" | "passphrase" | "password" | null {
+  switch (error.kind) {
+    case "sshHostKeyUnknown":
+    case "sshHostKeyChanged":
+      return "hostKey";
+    case "sshNeedsPassphrase":
+    case "sshWrongPassphrase":
+      return "passphrase";
+    case "sshAuthFailed":
+      // Without a user and port the failure came from Git's own ssh, which StashPanda cannot give a password to.
+      return error.passwordAllowed && error.user !== null && error.port !== null ? "password" : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Asks the user for what an SSH connection was missing: trust for an unknown host key (recorded
+ * in known_hosts), a key's passphrase (remembered at least until StashPanda closes), or a
+ * password (remembered until StashPanda closes). A changed host key gets a warning that only
+ * closes. `subject` names what was being opened, such as the repository's name. Resolves true
+ * when the connection can be tried again, false when the user cancelled or nothing can be done,
+ * and null when `error` is not an SSH problem a dialog can fix.
+ */
+export async function resolveSshProblem(error: GitError, subject: string): Promise<boolean | null> {
+  const dialogs = useDialogsStore();
+  switch (error.kind) {
+    case "sshHostKeyUnknown":
+    case "sshHostKeyChanged": {
+      const changed = error.kind === "sshHostKeyChanged";
+      const trusted = await dialogs.open("sshHostKey", { host: error.host, port: error.port, fingerprint: error.fingerprint, changed, subject });
+      return trusted && !changed;
+    }
+    case "sshNeedsPassphrase":
+    case "sshWrongPassphrase": {
+      const result = await dialogs.open("passphrase", {
+        path: error.path,
+        keyName: pathBasename(error.path),
+        purpose: `to open ${subject}`,
+        wrong: error.kind === "sshWrongPassphrase",
+        forConnection: true,
+      });
+      return result !== null;
+    }
+    case "sshAuthFailed": {
+      if (!error.passwordAllowed || error.user === null || error.port === null) return null;
+      return dialogs.open("sshPassword", { host: error.host, port: error.port, user: error.user, rejected: error.passwordRejected, subject });
+    }
+    default:
+      return null;
+  }
 }
 
 /** Asks, then adds `path` to `safe.directory` in the global Git config and opens the repository. */
