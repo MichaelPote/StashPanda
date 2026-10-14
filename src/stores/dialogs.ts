@@ -225,15 +225,28 @@ export const useDialogsStore = defineStore("dialogs", () => {
   /** The tab the Add Repository dialog opens on. The dialog puts it back to "existing" as it closes. */
   const addRepoTab = ref<AddRepoTab>("existing");
 
-  function editRepo(key: string): void {
-    editRepoKey.value = key;
+  /**
+   * Opens the Add Repository dialog, on `tab`. Does nothing while another dialog is open: it would
+   * open underneath that one, since it comes first in the page, yet as the newest modal dialog it
+   * would take every click, so the dialog in view could not be used. (A native menu item, such as
+   * File > Open Repository, still works while a dialog is open.) Returns whether it opened.
+   */
+  function showAddRepo(tab: AddRepoTab = "existing"): boolean {
+    if (active.value !== null || overlay.value !== null) return false;
+    addRepoTab.value = tab;
     addRepoOpen.value = true;
+    return true;
+  }
+
+  function editRepo(key: string): void {
+    if (active.value !== null || overlay.value !== null) return;
+    editRepoKey.value = key;
+    showAddRepo();
   }
 
   /** Opens the Add Repository dialog on its Clone From tab. */
   function cloneRepo(): void {
-    addRepoTab.value = "clone";
-    addRepoOpen.value = true;
+    showAddRepo("clone");
   }
 
   function open<K extends DialogKind>(kind: K, payload: DialogSpecs[K]["payload"]): Promise<DialogSpecs[K]["result"]> {
@@ -285,5 +298,5 @@ export const useDialogsStore = defineStore("dialogs", () => {
     (a.resolve as (r: unknown) => void)(CANCEL_RESULTS[a.kind]);
   }
 
-  return { active, overlay, addRepoOpen, editRepoKey, addRepoTab, editRepo, cloneRepo, open, current, resolve, cancel };
+  return { active, overlay, addRepoOpen, editRepoKey, addRepoTab, showAddRepo, editRepo, cloneRepo, open, current, resolve, cancel };
 });

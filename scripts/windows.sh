@@ -122,6 +122,16 @@ require_free_win_port() {
   exit 1
 }
 
+# With WEBVIEW_DEBUG_PORT set (`WEBVIEW_DEBUG_PORT=9222 npm run win:ux`), the app's WebView2
+# serves the DevTools protocol on that port, on Windows' 127.0.0.1 only, so a script running on
+# Windows can inspect the real page (its layer tree, for example). No space before `&&`: cmd
+# would keep it in the value.
+webview_debug_prefix() {
+  if [[ "${WEBVIEW_DEBUG_PORT:-}" =~ ^[0-9]+$ ]]; then
+    printf 'set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=%s&& ' "$WEBVIEW_DEBUG_PORT"
+  fi
+}
+
 # Set by start_win_logged, read by stop_win_logged.
 win_pid=""
 tail_pid=""
@@ -244,7 +254,7 @@ ux_mode() {
   fi
 
   echo "Starting the Windows app (it loads the frontend from WSL's Vite)"
-  start_win_logged "npm run tauri dev -- --config src-tauri/tauri.wsl-dev.conf.json"
+  start_win_logged "$(webview_debug_prefix)npm run tauri dev -- --config src-tauri/tauri.wsl-dev.conf.json"
   sync_rust_loop &
   sync_pid=$!
   echo "Rust changes under src-tauri/ are copied to the mirror as you save them."

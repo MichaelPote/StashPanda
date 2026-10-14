@@ -144,7 +144,7 @@ const toolbarReasons = computed(() => ({
 <template>
   <TooltipProvider :delay-duration="300">
     <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
-      <AppToolbar :has-repo="sessions.active !== null" :commit-count="commitCount" @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" @commit="openCommitDialog(sessions.active)"
+      <AppToolbar :has-repo="sessions.active !== null" :commit-count="commitCount" @add-repo="dialogs.showAddRepo()" @refresh="refresh" @commit="openCommitDialog(sessions.active)"
         @stash-save="openStashDialog(sessions.active)" @pull="openPullDialog(sessions.active)"
         @fetch="fetchAll(sessions.active)" @push="pushCurrentBranch(sessions.active)"
         @sync="syncCurrentBranch(sessions.active)" @stage="stageSelected(sessions.active)"
@@ -210,7 +210,7 @@ const toolbarReasons = computed(() => ({
           <ResizablePanel :order="1" :default-size="leftWidth" :min-size="12" :max-size="45">
             <ResizablePanelGroup direction="vertical" @layout="onSidebarLayout">
               <ResizablePanel :default-size="reposHeight" :min-size="15">
-                <RepositoriesPanel @add-repo="dialogs.addRepoOpen = true" />
+                <RepositoriesPanel @add-repo="dialogs.showAddRepo()" />
               </ResizablePanel>
               <ResizableHandle />
               <ResizablePanel :default-size="100 - reposHeight" :min-size="15">
@@ -233,7 +233,7 @@ const toolbarReasons = computed(() => ({
                       class="area"
                       message="Open a repository to get started."
                     >
-                      <Button variant="outline" size="sm" @click="dialogs.addRepoOpen = true">
+                      <Button variant="outline" size="sm" @click="dialogs.showAddRepo()">
                         <FolderOpenIcon />
                         Open Repository
                       </Button>

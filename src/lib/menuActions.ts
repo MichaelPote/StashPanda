@@ -57,7 +57,7 @@ export async function dispatch(id: string): Promise<void> {
 
   switch (id) {
     case "file.open":
-      dialogs.addRepoOpen = true;
+      dialogs.showAddRepo();
       return;
     case "file.clone":
       dialogs.cloneRepo();

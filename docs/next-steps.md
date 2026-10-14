@@ -559,6 +559,20 @@ frontend test runner.
       transition, background clip or corners, the resize handles, or giving the dialog its own
       layer with `translateZ(0)` did not help. Menus need both their `shadow-md` removed and
       `overflow-y-auto` off before they measure ClearType over a composited layer; not changed.
+      **Measured in the running Windows app on 2026-10-14** (through WebView2's DevTools protocol;
+      start the app with `WEBVIEW_DEBUG_PORT=9222 npm run win:ux`): the Settings dialog's footer
+      has ClearType, while Add Repository's Cancel and Add buttons do not (0 coloured pixels, the
+      title 337). Chromium draws Add Repository from the Advanced row down to the bottom edge in a
+      separate squashing layer (794×252, reason Overlap). These made no difference: hiding the
+      resize handles, hiding the panel dividers' `::after` hit areas, turning the opening
+      animations off, the disabled Add button at full opacity, and an opaque background behind
+      the "Advanced" label; giving the whole dialog a layer of its own turns its title grayscale
+      too. Michael finds the menus fine and the dialog text sharp apart from those two buttons.
+- [x] **Add Repository opened under another dialog** (fixed 2026-10-14). Opening it (File >
+      Open Repository still works from the native menu) while Settings was open put it underneath,
+      because it comes first in the page, while as the newest modal dialog it took every click, so
+      the dialog in view could not be used. `dialogs.showAddRepo()` now does nothing while another
+      dialog is open; every opener goes through it.
 - [x] **Dialog resizing applied the size again** (2026-10-01). `DialogContent` wrote the
       dragged size onto `unrefElement(contentRef)`, the element reka-ui forwards from its
       DialogContent. reka-ui works that element out once and caches it, so it could be the
