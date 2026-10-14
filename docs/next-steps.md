@@ -196,7 +196,9 @@ Each item names the files it touches so it can be picked up cold.
       the git command alone, with no clock time (`ConsoleEvent.command`, from `Cmd.summary`, which `GitClient::build_cmd`
       sets to the caller's arguments before the common flags and the transport wrapper are
       added), the full command line follows in grey, there are no category tags, and each row
-      starts expanded to show only its standard output. A category button pressed in Log mode
+      starts expanded to show what the command printed: its standard output, then its standard
+      error, red when it failed (since 2026-10-14; before, only standard output, so a push, fetch,
+      pull or checkout, which report on standard error, showed nothing). A category button pressed in Log mode
       leaves Log mode with just that category on; switching Log off turns all three back on. The
       buttons are remembered as `console.*` in the UI state (`console.log` is new). A successful
       internal or watcher command's console event carries no output text, only its byte counts

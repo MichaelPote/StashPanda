@@ -127,6 +127,15 @@ function succeeded(entry: ConsoleEntry): boolean {
   return entry.exitCode === 0 && !entry.error;
 }
 
+/**
+ * Whether Log mode has anything to show for the entry. Standard error counts: push, fetch, pull,
+ * clone and checkout write what they did there ("To github.com:…", "main -> main", rejections,
+ * the server's own messages), and leave standard output empty.
+ */
+function hasLogOutput(entry: ConsoleEntry): boolean {
+  return entry.stdout.length > 0 || entry.stderr.length > 0;
+}
+
 /** How long the command took, with the exit code after a dash when it failed. */
 function resultText(entry: ConsoleEntry): string {
   const time = formatDurationMs(entry.durationMs);
@@ -256,7 +265,7 @@ function categoryShort(category: Category): string {
           >
             <component
               :is="isExpanded(entry) ? ChevronDownIcon : ChevronRightIcon"
-              :class="cn('size-3 shrink-0 text-muted-foreground', logMode && entry.stdout.length === 0 && 'invisible')"
+              :class="cn('size-3 shrink-0 text-muted-foreground', logMode && !hasLogOutput(entry) && 'invisible')"
             />
             <span v-if="!logMode" class="shrink-0 text-muted-foreground tabular-nums">{{ formatClockTime(entry.startedAtMs) }}</span>
             <!-- How long it took: a tick and green for exit code 0, a cross and red with the code after a dash otherwise. -->
@@ -292,14 +301,17 @@ function categoryShort(category: Category): string {
             </template>
           </button>
 
-          <!-- Log mode: just the standard output, as plain text, pinned to the visible part of the list. -->
+          <!-- Log mode: what the command printed, as plain text, pinned to the visible part of the
+               list. Standard output, then standard error, which is where Git reports on a push,
+               fetch, pull or checkout; red only when the command failed. -->
           <div
-            v-if="logMode && isExpanded(entry) && entry.stdout.length > 0"
+            v-if="logMode && isExpanded(entry) && hasLogOutput(entry)"
             class="sticky left-0 overflow-x-auto px-7 pb-1.5 scrollbar-thin"
             :style="viewWidth > 0 ? { width: `${viewWidth}px` } : undefined"
           >
-            <pre class="whitespace-pre text-text-2">{{ entry.stdout }}</pre>
-            <p v-if="entry.stdoutTruncated" class="font-sans text-[0.7rem] text-modified-fg">The output was cut off at the console's size limit.</p>
+            <pre v-if="entry.stdout.length > 0" class="whitespace-pre text-text-2">{{ entry.stdout }}</pre>
+            <pre v-if="entry.stderr.length > 0" :class="cn('whitespace-pre', succeeded(entry) || entry.running ? 'text-text-2' : 'text-destructive')">{{ entry.stderr }}</pre>
+            <p v-if="entry.stdoutTruncated || entry.stderrTruncated" class="font-sans text-[0.7rem] text-modified-fg">The output was cut off at the console's size limit.</p>
           </div>
 
           <!-- Pinned to the visible part of the list, with its own scrollbars for long output. -->
