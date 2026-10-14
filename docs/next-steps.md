@@ -570,6 +570,10 @@ frontend test runner.
       animations off, the disabled Add button at full opacity, and an opaque background behind
       the "Advanced" label; giving the whole dialog a layer of its own turns its title grayscale
       too. Michael finds the menus fine and the dialog text sharp apart from those two buttons.
+- [x] **The first file is selected** (2026-10-14, `FilesPanel.vue`). Selecting a commit or the
+      Working Tree row selects the first file of its list once it has loaded, which shows its
+      diff. Once per row: a status refresh never moves a selection, and a file already clicked is
+      left alone.
 - [x] **Add Repository opened under another dialog** (fixed 2026-10-14). Opening it (File >
       Open Repository still works from the native menu) while Settings was open put it underneath,
       because it comes first in the page, while as the newest modal dialog it took every click, so

@@ -358,6 +358,29 @@ watch(flat, (items) => {
   }
 });
 
+// Selecting a commit or the Working Tree row selects the first file of its list, which shows its
+// diff, once the list has loaded. Once per row: a status refresh in the working tree later never
+// moves the selection, and a file the user has already clicked is left alone.
+let preselectPending = true;
+watch(
+  () => selectedRow.value?.oid ?? null,
+  () => {
+    preselectPending = true;
+  },
+);
+watch(
+  [flat, changesLoading, () => props.session.status],
+  () => {
+    if (!preselectPending || mode.value === "none") return;
+    if (mode.value === "commit" && changesLoading.value) return;
+    if (mode.value === "worktree" && !props.session.status) return;
+    preselectPending = false;
+    const first = flat.value[0];
+    if (first && props.session.fileSelection.ids.size === 0) list.selectOnly(first.id);
+  },
+  { immediate: true },
+);
+
 function onKeydown(event: KeyboardEvent): void {
   list.onKeydown(event);
 }
