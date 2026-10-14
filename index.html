@@ -9,6 +9,15 @@
 
   <body>
     <div id="app"></div>
+    <!-- The diff's "None" font smoothing: rounds each pixel's coverage to fully on or fully off,
+         so text comes out aliased. Used through the `diff-glyphs` class; see `lib/diff/font.ts`. -->
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <filter id="diff-aliased-text" x="-0.1" y="-0.25" width="1.2" height="1.5" color-interpolation-filters="sRGB">
+        <feComponentTransfer>
+          <feFuncA type="discrete" tableValues="0 1" />
+        </feComponentTransfer>
+      </filter>
+    </svg>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

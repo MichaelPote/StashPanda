@@ -34,9 +34,10 @@ const emit = defineEmits<{
   pull: [];
   fetch: [];
   push: [];
+  sync: [];
 }>();
 
-type ToolbarEvent = "commit" | "stashSave" | "pull" | "fetch" | "push";
+type ToolbarEvent = "commit" | "stashSave" | "pull" | "fetch" | "push" | "sync";
 
 interface ToolbarAction {
   label: string;
@@ -58,7 +59,7 @@ const groups: ToolbarAction[][] = [
   [
     { label: "Fetch from Every Remote", caption: "Fetch", icon: CloudDownloadIcon, event: "fetch" },
     { label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, event: "pull" },
-    { label: "Sync", caption: "Sync", icon: ArrowDownUpIcon, coming: M3 },
+    { label: "Sync: Pull, then Push", caption: "Sync", icon: ArrowDownUpIcon, event: "sync" },
     { label: "Push to Upstream", caption: "Push", icon: ArrowUpFromLineIcon, event: "push" },
     { label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, event: "commit", primary: true },
   ],
@@ -84,6 +85,7 @@ function run(action: ToolbarAction): void {
   else if (action.event === "pull") emit("pull");
   else if (action.event === "fetch") emit("fetch");
   else if (action.event === "push") emit("push");
+  else if (action.event === "sync") emit("sync");
 }
 
 /**

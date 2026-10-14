@@ -11,6 +11,9 @@ defineOptions({
 
 const props = withDefaults(defineProps<TooltipContentProps & { class?: HTMLAttributes['class'] }>(), {
   sideOffset: 0,
+  // Absolute rather than reka-ui's fixed: a fixed element gets a compositor layer of its own,
+  // where Chromium never draws ClearType, so the text came out grayscale and soft.
+  positionStrategy: 'absolute',
 })
 
 const emits = defineEmits<TooltipContentEmits>()

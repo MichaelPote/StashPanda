@@ -229,6 +229,18 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         help: "Fonts that have them draw pairs such as => and != as one symbol. Turn this off to see every character as typed.",
       },
       {
+        kind: "select",
+        group: "diff",
+        key: "fontSmoothing",
+        label: "Font smoothing",
+        help: "How the diff text's edges are drawn. ClearType is the sharpest, using the screen's red, green and blue subpixels; it needs ClearType switched on in Windows. Grayscale is softer, with no colour fringes. None draws every pixel as text or background, for hard bitmap-like edges. Only the diff text changes; the rest of the interface keeps the Windows setting.",
+        options: [
+          { value: "clearType", label: "ClearType" },
+          { value: "grayscale", label: "Grayscale" },
+          { value: "none", label: "None" },
+        ],
+      },
+      {
         kind: "toggle",
         group: "diff",
         key: "wordHighlight",

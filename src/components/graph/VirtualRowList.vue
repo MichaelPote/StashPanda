@@ -51,8 +51,11 @@ defineExpose({
 <template>
   <div ref="scroller" class="relative h-full min-h-0 overflow-auto scrollbar-thin [scrollbar-gutter:stable]">
     <div class="relative w-full" :style="{ height: `${total * rowHeight}px` }">
+      <!-- No will-change-transform here: it would put the rows on a compositor layer of their own,
+           where Chromium never draws ClearType, so the text would come out grayscale and soft.
+           The diff viewer's rows leave it out for the same reason (see lib/diff/font.ts). -->
       <div
-        class="absolute inset-x-0 top-0 will-change-transform"
+        class="absolute inset-x-0 top-0"
         :style="{ transform: `translateY(${virtual.start.value * rowHeight}px)` }"
       >
         <slot :start="virtual.start.value" :end="virtual.end.value" />

@@ -25,6 +25,24 @@ export const commands = {
 	fontsMonospace: () => typedError<string[], GitError>(__TAURI_INVOKE("fonts_monospace")),
 	/**  Resolve without opening: which transport, which paths, which key. */
 	repoResolve: (path: string, connection: Connection) => typedError<RepoResolution, GitError>(__TAURI_INVOKE("repo_resolve", { path, connection })),
+	/**
+	 *  Resolve a folder to clone into and look at what is in it, without changing anything. Fails
+	 *  when the path is a file, or when neither it nor the folder that would contain it exists.
+	 */
+	cloneInspect: (path: string, connection: Connection) => typedError<CloneTarget, GitError>(__TAURI_INVOKE("clone_inspect", { path, connection })),
+	/**
+	 *  Clone `url` into `path` and add the result to the library. The folder may be missing, empty
+	 *  or already have files in it, which are kept: see `repo::clone`. A folder that is already a
+	 *  repository is refused. `opId` is chosen by the caller: each progress update arrives as a
+	 *  `cloneProgress` event carrying it, and `cloneCancel` with it stops the clone while it
+	 *  downloads, which then fails with `cancelled` and leaves the folder as it was.
+	 */
+	repoClone: (opId: string, url: string, path: string, connection: Connection, groupId: string | null, displayName: string | null) => typedError<CloneResult, GitError>(__TAURI_INVOKE("repo_clone", { opId, url, path, connection, groupId, displayName })),
+	/**
+	 *  Stop a clone started with `opId`. Resolves false when it has finished or is writing the files
+	 *  out, which always runs to the end.
+	 */
+	cloneCancel: (opId: string) => typedError<boolean, GitError>(__TAURI_INVOKE("clone_cancel", { opId })),
 	/**  Add to the library (or update an existing entry with the same key). */
 	repoAdd: (path: string, connection: Connection, groupId: string | null, displayName: string | null) => typedError<RepoEntry, GitError>(__TAURI_INVOKE("repo_add", { path, connection, groupId, displayName })),
 	/**
@@ -184,6 +202,16 @@ export const commands = {
 	/**  The branch name on the remote, without `refs/heads/`. */
 	branch: string,
 } | null, setUpstream: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push", { key, opId, branch, target, setUpstream })),
+	/**
+	 *  Pull local `branch`'s upstream into it, then push it back there: one operation under the write
+	 *  gate, so no other write runs in between. The pull works as for `opPull`. The push runs only
+	 *  when the pull succeeded (an autostash that conflicted on the way back still counts, since the
+	 *  commits are complete) and the branch has commits the upstream lacks. `opCancel` stops it while
+	 *  it fetches or pushes, not while it merges or rebases; a stop after the merge comes back as
+	 *  `pushStopped` rather than `cancelled`, since the pull did happen. Fails with `invalidPath`
+	 *  when the branch has no upstream.
+	 */
+	opSync: (key: string, opId: string, branch: string, mode: PullMode, autostash: boolean) => typedError<SyncResult, GitError>(__TAURI_INVOKE("op_sync", { key, opId, branch, mode, autostash })),
 	/**  The remote branch local `branch` tracks (`branch.<branch>.remote` and `.merge`), or null. */
 	getUpstream: (key: string, branch: string) => typedError<{
 	remote: string,
@@ -206,6 +234,7 @@ export const commands = {
 /** Events */
 export const events = {
 	appWarning: makeEvent<AppWarning>("app-warning"),
+	cloneProgress: makeEvent<CloneProgress>("clone-progress"),
 	consoleEvent: makeEvent<ConsoleEvent>("console-event"),
 	graphProgressEvent: makeEvent<GraphProgressEvent>("graph-progress-event"),
 	graphSnapshotEvent: makeEvent<GraphSnapshotEvent>("graph-snapshot-event"),
@@ -258,6 +287,60 @@ export type CacheSettings = {
 export type Category = "userAction" | "internal" | "watcher";
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed" | "copied" | "typeChanged" | "unmerged" | "unknown";
+
+/**  What is at the folder a clone would go into. */
+export type CloneFolder = 
+/**  Nothing there yet: `git clone` creates the folder. */
+{ type: "missing" } | { type: "empty" } | 
+/**  The folder has `count` entries at its top level. They are kept, over the cloned files. */
+{ type: "hasFiles"; count: number } | 
+/**  The folder has a `.git` entry, so it is a repository already and cannot be cloned into. */
+{ type: "repository" };
+
+/**  What `clone_into` did, beyond creating the repository. */
+export type CloneOutcome = {
+	/**  The folder had files in it, and they were kept over the cloned files. */
+	keptExisting: boolean,
+	/**  The branch checked out: the remote's default branch. None when the remote has no branches. */
+	branch: string | null,
+	/**
+	 *  Repository files that were not written because one of the folder's own files is where a
+	 *  folder of theirs would go (a file `docs` where the repository has `docs/index.md`). They
+	 *  show as deleted.
+	 */
+	blocked: string[],
+	/**  Problems after the repository was created, which leave it usable. */
+	warnings: string[],
+};
+
+/**
+ *  One progress update from a running clone, which has no repository yet to carry it, as
+ *  `OperationProgress` does for the operations of an open one.
+ */
+export type CloneProgress = {
+	opId: string,
+	line: string,
+	/**
+	 *  False once the clone has reached the step that writes the files out, which `cloneCancel`
+	 *  cannot stop.
+	 */
+	cancellable: boolean,
+};
+
+/**  What `repo_clone` made: the library entry, and how the clone went. */
+export type CloneResult = {
+	entry: RepoEntry,
+	outcome: CloneOutcome,
+};
+
+/**
+ *  What the Clone From tab shows before the user commits: where the clone would go, and what is
+ *  in that folder now.
+ */
+export type CloneTarget = {
+	resolution: RepoResolution,
+	folder: CloneFolder,
+};
 
 /**
  *  How the commit graph colours a lane that carries several branch tips, as when one branch was
@@ -389,6 +472,11 @@ export type DiffSettings = {
 	ligatures?: boolean,
 	/**  Mark the changed words inside a changed line, not only the whole line. */
 	wordHighlight?: boolean,
+	/**
+	 *  How the diff font's edges are smoothed. Only the diff text follows this; the rest of the
+	 *  interface keeps the system's own rendering.
+	 */
+	fontSmoothing?: FontSmoothing,
 };
 
 /**  Which two versions of `path` to compare. */
@@ -471,6 +559,15 @@ export type FilesView = {
 	groupBy?: FilesGroupBy,
 	sortBy?: FilesSortBy,
 };
+
+/**  How the diff text is antialiased (see `src/lib/diff/font.ts` for how each is achieved). */
+export type FontSmoothing = 
+/**  Subpixel antialiasing: ClearType on Windows, when it is switched on in Windows. */
+"clearType" | 
+/**  Grayscale antialiasing: softer edges with no colour fringes. */
+"grayscale" | 
+/**  No antialiasing: every pixel is either text or background. */
+"none";
 
 export type GenerateAlgorithm = "ed25519" | "rsa4096";
 
@@ -900,6 +997,26 @@ export type StatusSnapshot = {
 	unstagedCount: number,
 	untrackedCount: number,
 	conflictedCount: number,
+};
+
+/**  What a sync did: the pull, then the push if it got that far. */
+export type SyncResult = {
+	/**  The upstream the branch was synced with. */
+	target: PushTarget,
+	/**  The fetch and the merge or rebase, combined as for a pull. */
+	pull: OpResult,
+	/**
+	 *  The push, or null when it did not run: the pull failed or stopped on conflicts, there was
+	 *  nothing to push, or it was stopped.
+	 */
+	push: OpResult | null,
+	/**  The pull succeeded and the branch had no commits the upstream lacks, so no push ran. */
+	nothingToPush: boolean,
+	/**
+	 *  Stop was pressed after the pull had merged or rebased: the push did not run or did not
+	 *  finish.
+	 */
+	pushStopped: boolean,
 };
 
 export type Theme = "system" | "dark" | "light";

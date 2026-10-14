@@ -3,7 +3,7 @@
  * panel and the native menu bar, plus removing a repository from the library. Every function
  * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
-import { commands, type OpResult, type PullMode, type PushTarget, type StashEntry } from "@/lib/bindings";
+import { commands, type OpResult, type PullMode, type PushTarget, type StashEntry, type SyncResult } from "@/lib/bindings";
 import { commitFiles } from "@/lib/files";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
@@ -14,7 +14,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
 /** Runs one write operation and refetches refs and status once it has finished, whatever the outcome. */
-export async function runOp(key: string, op: Promise<IpcResult<OpResult>>): Promise<OpResult> {
+export async function runOp<T = OpResult>(key: string, op: Promise<IpcResult<T>>): Promise<T> {
   const sessions = useSessionsStore();
   try {
     return await unwrap(op);
@@ -190,38 +190,51 @@ export async function openPullDialog(session: RepoSession | null): Promise<void>
   const upstreamSource = upstream === null ? undefined : sources.find((s) => `refs/remotes/${s.short}` === upstream);
   const source = upstreamSource ?? sources.find((s) => s.short === `origin/${into}`) ?? sources[0];
 
-  const uncommitted = uncommittedSummary(session);
-  if (uncommitted !== null) {
-    const confirmed = await dialogs.open("confirm", {
-      title: "Pull with uncommitted changes?",
-      message:
-        `The working tree has uncommitted changes (${uncommitted}). Pulling anyway stashes them first, pulls, ` +
-        "then puts them back (git pull --autostash). If putting them back conflicts, they also stay in a stash, so nothing is lost.",
-      confirmLabel: "Pull anyway (autostash)",
-    });
-    if (!confirmed) return;
-  }
-
-  let mode: PullMode | null = useUiStateStore().state?.perRepo?.[key]?.pullMode ?? null;
-  if (mode === null) {
-    try {
-      mode = await unwrap(commands.getPullMode(key, into));
-    } catch {
-      // Reading the config is only for the starting choice; Merge is a fine one.
-    }
-  }
+  const autostash = await confirmAutostash(session, "Pull");
+  if (autostash === null) return;
+  const mode = await pullModeFor(key, into);
   await dialogs.open("pull", {
     key,
     into,
     sources,
     source,
     sourceIsUpstream: upstreamSource !== undefined && source === upstreamSource,
-    mode: mode ?? "merge",
-    autostash: uncommitted !== null,
+    mode,
+    autostash,
   });
 }
 
-/** What the notice strip says after a pull ran to the end, and the button it offers. */
+/**
+ * With uncommitted changes, asks whether to go ahead with `--autostash`. Resolves false when the
+ * working tree is clean, true when the user chose to go ahead, and null when they cancelled.
+ * `verb` names the action: "Pull" or "Sync".
+ */
+async function confirmAutostash(session: RepoSession, verb: string): Promise<boolean | null> {
+  const uncommitted = uncommittedSummary(session);
+  if (uncommitted === null) return false;
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: `${verb} with uncommitted changes?`,
+    message:
+      `The working tree has uncommitted changes (${uncommitted}). ${verb === "Pull" ? "Pulling" : "Syncing"} anyway stashes them first, pulls, ` +
+      "then puts them back (--autostash). If putting them back conflicts, they also stay in a stash, so nothing is lost.",
+    confirmLabel: `${verb} anyway (autostash)`,
+  });
+  return confirmed ? true : null;
+}
+
+/** The pull mode to use in a repository: the one last chosen there, else its Git config, else Merge. */
+async function pullModeFor(key: string, branch: string): Promise<PullMode> {
+  const remembered = useUiStateStore().state?.perRepo?.[key]?.pullMode ?? null;
+  if (remembered !== null) return remembered;
+  try {
+    return (await unwrap(commands.getPullMode(key, branch))) ?? "merge";
+  } catch {
+    // Reading the config only chooses a default; Merge is a fine one.
+    return "merge";
+  }
+}
+
+/** What to report after a pull ran to the end, and the button an error notice offers. */
 export interface PullOutcome {
   message: string;
   kind: "success" | "error";
@@ -293,11 +306,11 @@ function busyReason(session: RepoSession): string | null {
  * operation id to pass to the command. Refetches refs and status afterwards. Throws what the
  * command throws, including `cancelled` after Stop.
  */
-export async function runOperation(
+export async function runOperation<T = OpResult>(
   key: string,
   title: string,
-  start: (opId: string) => Promise<IpcResult<OpResult>>,
-): Promise<OpResult> {
+  start: (opId: string) => Promise<IpcResult<T>>,
+): Promise<T> {
   const sessions = useSessionsStore();
   const session = sessions.sessions.get(key);
   const opId = crypto.randomUUID();
@@ -413,6 +426,92 @@ export async function pushCurrentBranch(session: RepoSession | null): Promise<vo
       isCancelled(e) ? `The push was stopped. ${to} may already have the commits; the next fetch shows whether it does.` : errorMessage(e),
     );
   }
+}
+
+/** Why the checked-out branch cannot be synced right now, or null when it can. */
+export function syncReason(session: RepoSession | null | undefined): string | null {
+  return pullReason(session) ?? pushReason(session);
+}
+
+/**
+ * Pulls the checked-out branch's upstream into it, then pushes it back: one operation, with
+ * progress and Stop in the status bar. The pull uses the mode last chosen in the Pull dialog,
+ * else the Git config, else Merge; with uncommitted changes it asks first and goes ahead with
+ * `--autostash`. A branch with no upstream has nothing to pull from, so this pushes it through
+ * the Push dialog instead. Nothing is pushed when the pull fails or stops on conflicts.
+ */
+export async function syncCurrentBranch(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = syncReason(session);
+  const branch = currentBranch(session);
+  if (reason || !session || branch === null) {
+    sessions.notify(reason ?? "The repository is still loading.");
+    return;
+  }
+  const key = session.key;
+  let upstream: PushTarget | null;
+  try {
+    upstream = await unwrap(commands.getUpstream(key, branch));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+    return;
+  }
+  if (upstream === null) {
+    // Publishing is the only half of a sync that applies.
+    await pushCurrentBranch(session);
+    return;
+  }
+  const autostash = await confirmAutostash(session, "Sync");
+  if (autostash === null) return;
+  const mode = await pullModeFor(key, branch);
+  const to = `${upstream.remote}/${upstream.branch}`;
+  try {
+    const result = await runOperation(key, `Syncing ${branch} with ${to}`, (opId) => commands.opSync(key, opId, branch, mode, autostash));
+    const outcome = syncOutcome(key, result, branch, mode);
+    if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
+    else sessions.notify(outcome.message, outcome.action);
+  } catch (e) {
+    sessions.notify(isCancelled(e) ? `The sync was stopped while fetching. Nothing was merged or pushed.` : errorMessage(e));
+  }
+}
+
+/** Turns a finished sync into the notice to show. */
+export function syncOutcome(key: string, result: SyncResult, branch: string, mode: PullMode): PullOutcome {
+  const sessions = useSessionsStore();
+  const to = `${result.target.remote}/${result.target.branch}`;
+  const pulled = pullOutcome(key, result.pull, to, branch, mode);
+  if (!result.pull.ok) {
+    // Failed, or stopped on conflicts: the pull's own notice, which offers the abort.
+    const suffix = pulled.failed ? "" : " Nothing was pushed.";
+    return { ...pulled, message: pulled.message + suffix };
+  }
+  const upToDate = /Already up to date|Current branch .* is up to date/i.test(`${result.pull.stdout}\n${result.pull.stderr}`);
+  // An autostash that conflicted on the way back keeps its warning in front of the push news.
+  const pullPart = pulled.kind === "error" ? `${pulled.message} ` : upToDate ? "" : `${pulled.message} `;
+  if (result.nothingToPush) {
+    if (upToDate && pulled.kind !== "error") return { message: `${branch} is in sync with ${to}.`, kind: "success", action: null, failed: false };
+    return { message: `${pullPart}There was nothing to push.`, kind: pulled.kind, action: null, failed: false };
+  }
+  if (result.pushStopped) {
+    return {
+      message: `${pullPart}The push was stopped, so ${to} may not have ${branch}'s new commits yet; sync again to send them.`,
+      kind: "error",
+      action: null,
+      failed: false,
+    };
+  }
+  const push = result.push;
+  if (push?.ok) return { message: `${pullPart}Pushed ${branch} to ${to}.`, kind: pulled.kind, action: null, failed: false };
+  if (push && push.stderr.includes("[rejected]")) {
+    return {
+      message: `${pullPart}${to} received new commits while the sync was running, so the push was refused. Sync again.`,
+      kind: "error",
+      action: { label: "Sync again", run: () => syncCurrentBranch(sessions.sessions.get(key) ?? null) },
+      failed: false,
+    };
+  }
+  const detail = push ? networkFailureText(push, `Pushing ${branch} to ${to}`) : `Pushing ${branch} to ${to} did not run.`;
+  return { message: `${pullPart}${detail}`, kind: "error", action: null, failed: false };
 }
 
 /**

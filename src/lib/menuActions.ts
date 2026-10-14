@@ -16,6 +16,7 @@ import {
   openStashDialog,
   pushCurrentBranch,
   removeFromLibrary,
+  syncCurrentBranch,
 } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
@@ -57,6 +58,9 @@ export async function dispatch(id: string): Promise<void> {
   switch (id) {
     case "file.open":
       dialogs.addRepoOpen = true;
+      return;
+    case "file.clone":
+      dialogs.cloneRepo();
       return;
     case "file.close_tab":
       if (sessions.activeKey !== null) await sessions.closeTab(sessions.activeKey);
@@ -124,6 +128,9 @@ export async function dispatch(id: string): Promise<void> {
       return;
     case "repo.push":
       await pushCurrentBranch(sessions.active);
+      return;
+    case "repo.sync":
+      await syncCurrentBranch(sessions.active);
       return;
     case "repo.remove": {
       // The same removal as the Repositories context menu and the Edit Repository dialog.

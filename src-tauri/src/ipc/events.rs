@@ -38,3 +38,15 @@ pub struct OperationProgress {
     /// False once the operation has reached a step that `opCancel` cannot stop.
     pub cancellable: bool,
 }
+
+/// One progress update from a running clone, which has no repository yet to carry it, as
+/// `OperationProgress` does for the operations of an open one.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneProgress {
+    pub op_id: String,
+    pub line: String,
+    /// False once the clone has reached the step that writes the files out, which `cloneCancel`
+    /// cannot stop.
+    pub cancellable: bool,
+}

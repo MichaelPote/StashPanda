@@ -10,11 +10,11 @@ use tauri_specta::Event;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{GitError, Result};
-use crate::git::ops::{self, OpResult, PullMode, PushTarget};
+use crate::git::ops::{self, OpResult, PullMode, PushTarget, SyncResult};
 use crate::graph::loader::refresh_if_changed;
 use crate::ipc::events::OperationProgress;
 use crate::ipc::query::repo;
-use crate::repo::RepoHandle;
+use crate::repo::{OperationGuard, RepoHandle};
 use crate::state::AppState;
 use crate::transport::paths::NativePath;
 
@@ -169,34 +169,102 @@ pub async fn op_pull(
     let out = {
         let op = h.start_operation(&op_id)?;
         let _gate = gate_or_cancel(&h, &op.token).await?;
-        let progress = |line: String| emit(line, true);
-        let fetched = ops::pull_fetch(&h.client, &remote, &branch, &progress, &op.token).await;
-        // From here on Stop no longer applies: `opCancel` finds no operation and resolves false.
-        let stopped = op.token.is_cancelled();
-        drop(op);
-        match fetched {
-            // Stop pressed just as the fetch finished: honour it before anything is merged.
-            Ok(_) if stopped => Err(GitError::Cancelled),
-            Ok(f) if f.ok => {
-                emit(
-                    match mode {
-                        PullMode::Rebase => format!("Rebasing onto {remote}/{branch}…"),
-                        PullMode::Merge => format!("Merging {remote}/{branch}…"),
-                        PullMode::FastForwardOnly => format!("Fast-forwarding to {remote}/{branch}…"),
-                    },
-                    false,
-                );
-                let _exclusive = h.lock.write().await;
-                ops::pull_integrate(&h.client, &remote, &branch, mode, autostash).await.map(|r| ops::combine(f, r))
-            }
-            other => other,
-        }
+        pull_steps(&h, &op, &emit, &remote, &branch, mode, autostash).await
     };
     after_write(&app, &state, &key).await;
     out.and_then(|r| match ops::index_lock_in(&r) {
         Some(lock_path) => Err(GitError::IndexLocked { lock_path }),
         None => Ok(r),
     })
+}
+
+/// A pull's two steps, for a caller holding the write gate: the fetch, which `op` can stop, then
+/// the merge or rebase under the exclusive lock, during which it cannot. Leaves `op`
+/// uncancellable.
+#[allow(clippy::too_many_arguments)]
+async fn pull_steps(
+    h: &RepoHandle,
+    op: &OperationGuard<'_>,
+    emit: &(dyn Fn(String, bool) + Send + Sync),
+    remote: &str,
+    branch: &str,
+    mode: PullMode,
+    autostash: bool,
+) -> Result<OpResult> {
+    let progress = |line: String| emit(line, true);
+    let fetched = ops::pull_fetch(&h.client, remote, branch, &progress, &op.token).await;
+    // From here on Stop no longer applies: `opCancel` resolves false.
+    op.set_cancellable(false);
+    match fetched {
+        // Stop pressed just as the fetch finished: honour it before anything is merged.
+        Ok(_) if op.token.is_cancelled() => Err(GitError::Cancelled),
+        Ok(f) if f.ok => {
+            emit(
+                match mode {
+                    PullMode::Rebase => format!("Rebasing onto {remote}/{branch}…"),
+                    PullMode::Merge => format!("Merging {remote}/{branch}…"),
+                    PullMode::FastForwardOnly => format!("Fast-forwarding to {remote}/{branch}…"),
+                },
+                false,
+            );
+            let _exclusive = h.lock.write().await;
+            ops::pull_integrate(&h.client, remote, branch, mode, autostash).await.map(|r| ops::combine(f, r))
+        }
+        other => other,
+    }
+}
+
+/// Pull local `branch`'s upstream into it, then push it back there: one operation under the write
+/// gate, so no other write runs in between. The pull works as for `opPull`. The push runs only
+/// when the pull succeeded (an autostash that conflicted on the way back still counts, since the
+/// commits are complete) and the branch has commits the upstream lacks. `opCancel` stops it while
+/// it fetches or pushes, not while it merges or rebases; a stop after the merge comes back as
+/// `pushStopped` rather than `cancelled`, since the pull did happen. Fails with `invalidPath`
+/// when the branch has no upstream.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_sync(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, branch: String, mode: PullMode, autostash: bool) -> Result<SyncResult> {
+    let h = repo(&state, &key).await?;
+    let emit = progress_emitter(&app, &key, &op_id);
+    let out = sync_steps(&h, &op_id, &emit, &branch, mode, autostash).await;
+    after_write(&app, &state, &key).await;
+    out
+}
+
+/// The whole of `op_sync` except the refresh afterwards.
+async fn sync_steps(h: &RepoHandle, op_id: &str, emit: &(dyn Fn(String, bool) + Send + Sync), branch: &str, mode: PullMode, autostash: bool) -> Result<SyncResult> {
+    let op = h.start_operation(op_id)?;
+    let _gate = gate_or_cancel(h, &op.token).await?;
+    let target = ops::upstream_of(&h.client, branch).await?.ok_or_else(|| GitError::InvalidPath {
+        path: branch.to_string(),
+        reason: "the branch does not track a remote branch, so there is nothing to sync with".into(),
+    })?;
+    let pull = pull_steps(h, &op, emit, &target.remote, &target.branch, mode, autostash).await?;
+    if let Some(lock_path) = ops::index_lock_in(&pull) {
+        return Err(GitError::IndexLocked { lock_path });
+    }
+    let mut result = SyncResult { target: target.clone(), pull, push: None, nothing_to_push: false, push_stopped: false };
+    if !result.pull.ok {
+        return Ok(result);
+    }
+    if ops::commits_ahead(&h.client, &format!("refs/remotes/{}/{}", target.remote, target.branch)).await? == 0 {
+        result.nothing_to_push = true;
+        return Ok(result);
+    }
+    op.set_cancellable(true);
+    emit(format!("Pushing to {}/{}…", target.remote, target.branch), true);
+    // A stop pressed during the merge or rebase was refused, so only one pressed since counts.
+    if op.token.is_cancelled() {
+        result.push_stopped = true;
+        return Ok(result);
+    }
+    let progress = |line: String| emit(line, true);
+    match ops::push(&h.client, branch, &target, false, &progress, &op.token).await {
+        Ok(r) => result.push = Some(r),
+        Err(GitError::Cancelled) => result.push_stopped = true,
+        Err(e) => return Err(e),
+    }
+    Ok(result)
 }
 
 /// Sends a running operation's progress as `operationProgress` events.
@@ -344,4 +412,115 @@ pub async fn op_stash_drop(app: AppHandle, state: State<'_, AppState>, key: Stri
 #[specta::specta]
 pub async fn op_tag_delete(app: AppHandle, state: State<'_, AppState>, key: String, name: String) -> Result<OpResult> {
     write_op!(app, state, key, |c| ops::tag_delete(c, &name).await)
+}
+
+/// The sync sequence against throwaway repositories, through a real `RepoHandle` opened the way
+/// the app opens one (without an `AppHandle`, so nothing is emitted to a window).
+#[cfg(test)]
+mod e2e {
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::Mutex;
+
+    use super::*;
+    use crate::platform::Host;
+    use crate::settings::{Connection, RepoEntry, Settings};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let st = Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    fn commit(dir: &Path, file: &str, text: &str) {
+        std::fs::write(dir.join(file), text).unwrap();
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-qm", file]);
+    }
+
+    fn rev(dir: &Path, r: &str) -> String {
+        String::from_utf8(Command::new("git").arg("-C").arg(dir).args(["rev-parse", r]).output().unwrap().stdout).unwrap()
+    }
+
+    #[tokio::test]
+    async fn sync_pulls_then_pushes_and_stops_where_it_should() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-sync-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local, other) = (root.join("origin.git"), root.join("local"), root.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        git(&root, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+        for dir in [&local, &other] {
+            git(&root, &["clone", "-q", origin.to_str().unwrap(), dir.to_str().unwrap()]);
+            for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+                git(dir, &["config", k, v]);
+            }
+        }
+        commit(&local, "a.txt", "1\n");
+        git(&local, &["push", "-q", "-u", "origin", "main"]);
+        git(&other, &["pull", "-q", "origin", "main"]);
+
+        let entry = RepoEntry {
+            key: "sync-test".into(),
+            path: local.to_string_lossy().into_owned(),
+            connection: Connection::Local,
+            resolved_transport: None,
+            display_name: None,
+            git_executable: None,
+            group_id: None,
+            last_opened_at: None,
+        };
+        let h = crate::repo::open::open_repo(None, &entry, &Settings::default(), &Host::detect(), None).await.unwrap();
+        let lines = Mutex::new(Vec::<(String, bool)>::new());
+        let record = |line: String, cancellable: bool| lines.lock().unwrap().push((line, cancellable));
+
+        // In sync already: nothing is pushed.
+        let same = sync_steps(&h, "op-1", &record, "main", PullMode::Merge, false).await.unwrap();
+        assert!(same.pull.ok && same.nothing_to_push && same.push.is_none(), "{same:?}");
+
+        // Both sides have new commits: the pull merges, then the merge is pushed.
+        commit(&other, "b.txt", "2\n");
+        git(&other, &["push", "-q", "origin", "main"]);
+        commit(&local, "c.txt", "3\n");
+        let both = sync_steps(&h, "op-2", &record, "main", PullMode::Merge, false).await.unwrap();
+        assert!(both.pull.ok && both.push.as_ref().is_some_and(|p| p.ok), "{both:?}");
+        assert_eq!(rev(&origin, "main"), rev(&local, "HEAD"));
+        assert_eq!(rev(&local, "HEAD^2"), rev(&other, "HEAD"));
+        assert_eq!(both.target, PushTarget { remote: "origin".into(), branch: "main".into() });
+        // The merge step is reported as not cancellable, the fetch and the push as cancellable.
+        let seen = lines.lock().unwrap().clone();
+        assert!(seen.iter().any(|(l, c)| l.starts_with("Merging origin/main") && !c), "{seen:?}");
+        assert!(seen.iter().any(|(l, c)| l.starts_with("Pushing to origin/main") && *c), "{seen:?}");
+
+        // Fast-forward only, with both sides moved on: the pull is refused and nothing is pushed.
+        git(&other, &["pull", "-q", "origin", "main"]);
+        commit(&other, "d.txt", "4\n");
+        git(&other, &["push", "-q", "origin", "main"]);
+        commit(&local, "e.txt", "5\n");
+        let refused = sync_steps(&h, "op-3", &record, "main", PullMode::FastForwardOnly, false).await.unwrap();
+        assert!(!refused.pull.ok && refused.push.is_none() && !refused.nothing_to_push, "{refused:?}");
+        assert_ne!(rev(&origin, "main"), rev(&local, "HEAD"));
+
+        // Stop during the merge is refused; Stop when the push starts leaves the merge in place
+        // and reports the push as stopped.
+        let refused_stop = Mutex::new(None);
+        let stop_at_push = |line: String, cancellable: bool| {
+            if line.starts_with("Merging") {
+                *refused_stop.lock().unwrap() = Some(h.cancel_operation("op-4"));
+            }
+            if line.starts_with("Pushing to") {
+                assert!(h.cancel_operation("op-4"));
+            }
+            let _ = cancellable;
+        };
+        let stopped = sync_steps(&h, "op-4", &stop_at_push, "main", PullMode::Merge, false).await.unwrap();
+        assert_eq!(*refused_stop.lock().unwrap(), Some(false));
+        assert!(stopped.pull.ok && stopped.push_stopped && stopped.push.is_none(), "{stopped:?}");
+        assert_eq!(rev(&local, "HEAD^2"), rev(&other, "HEAD"));
+        assert_ne!(rev(&origin, "main"), rev(&local, "HEAD"));
+
+        // No upstream: nothing to sync with.
+        git(&local, &["checkout", "-q", "-b", "loose"]);
+        assert!(matches!(sync_steps(&h, "op-5", &record, "loose", PullMode::Merge, false).await, Err(GitError::InvalidPath { .. })));
+        assert!(h.operations.lock().unwrap().is_empty(), "every operation unregistered");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

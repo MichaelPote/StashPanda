@@ -60,7 +60,7 @@ const MODES: { id: PullMode; label: string; detail: (into: string) => string }[]
 const selectClass =
   "well h-8 w-full rounded-lg border px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 
-/** Closing the dialog while the pull runs leaves it running in the status bar; its outcome then shows in the notice strip. */
+/** Closing the dialog while the pull runs leaves it running in the status bar; its outcome then shows as a notice. */
 function onOpenChange(open: boolean): void {
   if (!open) dialogs.cancel();
 }
@@ -88,7 +88,8 @@ async function submit(): Promise<void> {
       error.value = outcome.message;
       return;
     }
-    sessions.notify(outcome.message, outcome.action, outcome.kind);
+    if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
+    else sessions.notify(outcome.message, outcome.action);
     if (showing()) dialogs.resolve("pull", result);
   } catch (e) {
     const cancelled = e instanceof IpcError && e.error.kind === "cancelled";

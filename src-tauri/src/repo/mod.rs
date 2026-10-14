@@ -1,11 +1,12 @@
 //! One open repository: its transport, Git client, lock and lifecycle.
 
+pub mod clone;
 pub mod open;
 pub mod resolve;
 pub mod watch_start;
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
@@ -56,9 +57,8 @@ pub struct RepoHandle {
     /// Held by every write for its whole run, so writes never overlap. A pull holds only this
     /// one: holding `lock` for a network transfer would stall every read until it finished.
     pub write_gate: Mutex<()>,
-    /// Cancellation tokens of the running long operations (pulls), by the id the frontend gave.
-    /// Children of `cancel`, so closing the repository cancels them too.
-    pub operations: std::sync::Mutex<HashMap<String, CancellationToken>>,
+    /// The running long operations (fetch, pull, push, sync), by the id the frontend gave.
+    pub operations: OperationRegistry,
     /// Bounds concurrent read spawns for one repository.
     pub read_slots: Semaphore,
     pub cancel: CancellationToken,
@@ -78,24 +78,13 @@ impl RepoHandle {
 
     /// Register a cancellable operation under `op_id` until the returned guard drops.
     pub fn start_operation(&self, op_id: &str) -> Result<OperationGuard<'_>> {
-        let mut ops = self.operations.lock().expect("operations lock");
-        if op_id.is_empty() || ops.contains_key(op_id) {
-            return Err(GitError::internal(format!("operation id {op_id:?} is empty or already in use")));
-        }
-        let token = self.cancel.child_token();
-        ops.insert(op_id.to_string(), token.clone());
-        Ok(OperationGuard { handle: self, op_id: op_id.to_string(), token })
+        start_operation(&self.operations, op_id, self.cancel.child_token())
     }
 
-    /// Cancel a running operation. False when no operation has that id (it has already finished).
+    /// Cancel a running operation. False when no operation has that id (it has already finished)
+    /// or it is in a step that cannot be stopped.
     pub fn cancel_operation(&self, op_id: &str) -> bool {
-        match self.operations.lock().expect("operations lock").get(op_id) {
-            Some(token) => {
-                token.cancel();
-                true
-            }
-            None => false,
-        }
+        cancel_operation(&self.operations, op_id)
     }
 
     pub async fn close(self: Arc<Self>) {
@@ -109,15 +98,64 @@ impl RepoHandle {
     }
 }
 
+/// Running long operations by the id the frontend gave: a repository's, or the clones in
+/// `AppState`, which have no repository yet.
+pub type OperationRegistry = std::sync::Mutex<HashMap<String, RunningOperation>>;
+
+/// Register a cancellable operation under `op_id`, stopped through `token`, until the returned
+/// guard drops.
+pub fn start_operation<'a>(registry: &'a OperationRegistry, op_id: &str, token: CancellationToken) -> Result<OperationGuard<'a>> {
+    let mut ops = registry.lock().expect("operations lock");
+    if op_id.is_empty() || ops.contains_key(op_id) {
+        return Err(GitError::internal(format!("operation id {op_id:?} is empty or already in use")));
+    }
+    let cancellable = Arc::new(AtomicBool::new(true));
+    ops.insert(op_id.to_string(), RunningOperation { token: token.clone(), cancellable: cancellable.clone() });
+    Ok(OperationGuard { registry, op_id: op_id.to_string(), token, cancellable })
+}
+
+/// Cancel the operation registered under `op_id`. False when there is none (it has already
+/// finished) or it is in a step that cannot be stopped.
+pub fn cancel_operation(registry: &OperationRegistry, op_id: &str) -> bool {
+    match registry.lock().expect("operations lock").get(op_id) {
+        Some(op) if op.cancellable.load(Ordering::SeqCst) => {
+            op.token.cancel();
+            true
+        }
+        _ => false,
+    }
+}
+
 /// A running operation's registration; dropping it removes the operation from the registry.
 pub struct OperationGuard<'a> {
-    handle: &'a RepoHandle,
+    registry: &'a OperationRegistry,
     op_id: String,
     pub token: CancellationToken,
+    cancellable: Arc<AtomicBool>,
+}
+
+impl OperationGuard<'_> {
+    /// Whether `cancel_operation` may stop the operation from now on. Set false around a step
+    /// that must run to the end (a pull's merge or rebase); a cancel that arrived before it still
+    /// shows in `token`.
+    pub fn set_cancellable(&self, cancellable: bool) {
+        self.cancellable.store(cancellable, Ordering::SeqCst);
+    }
+
+    /// Whether `cancel_operation` may stop the operation now.
+    pub fn is_cancellable(&self) -> bool {
+        self.cancellable.load(Ordering::SeqCst)
+    }
+}
+
+/// A registry entry: the token that cancels the operation, and whether it may be cancelled now.
+pub struct RunningOperation {
+    token: CancellationToken,
+    cancellable: Arc<AtomicBool>,
 }
 
 impl Drop for OperationGuard<'_> {
     fn drop(&mut self) {
-        self.handle.operations.lock().expect("operations lock").remove(&self.op_id);
+        self.registry.lock().expect("operations lock").remove(&self.op_id);
     }
 }

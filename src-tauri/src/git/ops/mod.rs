@@ -267,6 +267,33 @@ pub async fn push(
     Ok(result(out))
 }
 
+/// How many commits HEAD has that `tracking` (`refs/remotes/origin/dev`) does not: what a push
+/// would send.
+pub async fn commits_ahead(client: &GitClient, tracking: &str) -> Result<u32> {
+    let range = format!("{tracking}..HEAD");
+    let out = client.exec(GitReq::new("rev-list", ["rev-list", "--count", &range])).await?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.trim().parse().map_err(|_| GitError::ParseError { what: "rev-list --count".into(), detail: text.trim().to_string() })
+}
+
+/// What a sync did: the pull, then the push if it got that far.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncResult {
+    /// The upstream the branch was synced with.
+    pub target: PushTarget,
+    /// The fetch and the merge or rebase, combined as for a pull.
+    pub pull: OpResult,
+    /// The push, or null when it did not run: the pull failed or stopped on conflicts, there was
+    /// nothing to push, or it was stopped.
+    pub push: Option<OpResult>,
+    /// The pull succeeded and the branch had no commits the upstream lacks, so no push ran.
+    pub nothing_to_push: bool,
+    /// Stop was pressed after the pull had merged or rebased: the push did not run or did not
+    /// finish.
+    pub push_stopped: bool,
+}
+
 /// True when the remote refused a push because it has commits the pushed branch does not:
 /// `! [rejected] dev -> dev (fetch first)` or `(non-fast-forward)`.
 pub fn push_rejected(res: &OpResult) -> bool {

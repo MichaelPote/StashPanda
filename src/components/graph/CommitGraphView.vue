@@ -7,7 +7,6 @@ import CommitContextMenu from "@/components/graph/CommitContextMenu.vue";
 import CommitRow from "@/components/graph/CommitRow.vue";
 import GraphHeader, { type ResizableColumn } from "@/components/graph/GraphHeader.vue";
 import GraphLanesSvg from "@/components/graph/GraphLanesSvg.vue";
-import GraphLoadingBar from "@/components/graph/GraphLoadingBar.vue";
 import RowSkeleton from "@/components/graph/RowSkeleton.vue";
 import VirtualRowList from "@/components/graph/VirtualRowList.vue";
 import WorkingTreeContextMenu from "@/components/graph/WorkingTreeContextMenu.vue";
@@ -124,11 +123,6 @@ watch(
   { immediate: true },
 );
 
-const loadingVisible = computed(() => {
-  const m = meta.value;
-  return m === null || m.version === 0 || props.session.graph.loading;
-});
-const loadedCount = computed(() => Math.max(props.session.graph.progress, total.value));
 
 // ---- Selection -----------------------------------------------------------------------------
 
@@ -309,7 +303,6 @@ function onScrollTop(top: number): void {
         </span>
       </template>
     </PanelHeader>
-    <GraphLoadingBar :loaded="loadedCount" :visible="loadingVisible" />
     <GraphHeader :graph-width="graphWidth" :author-width="authorWidth" :date-width="dateWidth" :id-width="idWidth" @resize="onResize" />
 
     <EmptyState v-if="meta && meta.version > 0 && meta.total === 0 && !session.graph.loading" message="This repository has no commits yet." />

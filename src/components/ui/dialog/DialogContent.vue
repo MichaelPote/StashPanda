@@ -3,7 +3,7 @@ import type { DialogContentEmits, DialogContentProps } from 'reka-ui'
 
 import type { HTMLAttributes } from 'vue'
 import { XIcon } from '@lucide/vue'
-import { reactiveOmit, unrefElement } from '@vueuse/core'
+import { reactiveOmit } from '@vueuse/core'
 import {
   DialogClose,
   DialogContent,
@@ -48,8 +48,8 @@ const forwarded = useForwardPropsEmits(delegatedProps, emits)
 
 // ---- Resizing ------------------------------------------------------------------------------
 //
-// Dragging an edge or corner makes the dialog bigger. It stays centred (the translate(-50%)
-// below), so the size changes by twice the pointer's movement. The size is applied as a
+// Dragging an edge or corner makes the dialog bigger. It stays centred (`inset-0 m-auto` below),
+// so the size changes by twice the pointer's movement. The size is applied as a
 // minimum width and height: the dialog never draws smaller than its content needs, and while
 // it is taller than that the `[data-resized]` rules in index.css give the extra height to the
 // parts marked `data-dialog-grow`.
@@ -65,14 +65,20 @@ const size = computed<DialogSize | null>(() => {
   return saved && (saved.width ?? 0) > 0 && (saved.height ?? 0) > 0 ? saved : null
 })
 
-const contentRef = ref()
+/**
+ * The resize handles, whose parent is the dialog element. The element is taken from them rather
+ * than from a ref on reka-ui's DialogContent: that ref forwards an element reka-ui works out once
+ * and caches, which can be the placeholder it renders while closed, so the size was sometimes
+ * never applied and dragging an edge did nothing.
+ */
+const handleEls = ref<HTMLElement[]>([])
 
 // Set on the element itself: reka-ui's dismissable layer writes its own `style` attribute over
 // a `:style` binding here. Never wider or taller than the window, even when it shrank since.
 watchEffect(() => {
-  // While the dialog is closed reka-ui renders a placeholder node, which has no style.
-  const el = unrefElement(contentRef)
-  if (!(el instanceof HTMLElement)) return
+  // No handles while the dialog is closed, or when it is not resizable (then it has no size).
+  const el = handleEls.value[0]?.parentElement
+  if (!el) return
   const s = size.value
   el.style.minWidth = s ? `min(${s.width}px, calc(100vw - 2rem))` : ''
   el.style.minHeight = s ? `min(${s.height}px, calc(100vh - 2rem))` : ''
@@ -147,16 +153,24 @@ function resetSize(): void {
 }
 </script>
 
+<!-- Kept so that its text gets ClearType (measured in headless Edge 154, 2026-10-01):
+     - Absolute, not fixed, and centred by `inset-0 m-auto` rather than translate(-50%): a fixed
+       element gets a compositor layer of its own, and a -50% translate puts a dialog of odd
+       width or height on a half pixel.
+     - No `ring` and no shadow-* class: both are a box-shadow. In the app the dialog is always on
+       a layer of its own, because it is drawn over the panels' composited scrollers, and
+       Chromium drops ClearType for the whole of such a layer when its element has a
+       box-shadow (a translucent border does the same).
+     See DialogOverlay.vue. -->
 <template>
   <DialogPortal>
     <DialogOverlay />
     <DialogContent
       data-slot="dialog-content"
       v-bind="{ ...$attrs, ...forwarded }"
-      ref="contentRef"
       :data-resized="size ? '' : undefined"
       @interact-outside="onInteractOutside"
-      :class="cn('bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/10 grid max-w-[calc(100%-2rem)] gap-5 rounded-xl p-6 text-sm ring-1 duration-100 sm:max-w-sm fixed top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 outline-none', props.class)"
+      :class="cn('bg-popover text-popover-foreground data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 grid max-w-[calc(100%-2rem)] gap-5 rounded-xl p-6 text-sm duration-100 sm:max-w-sm absolute inset-0 m-auto z-50 h-fit w-full outline-none', props.class)"
     >
       <slot />
 
@@ -175,6 +189,7 @@ function resetSize(): void {
         <div
           v-for="h in EDGES"
           :key="h.edge"
+          ref="handleEls"
           data-dialog-resize
           aria-hidden="true"
           :class="cn('absolute z-10 touch-none select-none', h.class)"

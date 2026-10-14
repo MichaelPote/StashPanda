@@ -383,16 +383,17 @@ const headerPath = computed(() => {
   return s.oldPath && s.oldPath !== s.path ? `${s.oldPath} → ${s.path}` : s.path;
 });
 
+/** The class a `diff-line` row adds for its kind (`assets/diff.css`); context lines add none. */
 function lineClass(kind: DiffLine["kind"] | undefined): string {
   switch (kind) {
     case "add":
-      return "border-l-2 border-transparent bg-diff-add";
+      return "diff-line-add";
     case "del":
-      return "border-l-2 border-transparent bg-diff-del";
+      return "diff-line-del";
     case "meta":
-      return "border-l-2 border-transparent text-muted-foreground italic";
+      return "diff-line-meta";
     default:
-      return "border-l-2 border-transparent";
+      return "";
   }
 }
 
@@ -418,7 +419,8 @@ function toggleContext(value: string): void {
 <template>
   <section class="area flex h-full min-h-0 flex-col">
     <PanelHeader title="Diff">
-      <span v-if="selected" class="truncate font-mono text-xs text-foreground" :title="headerPath">{{ headerPath }}</span>
+      <!-- The same look as the path beside the Commits header (CommitGraphView.vue), and selectable like it. -->
+      <span v-if="selected" class="truncate text-xs text-muted-foreground select-text" :title="headerPath">{{ headerPath }}</span>
       <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
       <template #actions>
         <div v-if="selected" class="flex items-center gap-1 text-[0.7rem]">
@@ -501,21 +503,24 @@ function toggleContext(value: string): void {
         @wheel="mode === 'side' ? onSideWheel($event) : undefined"
       >
         <div class="relative" :style="mode === 'side' ? { height: `${rowCount * rowPx}px` } : { height: `${rowCount * rowPx}px`, minWidth: contentMinWidth }">
-          <div class="absolute inset-x-0 top-0 will-change-transform" :style="{ transform: `translateY(${virtual.start.value * rowPx}px)` }">
+          <!-- No will-change-transform here: it would put the rows on a compositor layer of their own,
+               where Chromium never draws ClearType, so the text would come out grayscale and soft
+               whatever diff.fontSmoothing says. See smoothingStyle in lib/diff/font.ts. -->
+          <div class="absolute inset-x-0 top-0" :style="{ transform: `translateY(${virtual.start.value * rowPx}px)` }">
             <!-- Unified -->
             <template v-if="mode === 'unified'">
               <template v-for="(row, k) in visibleUnified" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="flex h-(--diff-row-h) items-center bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
-                  {{ row.header }}
+                <div v-if="row.kind === 'hunk'" class="diff-hunk">
+                  <span class="diff-glyphs"> {{ row.header }}</span>
                 </div>
-                <div v-else :class="cn('flex h-(--diff-row-h) whitespace-pre', lineClass(row.line?.kind))">
-                  <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.oldNo ?? "" }}</span>
-                  <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.line?.newNo ?? "" }}</span>
-                  <span class="w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none">{{ marker(row.line?.kind) }}</span>
-                  <span class="flex-1 pr-2">
+                <div v-else :class="['diff-line', lineClass(row.line?.kind)]">
+                  <span class="diff-num"><span class="diff-glyphs">{{ row.line?.oldNo ?? "" }}</span></span>
+                  <span class="diff-num"><span class="diff-glyphs">{{ row.line?.newNo ?? "" }}</span></span>
+                  <span class="diff-sign">{{ marker(row.line?.kind) }}</span>
+                  <span class="diff-code">
                     <template v-for="(seg, i) in segments(row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
-                      <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'rounded-sm bg-diff-del-mark text-inherit' : 'rounded-sm bg-diff-add-mark text-inherit'">{{ seg.text }}</mark>
-                      <template v-else>{{ seg.text }}</template>
+                      <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs">{{ seg.text }}</span></mark>
+                      <span v-else class="diff-glyphs">{{ seg.text }}</span>
                     </template>
                   </span>
                 </div>
@@ -525,33 +530,33 @@ function toggleContext(value: string): void {
             <!-- Side by side -->
             <template v-else>
               <template v-for="(row, k) in visibleSide" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="flex h-(--diff-row-h) items-center overflow-hidden bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg">
-                  {{ row.header }}
+                <div v-if="row.kind === 'hunk'" class="diff-hunk overflow-hidden">
+                  <span class="diff-glyphs"> {{ row.header }}</span>
                 </div>
-                <div v-else-if="row.kind === 'meta'" class="flex h-(--diff-row-h) items-center overflow-hidden border-l-2 border-transparent pr-2 pl-[calc(var(--diff-num-w)+var(--diff-mark-w))] whitespace-pre text-muted-foreground italic">
-                  \ {{ row.text }}
+                <div v-else-if="row.kind === 'meta'" class="diff-side-meta">
+                  <span class="diff-glyphs"> \ {{ row.text }}</span>
                 </div>
                 <div v-else class="diff-side-row h-(--diff-row-h)">
-                  <div :class="cn('flex min-w-0 overflow-hidden whitespace-pre', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'border-l-2 border-transparent bg-muted/20')">
-                    <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.left?.oldNo ?? "" }}</span>
-                    <span class="w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
-                    <span class="diff-text-left min-w-0 flex-1 overflow-hidden"><span class="inline-block pr-2">
+                  <div :class="['diff-line min-w-0 overflow-hidden', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'diff-line-empty']">
+                    <span class="diff-num"><span class="diff-glyphs">{{ row.left?.oldNo ?? "" }}</span></span>
+                    <span class="diff-sign">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
+                    <span class="diff-side-code diff-text-left"><span>
                       <template v-if="row.left">
                         <template v-for="(seg, i) in segments(row.pair, 'old', row.left.text)" :key="i">
-                          <mark v-if="seg.changed" class="rounded-sm bg-diff-del-mark text-inherit">{{ seg.text }}</mark>
-                          <template v-else>{{ seg.text }}</template>
+                          <mark v-if="seg.changed" class="diff-word-del"><span class="diff-glyphs">{{ seg.text }}</span></mark>
+                          <span v-else class="diff-glyphs">{{ seg.text }}</span>
                         </template>
                       </template>
                     </span></span>
                   </div>
-                  <div :class="cn('flex min-w-0 overflow-hidden whitespace-pre', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'border-l-2 border-transparent bg-muted/20')">
-                    <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none">{{ row.right?.newNo ?? "" }}</span>
-                    <span class="w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
-                    <span class="diff-text-right min-w-0 flex-1 overflow-hidden"><span class="inline-block pr-2">
+                  <div :class="['diff-line min-w-0 overflow-hidden', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'diff-line-empty']">
+                    <span class="diff-num"><span class="diff-glyphs">{{ row.right?.newNo ?? "" }}</span></span>
+                    <span class="diff-sign">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
+                    <span class="diff-side-code diff-text-right"><span>
                       <template v-if="row.right">
                         <template v-for="(seg, i) in segments(row.pair, 'new', row.right.text)" :key="i">
-                          <mark v-if="seg.changed" class="rounded-sm bg-diff-add-mark text-inherit">{{ seg.text }}</mark>
-                          <template v-else>{{ seg.text }}</template>
+                          <mark v-if="seg.changed" class="diff-word-add"><span class="diff-glyphs">{{ seg.text }}</span></mark>
+                          <span v-else class="diff-glyphs">{{ seg.text }}</span>
                         </template>
                       </template>
                     </span></span>
@@ -597,22 +602,3 @@ function toggleContext(value: string): void {
   </section>
 </template>
 
-<style>
-/* Side-by-side rows: the two sides take the widths the divider sets. */
-.diff-side-row {
-  display: grid;
-  grid-template-columns: var(--left-w, 50%) var(--right-w, 50%);
-}
-/* Each side's text moves by its own horizontal scroll; the line numbers stay where they are. */
-.diff-text-left > span {
-  transform: translateX(calc(-1 * var(--sx-left, 0px)));
-}
-.diff-text-right > span {
-  transform: translateX(calc(-1 * var(--sx-right, 0px)));
-}
-/* Same width as a side's gutter (2px border, line number, marker), so each horizontal scrollbar
-   starts under its text. The widths come from `diffTextStyle` in `lib/diff/font.ts`. */
-.diff-gutter-space {
-  width: calc(2px + var(--diff-num-w) + var(--diff-mark-w));
-}
-</style>

@@ -6,11 +6,18 @@ use tauri::{AppHandle, State};
 use tauri_specta::Event;
 
 use crate::error::{GitError, Result};
-use crate::ipc::events::{SettingsChanged, UiStateChanged};
+use tokio_util::sync::CancellationToken;
+
+use crate::git::console::ConsoleRecorder;
+use crate::git::versions::Capabilities;
+use crate::git::GitClient;
+use crate::ipc::events::{CloneProgress, SettingsChanged, UiStateChanged};
 use crate::platform::Host;
+use crate::repo::clone::{self, CloneFolder, CloneOutcome};
 use crate::repo::open::open_repo;
-use crate::repo::resolve::{repo_key, resolve};
-use crate::repo::RepoInfo;
+use crate::repo::resolve::{repo_key, resolve, Resolution};
+use crate::repo::{cancel_operation, start_operation, RepoInfo};
+use crate::transport::paths::NativePath;
 use crate::settings::{Connection, RepoEntry, ResolvedTransport};
 use crate::state::AppState;
 
@@ -44,6 +51,11 @@ pub async fn repo_resolve(
     path: String,
     connection: Connection,
 ) -> Result<RepoResolution> {
+    Ok(resolve_entry(&state, &path, connection)?.1)
+}
+
+/// `repo_resolve` for `path` and `connection`, with the resolution it came from.
+fn resolve_entry(state: &AppState, path: &str, connection: Connection) -> Result<(Resolution, RepoResolution)> {
     let settings = state.settings();
     let entry = RepoEntry {
         path: path.trim().to_string(),
@@ -61,14 +73,96 @@ pub async fn repo_resolve(
         .unwrap_or("")
         .to_string();
     let is_ssh = matches!(res.resolved, ResolvedTransport::Ssh { .. });
-    Ok(RepoResolution {
+    let preview = RepoResolution {
         key,
-        resolved_transport: res.resolved,
-        host_path: (!is_ssh).then_some(res.host_path.0),
-        native_path: res.native_path.0,
+        resolved_transport: res.resolved.clone(),
+        host_path: (!is_ssh).then(|| res.host_path.0.clone()),
+        native_path: res.native_path.0.clone(),
         display_name,
-        warnings: res.warnings,
-    })
+        warnings: res.warnings.clone(),
+    };
+    Ok((res, preview))
+}
+
+/// What the Clone From tab shows before the user commits: where the clone would go, and what is
+/// in that folder now.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneTarget {
+    pub resolution: RepoResolution,
+    pub folder: CloneFolder,
+}
+
+/// Resolve a folder to clone into and look at what is in it, without changing anything. Fails
+/// when the path is a file, or when neither it nor the folder that would contain it exists.
+#[tauri::command]
+#[specta::specta]
+pub async fn clone_inspect(state: State<'_, AppState>, path: String, connection: Connection) -> Result<CloneTarget> {
+    let (res, resolution) = resolve_entry(&state, &path, connection)?;
+    let folder = clone::inspect(&res.transport, &res.native_path).await?;
+    Ok(CloneTarget { resolution, folder })
+}
+
+/// What `repo_clone` made: the library entry, and how the clone went.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneResult {
+    pub entry: RepoEntry,
+    pub outcome: CloneOutcome,
+}
+
+/// Clone `url` into `path` and add the result to the library. The folder may be missing, empty
+/// or already have files in it, which are kept: see `repo::clone`. A folder that is already a
+/// repository is refused. `opId` is chosen by the caller: each progress update arrives as a
+/// `cloneProgress` event carrying it, and `cloneCancel` with it stops the clone while it
+/// downloads, which then fails with `cancelled` and leaves the folder as it was.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn repo_clone(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    op_id: String,
+    url: String,
+    path: String,
+    connection: Connection,
+    group_id: Option<String>,
+    display_name: Option<String>,
+) -> Result<CloneResult> {
+    let url = url.trim().to_string();
+    clone::check_url(&url)?;
+    let (res, preview) = resolve_entry(&state, &path, connection.clone())?;
+    let folder = clone::inspect(&res.transport, &res.native_path).await?;
+    let outer_path = clone::parent_native(&res.native_path).ok_or_else(|| GitError::InvalidPath {
+        path: res.native_path.0.clone(),
+        reason: "cannot clone into the root of a drive or filesystem".into(),
+    })?;
+    let info = res.transport.probe().await?;
+    let console = Arc::new(ConsoleRecorder::new(Some(app.clone()), preview.key.clone(), state.settings().console.output_cap_bytes as usize));
+    let client = |repo: NativePath| GitClient {
+        transport: res.transport.clone(),
+        repo,
+        caps: Capabilities::for_version(info.git_version),
+        console: console.clone(),
+    };
+    let (inner, outer) = (client(res.native_path.clone()), client(outer_path));
+    let outcome = {
+        let op = start_operation(&state.clones, &op_id, CancellationToken::new())?;
+        let progress = |line: String| {
+            let _ = CloneProgress { op_id: op_id.clone(), line, cancellable: op.is_cancellable() }.emit(&app);
+        };
+        clone::clone_into(&inner, &outer, &folder, &url, &progress, &op, &op.token).await?
+    };
+    let entry = repo_add(app, state, path, connection, group_id, display_name).await?;
+    Ok(CloneResult { entry, outcome })
+}
+
+/// Stop a clone started with `opId`. Resolves false when it has finished or is writing the files
+/// out, which always runs to the end.
+#[tauri::command]
+#[specta::specta]
+pub async fn clone_cancel(state: State<'_, AppState>, op_id: String) -> Result<bool> {
+    Ok(cancel_operation(&state.clones, &op_id))
 }
 
 /// Add to the library (or update an existing entry with the same key).

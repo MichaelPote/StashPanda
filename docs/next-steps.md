@@ -440,6 +440,66 @@ frontend test runner.
       virtual list and the rows now use one whole-pixel height; before, the list spaced rows at
       1.4rem while they were drawn at 1.25rem, so the text jumped while scrolling.
       `useVirtualRows` accepts the row height as a getter.
+- [x] **Font smoothing setting** `diff.fontSmoothing` (2026-10-01): ClearType (the default),
+      Grayscale or None, for the diff text only. Until now the diff was always grayscale and
+      looked soft next to the rest of the window: the virtual list's row container had
+      `will-change-transform`, which puts the rows on a compositor layer of their own, and
+      Chromium never draws ClearType there. That class is gone. WebView2 ignores
+      `-webkit-font-smoothing` (macOS only), so Grayscale sets `will-change: transform` on the
+      element holding the rows, and None uses the `#diff-aliased-text` SVG filter in
+      `index.html`, which rounds each pixel's coverage to on or off. That filter sits on the
+      `diff-glyphs` spans, which hold only text, so translucent row colours and changed-word
+      highlights keep their colour. All three measured in headless Edge 154 on Windows against
+      the real `DiffViewer` and `DiffPreview`. Not yet tried in the running app, and scrolling
+      speed with None is unmeasured. The commit graph's `VirtualRowList.vue` had the same
+      `will-change-transform` and lost it too, so the graph's text is ClearType now as well
+      (measured in headless Edge with the real component: no colour-fringed pixels before, 12593
+      after). The graph has no smoothing setting.
+- [x] **ClearType in dialogs, menus, popovers and tooltips** (2026-10-01). All of them drew
+      grayscale, soft text, because Chromium gave them a compositor layer of their own, and it
+      never draws ClearType on a layer that is not opaque (their rounded corners are
+      transparent). Chromium's DevTools layer tree gave the reasons: the dialog backdrop's
+      `backdrop-blur-xs` (`BackdropFilter`), `position: fixed` on the backdrop, the dialog and
+      reka-ui's menu wrappers (`Viewport`), and the dialog drawn over the backdrop (`Overlap`).
+      Fixes: the backdrop has no blur, and it and `DialogContent` are `absolute` (the window
+      never scrolls); `DialogContent` is centred with `inset-0 m-auto h-fit` instead of a -50%
+      translate, which put a dialog of odd size on a half pixel; the dropdown menu, context
+      menu, popover and tooltip wrappers in `src/components/ui` default `positionStrategy` to
+      `absolute`; and `index.css` overrides the `will-change: transform` Floating UI adds on
+      screens scaled 150% or more. Measured in headless Edge 154 with the real components:
+      Add Repository's text went from no colour-fringed pixels to ClearType, as did an open
+      dropdown menu, and the layer tree now has only the root layers. The open and close
+      animations still take a layer while they run (100ms). The only `will-change` left in
+      `src` is the diff's Grayscale font smoothing, which uses it on purpose. Not yet tried in
+      the running app. The blur cannot come back on its own: with the backdrop `absolute`,
+      `backdrop-blur` still gives it a `BackdropFilter` layer and the dialog an `Overlap` one,
+      and the dialog text measured grayscale again.
+      **Correction, same day:** in the running app the dialog text was still soft. The test page
+      had nothing composited behind the dialog; the app has the panels' composited scrollers,
+      so the backdrop and the dialog always get a layer (`Overlap`). With a composited element
+      behind the test dialog, the dialog's `ring-1` (a box-shadow) turned all its text grayscale;
+      without it the title, labels and fields measured ClearType, rounded corners and all. A
+      translucent border did the same as the ring; an `outline` kept ClearType. The ring is now
+      gone, with no replacement, and the backdrop is 60% black instead of 50%. **Still open:**
+      in that test the Advanced row and the footer (Cancel, Clone) stayed grayscale. Chromium
+      puts them in a separate 588×101 layer, which goes away if either the footer or the
+      Advanced section is hidden; removing the footer's inset shadow, the buttons' shadow,
+      transition, background clip or corners, the resize handles, or giving the dialog its own
+      layer with `translateZ(0)` did not help. Menus need both their `shadow-md` removed and
+      `overflow-y-auto` off before they measure ClearType over a composited layer; not changed.
+- [x] **Dialog resizing applied the size again** (2026-10-01). `DialogContent` wrote the
+      dragged size onto `unrefElement(contentRef)`, the element reka-ui forwards from its
+      DialogContent. reka-ui works that element out once and caches it, so it could be the
+      placeholder rendered while the dialog was closed, and dragging an edge then did nothing.
+      The size now goes onto the resize handles' parent element. Checked with real mouse
+      input through the DevTools protocol: the Add Repository dialog failed in 4 of 4 drags
+      before, grew from 588×612 to 708×732 in 4 of 4 after, and kept its size after release.
+- [x] **Diff row classes** (2026-10-01): the rows, gutters, markers and changed-word highlights
+      use named classes from `src/assets/diff.css` (`diff-line`, `diff-num`, `diff-sign`,
+      `diff-code`, `diff-word-add` and the rest), built with `@apply`, instead of long utility
+      lists on every row; `DiffPreview.vue` uses the same classes. The rows no longer go
+      through `cn()` (tailwind-merge) on every render. Checked in headless Edge: the unified
+      viewer and the preview render pixel for pixel as before.
 
 ### Shell, fonts and icons
 
@@ -527,6 +587,14 @@ none of it has been checked in the running app yet.
       checkout runs straight away. The Checkout menu items are no longer disabled on a dirty tree.
 - [x] **Success notices** (`notifySuccess`) show plainly with a tick and `role="status"`; only
       failures use the red error style.
+- [x] **Status bar messages** (2026-10-01). Success messages ("Committed …", "Stashed …") show
+      at the right of the status bar with a tick and a dismiss button. They are kept in their own
+      `successMessage` state in the sessions store and never go through `notify()`, which now
+      posts errors only, to the red strip under the toolbar. A new error clears the success
+      message and a new success message clears the error. The "Loading N commits…" message
+      shows in the status bar too, with a spinner, in place of the strip that used to sit above
+      the Commits table header (`GraphLoadingBar.vue`, now deleted). Not yet tried in the
+      running app.
 - [x] **Text selection off** everywhere except commit IDs, the Files panel's commit message, the
       repository path and diff code. Shift-click in the Commits table does not extend a text
       selection. The pointer cursor is gone from list rows.
@@ -564,7 +632,7 @@ none of it has been checked in the running app yet.
       `perRepo[key].pullMode`, else the Git config, else Merge). With uncommitted changes,
       `openPullDialog` asks first and offers "Pull anyway (autostash)". The dialog shows the
       latest progress line with a bar from its percentage, and Stop. Closing the dialog leaves
-      the pull running; the outcome then shows in the notice strip. Conflicts offer Abort rebase
+      the pull running; the outcome then shows as a notice. Conflicts offer Abort rebase
       or Abort merge; an autostash that conflicts on the way back (Git exits 0) is reported as
       needing attention. Not yet tried in the running app.
 - [x] **Stopping a command properly** (2026-10-01, for the pull's fetch). `Cmd::own_session`
@@ -624,7 +692,54 @@ none of it has been checked in the running app yet.
         with a notice while one runs.
       - Credential failures (`GIT_TERMINAL_PROMPT=0`) get one explanation for all three
         (`networkFailureText`); a `GIT_ASKPASS` helper is still to be designed.
-      Not yet tried in the running app. The toolbar's Sync button is still disabled.
+      Not yet tried in the running app.
+- [x] **Sync** (2026-10-01): the toolbar's Sync button and the new Repository › Sync (Pull,
+      then Push) run `syncCurrentBranch`, in one click. It pulls the upstream with the mode last
+      chosen in the Pull dialog (else the Git config, else Merge), then pushes back. With
+      uncommitted changes it asks first, as Pull does, and goes ahead with `--autostash`. A
+      branch with no upstream has nothing to pull from, so it goes to `pushCurrentBranch`, which
+      opens the Push dialog. `op_sync(key, opId, branch, mode, autostash)` runs the whole thing
+      as one operation under the write gate (`sync_steps` in `ipc/ops.rs`, sharing
+      `pull_steps` with `op_pull`), returning a `SyncResult` with the pull, the push, and
+      `nothingToPush` or `pushStopped`. Nothing is pushed when the pull fails or stops on
+      conflicts, and the push is skipped when `rev-list --count` finds no commits to send. Stop
+      works while it fetches and while it pushes, not while it merges or rebases: the registry
+      entry now carries a cancellable flag (`OperationGuard::set_cancellable`), which
+      `op_cancel` respects. A push refused because the remote moved on meanwhile offers "Sync
+      again". Test: `sync_pulls_then_pushes_and_stops_where_it_should`, which goes through a
+      real `RepoHandle` from `open_repo` and fails if the merge step can be stopped. Not yet
+      tried in the running app.
+- [x] **Clone** (2026-10-01): File › Clone Repository… opens the Add Repository dialog on its
+      new Clone From tab; the other tab, Add Existing, is the dialog as it was. Editing a library
+      entry shows no tabs. The two tabs share the path field and the Advanced connection
+      settings, so Auto still picks Local, WSL or SSH from the folder chosen. As the path
+      changes, `clone_inspect(path, connection)` resolves it and reports what is in the folder:
+      missing (the clone creates it), empty, has files, or a repository already, which is
+      refused with a link to Add Existing. When the folder has files or is a repository and its
+      name is not the repository's (`django` from `git@github.com:django/django.git`), the
+      dialog offers "Clone into …/django instead". `repo_clone(opId, url, path, connection,
+      groupId, displayName)` clones and then adds the result to the library, as `repo_add`
+      does, and the dialog opens it in a tab. A missing or empty folder gets a plain
+      `git clone --progress`, run in the folder above it. **A folder with files in it** is never
+      moved or copied: `repo/clone.rs` runs `git init`, `git remote add origin`, `git fetch
+      --progress origin`, takes the default branch from `refs/remotes/origin/HEAD` (running `git
+      remote set-head origin --auto` when Git did not create it and there is more than one
+      branch), then `git branch --track`, `git symbolic-ref HEAD` and a mixed `git reset`, which
+      sets the index and leaves every file alone. `git checkout-index --stdin` (without
+      `--force`) then writes only the files the folder lacks. Before that, any repository file
+      whose folder is taken by a file of the user's is left out: `checkout-index` would otherwise
+      stop with "cannot create directory", and those files come back in `CloneOutcome.blocked`.
+      The result is the clone with the user's files over it: changed where they differ, untracked
+      where the repository has no such file, and a notice says so. On failure or Stop the
+      `.git` folder it created is deleted (the whole folder, when it did not exist before), so
+      the folder is as it was. Progress arrives as `cloneProgress` events; `clone_cancel(opId)`
+      stops it through `AppState::clones`, a registry of the same kind as `RepoHandle`'s
+      (`repo::start_operation` and `repo::cancel_operation` are now free functions that both
+      use). Stop is refused once files are being written: from `Updating files` in a plain
+      clone, and after the fetch in the other case. While a clone runs the dialog cannot be
+      closed, only stopped. `Transport` gained `list_dir` and `remove_dir_all`. Test:
+      `clones_into_missing_empty_and_non_empty_folders`. There is no toolbar button yet. Not yet
+      tried in the running app, nor over WSL or SSH.
 - [ ] **Merge, rebase, cherry-pick, revert** with conflict detection (`u` entries in status), a
       conflict list using the `:1:`, `:2:`, `:3:` blob stages (`get_blob_content` already accepts
       those specs), and continue / abort actions.

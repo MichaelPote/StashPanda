@@ -184,6 +184,22 @@ pub struct DiffSettings {
     pub ligatures: bool,
     /// Mark the changed words inside a changed line, not only the whole line.
     pub word_highlight: bool,
+    /// How the diff font's edges are smoothed. Only the diff text follows this; the rest of the
+    /// interface keeps the system's own rendering.
+    pub font_smoothing: FontSmoothing,
+}
+
+/// How the diff text is antialiased (see `src/lib/diff/font.ts` for how each is achieved).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum FontSmoothing {
+    /// Subpixel antialiasing: ClearType on Windows, when it is switched on in Windows.
+    #[default]
+    ClearType,
+    /// Grayscale antialiasing: softer edges with no colour fringes.
+    Grayscale,
+    /// No antialiasing: every pixel is either text or background.
+    None,
 }
 
 impl Default for DiffSettings {
@@ -195,6 +211,7 @@ impl Default for DiffSettings {
             tab_width: 8,
             ligatures: true,
             word_highlight: true,
+            font_smoothing: FontSmoothing::ClearType,
         }
     }
 }

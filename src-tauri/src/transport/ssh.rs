@@ -241,6 +241,32 @@ impl Transport for SshTransport {
         }
         Ok(times)
     }
+    async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>> {
+        // The first line says what is at the path; for a folder, one name per line follows.
+        const SCRIPT: &str = r#"if [ -d "$1" ]; then echo dir; cd -- "$1" && ls -A; elif [ -e "$1" ] || [ -L "$1" ]; then echo file; else echo missing; fi"#;
+        let mut cmd = Cmd::git("ls", vec!["-c".into(), SCRIPT.into(), "sh".into(), path.0.clone()]);
+        cmd.program = Program::Other("sh".into());
+        let out = self.run(cmd).await?;
+        if !out.success() {
+            return Err(GitError::Io { detail: String::from_utf8_lossy(&out.stderr).trim().to_string() });
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut lines = text.lines();
+        match lines.next().map(str::trim) {
+            Some("dir") => Ok(Some(lines.filter(|l| !l.is_empty()).map(String::from).collect())),
+            Some("file") => Err(GitError::InvalidPath { path: path.0.clone(), reason: "it is a file, not a folder".into() }),
+            _ => Ok(None),
+        }
+    }
+    async fn remove_dir_all(&self, path: &NativePath) -> Result<()> {
+        let mut cmd = Cmd::git("rm", vec!["-rf".into(), "--".into(), path.0.clone()]);
+        cmd.program = Program::Other("rm".into());
+        let out = self.run(cmd).await?;
+        if !out.success() {
+            return Err(GitError::Io { detail: String::from_utf8_lossy(&out.stderr).trim().to_string() });
+        }
+        Ok(())
+    }
     async fn shutdown(&self) {
         // Connections are shared per host and closed by the pool on exit.
     }

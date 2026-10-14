@@ -101,6 +101,9 @@ export interface ConfirmPayload {
   destructive?: boolean;
 }
 
+/** The Add Repository dialog's tabs: add a folder that is a repository already, or clone one. */
+export type AddRepoTab = "existing" | "clone";
+
 /** Every dialog the store can open, with what the caller passes in and what the promise resolves to. */
 export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
@@ -148,9 +151,17 @@ export const useDialogsStore = defineStore("dialogs", () => {
   const addRepoOpen = ref(false);
   /** Set while the same dialog edits an existing library entry rather than adding one. */
   const editRepoKey = ref<string | null>(null);
+  /** The tab the Add Repository dialog opens on. The dialog puts it back to "existing" as it closes. */
+  const addRepoTab = ref<AddRepoTab>("existing");
 
   function editRepo(key: string): void {
     editRepoKey.value = key;
+    addRepoOpen.value = true;
+  }
+
+  /** Opens the Add Repository dialog on its Clone From tab. */
+  function cloneRepo(): void {
+    addRepoTab.value = "clone";
     addRepoOpen.value = true;
   }
 
@@ -184,5 +195,5 @@ export const useDialogsStore = defineStore("dialogs", () => {
     (a.resolve as (r: unknown) => void)(CANCEL_RESULTS[a.kind]);
   }
 
-  return { active, addRepoOpen, editRepoKey, editRepo, open, current, resolve, cancel };
+  return { active, addRepoOpen, editRepoKey, addRepoTab, editRepo, cloneRepo, open, current, resolve, cancel };
 });

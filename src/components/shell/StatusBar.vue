@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { EyeIcon, GitBranchIcon, LoaderCircleIcon, MonitorIcon, ServerIcon } from "@lucide/vue";
+import { CircleCheckIcon, EyeIcon, GitBranchIcon, LoaderCircleIcon, MonitorIcon, ServerIcon, XIcon } from "@lucide/vue";
 import { Separator } from "@/components/ui/separator";
 import { hostLabel, transportDetail } from "@/lib/format";
 import { stopOperation } from "@/lib/repoActions";
@@ -14,6 +14,21 @@ const hostText = computed(() => hostLabel(host.info));
 const active = computed(() => sessions.active);
 /** The active repository's fetch, pull or push, if one is running. */
 const operation = computed(() => active.value?.operation ?? null);
+
+/** True while the active repository's commit graph is being built, on first load and on every refresh. */
+const graphLoading = computed(() => {
+  const graph = active.value?.graph;
+  if (!graph) return false;
+  return graph.meta === null || graph.meta.version === 0 || graph.loading;
+});
+/** Commits loaded so far: the backend's progress count, or the previous snapshot's total if that is larger. */
+const loadedCount = computed(() => {
+  const graph = active.value?.graph;
+  return graph ? Math.max(graph.progress, graph.meta?.total ?? 0) : 0;
+});
+
+/** The last report that an action worked ("Committed …", "Stashed …"). Errors show in the strip under the toolbar. */
+const successMessage = computed(() => sessions.successMessage);
 
 const watcherText = computed(() => {
   switch (active.value?.watcherKind) {
@@ -33,48 +48,68 @@ const watcherText = computed(() => {
 
 <template>
   <footer
-    class="flex h-[21px] shrink-0 items-center gap-2 border-t border-window bg-bar px-2 text-xs text-muted-foreground select-none"
+    class="flex h-[21px] shrink-0 items-center gap-2 border-t border-window bg-bar px-2 text-xs whitespace-nowrap text-muted-foreground select-none"
   >
-    <span v-if="hostText" class="inline-flex items-center gap-1" :title="'Host operating system'">
+    <span v-if="hostText" class="inline-flex shrink-0 items-center gap-1" :title="'Host operating system'">
       <MonitorIcon class="size-3" />
       {{ hostText }}
     </span>
     <template v-if="active">
       <Separator orientation="vertical" class="h-3" />
-      <span class="inline-flex items-center gap-1 truncate" :title="active.info.nativePath">
-        <ServerIcon class="size-3" />
+      <span class="inline-flex min-w-0 items-center gap-1 truncate" :title="active.info.nativePath">
+        <ServerIcon class="size-3 shrink-0" />
         {{ transportDetail(active.info.transport) }}
       </span>
       <Separator orientation="vertical" class="h-3" />
-      <span class="inline-flex items-center gap-1">
+      <span class="inline-flex shrink-0 items-center gap-1">
         <GitBranchIcon class="size-3" />
         git {{ active.info.gitVersion }}
       </span>
       <template v-if="watcherText">
         <Separator orientation="vertical" class="h-3" />
-        <span class="inline-flex items-center gap-1" title="How changes in this repository are detected">
+        <span class="inline-flex shrink-0 items-center gap-1" title="How changes in this repository are detected">
           <EyeIcon class="size-3" />
           {{ watcherText }}
         </span>
       </template>
     </template>
-    <span v-else class="ml-auto">No repository open</span>
-    <!-- The running fetch, pull or push: what it is, Git's latest progress line, and Stop. -->
-    <div v-if="active && operation" class="ml-auto flex min-w-0 items-center gap-1.5" role="status" aria-live="polite">
-      <LoaderCircleIcon class="size-3 shrink-0 animate-spin" />
-      <span class="shrink-0 text-foreground">{{ operation.title }}</span>
-      <span v-if="operation.line || operation.stopping" class="min-w-0 truncate font-mono" :title="operation.line">
-        {{ operation.stopping ? "Stopping…" : operation.line }}
-      </span>
-      <button
-        type="button"
-        class="shrink-0 rounded border border-border px-1.5 leading-[15px] text-foreground enabled:hover:bg-foreground/10 disabled:opacity-40"
-        :disabled="!operation.cancellable || operation.stopping"
-        :title="operation.cancellable ? 'Stop it. Git exits cleanly and nothing is half done.' : 'This step cannot be stopped.'"
-        @click="stopOperation(active.key)"
-      >
-        Stop
-      </button>
+    <!-- The right-hand side: the last success message, the commit graph loading, and the running fetch, pull or push. -->
+    <div class="ml-auto flex min-w-0 items-center gap-2">
+      <div v-if="successMessage" class="flex min-w-0 items-center gap-1" role="status" aria-live="polite">
+        <CircleCheckIcon class="size-3 shrink-0 text-added-fg" />
+        <span class="min-w-0 truncate text-foreground" :title="successMessage">{{ successMessage }}</span>
+        <button type="button" class="shrink-0 rounded p-px hover:bg-foreground/10" aria-label="Dismiss" title="Dismiss" @click="sessions.dismissSuccess()">
+          <XIcon class="size-3" />
+        </button>
+      </div>
+      <template v-if="graphLoading">
+        <Separator v-if="successMessage" orientation="vertical" class="h-3" />
+        <span class="inline-flex shrink-0 items-center gap-1 tabular-nums" role="status">
+          <LoaderCircleIcon class="size-3 shrink-0 animate-spin" />
+          Loading {{ loadedCount.toLocaleString() }} commits…
+        </span>
+      </template>
+      <!-- The running fetch, pull or push: what it is, Git's latest progress line, and Stop. -->
+      <template v-if="active && operation">
+        <Separator v-if="successMessage || graphLoading" orientation="vertical" class="h-3" />
+        <div class="flex min-w-0 items-center gap-1.5" role="status" aria-live="polite">
+          <LoaderCircleIcon class="size-3 shrink-0 animate-spin" />
+          <span class="shrink-0 text-foreground">{{ operation.title }}</span>
+          <span v-if="operation.line || operation.stopping" class="min-w-0 truncate font-mono" :title="operation.line">
+            {{ operation.stopping ? "Stopping…" : operation.line }}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 rounded border border-border px-1.5 leading-[15px] text-foreground enabled:hover:bg-foreground/10 disabled:opacity-40"
+            :disabled="!operation.cancellable || operation.stopping"
+            :title="operation.cancellable ? 'Stop it. Git exits cleanly and nothing is half done.' : 'This step cannot be stopped.'"
+            @click="stopOperation(active.key)"
+          >
+            Stop
+          </button>
+        </div>
+      </template>
+      <span v-if="!active" class="shrink-0">No repository open</span>
     </div>
   </footer>
 </template>

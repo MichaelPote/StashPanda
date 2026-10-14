@@ -8,7 +8,11 @@ import {
 } from 'reka-ui'
 import { cn } from '@/lib/utils'
 
-const props = defineProps<DropdownMenuSubContentProps & { class?: HTMLAttributes['class'] }>()
+const props = withDefaults(defineProps<DropdownMenuSubContentProps & { class?: HTMLAttributes['class'] }>(), {
+  // Absolute rather than reka-ui's fixed: a fixed element gets a compositor layer of its own,
+  // where Chromium never draws ClearType, so the text came out grayscale and soft.
+  positionStrategy: 'absolute',
+})
 const emits = defineEmits<DropdownMenuSubContentEmits>()
 
 const delegatedProps = reactiveOmit(props, 'class')

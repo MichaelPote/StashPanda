@@ -72,10 +72,7 @@ export interface Selection {
   anchorOid: string | null;
 }
 
-/** A notice reports a failure (red, with a warning icon) unless it says an action worked. */
-export type NoticeKind = "error" | "success";
-
-/** A button rendered next to a notice; `run` is called when it is clicked and the notice is dismissed. */
+/** A button rendered next to an error notice; `run` is called when it is clicked and the notice is dismissed. */
 export interface NoticeAction {
   label: string;
   run: () => void | Promise<void>;
@@ -190,11 +187,12 @@ export const useSessionsStore = defineStore("sessions", () => {
   const activeKey = ref<string | null>(null);
   /** Keys whose `repoOpen` call is still running, so the tree can show a spinner. */
   const opening = shallowReactive(new Set<string>());
-  /** One-line message shown as an inline notice in the shell. */
+  /** One-line error shown in the red strip under the toolbar. */
   const notice = ref<string | null>(null);
   /** Optional button shown next to the notice (for example "Abort merge" after a conflicted merge). */
   const noticeAction = ref<NoticeAction | null>(null);
-  const noticeKind = ref<NoticeKind>("error");
+  /** One-line report that an action worked ("Committed …", "Stashed …"), shown in the status bar. */
+  const successMessage = ref<string | null>(null);
 
   /**
    * Console buffers keyed by repoId. Probe commands are emitted during `repoOpen`, before the
@@ -559,20 +557,26 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
-  function notify(message: string, action: NoticeAction | null = null, kind: NoticeKind = "error"): void {
+  /** Shows an error. It replaces the success message, which no longer describes the latest action. */
+  function notify(message: string, action: NoticeAction | null = null): void {
     notice.value = message;
     noticeAction.value = action;
-    noticeKind.value = kind;
+    successMessage.value = null;
   }
 
-  /** A notice that an action worked: shown plainly, not as an error. */
+  /** Reports that an action worked. It clears an older error notice, which the action has moved past. */
   function notifySuccess(message: string): void {
-    notify(message, null, "success");
+    successMessage.value = message;
+    dismissNotice();
   }
 
   function dismissNotice(): void {
     notice.value = null;
     noticeAction.value = null;
+  }
+
+  function dismissSuccess(): void {
+    successMessage.value = null;
   }
 
   let restoring = false;
@@ -622,9 +626,9 @@ export const useSessionsStore = defineStore("sessions", () => {
     active,
     opening,
     notice,
-    noticeKind,
     notifySuccess,
     noticeAction,
+    successMessage,
     init,
     openTab,
     closeTab,
@@ -637,6 +641,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     toggleRefVisible,
     notify,
     dismissNotice,
+    dismissSuccess,
     consoleBuffer,
   };
 });

@@ -49,6 +49,7 @@ fn theme_for_id(id: &str) -> Option<Theme> {
 pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
     let file = SubmenuBuilder::new(app, "&File")
         .text("file.open", "&Open Repository…\tCtrl+O")
+        .text("file.clone", "C&lone Repository…")
         .text("file.close_tab", "&Close Tab\tCtrl+W")
         .separator()
         .text("file.settings", "&Settings…\tCtrl+,")
@@ -96,6 +97,7 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .text("repo.fetch", "&Fetch")
         .text("repo.pull", "&Pull")
         .text("repo.push", "Pus&h")
+        .text("repo.sync", "S&ync (Pull, then Push)")
         .separator()
         .text("repo.remove", "&Remove from Library")
         .build()?;

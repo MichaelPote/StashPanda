@@ -1,6 +1,6 @@
 import { computed } from "vue";
 import { defineStore } from "pinia";
-import { commands, type Connection, type LibraryGroup, type RepoEntry } from "@/lib/bindings";
+import { commands, type CloneResult, type Connection, type LibraryGroup, type RepoEntry } from "@/lib/bindings";
 import { unwrap } from "@/lib/ipc";
 import { pathBasename } from "@/lib/format";
 import { useSettingsStore } from "@/stores/settings";
@@ -69,6 +69,24 @@ export const useLibraryStore = defineStore("library", () => {
     return entry;
   }
 
+  /**
+   * Clones `url` into `path` and adds it to the library; see `repoClone`. Progress arrives as
+   * `cloneProgress` events carrying `opId`, and `cloneCancel(opId)` stops it.
+   */
+  async function cloneRepo(
+    opId: string,
+    url: string,
+    path: string,
+    connection: Connection,
+    displayName: string | null = null,
+  ): Promise<CloneResult> {
+    try {
+      return await unwrap(commands.repoClone(opId, url, path, connection, null, displayName));
+    } finally {
+      await settings.refresh();
+    }
+  }
+
   /** Saves an edited entry. The returned entry has a new key when the path or connection moved it. */
   async function updateRepo(
     key: string,
@@ -92,5 +110,5 @@ export const useLibraryStore = defineStore("library", () => {
     await settings.update({ library: { groups: next } });
   }
 
-  return { groups, repos, repoByKey, tree, isEmpty, addRepo, updateRepo, removeRepo, setGroupCollapsed };
+  return { groups, repos, repoByKey, tree, isEmpty, addRepo, cloneRepo, updateRepo, removeRepo, setGroupCollapsed };
 });

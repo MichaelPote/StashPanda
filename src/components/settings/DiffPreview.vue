@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import type { FontSmoothing } from "@/lib/bindings";
 import { diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, type Segment } from "@/lib/diff/parseUnified";
-import { cn } from "@/lib/utils";
 import type { FormValue } from "./sections";
 
 /**
@@ -26,6 +26,7 @@ const font = computed(() =>
     lineHeight: num("lineHeight"),
     tabWidth: num("tabWidth"),
     ligatures: props.values["diff.ligatures"] === true,
+    fontSmoothing: props.values["diff.fontSmoothing"] as FontSmoothing,
   }),
 );
 const wordHighlight = computed(() => props.values["diff.wordHighlight"] === true);
@@ -65,10 +66,11 @@ function segments(row: Row): Segment[] {
   return row.kind === "del" ? pair.old : pair.new;
 }
 
+/** The class a `diff-line` row adds for its kind, as `lineClass` in `DiffViewer.vue` gives it. */
 const LINE_CLASS: Record<Kind, string> = {
-  context: "border-l-2 border-transparent",
-  add: "border-l-2 border-transparent bg-diff-add",
-  del: "border-l-2 border-transparent bg-diff-del",
+  context: "",
+  add: "diff-line-add",
+  del: "diff-line-del",
 };
 const MARKER: Record<Kind, string> = { context: " ", add: "+", del: "-" };
 </script>
@@ -78,15 +80,15 @@ const MARKER: Record<Kind, string> = { context: " ", add: "+", del: "-" };
     <!-- A fixed height, so changing the font size or line height never moves the fields below;
          a large font scrolls here instead. The default 12px at 1.2 fits all ten rows. -->
     <div class="area h-44 overflow-auto border border-border py-1 whitespace-pre select-none scrollbar-thin" :style="style" aria-hidden="true">
-      <div class="flex h-(--diff-row-h) w-max min-w-full items-center bg-diff-hunk px-2 text-diff-hunk-fg">{{ HUNK }}</div>
-      <div v-for="(row, i) in ROWS" :key="i" :class="cn('flex h-(--diff-row-h) w-max min-w-full', LINE_CLASS[row.kind])">
-        <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)]">{{ row.oldNo ?? "" }}</span>
-        <span class="w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)]">{{ row.newNo ?? "" }}</span>
-        <span class="w-(--diff-mark-w) shrink-0 text-center text-muted-foreground">{{ MARKER[row.kind] }}</span>
-        <span class="flex-1 pr-2">
+      <div class="diff-hunk w-max min-w-full"><span class="diff-glyphs">{{ HUNK }}</span></div>
+      <div v-for="(row, i) in ROWS" :key="i" :class="['diff-line w-max min-w-full', LINE_CLASS[row.kind]]">
+        <span class="diff-num"><span class="diff-glyphs">{{ row.oldNo ?? "" }}</span></span>
+        <span class="diff-num"><span class="diff-glyphs">{{ row.newNo ?? "" }}</span></span>
+        <span class="diff-sign">{{ MARKER[row.kind] }}</span>
+        <span class="diff-code">
           <template v-for="(seg, j) in segments(row)" :key="j">
-            <mark v-if="seg.changed" :class="row.kind === 'del' ? 'rounded-sm bg-diff-del-mark text-inherit' : 'rounded-sm bg-diff-add-mark text-inherit'">{{ seg.text }}</mark>
-            <template v-else>{{ seg.text }}</template>
+            <mark v-if="seg.changed" :class="row.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs">{{ seg.text }}</span></mark>
+            <span v-else class="diff-glyphs">{{ seg.text }}</span>
           </template>
         </span>
       </div>

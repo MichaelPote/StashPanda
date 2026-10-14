@@ -163,6 +163,35 @@ pub(crate) async fn host_modified_times(mapper: &dyn PathMapper, paths: &[Native
     Ok(times)
 }
 
+/// `list_dir` for transports whose files the app can reach on its own filesystem, as for
+/// `host_modified_times`. A symbolic link to a folder counts as the folder.
+pub(crate) async fn host_list_dir(mapper: &dyn PathMapper, path: &NativePath) -> Result<Option<Vec<String>>> {
+    let host = mapper.to_host(path)?;
+    match tokio::fs::metadata(&host.0).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+        Ok(meta) if !meta.is_dir() => {
+            return Err(GitError::InvalidPath { path: path.0.clone(), reason: "it is a file, not a folder".into() })
+        }
+        Ok(_) => {}
+    }
+    let mut names = Vec::new();
+    let mut entries = tokio::fs::read_dir(&host.0).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        names.push(entry.file_name().to_string_lossy().into_owned());
+    }
+    Ok(Some(names))
+}
+
+/// `remove_dir_all` through the host filesystem, as for `host_list_dir`.
+pub(crate) async fn host_remove_dir_all(mapper: &dyn PathMapper, path: &NativePath) -> Result<()> {
+    let host = mapper.to_host(path)?;
+    match tokio::fs::remove_dir_all(&host.0).await {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
+}
+
 #[async_trait]
 pub trait Transport: Send + Sync {
     fn kind(&self) -> TransportKind;
@@ -178,6 +207,12 @@ pub trait Transport: Send + Sync {
     /// Last-modified time of each working-tree file, in milliseconds since 1970, one result per
     /// path in order. None for a path that does not exist (a deleted file) or cannot be read.
     async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>>;
+    /// The names of the entries in folder `path`, or None when nothing exists at `path`. Fails
+    /// with `InvalidPath` when `path` is a file.
+    async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>>;
+    /// Delete folder `path` and everything inside it. A folder that does not exist is not an
+    /// error.
+    async fn remove_dir_all(&self, path: &NativePath) -> Result<()>;
     async fn shutdown(&self) {}
 
     /// Spawn, feed stdin, drain both pipes, wait. Honors `cmd.timeout`.

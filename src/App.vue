@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEventListener } from "@vueuse/core";
-import { CircleCheckIcon, FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
+import { FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -28,8 +28,7 @@ import StatusBar from "@/components/shell/StatusBar.vue";
 import { commitFileCount, isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
-import { fetchAll, openCommitDialog, openPullDialog, openStashDialog, pushCurrentBranch } from "@/lib/repoActions";
-import { cn } from "@/lib/utils";
+import { fetchAll, openCommitDialog, openPullDialog, openStashDialog, pushCurrentBranch, syncCurrentBranch } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { useSessionsStore } from "@/stores/sessions";
@@ -105,8 +104,6 @@ async function refresh(): Promise<void> {
 
 /** Files the Commit dialog would list for the active repository, shown on the toolbar's Commit button. */
 const commitCount = computed(() => commitFileCount(sessions.active?.status ?? null));
-
-const success = computed(() => sessions.noticeKind === "success");
 </script>
 
 <template>
@@ -115,42 +112,26 @@ const success = computed(() => sessions.noticeKind === "success");
       <AppToolbar :has-repo="sessions.active !== null" :commit-count="commitCount" @add-repo="dialogs.addRepoOpen = true" @refresh="refresh" @commit="openCommitDialog(sessions.active)"
         @stash-save="openStashDialog(sessions.active)" @pull="openPullDialog(sessions.active)"
         @fetch="fetchAll(sessions.active)" @push="pushCurrentBranch(sessions.active)"
+        @sync="syncCurrentBranch(sessions.active)"
       />
 
-      <!-- An error notice is red with a warning icon; a success notice is plain, with a tick. -->
+      <!-- An error notice: red, with a warning icon. Success messages show in the status bar instead. -->
       <div
         v-if="sessions.notice"
-        :class="
-          cn(
-            'flex shrink-0 items-center gap-2 border-b px-3 py-1 text-base',
-            // The diff viewer's added-line green and removed-line red, so the strip stands out.
-            success ? 'border-diff-add-mark bg-diff-add text-foreground' : 'border-diff-del-mark bg-diff-del text-destructive',
-          )
-        "
-        :role="success ? 'status' : 'alert'"
+        class="flex shrink-0 items-center gap-2 border-b border-diff-del-mark bg-diff-del px-3 py-1 text-base text-destructive"
+        role="alert"
       >
-        <CircleCheckIcon v-if="success" class="size-3.5 shrink-0 text-added-fg" />
-        <TriangleAlertIcon v-else class="size-3.5 shrink-0" />
+        <TriangleAlertIcon class="size-3.5 shrink-0" />
         <span class="truncate">{{ sessions.notice }}</span>
         <button
           v-if="sessions.noticeAction"
           type="button"
-          :class="
-            cn(
-              'ml-1 shrink-0 rounded border px-1.5 text-xs font-medium',
-              success ? 'border-border hover:bg-foreground/10' : 'border-destructive/40 hover:bg-destructive/20',
-            )
-          "
+          class="ml-1 shrink-0 rounded border border-destructive/40 px-1.5 text-xs font-medium hover:bg-destructive/20"
           @click="runNoticeAction"
         >
           {{ sessions.noticeAction.label }}
         </button>
-        <button
-          type="button"
-          :class="cn('ml-auto rounded p-0.5', success ? 'hover:bg-foreground/10' : 'hover:bg-destructive/20')"
-          aria-label="Dismiss"
-          @click="sessions.dismissNotice()"
-        >
+        <button type="button" class="ml-auto rounded p-0.5 hover:bg-destructive/20" aria-label="Dismiss" @click="sessions.dismissNotice()">
           <XIcon class="size-3.5" />
         </button>
       </div>

@@ -187,6 +187,13 @@ impl Transport for WslTransport {
         // Through the UNC view, like read_file: no wsl.exe spawn.
         super::host_modified_times(&self.mapper, paths).await
     }
+    async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>> {
+        // Through the UNC view, like read_file.
+        super::host_list_dir(&self.mapper, path).await
+    }
+    async fn remove_dir_all(&self, path: &NativePath) -> Result<()> {
+        super::host_remove_dir_all(&self.mapper, path).await
+    }
 }
 
 #[allow(dead_code)]

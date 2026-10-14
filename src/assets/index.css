@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn-vue/tailwind.css";
+@import "./diff.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -798,4 +799,12 @@
 @utility badge-neutral {
   color: var(--foreground);
   background-color: var(--neutral);
+}
+
+/* Floating UI, which positions reka-ui's menus, popovers and tooltips, adds `will-change:
+   transform` to them on screens scaled 150% or more. That gives them a compositor layer of their
+   own, where Chromium never draws ClearType; clear text matters more here than smooth motion.
+   Inline, so it takes !important. */
+[data-reka-popper-content-wrapper] {
+  will-change: auto !important;
 }

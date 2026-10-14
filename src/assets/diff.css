@@ -1,0 +1,97 @@
+/*
+ * The diff viewer's rows (`components/diff/DiffViewer.vue`), also used by the Settings dialog's
+ * preview (`components/settings/DiffPreview.vue`) so that it draws them the same way. Sizes come
+ * from the custom properties `diffTextStyle` in `lib/diff/font.ts` sets on the element holding the
+ * rows: `--diff-row-h`, `--diff-num-w` and `--diff-mark-w`.
+ *
+ * In the components layer, so a utility class on an element still overrides these.
+ */
+
+/* Diff text that the "None" font smoothing rounds to aliased pixels, through the filter that
+   `diffTextStyle` sets; no filter otherwise. Only on elements holding text over a transparent
+   background, since the filter would round a translucent background away too. */
+@utility diff-glyphs {
+  filter: var(--diff-glyph-filter, none);
+}
+
+@layer components {
+  /* A hunk header: `@@ -12,7 +12,7 @@ ...`. */
+  .diff-hunk {
+    @apply flex h-(--diff-row-h) items-center bg-diff-hunk px-2 whitespace-pre text-diff-hunk-fg;
+  }
+
+  /* One line of the diff, or one side of a side-by-side row. The transparent left border keeps
+     the text where it would be under a coloured one. */
+  .diff-line {
+    @apply flex h-(--diff-row-h) border-l-2 border-transparent whitespace-pre;
+  }
+  .diff-line-add {
+    @apply bg-diff-add;
+  }
+  .diff-line-del {
+    @apply bg-diff-del;
+  }
+  .diff-line-meta {
+    @apply text-muted-foreground italic;
+  }
+  /* The side of a side-by-side row that has no line: the other side was added or deleted. */
+  .diff-line-empty {
+    @apply bg-muted/20;
+  }
+
+  /* A side-by-side row's "\ No newline at end of file", indented past both gutters. */
+  .diff-side-meta {
+    @apply flex h-(--diff-row-h) items-center overflow-hidden border-l-2 border-transparent pr-2 pl-[calc(var(--diff-num-w)+var(--diff-mark-w))] whitespace-pre text-muted-foreground italic;
+  }
+
+  /* A line number. The number itself goes in a `diff-glyphs` span inside, because this cell has
+     a background of its own. */
+  .diff-num {
+    @apply w-(--diff-num-w) shrink-0 bg-diff-gutter pr-1 text-right text-gutter-fg tabular-nums shadow-[inset_1px_0_0_rgba(0,0,0,0.25)] select-none;
+  }
+
+  /* The `+`, `-` or space after the line numbers. */
+  .diff-sign {
+    @apply diff-glyphs w-(--diff-mark-w) shrink-0 text-center text-muted-foreground select-none;
+  }
+
+  /* A line's text in the unified layout. */
+  .diff-code {
+    @apply flex-1 pr-2;
+  }
+
+  /* A line's text on one side of the side-by-side layout. The inner span is what that side's
+     horizontal scroll moves (see `.diff-text-left` and `.diff-text-right`). */
+  .diff-side-code {
+    @apply min-w-0 flex-1 overflow-hidden;
+  }
+  .diff-side-code > span {
+    @apply inline-block pr-2;
+  }
+
+  /* The changed words inside a changed line. */
+  .diff-word-add {
+    @apply rounded-sm bg-diff-add-mark text-inherit;
+  }
+  .diff-word-del {
+    @apply rounded-sm bg-diff-del-mark text-inherit;
+  }
+
+  /* Side-by-side rows: the two sides take the widths the divider sets. */
+  .diff-side-row {
+    display: grid;
+    grid-template-columns: var(--left-w, 50%) var(--right-w, 50%);
+  }
+  /* Each side's text moves by its own horizontal scroll; the line numbers stay where they are. */
+  .diff-text-left > span {
+    transform: translateX(calc(-1 * var(--sx-left, 0px)));
+  }
+  .diff-text-right > span {
+    transform: translateX(calc(-1 * var(--sx-right, 0px)));
+  }
+  /* Same width as a side's gutter (2px border, line number, marker), so each horizontal
+     scrollbar starts under its text. */
+  .diff-gutter-space {
+    width: calc(2px + var(--diff-num-w) + var(--diff-mark-w));
+  }
+}

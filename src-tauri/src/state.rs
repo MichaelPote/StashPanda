@@ -9,7 +9,7 @@ use crate::error::{GitError, Result};
 use crate::keys::secrets::PassphraseCache;
 use crate::transport::ssh_pool::SshContext;
 use crate::platform::Host;
-use crate::repo::RepoHandle;
+use crate::repo::{OperationRegistry, RepoHandle};
 use crate::persist::{self, PersistHandle, PersistRequest, PersistSource};
 use crate::settings::{load_json_migrated, load_json_or_default, migrate_settings, Settings};
 use crate::storage::{ui_prefs, Db};
@@ -53,6 +53,8 @@ pub struct AppState {
     pub ssh: Arc<SshContext>,
     /// Open repositories by library key.
     pub repos: tokio::sync::RwLock<std::collections::HashMap<String, Arc<RepoHandle>>>,
+    /// Running clones, by the operation id the frontend gave. A clone has no `RepoHandle` yet.
+    pub clones: OperationRegistry,
 }
 
 impl AppState {
@@ -101,6 +103,7 @@ impl AppState {
             passphrases: passphrases.clone(),
             ssh: Arc::new(SshContext::new(passphrases, SshContext::default_known_hosts())),
             repos: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            clones: Default::default(),
         })
     }
 

@@ -260,4 +260,10 @@ impl Transport for LocalTransport {
     async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>> {
         super::host_modified_times(self.mapper.as_ref(), paths).await
     }
+    async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>> {
+        super::host_list_dir(self.mapper.as_ref(), path).await
+    }
+    async fn remove_dir_all(&self, path: &NativePath) -> Result<()> {
+        super::host_remove_dir_all(self.mapper.as_ref(), path).await
+    }
 }

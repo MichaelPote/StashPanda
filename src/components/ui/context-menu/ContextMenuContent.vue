@@ -13,7 +13,11 @@ defineOptions({
   inheritAttrs: false,
 })
 
-const props = defineProps<ContextMenuContentProps & { class?: HTMLAttributes['class'] }>()
+const props = withDefaults(defineProps<ContextMenuContentProps & { class?: HTMLAttributes['class'] }>(), {
+  // Absolute rather than reka-ui's fixed: a fixed element gets a compositor layer of its own,
+  // where Chromium never draws ClearType, so the text came out grayscale and soft.
+  positionStrategy: 'absolute',
+})
 const emits = defineEmits<ContextMenuContentEmits>()
 
 const delegatedProps = reactiveOmit(props, 'class')
