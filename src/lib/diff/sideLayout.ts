@@ -20,6 +20,13 @@ export interface Band {
   rh: number;
   /** "change" for deleted or added lines, "hunk" for a hunk header, "same" for lines on both sides. */
   kind: "change" | "hunk" | "same";
+  /**
+   * A change that is a whole block of Git's diff with no lines on one side: a pure insertion or
+   * deletion, the only kind drawn with an outline and a line marking where its lines would go.
+   * A block with lines on both sides, even when matching splits it into several bands, has no
+   * borders inside it.
+   */
+  outline?: boolean;
 }
 
 /** Builds the bands as lines are added to each side, merging neighbouring stretches of "same". */
@@ -29,7 +36,7 @@ export class BandBuilder {
   private left = 0;
   private right = 0;
 
-  add(kind: Band["kind"], lh: number, rh: number): void {
+  add(kind: Band["kind"], lh: number, rh: number, outline = false): void {
     if (lh === 0 && rh === 0) return;
     const h = Math.max(lh, rh);
     const last = this.bands[this.bands.length - 1];
@@ -38,7 +45,7 @@ export class BandBuilder {
       last.lh += lh;
       last.rh += rh;
     } else {
-      this.bands.push({ y: this.rows, h, l: this.left, lh, r: this.right, rh, kind });
+      this.bands.push({ y: this.rows, h, l: this.left, lh, r: this.right, rh, kind, outline });
     }
     this.rows += h;
     this.left += lh;

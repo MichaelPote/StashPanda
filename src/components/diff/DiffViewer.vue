@@ -252,7 +252,8 @@ const built = computed<Built>(() => {
         last[0] += leftMetas.length;
         last[1] += rightMetas.length;
       } else stretches.push([leftMetas.length, rightMetas.length]);
-      for (const [lh, rh] of stretches) bands.add("change", lh, rh);
+      const pure = dels.length === 0 || adds.length === 0;
+      for (const [lh, rh] of stretches) bands.add("change", lh, rh, pure);
       dels = [];
       adds = [];
       metas = [];
@@ -525,6 +526,8 @@ interface Curve {
   d: string;
   edges: string;
   kind: "del" | "add" | "both" | "hunk";
+  /** Draw its top and bottom edges: only a whole insertion or deletion has them. */
+  outline: boolean;
 }
 
 /**
@@ -549,7 +552,7 @@ const curves = computed<Curve[]>(() => {
     const [rt, rb] = sideEdges(right + b.r * px - top, b.rh * px);
     if (Math.max(lb, rb) < 0 || Math.min(lt, rt) > view) return;
     const kind = b.kind === "hunk" ? "hunk" : b.lh === 0 ? "add" : b.rh === 0 ? "del" : "both";
-    out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, lt, lb, rt, rb), kind });
+    out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, lt, lb, rt, rb), kind, outline: b.outline === true });
   });
   return out;
 });
@@ -573,7 +576,7 @@ const insertMarks = computed<{ key: number; side: Side; y: number }[]>(() => {
   const view = virtual.viewportHeight.value;
   const out: { key: number; side: Side; y: number }[] = [];
   built.value.bands.forEach((b, i) => {
-    if (b.kind !== "change" || (b.lh > 0 && b.rh > 0)) return;
+    if (b.kind !== "change" || !b.outline || (b.lh > 0 && b.rh > 0)) return;
     const side: Side = b.lh === 0 ? "left" : "right";
     const y = (side === "left" ? offsets.value.left + b.l * px : offsets.value.right + b.r * px) - top;
     if (y >= -1 && y <= view + 1) out.push({ key: i, side, y });
@@ -1272,7 +1275,7 @@ function toggleContext(value: string): void {
           <template v-for="c in curves" :key="c.key">
             <path :d="c.d" :class="`diff-curve-${c.kind}`" :style="c.kind === 'both' ? { fill: `url(#${gradientId})` } : undefined" />
             <path
-              v-if="c.kind === 'add' || c.kind === 'del'"
+              v-if="c.outline && (c.kind === 'add' || c.kind === 'del')"
               :d="c.edges"
               class="diff-curve-edge"
               :style="{ stroke: `url(#${gradientId}-edge-${c.kind})` }"
