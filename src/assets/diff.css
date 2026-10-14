@@ -106,13 +106,13 @@
   }
 
   /* A Find match (Ctrl+F in a diff view), in purple, a stronger magenta than the hunk headers'
-     blue-violet; the current match is darker and outlined. */
+     blue-violet. The current match has the same background, which keeps its text readable, and
+     an outline. */
   .diff-find {
     border-radius: 2px;
     background: var(--diff-find-bg);
   }
   .diff-find-current {
-    background: var(--diff-find-current-bg);
     outline: 1px solid var(--diff-find-outline);
   }
 

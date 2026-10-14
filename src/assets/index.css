@@ -237,7 +237,6 @@
     --diff-hunk-bg: rgba(138, 99, 214, 0.1);
     --diff-hunk-fg: #6f4bc0;
     --diff-find-bg: rgba(168, 62, 230, 0.22);
-    --diff-find-current-bg: rgba(168, 62, 230, 0.45);
     --diff-find-outline: rgba(140, 40, 210, 0.9);
     --diff-gutter: #ebe8e1;
     --gutter-fg: #7d828c;
@@ -402,7 +401,6 @@
     --diff-hunk-bg: rgba(125, 122, 255, 0.12);
     --diff-hunk-fg: #a9a7ff;
     --diff-find-bg: rgba(200, 110, 255, 0.3);
-    --diff-find-current-bg: rgba(200, 110, 255, 0.6);
     --diff-find-outline: rgba(225, 170, 255, 0.95);
     --diff-gutter: #272a30;
     --gutter-fg: #80848d;
