@@ -76,6 +76,12 @@ const CONTEXT_CHOICES: { value: number; label: string }[] = [
 // ---- Loading -------------------------------------------------------------------------------
 
 const diff = shallowRef<DiffText | null>(null);
+/**
+ * The path of the file `diff` belongs to. The selected file changes as soon as another is
+ * clicked, while `diff` keeps the previous file's text until the new one arrives; the syntax
+ * colours follow this, so the old text never takes the new file's language meanwhile.
+ */
+const diffPath = ref<string | null>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
 let request = 0;
@@ -85,6 +91,7 @@ async function load(): Promise<void> {
   const id = (request += 1);
   if (!file) {
     diff.value = null;
+    diffPath.value = null;
     error.value = null;
     loading.value = false;
     return;
@@ -101,11 +108,13 @@ async function load(): Promise<void> {
     );
     if (id !== request) return;
     diff.value = result;
+    diffPath.value = file.path;
     scroller.value?.scrollTo({ top: 0 });
     resetSideScroll();
   } catch (e) {
     if (id !== request) return;
     diff.value = null;
+    diffPath.value = null;
     error.value = errorMessage(e);
   } finally {
     if (id === request) loading.value = false;
@@ -334,7 +343,7 @@ function segments(pair: number | undefined, sideOf: "old" | "new", fallback: str
 const preferredDark = usePreferredDark();
 const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
 /** The path whose language colours the diff, or null when colouring is switched off. */
-const syntaxPath = computed(() => (settings.settings?.diff?.syntaxHighlight === false ? null : (selected.value?.path ?? null)));
+const syntaxPath = computed(() => (settings.settings?.diff?.syntaxHighlight === false ? null : diffPath.value));
 /** Past this many lines a diff stays plain: colouring it would take longer than it is worth. */
 const MAX_SYNTAX_LINES = 20_000;
 /** Each line's tokens, filled in when the worker answers for the diff on screen. */
