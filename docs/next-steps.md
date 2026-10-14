@@ -6,10 +6,10 @@ added on 2026-09-30, and stashes, a second round of interface work and pull adde
 (see "Interface, merge and checkout work" and "Milestone 3" below), and the first run in the real
 app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"), the rest of
 milestone 2 the same day, the rest of milestone 1 after it, and most of milestone 3 after that
-(conflicts, merge and rebase, file history and blame, automatic fetch, SSH reconnect and syntax
-colours). Left in milestone 3: the three-pane merge editor, planned on 2026-10-14, and the SSH
-fallback and `ProxyJump`. Everything not listed here is done
-and tested; see
+(conflicts, merge and rebase, file history and blame, automatic fetch, SSH reconnect, syntax
+colours, Find in diffs and Blame, and the three-pane merge editor). Left in milestone 3: a few
+parts of the merge editor, and the SSH fallback and `ProxyJump`. Everything not listed here is
+done and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
@@ -885,9 +885,29 @@ and anything over WSL or SSH.
       Tests: `merge_cherry_pick_and_revert_conflicts_resolved_and_continued` and
       `rebase_continue_skip_abort_and_the_operation_in_progress`. Tried in the running Linux
       build on 2026-10-14.
-- [ ] **Three-pane merge editor** (planned 2026-10-14). Today a conflicted file can only take one
-      side's whole version, or be edited in another editor and marked resolved. The merge editor
-      resolves it in the app, block by block.
+- [x] **Three-pane merge editor** (planned and built 2026-10-14). Before it, a conflicted file
+      could only take one side's whole version, or be edited in another editor and marked
+      resolved. The merge editor resolves it in the app, block by block.
+
+      **Built** (`src/components/merge/MergeEditorDialog.vue`, `src/lib/merge/`, and on the
+      backend `git/queries/conflict_file.rs` and `write_worktree_file`): steps 1 to 6 below,
+      tried in the running Linux build on 2026-10-14 against a real merge stopped on two
+      conflicts (open by double-click, names, arrows, take for all, F7, Alt+Shift+Left, undo,
+      scrolling together, Save with the markers left in, Save and Mark Resolved). Where it
+      differs from the plan below:
+      - The curves are inline SVG, not a canvas, for the ClearType reason given under "Curves
+        in the side-by-side diff".
+      - Unresolved conflicts are drawn in the conflict yellow (`--state-conflict`), and any
+        other difference from the result in the diff green.
+      - The panes are kept level at the middle of the pane being scrolled.
+      - The stages are read by their object IDs from `git ls-files -u`, not as `:1:<path>`,
+        since the long-lived `cat-file` keeps the first index it read (fixed in b5f207b).
+      - Unresolved blocks are written back with seven-character markers, whatever the file's
+        `conflict-marker-size`; a file with mixed line endings is saved with LF.
+
+      **Left:** the "×" that dismisses a difference, the stash's name (below), folding unchanged
+      lines and scroll bar marks (step 7), Vitest for `src/lib/merge/`, and a look at the
+      editor in the Windows window, ClearType included.
 
       **Layout.** Three panes side by side, all in the diff font
       (`resolveDiffFont`, with ligatures, tab width and font smoothing) and with syntax colours
@@ -1200,6 +1220,11 @@ and anything over WSL or SSH.
       and committed. Add a CI step that regenerates it and fails if `git diff` is non-empty.
 
 ## Known rough edges to revisit
+
+- `CatFile::read` (`git/catfile.rs`) breaks when its future is dropped part way through a
+  request: the answer stays in the helper's output and the next request reads it as its own.
+  `get_conflict_file` avoids it by never cancelling a read (`tokio::join!`, not `try_join!`);
+  any other caller that cancels a read could hit it. Found 2026-10-14.
 
 - `GitError::CommandFailed { argv }` is empty (`vec![]`) in several query modules because the argv
   is only rendered inside `GitClient::exec`; pass it through or drop the field.

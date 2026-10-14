@@ -672,8 +672,10 @@ far: pull, fetch, push, sync, clone, merge, rebase, cherry-pick and revert with 
 resolution, file history and blame, automatic fetch, SSH reconnect with backoff and a
 `transport_state` event, and syntax colours in the diff viewer. See `next-steps.md` for each item.
 
-Not done yet: in M3, the three-pane merge editor (planned in `next-steps.md`), and the SSH tier 2
-fallback and `ProxyJump`, both only if a real host needs them.
+The three-pane merge editor is built (CodeMirror 6 panes, loaded when it first opens); a few
+smaller parts of it are left, listed in `next-steps.md`.
+
+Not done yet: in M3, the SSH tier 2 fallback and `ProxyJump`, both only if a real host needs them.
 
 ### Tests
 
