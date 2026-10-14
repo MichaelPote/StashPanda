@@ -65,6 +65,10 @@ pub enum GitError {
     ObjectNotFound { spec: String },
     #[error("content is too large ({bytes} bytes, limit {limit})")]
     TooLarge { bytes: u64, limit: u64 },
+    /// A file was about to be saved over, but its contents on disk are no longer the ones it was
+    /// opened with: another program, or Git, has changed it since. Nothing was written.
+    #[error("{path} has changed on disk since it was opened")]
+    ChangedOnDisk { path: String },
     #[error("git {label} failed with exit code {exit_code:?}: {stderr}")]
     CommandFailed {
         label: String,

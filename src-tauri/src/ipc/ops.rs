@@ -191,6 +191,33 @@ pub async fn op_resolve_conflicts(app: AppHandle, state: State<'_, AppState>, ke
     write_op!(app, state, key, |c| ops::resolve_conflicts(c, &paths, side).await)
 }
 
+/// Write Git's merge of conflicted `path` to the working tree again, with `diff3` conflict markers
+/// that carry each block's base text (`git checkout --conflict=diff3`): the merge editor's "Start
+/// again from Git's merge". Throws away what has been done to the file; confirm with the user
+/// first. Fails with `invalidPath` when the file is not conflicted any more.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_restore_conflict(app: AppHandle, state: State<'_, AppState>, key: String, path: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::restore_conflict(c, &path).await)
+}
+
+/// Save `content` as working tree file `path`, byte for byte as UTF-8: the caller puts back the
+/// file's line endings and byte order mark. `expectedHash` is the `hash` from `getConflictFile`;
+/// when the file on disk has changed since, nothing is written and this fails with
+/// `changedOnDisk`. Returns the new hash, for the next save.
+#[tauri::command]
+#[specta::specta]
+pub async fn write_worktree_file(app: AppHandle, state: State<'_, AppState>, key: String, path: String, content: String, expected_hash: String) -> Result<String> {
+    let h = repo(&state, &key).await?;
+    let out = {
+        let _gate = h.write_gate.lock().await;
+        let _exclusive = h.lock.write().await;
+        ops::write_worktree_file(&h.client, &path, &content, &expected_hash).await
+    };
+    after_write(&app, &state, &key).await;
+    out
+}
+
 /// Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
 /// `git rebase` (see `ops::pull_fetch` and `ops::pull_integrate`). `opId` is chosen by the
 /// caller: each progress update arrives as an `operationProgress` event carrying it, and

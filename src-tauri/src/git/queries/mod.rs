@@ -4,6 +4,7 @@
 pub mod blame;
 pub mod blob;
 pub mod commit_files;
+pub mod conflict_file;
 pub mod diff;
 pub mod history;
 pub mod in_progress;
@@ -304,6 +305,206 @@ mod e2e {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&empty);
+    }
+
+    /// The merge editor's file, read from real `git merge` conflicts in each of Git's three marker
+    /// styles; then saved with the hash check, and put back to Git's merge with `diff3` markers.
+    #[tokio::test]
+    async fn conflict_file_from_real_merges_in_every_marker_style() {
+        use super::conflict_file::{content_hash, get_conflict_file, ConflictBlock, ConflictFile, ConflictRefusal};
+        use super::blob::Eol;
+        use crate::error::GitError;
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("stashpanda-conflict-file-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "core.autocrlf", "false"]);
+        let large = |last: &str| format!("{}{last}\n", format!("{}\n", "a".repeat(999)).repeat(6000));
+        // Each file's base, main and feature versions. feature deletes gone.txt and adds
+        // both.txt, which main adds too.
+        type Versions<'a> = (&'a str, &'a [u8], &'a [u8], &'a [u8]);
+        let files: [Versions; 10] = [
+            ("plain.txt", b"1\n2\n3\n", b"1\nX\nY\nZ\n3\n", b"1\nX\nQ\nZ\n3\n"),
+            ("crlf.txt", b"a\r\nb\r\nc\r\n", b"a\r\nB-main\r\nc\r\n", b"a\r\nB-feature\r\nc\r\n"),
+            ("bom.txt", "\u{feff}top\nmid\nend\n".as_bytes(), "\u{feff}top\nmid-main\nend\n".as_bytes(), "\u{feff}top\nmid-feature\nend\n".as_bytes()),
+            ("nonl.txt", b"one\ntwo\ntail", b"one\ntwo-main\ntail", b"one\ntwo-feature\ntail"),
+            ("big.txt", b"<<<<<<< not a marker\nkeep\nx\n", b"<<<<<<< not a marker\nkeep\nx-main\n", b"<<<<<<< not a marker\nkeep\nx-feature\n"),
+            ("lone.txt", b"<<<<<<< stray\nkeep\nv\n=======\nend\n", b"<<<<<<< stray\nkeep\nv-main\n=======\nend\n", b"<<<<<<< stray\nkeep\nv-feature\n=======\nend\n"),
+            ("gone.txt", b"g\n", b"g-main\n", b""),
+            ("bin.dat", &[0, 1, 2], &[0, 1, 3], &[0, 1, 4]),
+            ("latin.txt", b"caf\xe9\n", b"caf\xe9 main\n", b"caf\xe9 feature\n"),
+            ("clean.txt", b"same\n", b"same\n", b"same\n"),
+        ];
+        for (name, base, _, _) in &files {
+            std::fs::write(dir.join(name), base).unwrap();
+        }
+        std::fs::write(dir.join("large.txt"), large("base")).unwrap();
+        std::fs::write(dir.join(".gitattributes"), "big.txt conflict-marker-size=10\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "base"]);
+        git(&dir, &["checkout", "-qb", "feature"]);
+        for (name, _, _, feature) in &files {
+            std::fs::write(dir.join(name), feature).unwrap();
+        }
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::write(dir.join("both.txt"), "feature added\n").unwrap();
+        std::fs::write(dir.join("large.txt"), large("feature")).unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "feature"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        for (name, _, main, _) in &files {
+            std::fs::write(dir.join(name), main).unwrap();
+        }
+        std::fs::write(dir.join("both.txt"), "main added\n").unwrap();
+        std::fs::write(dir.join("large.txt"), large("main")).unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "main"]);
+        let merge = |style: &str| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(["-c", &format!("merge.conflictStyle={style}"), "merge", "-q", "feature"]).output().unwrap();
+            assert!(!out.status.success(), "the merge stops on conflicts");
+        };
+        let client = client_for(&dir).await;
+        let catfile = Arc::new(crate::git::catfile::CatFile::new(false));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let open = |path: &'static str| {
+            let (client, catfile, cancel) = (&client, &catfile, &cancel);
+            async move { get_conflict_file(client, Some((catfile, cancel)), path).await.unwrap() }
+        };
+        // The result with every block replaced by one side's text: ours everywhere must give our
+        // version back, and theirs theirs.
+        let resolve = |f: &ConflictFile, side: fn(&ConflictBlock) -> &str| {
+            let lines: Vec<&str> = f.result.split_inclusive('\n').collect();
+            let mut out = String::new();
+            let mut at = 0;
+            for b in &f.blocks {
+                out.extend(lines[at..b.start_line as usize].iter().copied());
+                out.push_str(side(b));
+                at = b.end_line as usize;
+            }
+            out.extend(lines[at..].iter().copied());
+            out
+        };
+        let check_sides = |f: &ConflictFile| {
+            assert_eq!(f.refused, None, "{}", f.path);
+            assert_eq!(Some(resolve(f, |b| &b.ours)), f.ours, "{}", f.path);
+            assert_eq!(Some(resolve(f, |b| &b.theirs)), f.theirs, "{}", f.path);
+            for text in [&f.result, f.ours.as_ref().unwrap(), f.theirs.as_ref().unwrap()] {
+                assert!(!text.contains('\r') && !text.contains('\u{feff}'), "{}: {text:?}", f.path);
+            }
+            assert_eq!(f.hash, content_hash(&std::fs::read(dir.join(&f.path)).unwrap()));
+        };
+
+        for style in ["merge", "diff3", "zdiff3"] {
+            merge(style);
+            let plain = open("plain.txt").await;
+            check_sides(&plain);
+            assert_eq!((plain.eol, plain.bom, plain.final_newline), (Eol::Lf, false, true));
+            assert_eq!(plain.base.as_deref(), Some("1\n2\n3\n"));
+            assert_eq!(plain.blocks.len(), 1, "{style}");
+            let block = &plain.blocks[0];
+            assert_eq!((block.ours_label.as_str(), block.theirs_label.as_str()), ("HEAD", "feature"));
+            match style {
+                // No base section, so the block takes no lines in the result.
+                "merge" => {
+                    assert_eq!((block.ours.as_str(), block.base.as_deref(), block.theirs.as_str()), ("Y\n", None, "Q\n"));
+                    assert_eq!((block.start_line, block.end_line, block.base_label.as_deref()), (2, 2, None));
+                    assert_eq!(plain.result, "1\nX\nZ\n3\n");
+                }
+                // The lines both sides share stay in the block.
+                "diff3" => {
+                    assert_eq!((block.ours.as_str(), block.base.as_deref(), block.theirs.as_str()), ("X\nY\nZ\n", Some("2\n"), "X\nQ\nZ\n"));
+                    assert_eq!((block.start_line, block.end_line), (1, 2));
+                    assert!(block.base_label.as_ref().is_some_and(|l| !l.is_empty()), "{block:?}");
+                    assert_eq!(plain.result, "1\n2\n3\n");
+                }
+                // zdiff3 moves them out.
+                _ => {
+                    assert_eq!((block.ours.as_str(), block.base.as_deref(), block.theirs.as_str()), ("Y\n", Some("2\n"), "Q\n"));
+                    assert_eq!((block.start_line, block.end_line), (2, 3));
+                    assert_eq!(plain.result, "1\nX\n2\nZ\n3\n");
+                }
+            }
+
+            let crlf = open("crlf.txt").await;
+            check_sides(&crlf);
+            assert_eq!((crlf.eol, crlf.blocks.len()), (Eol::CrLf, 1));
+            assert_eq!(crlf.blocks[0].ours, "B-main\n");
+
+            let bom = open("bom.txt").await;
+            check_sides(&bom);
+            assert!(bom.bom && bom.result.starts_with("top\n"), "{bom:?}");
+
+            let nonl = open("nonl.txt").await;
+            check_sides(&nonl);
+            assert!(!nonl.final_newline && nonl.result.ends_with("\ntail"), "{nonl:?}");
+
+            // Markers ten characters long, as the attribute asks; the seven-character line is text.
+            let big = open("big.txt").await;
+            check_sides(&big);
+            assert!(std::fs::read_to_string(dir.join("big.txt")).unwrap().contains("<<<<<<<<<< HEAD\n"));
+            assert_eq!(big.blocks.len(), 1);
+            assert!(big.result.starts_with("<<<<<<< not a marker\nkeep\n"), "{big:?}");
+
+            // A stray `<<<<<<<` before the real block and a stray `=======` after it stay as text.
+            let lone = open("lone.txt").await;
+            check_sides(&lone);
+            assert_eq!(lone.blocks.len(), 1);
+            assert!(lone.result.starts_with("<<<<<<< stray\nkeep\n") && lone.result.ends_with("=======\nend\n"), "{lone:?}");
+
+            // Both sides added the file, so there is no base version. The diff3 styles still
+            // write a base section, with nothing in it.
+            let both = open("both.txt").await;
+            check_sides(&both);
+            assert_eq!(both.base, None);
+            let expected_base = if style == "merge" { None } else { Some("") };
+            assert_eq!(both.blocks[0].base.as_deref(), expected_base);
+
+            git(&dir, &["merge", "--abort"]);
+        }
+
+        merge("merge");
+        let refused = |f: ConflictFile| {
+            assert!(f.result.is_empty() && f.blocks.is_empty() && f.ours.is_none() && f.theirs.is_none(), "{f:?}");
+            f.refused
+        };
+        assert_eq!(refused(open("gone.txt").await), Some(ConflictRefusal::DeletedOnOneSide));
+        assert_eq!(refused(open("bin.dat").await), Some(ConflictRefusal::Binary));
+        assert_eq!(refused(open("latin.txt").await), Some(ConflictRefusal::NotUtf8));
+        assert_eq!(refused(open("large.txt").await), Some(ConflictRefusal::TooLarge));
+        assert_eq!(refused(open("clean.txt").await), Some(ConflictRefusal::NotConflicted));
+        assert_eq!(refused(open("nowhere.txt").await), Some(ConflictRefusal::NotConflicted));
+        assert!(matches!(get_conflict_file(&client, None, "../plain.txt").await, Err(GitError::InvalidPath { .. })));
+        // The same without the long-lived `cat-file`.
+        let plain = open("plain.txt").await;
+        assert_eq!(get_conflict_file(&client, None, "plain.txt").await.unwrap(), plain);
+
+        // Saving checks the hash from opening: a save over a file changed since is refused and
+        // writes nothing, and the hash a save returns is good for the next one.
+        use crate::git::ops::{restore_conflict, write_worktree_file};
+        let saved = write_worktree_file(&client, "plain.txt", "resolved\n", &plain.hash).await.unwrap();
+        assert_eq!((std::fs::read_to_string(dir.join("plain.txt")).unwrap(), saved.clone()), ("resolved\n".to_string(), content_hash(b"resolved\n")));
+        let stale = write_worktree_file(&client, "plain.txt", "again\n", &plain.hash).await;
+        assert!(matches!(&stale, Err(GitError::ChangedOnDisk { path }) if path == "plain.txt"), "{stale:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("plain.txt")).unwrap(), "resolved\n");
+        write_worktree_file(&client, "plain.txt", "again\n", &saved).await.unwrap();
+        assert!(matches!(write_worktree_file(&client, "../x.txt", "x", &saved).await, Err(GitError::InvalidPath { .. })));
+        // Still conflicted in the index, with no markers left in the file.
+        let edited = open("plain.txt").await;
+        assert_eq!((edited.result.as_str(), edited.blocks.len()), ("again\n", 0));
+
+        // Back to Git's merge, now with diff3 markers and their base sections.
+        let restored = restore_conflict(&client, "plain.txt").await.unwrap();
+        assert!(restored.ok, "{restored:?}");
+        let text = std::fs::read_to_string(dir.join("plain.txt")).unwrap();
+        assert!(text.contains("<<<<<<< ours\n") && text.contains("||||||| base\n2\n=======\n"), "{text}");
+        let reopened = open("plain.txt").await;
+        check_sides(&reopened);
+        assert_eq!(reopened.blocks.len(), 1);
+        assert_eq!((reopened.blocks[0].base.as_deref(), reopened.blocks[0].base_label.as_deref()), (Some("2\n"), Some("base")));
+        assert!(matches!(restore_conflict(&client, "clean.txt").await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

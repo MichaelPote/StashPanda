@@ -115,6 +115,14 @@ export const commands = {
 	getBlobContent: (key: string, spec: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_blob_content", { key, spec })),
 	getWorktreeFileContent: (key: string, path: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_worktree_file_content", { key, path })),
 	/**
+	 *  Conflicted file `path` as the merge editor opens it: its base, ours and theirs versions, and
+	 *  the working tree file with its conflict markers replaced by their base text and described as
+	 *  blocks. Every text uses "\n" line endings and has no byte order mark. A file the editor
+	 *  cannot open (not conflicted, deleted on one side, binary, not UTF-8, over 5 MB) comes back
+	 *  with `refused` set. Pass `hash` to `writeWorktreeFile` when saving.
+	 */
+	getConflictFile: (key: string, path: string) => typedError<ConflictFile, GitError>(__TAURI_INVOKE("get_conflict_file", { key, path })),
+	/**
 	 *  The commits that changed `path`, newest first, following renames, from `rev` (HEAD when
 	 *  null), at most `maxCount` of them. A longer history is read by asking again with a larger
 	 *  count: `git log --follow` cannot skip.
@@ -302,6 +310,20 @@ export const commands = {
 	 *  conflicted any more. To mark a file resolved as it is on disk, stage it with `opStage`.
 	 */
 	opResolveConflicts: (key: string, paths: string[], side: ResolveSide) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_resolve_conflicts", { key, paths, side })),
+	/**
+	 *  Write Git's merge of conflicted `path` to the working tree again, with `diff3` conflict markers
+	 *  that carry each block's base text (`git checkout --conflict=diff3`): the merge editor's "Start
+	 *  again from Git's merge". Throws away what has been done to the file; confirm with the user
+	 *  first. Fails with `invalidPath` when the file is not conflicted any more.
+	 */
+	opRestoreConflict: (key: string, path: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_restore_conflict", { key, path })),
+	/**
+	 *  Save `content` as working tree file `path`, byte for byte as UTF-8: the caller puts back the
+	 *  file's line endings and byte order mark. `expectedHash` is the `hash` from `getConflictFile`;
+	 *  when the file on disk has changed since, nothing is written and this fails with
+	 *  `changedOnDisk`. Returns the new hash, for the next save.
+	 */
+	writeWorktreeFile: (key: string, path: string, content: string, expectedHash: string) => typedError<string, GitError>(__TAURI_INVOKE("write_worktree_file", { key, path, content, expectedHash })),
 	/**
 	 *  Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
 	 *  `git rebase` (see `ops::pull_fetch` and `ops::pull_integrate`). `opId` is chosen by the
@@ -591,6 +613,79 @@ export type CommitSettings = {
 	preselect?: CommitPreselect,
 };
 
+/**  One block of conflict markers in the working tree file. */
+export type ConflictBlock = {
+	/**
+	 *  Line range in `result`, counting from 0, end exclusive. start_line == end_line when the
+	 *  markers carried no base text, so the block takes no lines in `result`.
+	 */
+	startLine: number,
+	endLine: number,
+	/**  Each side's lines, every line followed by "\n"; "" when a side has no lines in the block. */
+	ours: string,
+	/**  None when the markers carry no base section (merge style); Some("") for an empty base. */
+	base: string | null,
+	theirs: string,
+	/**  The text Git wrote after `<<<<<<< ` and `>>>>>>> `, such as "HEAD" and "feature/x". */
+	oursLabel: string,
+	theirsLabel: string,
+	/**  The text after `||||||| `, when there is a base section. */
+	baseLabel: string | null,
+};
+
+/**  A conflicted file, ready for the merge editor. */
+export type ConflictFile = {
+	path: string,
+	/**  Why the merge editor cannot open this file; when Some, the text fields are empty. */
+	refused: ConflictRefusal | null,
+	/**
+	 *  Stage 1 (base), 2 (ours) and 3 (theirs) of the file, read through the long-lived
+	 *  cat-file (`:1:<path>` etc.); None when that stage is missing.
+	 */
+	base: string | null,
+	ours: string | null,
+	theirs: string | null,
+	/**
+	 *  The working tree file with each conflict marker block replaced by its base text (or by
+	 *  nothing when the markers carry no base).
+	 */
+	result: string,
+	blocks: ConflictBlock[],
+	/**
+	 *  The working tree file's line endings, whether it starts with a UTF-8 byte order mark, and
+	 *  whether it ends with a newline. When Git's markers open the file, the byte order mark sits
+	 *  after the first marker line, at the start of each side's first line; `bom` is true then
+	 *  as well, and the mark is taken out of the block texts like everywhere else.
+	 */
+	eol: Eol,
+	bom: boolean,
+	finalNewline: boolean,
+	/**
+	 *  A hash of the working tree file's bytes, opaque to the frontend, passed back to
+	 *  `write_worktree_file` to detect a change on disk.
+	 */
+	hash: string,
+};
+
+/**  Why the merge editor cannot open a conflicted file. */
+export type ConflictRefusal = 
+/**
+ *  The index has no conflict stages for the path: it was never conflicted, or has been
+ *  marked resolved.
+ */
+"notConflicted" | 
+/**
+ *  One side deleted the file and the other changed it, so there is no second version to
+ *  merge with. The take-a-side actions handle these.
+ */
+"deletedOnOneSide" | 
+/**  A version contains a NUL byte. */
+"binary" | 
+/**  A version is not valid UTF-8 text. */
+"notUtf8" | 
+/**  A version is larger than 5 MB (`CONFLICT_FILE_CAP`). */
+"tooLarge";
+
 /**  One version of a conflicted file. */
 export type ConflictVersion = 
 /**  Stage 1: the common ancestor both sides started from. */
@@ -878,7 +973,12 @@ export type GitError = { kind: "gitNotFound"; searched: string[] } | { kind: "gi
  */
 { kind: "sshAuthFailed"; host: string; port: number | null; user: string | null; methodsTried: string[]; passwordAllowed: boolean; passwordRejected: boolean } | 
 /**  `ssh_trust_host(host, port)` records the key that was offered. */
-{ kind: "sshHostKeyUnknown"; host: string; port: number; fingerprint: string } | { kind: "sshHostKeyChanged"; host: string; port: number; fingerprint: string } | { kind: "sshKeyUnsupported"; path: string; detectedHeader: string } | { kind: "sshNeedsPassphrase"; path: string } | { kind: "sshWrongPassphrase"; path: string } | { kind: "keyParseError"; path: string; format: string; detail: string } | { kind: "sshUnsupportedFeature"; feature: string } | { kind: "transportDisconnected"; detail: string } | { kind: "notARepository"; path: string } | { kind: "repoPathNotFound"; path: string } | { kind: "unsafeRepository"; path: string } | { kind: "indexLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
+{ kind: "sshHostKeyUnknown"; host: string; port: number; fingerprint: string } | { kind: "sshHostKeyChanged"; host: string; port: number; fingerprint: string } | { kind: "sshKeyUnsupported"; path: string; detectedHeader: string } | { kind: "sshNeedsPassphrase"; path: string } | { kind: "sshWrongPassphrase"; path: string } | { kind: "keyParseError"; path: string; format: string; detail: string } | { kind: "sshUnsupportedFeature"; feature: string } | { kind: "transportDisconnected"; detail: string } | { kind: "notARepository"; path: string } | { kind: "repoPathNotFound"; path: string } | { kind: "unsafeRepository"; path: string } | { kind: "indexLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | 
+/**
+ *  A file was about to be saved over, but its contents on disk are no longer the ones it was
+ *  opened with: another program, or Git, has changed it since. Nothing was written.
+ */
+{ kind: "changedOnDisk"; path: string } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
 
 /**  Which git executable to run when a repository has no override. */
 export type GitSettings = {

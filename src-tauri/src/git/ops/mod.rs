@@ -590,6 +590,56 @@ pub async fn resolve_conflicts(client: &GitClient, paths: &[String], side: Resol
     Ok(res.expect("at least one path is given"))
 }
 
+/// Write Git's merge of conflicted `path` to the working tree again, with conflict markers in the
+/// `diff3` style, which carry each block's base text (`git checkout --conflict=diff3`). Whatever
+/// has been done to the file since is lost, so the frontend asks first. Refuses, and changes
+/// nothing, when the path is not conflicted any more: Git would then write the index's version
+/// over the file instead.
+pub async fn restore_conflict(client: &GitClient, path: &str) -> Result<OpResult> {
+    let paths = [path.to_string()];
+    valid_paths(&paths)?;
+    if !unmerged_stages(client).await?.contains_key(path) {
+        return Err(GitError::InvalidPath { path: path.to_string(), reason: "the file is not conflicted any more".into() });
+    }
+    exec_with_paths(client, "checkout", &["checkout", "--conflict=diff3"], &paths).await
+}
+
+/// Save `content` as working tree file `path` (relative to the repository), byte for byte, and
+/// return the hash of what was written. `expected_hash` is the `hash` the file had when the merge
+/// editor opened it (see `conflict_file::content_hash`); when the file on disk no longer has it,
+/// nothing is written and this fails with `changedOnDisk`, so a change made meanwhile by another
+/// program is never overwritten unasked. The file is written in place, keeping its mode.
+pub async fn write_worktree_file(client: &GitClient, path: &str, content: &str, expected_hash: &str) -> Result<String> {
+    use crate::git::queries::conflict_file::content_hash;
+    valid_worktree_path(path)?;
+    let full = crate::git::queries::diff::join_repo_path(&client.repo, path);
+    // A file that has grown past the cap since it was opened has certainly changed.
+    let on_disk = match client.transport.read_file(&full, crate::git::queries::blob::BLOB_CAP).await {
+        Ok(bytes) => Some(bytes),
+        Err(GitError::TooLarge { .. }) => None,
+        Err(e) => return Err(e),
+    };
+    if on_disk.is_none_or(|bytes| content_hash(&bytes) != expected_hash) {
+        return Err(GitError::ChangedOnDisk { path: path.to_string() });
+    }
+    client.transport.write_file(&full, content.as_bytes()).await?;
+    Ok(content_hash(content.as_bytes()))
+}
+
+/// A repository-relative path that is written or read as a file directly, not handed to Git as
+/// a pathspec: on top of `valid_paths`, it must stay inside the working tree, so it may not be
+/// absolute or step up with `..`.
+pub(crate) fn valid_worktree_path(path: &str) -> Result<()> {
+    valid_paths(&[path.to_string()])?;
+    let bytes = path.as_bytes();
+    // `C:` starts a Windows path on a drive, even without a slash after it.
+    let absolute = path.starts_with(['/', '\\']) || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':');
+    if absolute || path.split(['/', '\\']).any(|part| part == "..") {
+        return Err(GitError::InvalidPath { path: path.to_string(), reason: "not a path inside the working tree".into() });
+    }
+    Ok(())
+}
+
 /// `git config --global --add safe.directory <path>`, which tells Git to trust a repository owned
 /// by another user. Run through the repository's own transport with the path exactly as Git
 /// printed it in its "dubious ownership" message, so the Git that refused gets the setting.

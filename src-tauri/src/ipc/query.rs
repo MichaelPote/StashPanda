@@ -11,6 +11,7 @@ use crate::git::queries::blame::{get_blame, FileBlame};
 use crate::git::queries::blob::{get_blob, get_worktree_file, BlobContent};
 use crate::git::queries::history::{get_file_history as history_of, FileHistory};
 use crate::git::queries::commit_files::{get_commit_files, FileChange};
+use crate::git::queries::conflict_file::{get_conflict_file as conflict_file_of, ConflictFile};
 use crate::git::queries::diff::{get_diff, join_repo_path, DiffOptions, DiffTarget, DiffText};
 use crate::git::queries::log::{get_commit_body, get_stashes, get_unchanged_parents as unchanged_parents, StashEntry};
 use crate::git::queries::refs::{get_refs, RefsSnapshot};
@@ -172,6 +173,18 @@ pub async fn get_file_history(
 pub async fn get_file_blame(state: State<'_, AppState>, key: String, path: String, rev: Option<String>) -> Result<FileBlame> {
     let h = repo(&state, &key).await?;
     with_read_slot!(h, get_blame(&h.client, Some((&h.catfile, &h.cancel)), &path, rev.as_deref()).await)
+}
+
+/// Conflicted file `path` as the merge editor opens it: its base, ours and theirs versions, and
+/// the working tree file with its conflict markers replaced by their base text and described as
+/// blocks. Every text uses "\n" line endings and has no byte order mark. A file the editor
+/// cannot open (not conflicted, deleted on one side, binary, not UTF-8, over 5 MB) comes back
+/// with `refused` set. Pass `hash` to `writeWorktreeFile` when saving.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_conflict_file(state: State<'_, AppState>, key: String, path: String) -> Result<ConflictFile> {
+    let h = repo(&state, &key).await?;
+    with_read_slot!(h, conflict_file_of(&h.client, Some((&h.catfile, &h.cancel)), &path).await)
 }
 
 #[tauri::command]
