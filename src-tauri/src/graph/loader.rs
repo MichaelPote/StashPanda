@@ -13,7 +13,7 @@ use tauri_specta::Event;
 use super::oid::Oid;
 use super::snapshot::{GraphSnapshot, WorktreeSummary};
 use super::store::CommitStore;
-use crate::error::Result;
+use crate::error::{GitError, Result};
 use crate::git::queries::{log, refs, status};
 use crate::repo::RepoHandle;
 use crate::settings::{CacheSettings, GraphOptions};
@@ -83,6 +83,15 @@ impl GraphSnapshotEvent {
 pub struct GraphProgressEvent {
     pub repo_id: String,
     pub loaded: u32,
+}
+
+/// The live load started when a tab opened failed (the connection dropped, Git failed), so no
+/// snapshot follows; the frontend stops showing it as loading and offers to try again.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphLoadFailedEvent {
+    pub repo_id: String,
+    pub error: GitError,
 }
 
 /// The Working Tree row's counts. Every repository with a working tree gets the row, clean or not
@@ -484,6 +493,10 @@ pub async fn open_pipeline(
     }
     if let Err(e) = refresh_full(Some(app), Some(db), handle, options, cache, SnapshotReason::Live, false).await {
         tracing::warn!("live graph load for {} failed: {e}", handle.key);
+        // A closed tab has nobody to tell.
+        if !handle.cancel.is_cancelled() {
+            let _ = GraphLoadFailedEvent { repo_id: handle.key.clone(), error: e }.emit(app);
+        }
     }
 }
 

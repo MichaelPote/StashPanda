@@ -410,7 +410,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         max: 1440,
         optional: true,
         emptyLabel: "Off",
-        applies: "unused",
+        help: "Every open repository fetches from all its remotes this often. A failure is reported once, until a fetch works again.",
       },
     ],
   },

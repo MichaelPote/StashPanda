@@ -31,12 +31,21 @@ const MAX_EXCLUDED_DIRS: usize = 500;
 /// The events that change what Git reports. `access`, `open` and `close_nowrite` never do.
 const EVENTS: &str = "modify,close_write,create,delete,move,attrib";
 
-/// True when `inotifywait` is on the remote system's `PATH`.
-pub async fn available(transport: &SharedTransport) -> bool {
+/// Whether `inotifywait` is on the remote system's `PATH`. Fails when the system could not be
+/// asked at all (the connection is down), which is not the same as "not installed".
+pub async fn available(transport: &SharedTransport) -> crate::error::Result<bool> {
     let mut cmd = Cmd::git("probe", vec!["-c".into(), "command -v inotifywait".into()]);
     cmd.program = Program::Other("sh".into());
     cmd.category = Category::Watcher;
-    matches!(transport.run(cmd).await, Ok(out) if out.success() && !out.stdout.trim_ascii().is_empty())
+    let out = transport.run(cmd).await?;
+    Ok(out.success() && !out.stdout.trim_ascii().is_empty())
+}
+
+/// True when `inotifywait` stopped because of a problem that starting it again will not fix: the
+/// limit on watched folders, or a folder that is gone. Otherwise (the connection dropped) it is
+/// worth starting again once the connection is back.
+pub fn exit_is_final(stderr: &str) -> bool {
+    stderr.contains("upper limit") || stderr.contains("No such file") || stderr.contains("No space left")
 }
 
 /// Escapes a path for a POSIX extended regular expression.
@@ -252,7 +261,7 @@ mod tests {
         let wsl = tmp("inotify-wsl");
         let t: crate::transport::SharedTransport =
             std::sync::Arc::new(WslTransport { distro: distro.clone(), git: "git".into(), mapper: WslMapper { distro, automount_root: "/mnt/".into() } });
-        assert!(available(&t).await);
+        assert!(available(&t).await.unwrap());
         watch_a_repository(t, &wsl).await;
         let _ = std::fs::remove_dir_all(&wsl);
     }

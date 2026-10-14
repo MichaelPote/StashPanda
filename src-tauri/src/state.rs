@@ -95,6 +95,12 @@ impl AppState {
         );
 
         let passphrases = Arc::new(PassphraseCache::with_keychain(Arc::new(OsKeychain::default())));
+        let ssh = Arc::new(SshContext::new(passphrases.clone(), SshContext::default_known_hosts()));
+        let events = app.clone();
+        *ssh.on_state.lock().expect("ssh state sink") = Some(Box::new(move |ev| {
+            use tauri_specta::Event;
+            let _ = ev.emit(&events);
+        }));
         Ok(AppState {
             paths,
             inner,
@@ -103,7 +109,7 @@ impl AppState {
             startup_warnings: warnings,
             host: Host::detect(),
             passphrases: passphrases.clone(),
-            ssh: Arc::new(SshContext::new(passphrases, SshContext::default_known_hosts())),
+            ssh,
             repos: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             clones: Default::default(),
         })

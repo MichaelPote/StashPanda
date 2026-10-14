@@ -33,6 +33,7 @@ import { commitFileCount, isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
 import {
+  autoFetchDue,
   discardSelected,
   fetchAll,
   fileActionReason,
@@ -58,6 +59,10 @@ const dialogs = useDialogsStore();
 
 const ready = ref(false);
 let unlistenMenu: UnlistenFn | null = null;
+
+// Automatic fetching, when `polling.autoFetchMinutes` is set: every half minute, fetch the tabs that are due.
+const autoFetchTimer = setInterval(() => void autoFetchDue(), 30_000);
+onBeforeUnmount(() => clearInterval(autoFetchTimer));
 
 onMounted(async () => {
   // The console listener must be live before the first repoOpen emits probe commands.

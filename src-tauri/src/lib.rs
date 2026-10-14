@@ -123,6 +123,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         ])
         .events(collect_events![
             ipc::events::SettingsChanged,
+            transport::ssh_pool::TransportState,
+            graph::loader::GraphLoadFailedEvent,
             ipc::events::UiStateChanged,
             ipc::events::AppWarning,
             ipc::events::OperationProgress,

@@ -331,12 +331,14 @@ export const events = {
 	appWarning: makeEvent<AppWarning>("app-warning"),
 	cloneProgress: makeEvent<CloneProgress>("clone-progress"),
 	consoleEvent: makeEvent<ConsoleEvent>("console-event"),
+	graphLoadFailedEvent: makeEvent<GraphLoadFailedEvent>("graph-load-failed-event"),
 	graphProgressEvent: makeEvent<GraphProgressEvent>("graph-progress-event"),
 	graphSnapshotEvent: makeEvent<GraphSnapshotEvent>("graph-snapshot-event"),
 	menuActionEvent: makeEvent<MenuActionEvent>("menu-action-event"),
 	operationProgress: makeEvent<OperationProgress>("operation-progress"),
 	repoChangedEvent: makeEvent<RepoChangedEvent>("repo-changed-event"),
 	settingsChanged: makeEvent<SettingsChanged>("settings-changed"),
+	transportState: makeEvent<TransportState>("transport-state"),
 	uiStateChanged: makeEvent<UiStateChanged>("ui-state-changed"),
 	watcherStateEvent: makeEvent<WatcherStateEvent>("watcher-state-event"),
 };
@@ -482,6 +484,21 @@ export type CommitSettings = {
 
 /**  How a repository is reached. `Auto` resolves from the path on every open. */
 export type Connection = { type: "auto" } | { type: "local" } | { type: "wsl"; distro: string } | { type: "ssh"; host: string; user: string | null; port: number | null; identityFile: string | null; remoteGit: string | null };
+
+/**  What the connection to one SSH server is doing. */
+export type ConnectionState = 
+/**  Logging in, for the first time or again after the connection was lost. */
+"connecting" | "ready" | 
+/**
+ *  The connection failed or was lost for a reason that may pass (the network, the server
+ *  restarting); the next attempt is after `retryInMs`.
+ */
+"degraded" | 
+/**
+ *  It failed for a reason trying again will not fix (a refused login, a changed host key);
+ *  the next command tries again.
+ */
+"disconnected";
 
 export type ConsoleEvent = {
 	repoId: string,
@@ -727,6 +744,15 @@ export type GraphColumns = {
 	date?: number | null,
 	/**  The short commit ID column, at the right-hand end. */
 	id?: number | null,
+};
+
+/**
+ *  The live load started when a tab opened failed (the connection dropped, Git failed), so no
+ *  snapshot follows; the frontend stops showing it as loading and offers to try again.
+ */
+export type GraphLoadFailedEvent = {
+	repoId: string,
+	error: GitError,
 };
 
 export type GraphMeta = {
@@ -1212,6 +1238,18 @@ export type SyncResult = {
 };
 
 export type Theme = "system" | "dark" | "light";
+
+/**  A change in the connection to `user@host:port`, sent to the frontend as an event. */
+export type TransportState = {
+	host: string,
+	port: number,
+	user: string,
+	state: ConnectionState,
+	/**  What went wrong, for Degraded and Disconnected. */
+	detail: string | null,
+	/**  For Degraded: how long until the next attempt. */
+	retryInMs: number | null,
+};
 
 export type UiState = {
 	panels?: Panels,

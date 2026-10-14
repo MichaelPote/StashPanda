@@ -95,6 +95,10 @@ pub fn start(app: &AppHandle, db: &Arc<Db>, handle: &Arc<RepoHandle>, settings: 
     }
 }
 
+/// How long to wait before asking a remote system about `inotifywait` again, while it cannot be
+/// reached, and before starting it again after it stopped with the connection.
+const RETRY_INOTIFY: Duration = Duration::from_secs(30);
+
 /// Where the repository's files are, for messages: the SSH host or the WSL distribution.
 fn remote_name(handle: &RepoHandle) -> String {
     match handle.transport.kind() {
@@ -153,11 +157,23 @@ fn try_remote_inotify(app: AppHandle, handle: Arc<RepoHandle>, client: Arc<crate
     tauri::async_runtime::spawn(async move {
         let every = polling::status_interval(&polling_settings, crate::watch::Activity::Focused).as_secs();
         let name = remote_name(&handle);
-        if !remote::available(&handle.transport).await {
-            emit_state(&app, &handle, WatcherKind::Polling, Some(format!(
-                "inotifywait is not installed on {name}, so changes are found by checking every {every} seconds. Install inotify-tools there to see them at once.",
-            )));
-            return;
+        // While the connection is down the system cannot be asked; try again until it can.
+        loop {
+            match remote::available(&handle.transport).await {
+                Ok(true) => break,
+                Ok(false) => {
+                    emit_state(&app, &handle, WatcherKind::Polling, Some(format!(
+                        "inotifywait is not installed on {name}, so changes are found by checking every {every} seconds. Install inotify-tools there to see them at once.",
+                    )));
+                    return;
+                }
+                Err(_) => {
+                    tokio::select! {
+                        _ = handle.cancel.cancelled() => return,
+                        _ = tokio::time::sleep(RETRY_INOTIFY) => {}
+                    }
+                }
+            }
         }
         let ignored = ignored_dirs(&handle).await;
         let worktree = (!handle.info.is_bare).then(|| handle.info.toplevel.trim_end_matches('/').to_string());
@@ -169,12 +185,25 @@ fn try_remote_inotify(app: AppHandle, handle: Arc<RepoHandle>, client: Arc<crate
                 if handle.cancel.is_cancelled() {
                     return;
                 }
-                let poller = polling::start(client, polling_settings, handle.activity.subscribe(), &handle.cancel, tx);
-                if swap_watcher(&handle, Box::new(poller)) {
-                    let why = if stderr.is_empty() { String::new() } else { format!(": {stderr}") };
-                    emit_state(&app, &handle, WatcherKind::Polling, Some(format!(
-                        "inotifywait on {name} stopped{why}. Changes are found by checking every {every} seconds instead.",
-                    )));
+                let poller = polling::start(client.clone(), polling_settings.clone(), handle.activity.subscribe(), &handle.cancel, tx.clone());
+                if !swap_watcher(&handle, Box::new(poller)) {
+                    return;
+                }
+                let why = if stderr.is_empty() { String::new() } else { format!(": {stderr}") };
+                let final_exit = remote::exit_is_final(&stderr);
+                let then = if final_exit { "" } else { " It starts again once the connection is back." };
+                emit_state(&app, &handle, WatcherKind::Polling, Some(format!(
+                    "inotifywait on {name} stopped{why}. Changes are found by checking every {every} seconds instead.{then}",
+                )));
+                if !final_exit {
+                    // Usually the connection dropped: wait a little, then start it again; the
+                    // loop above waits for the connection to come back.
+                    tauri::async_runtime::spawn(async move {
+                        tokio::select! {
+                            _ = handle.cancel.cancelled() => {}
+                            _ = tokio::time::sleep(RETRY_INOTIFY) => try_remote_inotify(app, handle, client, polling_settings, tx),
+                        }
+                    });
                 }
             }
         };

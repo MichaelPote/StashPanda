@@ -388,10 +388,51 @@ export async function fetchAll(session: RepoSession | null): Promise<void> {
   const key = session.key;
   try {
     const result = await runOperation(key, `Fetching from ${from}`, (opId) => commands.opFetch(key, opId));
-    if (result.ok) sessions.notifySuccess(`Fetched from ${from}.`);
-    else sessions.notify(networkFailureText(result, `Fetching from ${from}`));
+    session.lastFetchAt = Date.now();
+    if (result.ok) {
+      session.autoFetchFailed = false;
+      sessions.notifySuccess(`Fetched from ${from}.`);
+    } else {
+      sessions.notify(networkFailureText(result, `Fetching from ${from}`));
+    }
   } catch (e) {
     sessions.notify(isCancelled(e) ? "The fetch was stopped. The remote branches are as they were before it." : errorMessage(e));
+  }
+}
+
+/**
+ * Fetches every open repository whose last fetch is `polling.autoFetchMinutes` old or more (the
+ * time a tab opened counts as a fetch), one after another. Called every half minute by `App.vue`.
+ * The fetch shows in the status bar like any other and can be stopped; a success says nothing,
+ * since new commits show in the graph by themselves. A failure is reported once per repository,
+ * until a fetch there works again, so a server that is down does not post a notice every few
+ * minutes. Skips repositories with no remotes, still loading, or running a fetch, pull or push.
+ */
+export async function autoFetchDue(): Promise<void> {
+  const minutes = useSettingsStore().settings?.polling?.autoFetchMinutes ?? null;
+  if (minutes === null || minutes <= 0) return;
+  const sessions = useSessionsStore();
+  for (const session of [...sessions.sessions.values()]) {
+    if (Date.now() - session.lastFetchAt < minutes * 60_000 || fetchReason(session) !== null || !session.refs) continue;
+    const key = session.key;
+    const remotes = session.refs.remotes.map((r) => r.name);
+    const from = remotes.length === 1 ? remotes[0] : `${remotes.length} remotes`;
+    try {
+      const result = await runOperation(key, `Fetching from ${from} (automatic)`, (opId) => commands.opFetch(key, opId));
+      session.lastFetchAt = Date.now();
+      if (result.ok) {
+        session.autoFetchFailed = false;
+      } else if (!session.autoFetchFailed) {
+        session.autoFetchFailed = true;
+        sessions.notify(`${networkFailureText(result, `Fetching ${session.info.displayName} automatically`)} Automatic fetches carry on; this is not reported again until one works.`);
+      }
+    } catch (e) {
+      session.lastFetchAt = Date.now();
+      if (!isCancelled(e) && !session.autoFetchFailed) {
+        session.autoFetchFailed = true;
+        sessions.notify(`Fetching ${session.info.displayName} automatically failed: ${errorMessage(e)}`);
+      }
+    }
   }
 }
 

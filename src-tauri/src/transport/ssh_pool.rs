@@ -15,7 +15,10 @@ use russh::keys::known_hosts::learn_known_hosts_path;
 use russh::keys::{check_known_hosts_path, PrivateKeyWithHashAlg};
 use russh::Channel;
 use ssh_key::{HashAlg, PublicKey};
+use serde::{Deserialize, Serialize};
+use specta::Type;
 use tokio::sync::Semaphore;
+use tokio::time::Instant;
 
 use crate::error::{GitError, Result};
 use crate::keys::secrets::PassphraseCache;
@@ -44,6 +47,66 @@ pub struct SshContext {
     pub offered_keys: Mutex<HashMap<String, PublicKey>>,
     /// Passwords supplied through the UI, keyed by `user@host:port`.
     pub passwords: PassphraseCache,
+    /// Where connection states go: the app sends them on as `transport_state` events.
+    pub on_state: Mutex<Option<StateSink>>,
+}
+
+pub type StateSink = Box<dyn Fn(TransportState) + Send + Sync>;
+
+/// What the connection to one SSH server is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectionState {
+    /// Logging in, for the first time or again after the connection was lost.
+    Connecting,
+    Ready,
+    /// The connection failed or was lost for a reason that may pass (the network, the server
+    /// restarting); the next attempt is after `retryInMs`.
+    Degraded,
+    /// It failed for a reason trying again will not fix (a refused login, a changed host key);
+    /// the next command tries again.
+    Disconnected,
+}
+
+/// A change in the connection to `user@host:port`, sent to the frontend as an event.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, tauri_specta::Event)]
+#[serde(rename_all = "camelCase")]
+pub struct TransportState {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub state: ConnectionState,
+    /// What went wrong, for Degraded and Disconnected.
+    pub detail: Option<String>,
+    /// For Degraded: how long until the next attempt.
+    pub retry_in_ms: Option<u64>,
+}
+
+/// How long to wait before trying again after the n-th network failure in a row.
+const BACKOFF: [Duration; 6] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+
+pub fn backoff_delay(failures: u32) -> Duration {
+    BACKOFF[(failures.max(1) as usize - 1).min(BACKOFF.len() - 1)]
+}
+
+/// Failures that may pass by themselves, so they are retried after a pause; anything else (a
+/// refused login, a host key, a passphrase) needs the user and is not.
+fn passes_by_itself(e: &GitError) -> bool {
+    matches!(e, GitError::SshConnectFailed { .. } | GitError::TransportDisconnected { .. } | GitError::Timeout { .. } | GitError::Io { .. })
+}
+
+/// Consecutive network failures for one server, and when the next attempt may be made.
+struct Backoff {
+    failures: u32,
+    next_try: Instant,
+    error: GitError,
 }
 
 impl SshContext {
@@ -55,6 +118,23 @@ impl SshContext {
             accept_new: std::sync::atomic::AtomicBool::new(false),
             offered_keys: Mutex::new(HashMap::new()),
             passwords: PassphraseCache::default(),
+            on_state: Mutex::new(None),
+        }
+    }
+
+    fn report(&self, target: &SshTarget, state: ConnectionState, detail: Option<String>, retry_in: Option<Duration>) {
+        let ev = TransportState {
+            host: target.host.clone(),
+            port: target.port,
+            user: target.user.clone(),
+            state,
+            detail,
+            retry_in_ms: retry_in.map(|d| d.as_millis() as u64),
+        };
+        if let Ok(sink) = self.on_state.lock() {
+            if let Some(f) = sink.as_ref() {
+                f(ev);
+            }
         }
     }
 
@@ -196,6 +276,18 @@ impl SshConn {
 #[derive(Default)]
 pub struct SshPool {
     conns: tokio::sync::Mutex<HashMap<(String, u16, String), Arc<SshConn>>>,
+    backoff: Mutex<HashMap<(String, u16, String), Backoff>>,
+}
+
+/// The error from the last attempt, saying when the next one is.
+fn error_with_retry(error: GitError, wait: Duration) -> GitError {
+    let secs = wait.as_secs_f64().ceil() as u64;
+    match error {
+        GitError::SshConnectFailed { host, detail } => {
+            GitError::SshConnectFailed { host, detail: format!("{detail} (trying again in {secs} s)") }
+        }
+        other => other,
+    }
 }
 
 fn fingerprint(pk: &PublicKey) -> String {
@@ -203,6 +295,10 @@ fn fingerprint(pk: &PublicKey) -> String {
 }
 
 impl SshPool {
+    /// The open connection to `target`, or a new one. After a failure that may pass by itself,
+    /// attempts wait 1, 2, 5, 10, 30, then 60 seconds; until then this fails at once with the last
+    /// error, so every status poll and command does not try to connect again. Each attempt and
+    /// its outcome is reported through `SshContext::on_state`.
     pub async fn get_or_connect(&self, target: &SshTarget, ctx: &SshContext) -> Result<Arc<SshConn>> {
         let key = (target.host.clone(), target.port, target.user.clone());
         let mut conns = self.conns.lock().await;
@@ -212,9 +308,40 @@ impl SshPool {
             }
             conns.remove(&key);
         }
-        let conn = Arc::new(connect(target, ctx).await?);
-        conns.insert(key, conn.clone());
-        Ok(conn)
+        if let Some((error, wait)) = self.waiting(&key) {
+            return Err(error_with_retry(error, wait));
+        }
+        ctx.report(target, ConnectionState::Connecting, None, None);
+        match connect(target, ctx).await {
+            Ok(conn) => {
+                self.backoff.lock().expect("backoff lock").remove(&key);
+                ctx.report(target, ConnectionState::Ready, None, None);
+                let conn = Arc::new(conn);
+                conns.insert(key, conn.clone());
+                Ok(conn)
+            }
+            Err(e) if passes_by_itself(&e) => {
+                let mut backoff = self.backoff.lock().expect("backoff lock");
+                let failures = backoff.get(&key).map_or(1, |b| b.failures + 1);
+                let wait = backoff_delay(failures);
+                backoff.insert(key, Backoff { failures, next_try: Instant::now() + wait, error: e.clone() });
+                ctx.report(target, ConnectionState::Degraded, Some(e.to_string()), Some(wait));
+                Err(e)
+            }
+            Err(e) => {
+                self.backoff.lock().expect("backoff lock").remove(&key);
+                ctx.report(target, ConnectionState::Disconnected, Some(e.to_string()), None);
+                Err(e)
+            }
+        }
+    }
+
+    /// The last error and the time left, while `key` must wait before trying again.
+    fn waiting(&self, key: &(String, u16, String)) -> Option<(GitError, Duration)> {
+        let backoff = self.backoff.lock().expect("backoff lock");
+        let b = backoff.get(key)?;
+        let now = Instant::now();
+        (now < b.next_try).then(|| (b.error.clone(), b.next_try - now))
     }
 
     pub async fn disconnect_all(&self) {

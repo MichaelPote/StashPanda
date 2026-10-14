@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import { CircleCheckIcon, EyeIcon, GitBranchIcon, InfoIcon, LoaderCircleIcon, MonitorIcon, ServerIcon, XIcon } from "@lucide/vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { CircleCheckIcon, EyeIcon, GitBranchIcon, InfoIcon, LoaderCircleIcon, MonitorIcon, ServerIcon, UnplugIcon, XIcon } from "@lucide/vue";
 import { Separator } from "@/components/ui/separator";
 import { hostLabel, transportDetail } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import { stopOperation } from "@/lib/repoActions";
 import { useHostStore } from "@/stores/host";
 import { useSessionsStore } from "@/stores/sessions";
@@ -19,7 +20,8 @@ const operation = computed(() => active.value?.operation ?? null);
 const graphLoading = computed(() => {
   const graph = active.value?.graph;
   if (!graph) return false;
-  return graph.meta === null || graph.meta.version === 0 || graph.loading;
+  // Only the loading flag: a load that failed leaves no snapshot (version 0) and is not loading.
+  return graph.loading;
 });
 /** Commits loaded so far: the backend's progress count, or the previous snapshot's total if that is larger. */
 const loadedCount = computed(() => {
@@ -29,6 +31,47 @@ const loadedCount = computed(() => {
 
 /** The last report that an action worked ("Committed …", "Stashed …"). Errors show in the strip under the toolbar. */
 const successMessage = computed(() => sessions.successMessage);
+
+// ---- The SSH connection's state ----------------------------------------------------------------
+
+/** Ticks once a second while a countdown to the next connection attempt is shown. */
+const now = ref(Date.now());
+let ticker: ReturnType<typeof setInterval> | null = null;
+watch(
+  () => active.value?.connection?.state === "degraded",
+  (counting) => {
+    if (counting && ticker === null) {
+      // Start from the current time: the clock stood still since the last countdown.
+      now.value = Date.now();
+      ticker = setInterval(() => (now.value = Date.now()), 1000);
+    }
+    if (!counting && ticker !== null) {
+      clearInterval(ticker);
+      ticker = null;
+    }
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  if (ticker !== null) clearInterval(ticker);
+});
+
+const connectionText = computed(() => {
+  const c = active.value?.connection;
+  switch (c?.state) {
+    case "connecting":
+      return "connecting…";
+    case "degraded": {
+      const secs = c.retryAt === null ? 0 : Math.ceil((c.retryAt - now.value) / 1000);
+      return secs > 0 ? `connection lost, trying again in ${secs} s` : "connection lost, trying again";
+    }
+    case "disconnected":
+      return "disconnected";
+    default:
+      return null;
+  }
+});
+const connectionClass = computed(() => (active.value?.connection?.state === "disconnected" ? "text-destructive" : "text-modified-fg"));
 
 const watcherText = computed(() => {
   switch (active.value?.watcherKind) {
@@ -59,6 +102,12 @@ const watcherText = computed(() => {
       <span class="inline-flex min-w-0 items-center gap-1 truncate" :title="active.info.nativePath">
         <ServerIcon class="size-3 shrink-0" />
         {{ transportDetail(active.info.transport) }}
+      </span>
+      <!-- An SSH connection that is not ready: connecting, lost and trying again, or refused. -->
+      <span v-if="connectionText" :class="cn('inline-flex shrink-0 items-center gap-1', connectionClass)" :title="active.connection?.detail ?? undefined" role="status">
+        <LoaderCircleIcon v-if="active.connection?.state === 'connecting'" class="size-3 animate-spin" />
+        <UnplugIcon v-else class="size-3" />
+        {{ connectionText }}
       </span>
       <Separator orientation="vertical" class="h-3" />
       <span class="inline-flex shrink-0 items-center gap-1">

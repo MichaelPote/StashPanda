@@ -18,6 +18,9 @@ import {
   type RepoInfo,
   type StashEntry,
   type StatusSnapshot,
+  type TransportState,
+  type GraphLoadFailedEvent,
+  type ConnectionState,
   type WatcherKind,
   type WatcherStateEvent,
 } from "@/lib/bindings";
@@ -77,6 +80,14 @@ export interface Selection {
 export interface NoticeAction {
   label: string;
   run: () => void | Promise<void>;
+}
+
+/** The SSH connection's state as the status bar shows it. */
+export interface SessionConnection {
+  state: ConnectionState;
+  detail: string | null;
+  /** For a lost connection: when, in `Date.now()` time, the next attempt is due. */
+  retryAt: number | null;
 }
 
 /** A fetch, pull or push in progress in one repository. Replaced, never mutated. */
@@ -147,6 +158,12 @@ export interface RepoSession {
   watcherKind: WatcherKind | null;
   /** Why the watcher is what it is, when that needs saying ("inotifywait is not installed on …"). */
   watcherDetail: string | null;
+  /** The SSH connection's latest state, for repositories reached over SSH; null until one arrives. */
+  connection: SessionConnection | null;
+  /** When the last fetch from this tab finished (`Date.now()` time), or when the tab opened. Automatic fetching counts from it. */
+  lastFetchAt: number;
+  /** An automatic fetch failed and the user was told; later failures stay quiet until one works. */
+  autoFetchFailed: boolean;
   /** The fetch, pull or push running in this repository, shown in the status bar. */
   operation: RunningOperation | null;
 }
@@ -401,6 +418,39 @@ export const useSessionsStore = defineStore("sessions", () => {
    */
   const earlyWatcherStates = new Map<string, WatcherStateEvent>();
 
+  /**
+   * A change in an SSH connection, which every repository on that server shares. A user left
+   * out of the repository's connection settings comes from the SSH config, so then the host and
+   * port decide.
+   */
+  function onTransportState(ev: TransportState): void {
+    for (const session of sessions.values()) {
+      const t = session.info.transport;
+      if (t.type !== "ssh" || t.host !== ev.host || (t.port ?? 22) !== ev.port || (t.user !== null && t.user !== ev.user)) continue;
+      const wasDown = session.connection !== null && session.connection.state !== "ready";
+      session.connection = {
+        state: ev.state,
+        detail: ev.detail,
+        retryAt: ev.retryInMs === null ? null : Date.now() + ev.retryInMs,
+      };
+      // Back after a loss: a graph that never loaded (its load failed with the connection) loads now.
+      if (ev.state === "ready" && wasDown && !session.graph.loading && (session.graph.meta?.version ?? 0) === 0) {
+        void refreshSession(session.key);
+      }
+    }
+  }
+
+  /** The graph load started when the tab opened failed, so no snapshot is coming. */
+  function onGraphLoadFailed(ev: GraphLoadFailedEvent): void {
+    const session = sessions.get(ev.repoId);
+    if (!session) return;
+    session.graph.loading = false;
+    notify(`The commit history of ${session.info.displayName} could not be loaded: ${errorMessage(new IpcError(ev.error))}`, {
+      label: "Try again",
+      run: () => refreshSession(ev.repoId),
+    });
+  }
+
   function onWatcherState(ev: WatcherStateEvent): void {
     const session = sessions.get(ev.repoId);
     if (!session) {
@@ -479,6 +529,8 @@ export const useSessionsStore = defineStore("sessions", () => {
         events.graphProgressEvent.listen((event) => onGraphProgress(event.payload)),
         events.repoChangedEvent.listen((event) => onRepoChanged(event.payload)),
         events.watcherStateEvent.listen((event) => onWatcherState(event.payload)),
+        events.transportState.listen((event) => onTransportState(event.payload)),
+        events.graphLoadFailedEvent.listen((event) => onGraphLoadFailed(event.payload)),
         events.operationProgress.listen((event) => onOperationProgress(event.payload)),
       ]).then(() => undefined);
     }
@@ -546,6 +598,9 @@ export const useSessionsStore = defineStore("sessions", () => {
         findFocus: 0,
         watcherKind: earlyWatcherStates.get(key)?.kind ?? null,
         watcherDetail: earlyWatcherStates.get(key)?.detail ?? null,
+        connection: null,
+        lastFetchAt: Date.now(),
+        autoFetchFailed: false,
         operation: null,
       });
       sessions.set(key, session);
@@ -589,6 +644,8 @@ export const useSessionsStore = defineStore("sessions", () => {
       }
     });
     const results = await Promise.allSettled([graph, loadStatus(session), loadRefs(session)]);
+    // A failed graph load sends no snapshot, so nothing else would end the loading state.
+    if (results[0].status === "rejected") session.graph.loading = false;
     for (const r of results) if (r.status === "rejected") notify(errorMessage(r.reason));
   }
 

@@ -312,8 +312,13 @@ mod e2e {
     /// `passwords` turns on password authentication. The server runs as this user, so it cannot
     /// read the shadow file and refuses every password, which is enough to test the prompt.
     fn start_sshd(dir: &Path, port: u16, passwords: bool) -> Sshd {
+        keygen(&dir.join("host_key"));
+        start_sshd_with_key(dir, port, passwords)
+    }
+
+    /// Starts sshd with the host key already in `dir`, as after a restart of the same server.
+    fn start_sshd_with_key(dir: &Path, port: u16, passwords: bool) -> Sshd {
         let host_key = dir.join("host_key");
-        keygen(&host_key);
         let cfg = format!(
             "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPasswordAuthentication {}\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nStrictModes no\nPidFile none\nLogLevel ERROR\n",
             host_key.display(),
@@ -339,6 +344,63 @@ mod e2e {
         let st = Command::new("git").arg("-C").arg(dir)
             .args(["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false"]).args(args).status().unwrap();
         assert!(st.success());
+    }
+
+    /// A lost connection: the next command reports Degraded and when it will try again, commands
+    /// meanwhile fail at once without connecting, and once the server is back it reconnects.
+    #[tokio::test]
+    async fn reconnects_with_backoff_after_the_server_goes_away() {
+        use crate::transport::ssh_pool::{ConnectionState, TransportState};
+        use crate::transport::Program;
+        if !std::path::Path::new("/usr/sbin/sshd").exists() || which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("stashpanda-sshback-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let client_key = dir.join("client_key");
+        keygen(&client_key);
+        std::fs::copy(dir.join("client_key.pub"), dir.join("authorized_keys")).unwrap();
+        let port = free_port();
+        let sshd = start_sshd(&dir, port, false);
+        let user = std::env::var("USER").unwrap();
+        let target = SshTarget { host: "127.0.0.1".into(), port, user, identity_files: vec![client_key], identities_only: true };
+        let ctx = Arc::new(SshContext::new(Arc::new(PassphraseCache::default()), dir.join("known_hosts")));
+        ctx.accept_new.store(true, std::sync::atomic::Ordering::Relaxed);
+        let states = Arc::new(std::sync::Mutex::new(Vec::<TransportState>::new()));
+        let seen = states.clone();
+        *ctx.on_state.lock().unwrap() = Some(Box::new(move |ev| seen.lock().unwrap().push(ev)));
+        let transport = SshTransport::new(target, None, ctx.clone());
+        let kinds = || states.lock().unwrap().iter().map(|s| s.state).collect::<Vec<_>>();
+        let run = || async {
+            let mut cmd = Cmd::git("true", vec![]);
+            cmd.program = Program::Other("true".into());
+            transport.run(cmd).await
+        };
+
+        assert!(run().await.is_ok());
+        assert_eq!(kinds(), [ConnectionState::Connecting, ConnectionState::Ready]);
+
+        // The server goes away and the connection with it. Stopping sshd leaves the process that
+        // serves this connection running, so the connection is closed here, as a dropped network
+        // would close it.
+        drop(sshd);
+        ctx.pool.disconnect_all().await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(run().await.is_err());
+        let last = states.lock().unwrap().last().cloned().unwrap();
+        assert_eq!((last.state, last.retry_in_ms), (ConnectionState::Degraded, Some(1000)), "{last:?}");
+        // Within the pause: fails at once, saying when it tries again, and does not connect.
+        let before = kinds().len();
+        let err = run().await.expect_err("still waiting");
+        assert!(err.to_string().contains("trying again in"), "{err}");
+        assert_eq!(kinds().len(), before);
+
+        // The server is back; after the pause the next command reconnects.
+        let _sshd = start_sshd_with_key(&dir, port, false);
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        assert!(run().await.is_ok());
+        assert_eq!(kinds().last(), Some(&ConnectionState::Ready));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
