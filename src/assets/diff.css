@@ -195,9 +195,24 @@
   .merge-curve-conflict {
     fill: color-mix(in srgb, var(--state-conflict) 22%, transparent);
   }
-  /* The arrow beside a difference that copies that side's lines into the result. */
+  /* A difference dismissed with "×": its band stays, faded, so it is still clear where it was. */
+  .merge-curve-dismissed {
+    opacity: 0.3;
+  }
+  /* The arrow beside a difference that copies that side's lines into the result, and the "×"
+     beside it that dismisses them. */
   .merge-arrow {
     @apply absolute z-[1] flex h-(--diff-row-h) w-4 items-center justify-center rounded-sm font-sans text-sm leading-none font-bold text-foreground hover:bg-primary hover:text-primary-foreground;
+  }
+  .merge-dismiss {
+    @apply font-normal text-muted-foreground hover:bg-destructive hover:text-white;
+  }
+  /* A fold standing in for a run of unchanged lines: one row, as tall as a line, in every pane. */
+  .merge-fold {
+    @apply flex h-(--diff-row-h) items-center gap-2 border-y border-border-soft bg-muted/40 px-2 font-sans text-[0.7rem] text-muted-foreground;
+  }
+  .merge-fold-show {
+    @apply rounded-sm px-1.5 leading-none text-foreground underline-offset-2 hover:underline;
   }
 
   /* The Blame dialog's rows (`components/dialogs/BlameDialog.vue`): the commit column and the

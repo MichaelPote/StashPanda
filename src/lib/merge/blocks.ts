@@ -28,7 +28,9 @@ export interface MergeBlock {
   original: string;
   /** Filled by an arrow or "take for all", which counts even when the text it put there is the original. */
   taken: boolean;
-  /** Its text differs from the original, or it was taken. */
+  /** Each side's lines were dismissed with "×": the user does not want them in the result. */
+  dismissed: { left: boolean; right: boolean };
+  /** Its text differs from the original, it was taken, or both sides were dismissed. */
   resolved: boolean;
   source: BlockSource;
 }
@@ -38,6 +40,32 @@ export interface MergeBlock {
  * undo sends it back the other way (see `blocksField`), so undoing a take unresolves the block.
  */
 export const setTaken = StateEffect.define<{ id: number; taken: boolean }>();
+
+/** Marks one side of a block as dismissed or not, as "×" does; undo sends it back the other way. */
+export const setDismissed = StateEffect.define<{ id: number; side: "left" | "right"; dismissed: boolean }>();
+
+/**
+ * Dismisses a difference between one side and the result, or brings it back. `key` names it by
+ * its side and that side's lines (`left:3-5`); a side pane never changes, so the key holds as
+ * the result is edited. Undo sends it back the other way.
+ */
+export const setChunkDismissed = StateEffect.define<{ key: string; dismissed: boolean }>();
+
+/** The differences dismissed with "×", by key. */
+export const dismissedChunks = StateField.define<ReadonlySet<string>>({
+  create: () => new Set(),
+  update(set, tr) {
+    let next = set;
+    for (const e of tr.effects) {
+      if (!e.is(setChunkDismissed) || next.has(e.value.key) === e.value.dismissed) continue;
+      const copy = new Set(next);
+      if (e.value.dismissed) copy.add(e.value.key);
+      else copy.delete(e.value.key);
+      next = copy;
+    }
+    return next;
+  },
+});
 
 /** The document range of lines `[start, end)` of `doc`, including the newline after the last. */
 function linesRange(doc: Text, start: number, end: number): [number, number] {
@@ -51,44 +79,54 @@ function linesRange(doc: Text, start: number, end: number): [number, number] {
 export function initialBlocks(doc: Text, sources: readonly BlockSource[]): MergeBlock[] {
   return sources.map((source, id) => {
     const [from, to] = linesRange(doc, source.startLine, source.endLine);
-    return { id, from, to, original: doc.sliceString(from, to), taken: false, resolved: false, source };
+    return { id, from, to, original: doc.sliceString(from, to), taken: false, dismissed: { left: false, right: false }, resolved: false, source };
   });
 }
 
 /**
- * The blocks, mapped through every edit, as a state field and the undo support it needs. Typing
- * at a block's edges grows it, so an empty block (no base text) holds what is typed at its place.
- * A block is resolved while its text differs from the original or it was taken; undo restores
- * both the text and the taken mark, so it unresolves the block again.
+ * The blocks, mapped through every edit, as a state field and the undo support it needs, with
+ * the dismissed differences. Typing at a block's edges grows it, so an empty block (no base
+ * text) holds what is typed at its place. A block is resolved while its text differs from the
+ * original, it was taken, or both its sides were dismissed (the result keeps what it has); undo
+ * restores the text and the marks, so it unresolves the block again.
  */
 export function blocksField(initial: MergeBlock[]): { field: StateField<MergeBlock[]>; extension: Extension } {
   const field = StateField.define<MergeBlock[]>({
     create: () => initial,
     update(blocks, tr) {
-      if (!tr.docChanged && !tr.effects.some((e) => e.is(setTaken))) return blocks;
+      if (!tr.docChanged && !tr.effects.some((e) => e.is(setTaken) || e.is(setDismissed))) return blocks;
       return blocks.map((b) => {
-        let { from, to, taken } = b;
+        let { from, to, taken, dismissed } = b;
         if (tr.docChanged) {
           from = tr.changes.mapPos(b.from, -1);
           to = Math.max(from, tr.changes.mapPos(b.to, 1));
         }
-        for (const e of tr.effects) if (e.is(setTaken) && e.value.id === b.id) taken = e.value.taken;
-        const resolved = taken || tr.newDoc.sliceString(from, to) !== b.original;
-        return { ...b, from, to, taken, resolved };
+        for (const e of tr.effects) {
+          if (e.is(setTaken) && e.value.id === b.id) taken = e.value.taken;
+          if (e.is(setDismissed) && e.value.id === b.id) dismissed = { ...dismissed, [e.value.side]: e.value.dismissed };
+        }
+        const resolved = taken || (dismissed.left && dismissed.right) || tr.newDoc.sliceString(from, to) !== b.original;
+        return { ...b, from, to, taken, dismissed, resolved };
       });
     },
   });
-  // Undo and redo send each take mark back to what it was before the transaction.
-  const undoTaken = invertedEffects.of((tr) =>
-    tr.effects
-      .filter((e) => e.is(setTaken))
-      .map((e) => {
-        const value = (e as StateEffect<{ id: number; taken: boolean }>).value;
-        const before = tr.startState.field(field).find((b) => b.id === value.id)?.taken ?? false;
-        return setTaken.of({ id: value.id, taken: before });
-      }),
-  );
-  return { field, extension: [field, undoTaken] };
+  // Undo and redo send each mark back to what it was before the transaction.
+  const undoMarks = invertedEffects.of((tr) => {
+    const before = tr.startState.field(field);
+    const out: StateEffect<unknown>[] = [];
+    for (const e of tr.effects) {
+      if (e.is(setTaken)) {
+        out.push(setTaken.of({ id: e.value.id, taken: before.find((b) => b.id === e.value.id)?.taken ?? false }));
+      } else if (e.is(setDismissed)) {
+        const was = before.find((b) => b.id === e.value.id)?.dismissed[e.value.side] ?? false;
+        out.push(setDismissed.of({ ...e.value, dismissed: was }));
+      } else if (e.is(setChunkDismissed)) {
+        out.push(setChunkDismissed.of({ key: e.value.key, dismissed: tr.startState.field(dismissedChunks).has(e.value.key) }));
+      }
+    }
+    return out;
+  });
+  return { field, extension: [field, dismissedChunks, undoMarks] };
 }
 
 /** The markers Git writes, at its default length of seven characters. */

@@ -11,12 +11,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import { operationNames } from "@/lib/conflicts";
-import { diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
+import { diffRowPx, diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { bandPath } from "@/lib/diff/sideLayout";
 import { themeFor } from "@/lib/diff/syntax";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { blocksField, initialBlocks, saveText, setTaken, type MergeBlock } from "@/lib/merge/blocks";
+import { blocksField, dismissedChunks, initialBlocks, saveText, setChunkDismissed, setDismissed, setTaken, type MergeBlock } from "@/lib/merge/blocks";
 import { buildChunks, chunkLines, mapLine, updateChunks, type LineChunk } from "@/lib/merge/chunks";
+import { folds, foldsEffect, lineAtHeight, lineTop, type FoldRange } from "@/lib/merge/folds";
 import { lineMarks, lineMarksEffect, type LineMark } from "@/lib/merge/lines";
 import { syntaxColours } from "@/lib/merge/syntax";
 import { openWorktreeFile, runOp } from "@/lib/repoActions";
@@ -79,6 +80,11 @@ const leftLines = shallowRef<LineChunk[]>([]);
 const rightLines = shallowRef<LineChunk[]>([]);
 const dirty = ref(false);
 const syncScroll = ref(true);
+/** The differences dismissed with "×", by `chunkKey`, as the result pane's state holds them. */
+const dismissed = shallowRef<ReadonlySet<string>>(new Set());
+/** Fold long runs of unchanged lines; the folds shown again with their Show button, by key. */
+const foldUnchanged = ref(true);
+const shownFolds = ref(new Set<string>());
 
 const unresolved = computed(() => blocks.value.filter((b) => !b.resolved));
 
@@ -166,6 +172,7 @@ function paneExtensions(readOnly: boolean): Extension[] {
     EditorState.readOnly.of(readOnly),
     syntaxOn.value ? syntaxColours(p, themeFor(dark.value)) : [],
     lineMarks(),
+    folds(),
     keymap.of(editorKeys),
   ];
 }
@@ -226,8 +233,10 @@ function onMiddleUpdate(update: ViewUpdate): void {
     rightChunks.value = updateChunks(rightChunks.value, panes.right.state.doc, update.state.doc, update.changes);
   }
   const next = update.state.field(panes.blocks);
-  if (next !== blocks.value || update.docChanged) {
+  const nextDismissed = update.state.field(dismissedChunks);
+  if (next !== blocks.value || nextDismissed !== dismissed.value || update.docChanged) {
     blocks.value = next;
+    dismissed.value = nextDismissed;
     refreshLines();
   }
 }
@@ -249,17 +258,26 @@ function isConflict(c: LineChunk): boolean {
   });
 }
 
-/** Recomputes the line ranges of the differences and every pane's line backgrounds. */
+/** Names a difference by its side and that side's lines, which never change. */
+function chunkKey(side: Side, c: LineChunk): string {
+  return `${side}:${c.a0}-${c.a1}`;
+}
+
+/** Recomputes the line ranges of the differences, every pane's line backgrounds, and the folds. */
 function refreshLines(): void {
   if (!panes) return;
   const { left, middle, right } = panes;
   leftLines.value = leftChunks.value.map((c) => chunkLines(c, left.state.doc, middle.state.doc));
   rightLines.value = rightChunks.value.map((c) => chunkLines(c, right.state.doc, middle.state.doc));
   const kind = (c: LineChunk): LineMark["kind"] => (isConflict(c) ? "conflict" : "change");
-  const leftMarks = leftLines.value.map((c) => ({ from: c.a0, to: c.a1, kind: kind(c) }));
-  const rightMarks = rightLines.value.map((c) => ({ from: c.a0, to: c.a1, kind: kind(c) }));
+  // A dismissed difference keeps no background, on its side or in the result.
+  const kept = (side: Side, lines: LineChunk[]): LineChunk[] => lines.filter((c) => !dismissed.value.has(chunkKey(side, c)));
+  const leftKept = kept("left", leftLines.value);
+  const rightKept = kept("right", rightLines.value);
+  const leftMarks = leftKept.map((c) => ({ from: c.a0, to: c.a1, kind: kind(c) }));
+  const rightMarks = rightKept.map((c) => ({ from: c.a0, to: c.a1, kind: kind(c) }));
   const middleMarks: LineMark[] = [
-    ...[...leftLines.value, ...rightLines.value].map((c) => ({ from: c.b0, to: c.b1, kind: kind(c) })),
+    ...[...leftKept, ...rightKept].map((c) => ({ from: c.b0, to: c.b1, kind: kind(c) })),
     ...unresolved.value.map((b) => {
       const [from, to] = blockLines(b);
       return { from, to, kind: "conflict" as const };
@@ -270,8 +288,71 @@ function refreshLines(): void {
   left.dispatch({ effects: lineMarksEffect(left.state.doc, leftMarks) });
   right.dispatch({ effects: lineMarksEffect(right.state.doc, rightMarks) });
   middle.dispatch({ effects: lineMarksEffect(middle.state.doc, dedupeMarks(middleMarks)) });
+  refreshFolds();
   scheduleDraw();
 }
+
+// ---- Folding unchanged lines -------------------------------------------------------------
+
+/** Lines kept on show around every difference and conflict. */
+const FOLD_CONTEXT = 3;
+/** The fewest lines worth folding: a shorter run stays on show. */
+const FOLD_MIN = 4;
+
+/**
+ * Folds each run of lines the same in all three panes, apart from a few lines of context next to
+ * the differences. A run is found in the result and mapped to each side, where it has the same
+ * number of lines, and named by where it starts on the left, which never changes.
+ */
+function refreshFolds(): void {
+  if (!panes) return;
+  const { left, middle, right } = panes;
+  const n = middle.state.doc.lines;
+  const ranges = { left: [] as FoldRange[], middle: [] as FoldRange[], right: [] as FoldRange[] };
+  if (foldUnchanged.value) {
+    const busy = new Uint8Array(n + 1);
+    const keep = (from: number, to: number): void => {
+      for (let line = Math.max(0, from - FOLD_CONTEXT); line < Math.min(n, Math.max(to, from + 1) + FOLD_CONTEXT); line += 1) busy[line] = 1;
+    };
+    for (const c of [...leftLines.value, ...rightLines.value]) keep(c.b0, c.b1);
+    for (const b of unresolved.value) keep(...blockLines(b));
+    let start = -1;
+    for (let line = 0; line <= n; line += 1) {
+      const free = line < n && busy[line] === 0;
+      if (free && start < 0) start = line;
+      if (!free && start >= 0) {
+        if (line - start >= FOLD_MIN) {
+          const count = line - start;
+          const l0 = Math.round(mapLine(leftLines.value, start, false));
+          const r0 = Math.round(mapLine(rightLines.value, start, false));
+          const key = `${l0}`;
+          if (!shownFolds.value.has(key)) {
+            ranges.middle.push({ key, from: start, to: line });
+            ranges.left.push({ key, from: l0, to: l0 + count });
+            ranges.right.push({ key, from: r0, to: r0 + count });
+          }
+        }
+        start = -1;
+      }
+    }
+  }
+  const row = diffRowPx(font.value);
+  for (const [view, list] of [[left, ranges.left], [middle, ranges.middle], [right, ranges.right]] as const) {
+    view.dispatch({ effects: foldsEffect(view.state.doc, list, row, showFold) });
+  }
+}
+
+function showFold(key: string): void {
+  shownFolds.value = new Set([...shownFolds.value, key]);
+  refreshFolds();
+  scheduleDraw();
+}
+
+watch(foldUnchanged, () => {
+  shownFolds.value = new Set();
+  refreshFolds();
+  scheduleDraw();
+});
 
 /** One mark per line: a conflict wins over a plain difference. */
 function dedupeMarks(marks: LineMark[]): LineMark[] {
@@ -286,6 +367,8 @@ interface GapShape {
   key: string;
   d: string;
   kind: LineMark["kind"];
+  /** Dismissed with "×": drawn faded, with no arrow. */
+  dismissed: boolean;
   /** Where the arrow sits, from the top of the gap, and which difference it takes. */
   arrowY: number;
   index: number;
@@ -304,9 +387,9 @@ function scheduleDraw(): void {
   });
 }
 
-/** The top of line `line` (counted from 0) of a pane, from the top of `gap`. */
+/** The top of line `line` (counted from 0) of a pane, from the top of `gap`, folds included. */
 function lineY(view: EditorView, line: number, gapTop: number): number {
-  return view.documentTop + line * view.defaultLineHeight - gapTop;
+  return view.documentTop + lineTop(view, line) - gapTop;
 }
 
 function draw(): void {
@@ -316,6 +399,7 @@ function draw(): void {
   const rg = rightGap.value.getBoundingClientRect();
   gapHeight.value = lg.height;
   const shapes = (lines: LineChunk[], side: EditorView, sideOnLeft: boolean, gapTop: number, height: number): GapShape[] => {
+    const sideName: Side = sideOnLeft ? "left" : "right";
     const out: GapShape[] = [];
     lines.forEach((c, index) => {
       const st = lineY(side, c.a0, gapTop);
@@ -325,7 +409,7 @@ function draw(): void {
       if (Math.max(sb, mb) < -40 || Math.min(st, mt) > height + 40) return;
       const kind: LineMark["kind"] = isConflict(c) ? "conflict" : "change";
       const d = sideOnLeft ? bandPath(GAP_PX, st, sb, mt, mb) : bandPath(GAP_PX, mt, mb, st, sb);
-      out.push({ key: `${index}`, d, kind, arrowY: st, index });
+      out.push({ key: `${index}`, d, kind, dismissed: dismissed.value.has(chunkKey(sideName, c)), arrowY: st, index });
     });
     return out;
   };
@@ -348,6 +432,24 @@ function take(side: Side, index: number, below = false): void {
   // Every conflict block the difference meets counts as taken, even when its text stays the same.
   const met = blocks.value.filter((b) => (b.from === b.to ? chunk.fromB <= b.from && chunk.toB >= b.from : chunk.fromB < b.to && chunk.toB > b.from));
   panes.middle.dispatch({ changes, effects: met.map((b) => setTaken.of({ id: b.id, taken: true })), userEvent: "input.take" });
+  panes.middle.focus();
+}
+
+/**
+ * Dismisses difference `index` of one side: the user does not want those lines. Its arrow goes
+ * and its band fades; a conflict block it meets counts that side as dismissed, and is resolved
+ * once both sides are, keeping the result as it is. Undo brings it back.
+ */
+function dismiss(side: Side, index: number): void {
+  if (!panes) return;
+  const chunk = (side === "left" ? leftChunks.value : rightChunks.value)[index];
+  const lines = (side === "left" ? leftLines.value : rightLines.value)[index];
+  if (!chunk || !lines) return;
+  const met = blocks.value.filter((b) => (b.from === b.to ? chunk.fromB <= b.from && chunk.toB >= b.from : chunk.fromB < b.to && chunk.toB > b.from));
+  panes.middle.dispatch({
+    effects: [setChunkDismissed.of({ key: chunkKey(side, lines), dismissed: true }), ...met.map((b) => setDismissed.of({ id: b.id, side, dismissed: true }))],
+    userEvent: "select.dismiss",
+  });
   panes.middle.focus();
 }
 
@@ -416,9 +518,8 @@ function onPaneScroll(name: "left" | "middle" | "right"): void {
   if (following.delete(name) || !syncScroll.value || !panes) return;
   const view = panes[name];
   const rect = view.scrollDOM.getBoundingClientRect();
-  const lh = view.defaultLineHeight;
   // The line at the middle of the pane scrolled; the others are brought level with it there.
-  const line = (rect.top + view.scrollDOM.clientHeight / 2 - view.documentTop) / lh;
+  const line = lineAtHeight(view, rect.top + view.scrollDOM.clientHeight / 2 - view.documentTop);
   let middleLine = line;
   if (name === "left") middleLine = mapLine(leftLines.value, line, true);
   if (name === "right") middleLine = mapLine(rightLines.value, line, true);
@@ -429,7 +530,7 @@ function onPaneScroll(name: "left" | "middle" | "right"): void {
   for (const [target, other, otherLine] of targets) {
     const el = other.scrollDOM;
     const otherRect = el.getBoundingClientRect();
-    const delta = other.documentTop + otherLine * other.defaultLineHeight - (otherRect.top + el.clientHeight / 2);
+    const delta = other.documentTop + lineTop(other, otherLine) - (otherRect.top + el.clientHeight / 2);
     const before = el.scrollTop;
     const top = Math.max(0, before + delta);
     if (Math.abs(top - before) > 0.5) {
@@ -585,6 +686,10 @@ const resolveBlocked = computed(() => {
             <button type="button" class="diff-action" :disabled="unresolved.length === 0" @click="takeAll('right')">Take {{ names.theirs }} for All Conflicts</button>
             <span class="ml-auto flex items-center gap-1.5">
               <label class="inline-flex items-center gap-1 text-muted-foreground">
+                <input v-model="foldUnchanged" type="checkbox" class="size-3 accent-primary" data-merge-fold-toggle />
+                Hide unchanged lines
+              </label>
+              <label class="inline-flex items-center gap-1 text-muted-foreground">
                 <input v-model="syncScroll" type="checkbox" class="size-3 accent-primary" />
                 Scroll together
               </label>
@@ -609,38 +714,62 @@ const resolveBlocked = computed(() => {
             <div ref="leftHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="left" />
             <div ref="leftGap" class="relative min-h-0 overflow-hidden" data-merge-gap="left">
               <svg class="pointer-events-none absolute inset-0" :width="GAP_PX" :height="gapHeight" aria-hidden="true">
-                <path v-for="s in leftShapes" :key="s.key" :d="s.d" :class="`merge-curve-${s.kind}`" />
+                <path v-for="s in leftShapes" :key="s.key" :d="s.d" :class="[`merge-curve-${s.kind}`, s.dismissed && 'merge-curve-dismissed']" />
               </svg>
-              <button
-                v-for="s in leftShapes"
-                :key="`a${s.key}`"
-                type="button"
-                class="merge-arrow left-0.5"
-                :style="{ top: `${s.arrowY}px` }"
-                :title="`Copy these lines from ${names.ours} into the result (Ctrl+click to add them below)`"
-                data-merge-take="left"
-                @click="take('left', s.index, $event.ctrlKey || $event.metaKey)"
-              >
-                »
-              </button>
+              <template v-for="s in leftShapes" :key="`a${s.key}`">
+                <template v-if="!s.dismissed">
+                  <button
+                    type="button"
+                    class="merge-arrow left-0.5"
+                    :style="{ top: `${s.arrowY}px` }"
+                    :title="`Copy these lines from ${names.ours} into the result (Ctrl+click to add them below)`"
+                    data-merge-take="left"
+                    @click="take('left', s.index, $event.ctrlKey || $event.metaKey)"
+                  >
+                    »
+                  </button>
+                  <button
+                    type="button"
+                    class="merge-arrow merge-dismiss left-5"
+                    :style="{ top: `${s.arrowY}px` }"
+                    :title="`Leave these lines from ${names.ours} out (undo brings them back)`"
+                    data-merge-dismiss="left"
+                    @click="dismiss('left', s.index)"
+                  >
+                    ×
+                  </button>
+                </template>
+              </template>
             </div>
             <div ref="middleHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="middle" />
             <div ref="rightGap" class="relative min-h-0 overflow-hidden" data-merge-gap="right">
               <svg class="pointer-events-none absolute inset-0" :width="GAP_PX" :height="gapHeight" aria-hidden="true">
-                <path v-for="s in rightShapes" :key="s.key" :d="s.d" :class="`merge-curve-${s.kind}`" />
+                <path v-for="s in rightShapes" :key="s.key" :d="s.d" :class="[`merge-curve-${s.kind}`, s.dismissed && 'merge-curve-dismissed']" />
               </svg>
-              <button
-                v-for="s in rightShapes"
-                :key="`a${s.key}`"
-                type="button"
-                class="merge-arrow right-0.5"
-                :style="{ top: `${s.arrowY}px` }"
-                :title="`Copy these lines from ${names.theirs} into the result (Ctrl+click to add them below)`"
-                data-merge-take="right"
-                @click="take('right', s.index, $event.ctrlKey || $event.metaKey)"
-              >
-                «
-              </button>
+              <template v-for="s in rightShapes" :key="`a${s.key}`">
+                <template v-if="!s.dismissed">
+                  <button
+                    type="button"
+                    class="merge-arrow merge-dismiss right-5"
+                    :style="{ top: `${s.arrowY}px` }"
+                    :title="`Leave these lines from ${names.theirs} out (undo brings them back)`"
+                    data-merge-dismiss="right"
+                    @click="dismiss('right', s.index)"
+                  >
+                    ×
+                  </button>
+                  <button
+                    type="button"
+                    class="merge-arrow right-0.5"
+                    :style="{ top: `${s.arrowY}px` }"
+                    :title="`Copy these lines from ${names.theirs} into the result (Ctrl+click to add them below)`"
+                    data-merge-take="right"
+                    @click="take('right', s.index, $event.ctrlKey || $event.metaKey)"
+                  >
+                    «
+                  </button>
+                </template>
+              </template>
             </div>
             <div ref="rightHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="right" />
           </div>

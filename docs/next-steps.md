@@ -905,9 +905,23 @@ and anything over WSL or SSH.
       - Unresolved blocks are written back with seven-character markers, whatever the file's
         `conflict-marker-size`; a file with mixed line endings is saved with LF.
 
-      **Left:** the "×" that dismisses a difference, the stash's name (below), folding unchanged
-      lines and scroll bar marks (step 7), Vitest for `src/lib/merge/`, and a look at the
-      editor in the Windows window, ClearType included.
+      **Added the same day:**
+      - The "×" beside each arrow dismisses that side's difference. Its arrows go, its band
+        fades and its lines lose their background. A conflict with both sides dismissed counts
+        as resolved, keeping the result as it is. Dismissing goes into the undo history, so
+        Ctrl+Z brings it back (`setChunkDismissed` and `setDismissed` in `lib/merge/blocks.ts`,
+        inverted with `invertedEffects`).
+      - Runs of four or more lines that are the same in all three panes, beyond three lines of
+        context around each difference, fold into one "N unchanged lines hidden · Show" row in
+        every pane (`lib/merge/folds.ts`, block widgets one line high). Show unfolds the run in
+        all three panes. "Hide unchanged lines" in the toolbar turns folding off. The curves,
+        arrows and scrolling work in fold-aware positions (`lineTop`, `lineAtHeight`), so the
+        panes stay level through folds.
+      - When the long-lived `cat-file` cannot find a version, the query asks a fresh one, which
+        sees the repository as it is now.
+
+      **Left:** the stash's name (below), scroll bar marks (step 7), Vitest for
+      `src/lib/merge/`, and a look at the editor in the Windows window, ClearType included.
 
       **Layout.** Three panes side by side, all in the diff font
       (`resolveDiffFont`, with ligatures, tab width and font smoothing) and with syntax colours
