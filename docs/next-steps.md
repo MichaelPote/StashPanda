@@ -1149,10 +1149,14 @@ and anything over WSL or SSH.
       Tried in the running Linux build on 2026-10-14: an insertion, a deletion, three lines
       changed into one, picking a line by its number, Stage hunk, hunk navigation and switching
       to Unified. Not yet looked at in the Windows window.
-- [x] **Find in a diff view** (2026-10-14). Ctrl+F with the keyboard focus in a diff view (the
-      main panel's, or the File History dialog's) opens a Find box in its top right corner.
+- [x] **Find in a diff view and in Blame** (2026-10-14). Ctrl+F with the keyboard focus in a
+      diff view (the main panel's, or the File History dialog's), or anywhere in the Blame
+      dialog, opens a Find box in its top right corner. The two share `useFind`
+      (`src/composables/useFind.ts`) and `FindBox.vue`; each view only collects its matches and
+      scrolls to one.
       - Every match is drawn in purple, a stronger magenta than the hunk headers' blue-violet,
-        and the current one darker with an outline. Case is ignored.
+        and the current one outlined in the same purple, which keeps its text readable. Case is
+        ignored.
       - The count reads "3 of 12". Enter and the > button go to the next match, and Shift+Enter
         and < to the previous one, wrapping around at the ends. Escape closes the box and gives
         the focus back to the diff.
@@ -1165,8 +1169,10 @@ and anything over WSL or SSH.
       - The matching is in `src/lib/diff/find.ts`. `markFound` cuts a line's coloured pieces at
         the edges of the matches, so a match inside a changed word stays inside its highlight.
         Past 10,000 matches the rest are neither drawn nor counted, and the count ends in "+".
-      Tried in the running Linux build on 2026-10-14, in both layouts: wrapping both ways, a
-      match on one side only, and a match at the end of a 300-character line.
+      - The Blame dialog's lines now have the diff viewer's syntax colours too, the whole file
+        coloured as one run, and follow the "Syntax Highlighting" setting.
+      Tried in the running Linux build on 2026-10-14, in both diff layouts and in Blame: wrapping
+      both ways, a match on one side only, and a match at the end of a 300-character line.
 
 ## Packaging and CI
 

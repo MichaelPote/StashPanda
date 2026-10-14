@@ -66,3 +66,23 @@ export function markFound(spans: Span[], ranges: FindRange[], current: number): 
   }
   return out;
 }
+
+/** The classes for one piece of a line's text: the find colour on a match, outlined on the current one. */
+export function glyphClass(span: Span): string {
+  return span.found === 2 ? "diff-glyphs diff-find diff-find-current" : span.found === 1 ? "diff-glyphs diff-find" : "diff-glyphs";
+}
+
+/**
+ * Scrolls `target` sideways so that `el` (the current match) shows inside `area`, the box its
+ * text is clipped to, with some room beside it. `fixed` is how wide a part at the left of `area`
+ * stays in place while the text scrolls under it, such as the Blame dialog's commit column.
+ */
+export function scrollSidewaysTo(el: HTMLElement, target: HTMLElement, area: HTMLElement, fixed: number): void {
+  const margin = 32;
+  const r = el.getBoundingClientRect();
+  const box = area.getBoundingClientRect();
+  const left = box.left + fixed;
+  const right = box.left + area.clientWidth;
+  if (r.left < left + margin) target.scrollLeft -= left + margin - r.left;
+  else if (r.right > right - margin) target.scrollLeft += r.right - (right - margin);
+}

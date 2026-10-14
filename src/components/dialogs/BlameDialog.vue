@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, watch } from "vue";
+import { useEventListener, usePreferredDark } from "@vueuse/core";
 import { ArrowLeftIcon, HistoryIcon, LoaderCircleIcon } from "@lucide/vue";
 import { commands, type BlameCommit, type BlameOrigin, type Eol, type FileBlame } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
@@ -8,10 +9,15 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
+import FindBox from "@/components/diff/FindBox.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
+import { useFind, type FindHit } from "@/composables/useFind";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { layoutBlame, revisionLabel } from "@/lib/blame";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
+import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
+import { highlightRuns, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
+import type { RawToken } from "@/lib/diff/syntax.worker";
 import { openFileHistory, showCommitInGraph } from "@/lib/fileViews";
 import { splitPath } from "@/lib/files";
 import { formatAbsoluteTime, formatRelativeTime, hashString, isoTime, shortOid } from "@/lib/format";
@@ -108,6 +114,45 @@ const textStyle = computed(() => ({ ...diffTextStyle(font.value), "--blame-commi
 const rowPx = computed(() => diffRowPx(font.value));
 
 const layout = computed(() => (blame.value?.content === "lines" ? layoutBlame(blame.value) : null));
+
+// ---- Syntax colours, as the diff viewer has them ----------------------------------------------
+//
+// The whole file goes to the worker as one run, so a comment or string spanning several lines is
+// coloured as one. Until the colours arrive, and for a file whose language is not known, the text
+// is plain.
+
+const preferredDark = usePreferredDark();
+const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
+const syntaxOn = computed(() => settings.settings?.diff?.syntaxHighlight !== false);
+/** Past this many lines a file stays plain, as in the diff viewer. */
+const MAX_SYNTAX_LINES = 20_000;
+/** Each line's tokens, by line index, once the worker has answered for the version shown. */
+const lineTokens = shallowRef<RawToken[][] | null>(null);
+let syntaxRequest = 0;
+
+watch(
+  [blame, dark, syntaxOn],
+  async () => {
+    const id = (syntaxRequest += 1);
+    lineTokens.value = null;
+    const b = blame.value;
+    const path = view.value?.path;
+    if (!syntaxOn.value || !b || b.content !== "lines" || !path || b.lines.length === 0 || b.lines.length > MAX_SYNTAX_LINES) return;
+    try {
+      const tokens = await highlightRuns(path, themeFor(dark.value), [b.lines]);
+      if (id === syntaxRequest) lineTokens.value = tokens?.[0] ?? null;
+    } catch {
+      // A language that fails to load leaves the text plain.
+    }
+  },
+  { immediate: true },
+);
+
+/** A line's text in its syntax colours, with its Find matches. */
+function lineSpans(index: number, text: string): Span[] {
+  const spans = mergeSpans(lineTokens.value?.[index], [{ text, changed: false }]);
+  return markFound(spans, find.ranges.value.get(`b${index}`) ?? [], find.current.value);
+}
 const lineCount = computed(() => (layout.value ? (blame.value?.lines.length ?? 0) : 0));
 /** The longest line in characters with tabs expanded, so the rows are wide enough to scroll to its end. */
 const maxLength = computed(() => {
@@ -120,6 +165,52 @@ const contentMinWidth = computed(() => `calc(var(--blame-commit-w) + var(--diff-
 
 const scroller = ref<HTMLElement | null>(null);
 const virtual = useVirtualRows(scroller, { rowHeight: () => rowPx.value, total: () => lineCount.value, overscan: 10 });
+
+// ---- Find (Ctrl+F) -------------------------------------------------------------------------
+//
+// The diff view's Find box (`useFind`, `FindBox.vue`), over the lines of the version shown.
+
+function collectMatches(query: string, max: number): FindHit[] {
+  const out: FindHit[] = [];
+  const lines = layout.value ? (blame.value?.lines ?? []) : [];
+  for (let i = 0; i < lines.length && out.length < max; i += 1) {
+    for (const [start, end] of findInText(lines[i] as string, query)) {
+      if (out.length >= max) break;
+      out.push({ key: `b${i}`, start, end, row: i });
+    }
+  }
+  return out;
+}
+
+/** Scrolls a match to the middle of the view when it is off screen, then sideways to its text. */
+function revealMatch(hit: FindHit): void {
+  const px = rowPx.value;
+  const view = virtual.viewportHeight.value;
+  const top = hit.row * px - virtual.scrollTop.value;
+  if (top < 0 || top + px > view) virtual.scrollTo(Math.max(0, Math.round(hit.row * px - view / 2 + px / 2)));
+  void nextTick(() =>
+    requestAnimationFrame(() => {
+      const el = scroller.value?.querySelector<HTMLElement>("[data-find-current]");
+      const fixed = el?.closest(".blame-row")?.querySelector(".blame-fixed");
+      // The commit column and line number stay in place while the text scrolls under them.
+      if (el && scroller.value) scrollSidewaysTo(el, scroller.value, scroller.value, fixed?.getBoundingClientRect().width ?? 0);
+    }),
+  );
+}
+
+const find = useFind<FindHit>({
+  collect: collectMatches,
+  topRow: () => virtual.scrollTop.value / rowPx.value,
+  reveal: revealMatch,
+  refocus: () => scroller.value?.focus({ preventScroll: true }),
+  resetOn: [blame],
+});
+
+// Ctrl+F anywhere in the dialog while it shows lines. The Commits panel's own Ctrl+F stands
+// aside while a dialog is open; keys typed in the Find box stop at the box.
+useEventListener(window, "keydown", (event: KeyboardEvent) => {
+  if (request.value && layout.value && !event.defaultPrevented) find.onKeydown(event);
+});
 /** A line drawn in the list, with its commit and whether it starts that commit's block. */
 interface Row {
   index: number;
@@ -368,9 +459,22 @@ const pickedText = computed(() => {
             <Button v-if="placeholder.action" type="button" variant="outline" size="sm" @click="go(placeholder.action.view)">{{ placeholder.action.label }}</Button>
           </EmptyState>
 
-          <ContextMenu v-else-if="layout">
+          <div v-else-if="layout" class="relative flex min-h-0 flex-1 flex-col">
+          <!-- The Find box (Ctrl+F), clear of the vertical scrollbar. -->
+          <FindBox
+            v-if="find.open.value"
+            :ref="(el) => (find.box.value = el as InstanceType<typeof FindBox> | null)"
+            v-model="find.query.value"
+            class="absolute top-1.5 right-5 z-20"
+            :summary="find.summary.value"
+            :can-step="find.matches.value.length > 0"
+            placeholder="Find in this file"
+            @step="find.step"
+            @close="find.close"
+          />
+          <ContextMenu>
             <ContextMenuTrigger as-child>
-              <div ref="scroller" class="relative min-h-0 flex-1 overflow-auto select-text scrollbar-thin" :style="textStyle">
+              <div ref="scroller" class="relative min-h-0 flex-1 overflow-auto outline-none select-text scrollbar-thin" tabindex="-1" :style="textStyle">
                 <div class="relative" :style="{ height: `${lineCount * rowPx}px`, minWidth: contentMinWidth }">
                   <!-- No will-change-transform here, for the reason given in DiffViewer.vue. -->
                   <div class="absolute inset-x-0 top-0" :style="{ transform: `translateY(${virtual.start.value * rowPx}px)` }">
@@ -403,7 +507,7 @@ const pickedText = computed(() => {
                         </div>
                         <span class="diff-num"><span class="diff-glyphs">{{ row.index + 1 }}</span></span>
                       </div>
-                      <span class="diff-code pl-2"><span class="diff-glyphs">{{ row.text }}</span></span>
+                      <span class="diff-code pl-2"><span v-for="(seg, k) in lineSpans(row.index, row.text)" :key="k" :class="glyphClass(seg)" :style="spanStyle(seg)" :data-find-current="seg.found === 2 ? '' : undefined">{{ seg.text }}</span></span>
                     </div>
                   </div>
                 </div>
@@ -417,6 +521,7 @@ const pickedText = computed(() => {
               <ActionMenuItem :reason="graphReason" @select="pickedCommit && copyText(pickedCommit.oid, 'the commit ID')">Copy Commit ID</ActionMenuItem>
             </ContextMenuContent>
           </ContextMenu>
+          </div>
         </section>
       </div>
 

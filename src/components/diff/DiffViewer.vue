@@ -1,21 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef, useId, watch } from "vue";
 import { useDebounceFn, usePreferredDark, useResizeObserver } from "@vueuse/core";
-import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanTextIcon, SearchIcon, XIcon } from "@lucide/vue";
+import { ChevronDownIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanTextIcon } from "@lucide/vue";
 import { commands, type DiffText, type Eol, type LineAction, type ResolveSide, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { fileViewReason, fileViewRev, openBlame, openFileHistory } from "@/lib/fileViews";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
+import FindBox from "@/components/diff/FindBox.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
+import { useFind, type FindHit } from "@/composables/useFind";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
-import { findInText, markFound, type FindRange } from "@/lib/diff/find";
+import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
 import { pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
 import { BandBuilder, bandEdges, bandPath, sideOffsets, type Band } from "@/lib/diff/sideLayout";
-import { highlightRuns, mergeSpans, spanRuns, spanStyle, themeFor, type Span, type SpanRun } from "@/lib/diff/syntax";
+import { highlightRuns, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { conflictComparisons, conflictStages, conflictSummary, operationNames, type ConflictComparison } from "@/lib/conflicts";
@@ -375,38 +376,19 @@ watch(
  */
 function runs(key: string, line: DiffLine | undefined, pair: number | undefined, sideOf: "old" | "new", fallback: string): SpanRun[] {
   const spans = mergeSpans(line ? lineTokens.value.get(line) : undefined, segments(pair, sideOf, fallback));
-  return spanRuns(markFound(spans, findRanges.value.get(key) ?? [], findCurrent.value));
-}
-
-/** The classes for one piece of a line's text: the find colour on a match. */
-function glyphClass(span: Span): string {
-  return span.found === 2 ? "diff-glyphs diff-find diff-find-current" : span.found === 1 ? "diff-glyphs diff-find" : "diff-glyphs";
+  return spanRuns(markFound(spans, find.ranges.value.get(key) ?? [], find.current.value));
 }
 
 // ---- Find (Ctrl+F) -------------------------------------------------------------------------
 //
-// Ctrl+F with the keyboard focus in the diff view opens a Find box in its top right corner. Every
-// match is drawn in the find colour and the current one more strongly; Enter and the > button go
-// to the next match and Shift+Enter and < to the previous one, wrapping around at the ends. Case
-// is ignored. The box handles Ctrl+F before the Commits panel's own Find box sees it.
+// Ctrl+F with the keyboard focus in the diff view opens a Find box in its top right corner
+// (`useFind`, `FindBox.vue`). Every match is drawn in the find colour, the current one outlined.
 
 const root = ref<HTMLElement | null>(null);
-const findBox = ref<HTMLElement | null>(null);
-const findOpen = ref(false);
-const findQuery = ref("");
-const findCurrent = ref(0);
-/** Past this many matches the rest are not drawn or counted; the count says so. */
-const MAX_FIND = 10_000;
 
-interface FindMatch {
-  /** The row's key, as `runs` takes it. */
-  key: string;
+interface FindMatch extends FindHit {
   /** Its index in the unified rows, or among its side's items. */
   index: number;
-  start: number;
-  end: number;
-  /** Where it sits in the rows the view scrolls through, for ordering and scrolling to it. */
-  row: number;
   /** 0 for the unified layout, 1 for the left side and 2 for the right side. */
   side: 0 | 1 | 2;
 }
@@ -429,13 +411,11 @@ function sideRow(bands: Band[], index: number, side: "left" | "right"): number {
   return b.y + (count > 0 ? ((index - start(b)) * b.h) / count : 0);
 }
 
-const findMatches = computed<FindMatch[]>(() => {
-  const query = findOpen.value ? findQuery.value : "";
+function collectMatches(query: string, max: number): FindMatch[] {
   const out: FindMatch[] = [];
-  if (query === "") return out;
   const add = (key: string, index: number, text: string, row: number, side: FindMatch["side"]): void => {
     for (const [start, end] of findInText(text, query)) {
-      if (out.length >= MAX_FIND) return;
+      if (out.length >= max) return;
       out.push({ key, index, start, end, row, side });
     }
   };
@@ -453,73 +433,9 @@ const findMatches = computed<FindMatch[]>(() => {
     if (item.kind === "line" && item.line) add(`r${i}`, i, item.line.text, sideRow(b.bands, i, "right"), 2);
   });
   return out.sort((x, y) => x.row - y.row || x.side - y.side || x.start - y.start);
-});
-
-/** Each row's matches, by its key, for `runs`. */
-const findRanges = computed(() => {
-  const map = new Map<string, FindRange[]>();
-  findMatches.value.forEach((m, ordinal) => {
-    let list = map.get(m.key);
-    if (!list) map.set(m.key, (list = []));
-    list.push({ start: m.start, end: m.end, ordinal });
-  });
-  return map;
-});
-
-const findSummary = computed(() => {
-  const n = findMatches.value.length;
-  if (findQuery.value === "") return "";
-  if (n === 0) return "No matches";
-  return `${(findCurrent.value + 1).toLocaleString()} of ${n.toLocaleString()}${n >= MAX_FIND ? "+" : ""}`;
-});
-
-function openFind(): void {
-  findOpen.value = true;
-  void nextTick(() => {
-    const input = findBox.value?.querySelector("input");
-    input?.focus();
-    input?.select();
-  });
 }
 
-function closeFind(): void {
-  findOpen.value = false;
-  root.value?.focus({ preventScroll: true });
-}
-
-function onRootKeydown(event: KeyboardEvent): void {
-  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || (event.key !== "f" && event.key !== "F")) return;
-  if (!selected.value) return;
-  // Handled here, so the Commits panel's window-wide Ctrl+F leaves it alone.
-  event.preventDefault();
-  openFind();
-}
-
-function onFindKeydown(event: KeyboardEvent): void {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    findStep(event.shiftKey ? -1 : 1);
-  } else if (event.key === "Escape") {
-    event.preventDefault();
-    closeFind();
-  } else if ((event.ctrlKey || event.metaKey) && (event.key === "f" || event.key === "F")) {
-    // Ctrl+F again selects the text, and never opens the web view's own find bar.
-    event.preventDefault();
-    openFind();
-  }
-  // Nothing else in the view or the window acts on keys typed here.
-  event.stopPropagation();
-}
-
-/** The next match (1) or the previous one (-1), wrapping around at the ends. */
-function findStep(direction: 1 | -1): void {
-  const n = findMatches.value.length;
-  if (n === 0) return;
-  findCurrent.value = (findCurrent.value + direction + n) % n;
-  revealMatch();
-}
-
-/** The current match's top on screen (0 is the top of the rows) for a scroll position. */
+/** A match's top on screen (0 is the top of the rows) for a scroll position. */
 function matchTop(m: FindMatch, scrollTop: number): number {
   const px = rowPx.value;
   if (m.side === 0) return m.index * px - scrollTop;
@@ -528,19 +444,16 @@ function matchTop(m: FindMatch, scrollTop: number): number {
 }
 
 /**
- * Scrolls the current match into view, to the middle when it is off screen, then sideways when
- * its text is past the edge. Side by side, where a side's lines move at their own pace, the
- * scroll position is found by correcting it a few times.
+ * Scrolls a match into view, to the middle when it is off screen, then sideways when its text is
+ * past the edge. Side by side, where a side's lines move at their own pace, the scroll position
+ * is found by correcting it a few times.
  */
-function revealMatch(): void {
-  const m = findMatches.value[findCurrent.value];
-  if (!m) return;
+function revealMatch(m: FindMatch): void {
   const px = rowPx.value;
   const view = virtual.viewportHeight.value;
   const max = Math.max(0, rowCount.value * px - view);
   const clamp = (v: number): number => Math.min(max, Math.max(0, v));
-  const now = virtual.scrollTop.value;
-  const top = matchTop(m, now);
+  const top = matchTop(m, virtual.scrollTop.value);
   if (top < 0 || top + px > view) {
     const target = view / 2 - px / 2;
     let s = clamp(m.row * px - target);
@@ -553,31 +466,23 @@ function revealMatch(): void {
 function revealSideways(): void {
   const el = root.value?.querySelector<HTMLElement>("[data-find-current]");
   if (!el) return;
-  const margin = 32;
-  const r = el.getBoundingClientRect();
   const sideAttr = el.closest("[data-diff-side]")?.getAttribute("data-diff-side");
   const target = mode.value === "unified" ? scroller.value : sideAttr === "left" || sideAttr === "right" ? strip(sideAttr) : null;
-  const area = mode.value === "unified" ? scroller.value : el.closest(".diff-side-code");
-  if (!target || !area) return;
-  const box = area.getBoundingClientRect();
-  const right = box.left + (area as HTMLElement).clientWidth;
-  if (r.left < box.left + margin) target.scrollLeft -= box.left + margin - r.left;
-  else if (r.right > right - margin) target.scrollLeft += r.right - (right - margin);
+  const area = mode.value === "unified" ? scroller.value : el.closest<HTMLElement>(".diff-side-code");
+  if (target && area) scrollSidewaysTo(el, target, area, 0);
 }
 
-// Typing picks the first match from the top of the view down, and shows it.
-watch(findQuery, () => {
-  const matches = findMatches.value;
-  const topRow = virtual.scrollTop.value / rowPx.value;
-  const first = matches.findIndex((m) => m.row >= topRow);
-  findCurrent.value = Math.max(0, first);
-  if (matches.length > 0) revealMatch();
+const find = useFind<FindMatch>({
+  collect: collectMatches,
+  topRow: () => virtual.scrollTop.value / rowPx.value,
+  reveal: revealMatch,
+  refocus: () => root.value?.focus({ preventScroll: true }),
+  resetOn: [built, mode],
 });
 
-// Another file, or the other layout: start from the first match again, without scrolling.
-watch([built, mode], () => {
-  findCurrent.value = 0;
-});
+function onRootKeydown(event: KeyboardEvent): void {
+  if (selected.value) find.onKeydown(event);
+}
 
 // ---- Virtualisation ------------------------------------------------------------------------
 
@@ -1225,26 +1130,17 @@ function toggleContext(value: string): void {
 
       <div class="relative flex min-h-0 flex-1 flex-col" :style="mode === 'side' ? sideStyle : undefined">
       <!-- The Find box (Ctrl+F), clear of the vertical scrollbar. -->
-      <div v-if="findOpen" ref="findBox" class="absolute top-1.5 right-5 z-20 w-72 max-w-[calc(100%-2rem)] rounded-lg bg-popover shadow-md" data-diff-find @keydown="onFindKeydown">
-        <InputGroup>
-          <InputGroupAddon>
-            <SearchIcon />
-          </InputGroupAddon>
-          <InputGroupInput v-model="findQuery" placeholder="Find in this diff" aria-label="Find in this diff" spellcheck="false" />
-          <InputGroupAddon align="inline-end">
-            <InputGroupText v-if="findSummary" class="text-xs tabular-nums" data-diff-find-count>{{ findSummary }}</InputGroupText>
-            <InputGroupButton size="icon-xs" title="Previous match (Shift+Enter)" aria-label="Previous match" :disabled="findMatches.length === 0" @click="findStep(-1)">
-              <ChevronLeftIcon />
-            </InputGroupButton>
-            <InputGroupButton size="icon-xs" title="Next match (Enter)" aria-label="Next match" :disabled="findMatches.length === 0" @click="findStep(1)">
-              <ChevronRightIcon />
-            </InputGroupButton>
-            <InputGroupButton size="icon-xs" title="Close (Escape)" aria-label="Close" @click="closeFind">
-              <XIcon />
-            </InputGroupButton>
-          </InputGroupAddon>
-        </InputGroup>
-      </div>
+      <FindBox
+        v-if="find.open.value"
+        :ref="(el) => (find.box.value = el as InstanceType<typeof FindBox> | null)"
+        v-model="find.query.value"
+        class="absolute top-1.5 right-5 z-20"
+        :summary="find.summary.value"
+        :can-step="find.matches.value.length > 0"
+        placeholder="Find in this diff"
+        @step="find.step"
+        @close="find.close"
+      />
       <div
         ref="scroller"
         data-diff-rows
