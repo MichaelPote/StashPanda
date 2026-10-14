@@ -259,6 +259,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         label: "Syntax Highlighting",
         help: "Colour keywords, strings and comments by the file's language, chosen from its extension. Files without a known extension stay plain.",
       },
+      {
+        kind: "toggle",
+        group: "diff",
+        key: "matchSimilarLines",
+        label: "Match similar lines",
+        help: "In a block of changed lines, compare each removed line with the added line most like it, not the one in the same position. Side by side, each matched pair gets a curve of its own. Off pairs the lines in the order Git lists them.",
+      },
     ],
   },
   {

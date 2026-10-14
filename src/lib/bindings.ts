@@ -721,6 +721,11 @@ export type DiffSettings = {
 	/**  Colour the code by its language, chosen from the file's extension. */
 	syntaxHighlight?: boolean,
 	/**
+	 *  Inside a block of changed lines, pair each removed line with the added line most like it,
+	 *  rather than with the one in the same position.
+	 */
+	matchSimilarLines?: boolean,
+	/**
 	 *  How the diff font's edges are smoothed. Only the diff text follows this; the rest of the
 	 *  interface keeps the system's own rendering.
 	 */

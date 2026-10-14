@@ -11,6 +11,7 @@ import EmptyState from "@/components/shell/EmptyState.vue";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
+import { pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
 import { BandBuilder, bandEdges, bandPath, sideOffsets, type Band } from "@/lib/diff/sideLayout";
 import { highlightRuns, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
@@ -175,6 +176,7 @@ const built = computed<Built>(() => {
   const f = file.value;
   if (!f) return done();
   const tab = font.value.tabWidth;
+  const matchSimilar = settings.settings?.diff?.matchSimilarLines !== false;
 
   f.hunks.forEach((hunk, h) => {
     unified.push({ kind: "hunk", hunk: h, header: hunk.header });
@@ -194,28 +196,60 @@ const built = computed<Built>(() => {
     let rightMetas: SideItem[] = [];
     let previous: DiffLine["kind"] | null = null;
     const flush = (): void => {
-      const n = Math.max(dels.length, adds.length);
-      const pairIds: (number | undefined)[] = [];
-      for (let i = 0; i < n; i += 1) {
-        const d = dels[i];
-        const a = adds[i];
-        let pair: number | undefined;
-        if (d && a) {
-          pair = pairs.length;
-          pairs.push({ old: d.text, new: a.text });
-        }
-        pairIds.push(pair);
-        if (d) leftMax = Math.max(leftMax, displayLength(d.text, tab));
-        if (a) rightMax = Math.max(rightMax, displayLength(a.text, tab));
+      const matched = matchSimilar
+        ? pairBySimilarity(dels.map((d) => d.text), adds.map((a) => a.text))
+        : pairByPosition(dels.length, adds.length);
+      const delPair: (number | undefined)[] = [];
+      const addPair: (number | undefined)[] = [];
+      for (const [i, j] of matched) {
+        delPair[i] = addPair[j] = pairs.length;
+        pairs.push({ old: (dels[i] as DiffLine).text, new: (adds[j] as DiffLine).text });
       }
-      dels.forEach((d, i) => unified.push({ kind: "line", hunk: h, line: d, pair: pairIds[i] }));
-      adds.forEach((a, i) => unified.push({ kind: "line", hunk: h, line: a, pair: pairIds[i] }));
+      for (const d of dels) leftMax = Math.max(leftMax, displayLength(d.text, tab));
+      for (const a of adds) rightMax = Math.max(rightMax, displayLength(a.text, tab));
+      dels.forEach((d, i) => unified.push({ kind: "line", hunk: h, line: d, pair: delPair[i] }));
+      adds.forEach((a, j) => unified.push({ kind: "line", hunk: h, line: a, pair: addPair[j] }));
       for (const m of metas) unified.push({ kind: "line", hunk: h, line: m });
-      dels.forEach((d, i) => left.push({ kind: "line", hunk: h, line: d, pair: pairIds[i] }));
-      adds.forEach((a, i) => right.push({ kind: "line", hunk: h, line: a, pair: pairIds[i] }));
+      dels.forEach((d, i) => left.push({ kind: "line", hunk: h, line: d, pair: delPair[i] }));
+      adds.forEach((a, j) => right.push({ kind: "line", hunk: h, line: a, pair: addPair[j] }));
       left.push(...leftMetas);
       right.push(...rightMetas);
-      bands.add("change", dels.length + leftMetas.length, adds.length + rightMetas.length);
+      // Side by side, one band per stretch: lines removed and added between two matched pairs,
+      // then each run of matched pairs, so the curves join each line to its match. Without matching (or with nothing
+      // matched) that is the whole block as one band. The notes about a missing final newline
+      // go with the last stretch.
+      const stretches: [number, number][] = [];
+      let di = 0;
+      let ai = 0;
+      const unmatched = (toD: number, toA: number): void => {
+        if (toD > di || toA > ai) stretches.push([toD - di, toA - ai]);
+        di = toD;
+        ai = toA;
+      };
+      if (matchSimilar) {
+        let run = 0;
+        const endRun = (): void => {
+          if (run > 0) stretches.push([run, run]);
+          run = 0;
+        };
+        for (const [i, j] of matched) {
+          if (i > di || j > ai) {
+            endRun();
+            unmatched(i, j);
+          }
+          run += 1;
+          di = i + 1;
+          ai = j + 1;
+        }
+        endRun();
+      }
+      unmatched(dels.length, adds.length);
+      const last = stretches[stretches.length - 1];
+      if (last) {
+        last[0] += leftMetas.length;
+        last[1] += rightMetas.length;
+      } else stretches.push([leftMetas.length, rightMetas.length]);
+      for (const [lh, rh] of stretches) bands.add("change", lh, rh);
       dels = [];
       adds = [];
       metas = [];

@@ -197,6 +197,9 @@ pub struct DiffSettings {
     pub word_highlight: bool,
     /// Colour the code by its language, chosen from the file's extension.
     pub syntax_highlight: bool,
+    /// Inside a block of changed lines, pair each removed line with the added line most like it,
+    /// rather than with the one in the same position.
+    pub match_similar_lines: bool,
     /// How the diff font's edges are smoothed. Only the diff text follows this; the rest of the
     /// interface keeps the system's own rendering.
     pub font_smoothing: FontSmoothing,
@@ -225,6 +228,7 @@ impl Default for DiffSettings {
             ligatures: true,
             word_highlight: true,
             syntax_highlight: true,
+            match_similar_lines: true,
             font_smoothing: FontSmoothing::ClearType,
         }
     }
