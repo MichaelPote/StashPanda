@@ -343,11 +343,21 @@ async fn connect(target: &SshTarget, ctx: &SshContext) -> Result<SshConn> {
     // 3. Password supplied through the UI. A refused one is forgotten, so the UI asks again.
     let password_key = password_key(&target.user, &target.host, target.port);
     // Nothing else got in, and a usual key file is encrypted: ask for its passphrase, as OpenSSH
-    // does, unless a password from the UI is waiting to be tried.
+    // does, unless a password from the UI is waiting to be tried, or the server takes passwords.
+    // A server that takes passwords gets the password prompt instead, as OpenSSH falls back to
+    // one when its passphrase prompt is skipped; choosing the key in the connection settings
+    // makes it an explicit identity, which still asks for its passphrase.
     if let Some(e) = locked {
         if ctx.passwords.get(&password_key).is_none() {
-            let _ = handle.disconnect(russh::Disconnect::ByApplication, "passphrase needed", "").await;
-            return Err(e);
+            if methods.is_none() {
+                if let Ok(AuthResult::Failure { remaining_methods, .. }) = handle.authenticate_none(target.user.clone()).await {
+                    methods = Some(remaining_methods);
+                }
+            }
+            if !methods.as_ref().is_some_and(|m| m.contains(&MethodKind::Password)) {
+                let _ = handle.disconnect(russh::Disconnect::ByApplication, "passphrase needed", "").await;
+                return Err(e);
+            }
         }
     }
     let mut password_rejected = false;

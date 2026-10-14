@@ -155,8 +155,15 @@ Each item names the files it touches so it can be picked up cold.
 - [x] **Password prompt and retry** (2026-10-14). `sshAuthFailed` now carries `port`, `user`,
       `passwordAllowed` (from the server's own list of methods) and `passwordRejected`; a refused
       password is forgotten. The frontend asks and retries the open through `reportOpenFailure`.
-      A password that succeeds cannot be tested here: an `sshd` run as a normal user cannot check
-      passwords.
+      Tried on 2026-10-14 from the Windows build against Michael's Ubuntu home server
+      (192.168.2.200, password logins): the Trust dialog showed the fingerprint `ssh-keyscan`
+      reads, the password dialog came up and the password worked, and the repository opened,
+      polling with the "inotifywait is not installed" hint until inotify-tools was installed, then
+      "watching: inotify (remote)". **Fixed on the way:** a passphrase-protected default key
+      (`~/.ssh/id_rsa`) whose passphrase is not known used to win over a server that takes
+      passwords, so the passphrase dialog came up and a password could never be given. Now such a
+      server gets the password prompt, as OpenSSH falls back to one; a key chosen in the connection
+      settings still asks for its passphrase.
 
 ### Frontend
 
@@ -282,8 +289,9 @@ Each item names the files it touches so it can be picked up cold.
       nine times slower, so timings in `tauri dev` look worse than the shipped app.
 - [x] Manual check of the rendered UI (2026-09-23): Michael looked at the running app and was
       happy with it.
-- [ ] Cross-side runs from the Windows build (`npm run win:ux`; see step 14 above) and against a real Brave Digital
-      host over SSH (only a private `sshd` on localhost has been tested).
+- [x] Cross-side runs (2026-10-14): from the Windows build against a real Ubuntu server over SSH with
+      a password (see "Password prompt and retry"), and the WSL and Windows-folder tests in
+      `repo/cross_e2e.rs`. Still to check on screen: whether dialog and menu text is ClearType.
 
 ## Milestone 2: local write operations
 
