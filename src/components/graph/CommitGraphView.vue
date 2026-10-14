@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import type { DateFormat, GraphRow } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import CommitContextMenu from "@/components/graph/CommitContextMenu.vue";
 import CommitRow from "@/components/graph/CommitRow.vue";
+import GraphFindBar from "@/components/graph/GraphFindBar.vue";
 import GraphHeader, { type ResizableColumn } from "@/components/graph/GraphHeader.vue";
 import GraphLanesSvg from "@/components/graph/GraphLanesSvg.vue";
 import RowSkeleton from "@/components/graph/RowSkeleton.vue";
@@ -15,6 +17,7 @@ import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { useGraphPages } from "@/composables/useGraphPages";
 import { autoAuthorWidth, autoDateWidth, autoIdWidth, fontsVersion } from "@/lib/graph/columnWidths";
 import { autoGraphColumnWidth, ROW_HEIGHT } from "@/lib/graph/paths";
+import { isEditableTarget } from "@/lib/files";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
@@ -121,6 +124,12 @@ watch(
     void pages.ensureRange(Math.max(0, s - 1), e);
   },
   { immediate: true },
+);
+
+// Pages far from the window are dropped as it moves, so a long scroll does not keep them all.
+watch(
+  () => [start.value, end.value] as const,
+  ([s, e]) => pages.dropFarPages(Math.max(0, s - 1), e),
 );
 
 
@@ -246,6 +255,11 @@ function onKeydown(event: KeyboardEvent): void {
     void copySelection();
     return;
   }
+  if (event.key === "Escape" && props.session.findOpen) {
+    event.preventDefault();
+    props.session.findOpen = false;
+    return;
+  }
   const n = total.value;
   if (n === 0) return;
   const cur = currentIndex();
@@ -291,6 +305,26 @@ watch(
 function onScrollTop(top: number): void {
   props.session.scrollTop = top;
 }
+
+// ---- Find box ------------------------------------------------------------------------------
+
+function openFind(): void {
+  props.session.findOpen = true;
+  props.session.findFocus += 1;
+}
+
+// Ctrl+F anywhere in the active tab opens the Find box, except in a text field, where it is
+// left to the field. The native Edit > Find Commit item does the same through `edit.find`.
+useEventListener(window, "keydown", (event: KeyboardEvent) => {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || (event.key !== "f" && event.key !== "F")) return;
+  if (sessions.activeKey !== props.session.key || event.defaultPrevented || isEditableTarget(event.target)) return;
+  event.preventDefault();
+  openFind();
+});
+
+function onFindClosed(): void {
+  container.value?.focus();
+}
 </script>
 
 <template>
@@ -330,6 +364,16 @@ function onScrollTop(top: number): void {
           </template>
         </template>
       </VirtualRowList>
+      <GraphFindBar
+        v-if="session.findOpen"
+        class="absolute top-1.5 right-4 z-20"
+        :session="session"
+        :current="currentIndex"
+        @close="onFindClosed"
+        @mousedown.stop
+        @click.stop
+        @contextmenu.stop
+      />
     </div>
   </section>
 </template>

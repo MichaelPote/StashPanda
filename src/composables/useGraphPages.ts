@@ -1,10 +1,13 @@
 import { commands, type GraphRow } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
+import { pagesToDrop } from "@/lib/graph/pageWindow";
 import type { GraphState, RepoSession } from "@/stores/sessions";
 
 export const PAGE_SIZE = 200;
 /** Pages fetched on either side of the visible window. */
 const PREFETCH_PAGES = 2;
+/** Pages kept beyond the prefetched ones before the furthest are dropped (see `dropFarPages`). */
+const KEEP_PAGES = 3;
 
 export function pageOf(index: number): number {
   return Math.floor(index / PAGE_SIZE);
@@ -29,7 +32,8 @@ export function findLoadedIndex(graph: GraphState, oid: string): number | null {
 
 /**
  * Page cache on top of `graph_rows` for one session. Pages are keyed by number, fetched once,
- * and dropped wholesale when the snapshot version changes (the store does that).
+ * dropped wholesale when the snapshot version changes (the store does that), and dropped one by
+ * one when the visible window moves far from them (`dropFarPages`).
  */
 export function useGraphPages(session: RepoSession) {
   const graph = session.graph;
@@ -89,6 +93,19 @@ export function useGraphPages(session: RepoSession) {
     return Promise.all(waits).then(() => undefined);
   }
 
+  /**
+   * Drops cached pages far from the rows `start..end` (exclusive) on screen: anything beyond the
+   * prefetched pages and `KEEP_PAGES` more on either side. Called when the window moves, never
+   * from `ensureRange`, so the pages a Shift-range selection has just fetched stay until it has
+   * read them.
+   */
+  function dropFarPages(start: number, end: number): void {
+    const drop = pagesToDrop(graph.pages.keys(), pageOf(Math.max(0, start)), pageOf(Math.max(0, end - 1)), PREFETCH_PAGES + KEEP_PAGES);
+    if (drop.length === 0) return;
+    for (const page of drop) graph.pages.delete(page);
+    graph.pagesVersion.value += 1;
+  }
+
   /** True while the page holding `index` is being fetched. */
   function isLoading(index: number): boolean {
     return graph.inflight.has(pageOf(index));
@@ -98,6 +115,7 @@ export function useGraphPages(session: RepoSession) {
     rowAt: (index: number) => rowAt(graph, index),
     findLoadedIndex: (oid: string) => findLoadedIndex(graph, oid),
     ensureRange,
+    dropFarPages,
     isLoading,
   };
 }

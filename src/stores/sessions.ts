@@ -134,6 +134,16 @@ export interface RepoSession {
   scrollTop: number;
   /** A row index the graph view should scroll into view (set by the Branches panel). */
   reveal: { index: number } | null;
+  /**
+   * The commit selected when this repository was last open (`perRepo[key].lastSelectedOid`),
+   * until the graph holds it and it is selected again, or the first complete graph lacks it.
+   */
+  restoreOid: string | null;
+  /** The Find box over the Commits panel (Ctrl+F): whether it shows, and the text in it. */
+  findOpen: boolean;
+  findQuery: string;
+  /** Bumped to move the keyboard focus into the Find box, even when it is already open. */
+  findFocus: number;
   watcherKind: WatcherKind | null;
   /** Why the watcher is what it is, when that needs saying ("inotifywait is not installed on …"). */
   watcherDetail: string | null;
@@ -338,6 +348,43 @@ export const useSessionsStore = defineStore("sessions", () => {
     clearPages(session.graph);
     void refreshMeta(session, ev.version);
     void reconcile(session, ev.version, anchorOid, offset, selected);
+    void restoreLastSelected(session, ev.version, ev.complete);
+  }
+
+  /**
+   * Selects the commit that was selected when the repository was last open, once a snapshot
+   * holds it, and scrolls it into view. A large repository's first snapshot may be only its top
+   * rows, so an incomplete snapshot that lacks the commit leaves the restore for the next one; a
+   * complete one that lacks it ends it. Anything the user selects first wins.
+   */
+  async function restoreLastSelected(session: RepoSession, version: number, complete: boolean): Promise<void> {
+    const oid = session.restoreOid;
+    if (oid === null) return;
+    const settled = () => session.restoreOid !== oid || session.graph.meta?.version !== version;
+    if (session.selection.oids.size > 0) {
+      session.restoreOid = null;
+      return;
+    }
+    let row: GraphRow | undefined;
+    try {
+      const [index] = await unwrap(commands.graphFind(session.key, version, [oid]));
+      if (settled()) return;
+      if (index === null || index === undefined) {
+        if (complete) session.restoreOid = null;
+        return;
+      }
+      row = (await unwrap(commands.graphRows(session.key, version, index, 1)))[0];
+    } catch {
+      // A newer snapshot has taken over; its own event tries again.
+      return;
+    }
+    if (settled() || !row) return;
+    session.restoreOid = null;
+    if (session.selection.oids.size > 0) return;
+    selectRow(session, row);
+    // Set the offset rather than `reveal`: a tab in the background has no height to scroll in.
+    // A row on the first screen leaves the list at the top; any other lands a few rows down.
+    if (row.index >= 10) session.scrollTop = (row.index - 3) * ROW_HEIGHT;
   }
 
   function onGraphProgress(ev: GraphProgressEvent): void {
@@ -458,6 +505,8 @@ export const useSessionsStore = defineStore("sessions", () => {
     session.graph.loading = true;
     const graph = unwrap(commands.graphOpen(session.key)).then((meta) => {
       if (session.graph.meta === null || meta.version >= session.graph.meta.version) applyMeta(session, meta);
+      // A snapshot the backend already had comes with no snapshot event.
+      if (meta.version > 0) void restoreLastSelected(session, meta.version, meta.complete);
     });
     void Promise.allSettled([graph, loadStatus(session), loadRefs(session)]).then((results) => {
       for (const r of results) if (r.status === "rejected") notify(errorMessage(r.reason));
@@ -491,6 +540,10 @@ export const useSessionsStore = defineStore("sessions", () => {
         hiddenRefs: new Set(uiState.state?.perRepo?.[key]?.hiddenRefs ?? []),
         scrollTop: 0,
         reveal: null,
+        restoreOid: uiState.state?.perRepo?.[key]?.lastSelectedOid ?? null,
+        findOpen: false,
+        findQuery: "",
+        findFocus: 0,
         watcherKind: earlyWatcherStates.get(key)?.kind ?? null,
         watcherDetail: earlyWatcherStates.get(key)?.detail ?? null,
         operation: null,
@@ -605,6 +658,36 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
+  /**
+   * Selects the row at `index` in snapshot `version` and asks the graph view to scroll to it (the
+   * Find box). Returns false when that snapshot has been replaced or has no such row.
+   */
+  async function selectIndex(key: string, version: number, index: number): Promise<boolean> {
+    const session = sessions.get(key);
+    if (!session) return false;
+    try {
+      const row = (await unwrap(commands.graphRows(key, version, index, 1)))[0];
+      if (!row || session.graph.meta?.version !== version) return false;
+      selectRow(session, row);
+      session.reveal = { index };
+      return true;
+    } catch (e) {
+      if (!(e instanceof IpcError && e.error.kind === "staleVersion")) notify(errorMessage(e));
+      return false;
+    }
+  }
+
+  /** Shows the Find box over the active tab's Commits panel and puts the keyboard focus in it. */
+  function openFind(): void {
+    const session = active.value;
+    if (!session) {
+      notify("Open a repository first.");
+      return;
+    }
+    session.findOpen = true;
+    session.findFocus += 1;
+  }
+
   /** Shows an error. It replaces the success message, which no longer describes the latest action. */
   function notify(message: string, action: NoticeAction | null = null): void {
     notice.value = message;
@@ -686,6 +769,8 @@ export const useSessionsStore = defineStore("sessions", () => {
     refetchRefsAndStatus,
     selectRow,
     selectCommit,
+    selectIndex,
+    openFind,
     toggleRefVisible,
     notify,
     dismissNotice,

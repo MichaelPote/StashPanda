@@ -42,6 +42,31 @@ pub struct CachedGraph {
 /// Everything cached for `key`, or None when nothing has been stored yet or
 /// the row format is older than this build understands.
 pub fn load(conn: &Connection, key: &str) -> rusqlite::Result<Option<CachedGraph>> {
+    load_rows(conn, key, None)
+}
+
+/// The top `limit` rows of the cached graph (the highest `seq`, which counts from the bottom)
+/// and every ref, so a large repository paints before its whole history is read. None when
+/// nothing is cached, or when no more than `min_total` commits are: those load whole quickly.
+pub fn load_first_page(conn: &Connection, key: &str, limit: u32, min_total: u32) -> rusqlite::Result<Option<CachedGraph>> {
+    let count: Option<i64> = conn
+        .query_row("SELECT commit_count FROM repos WHERE key = ?1", params![key], |r| r.get(0))
+        .optional()?;
+    if count.is_none_or(|c| c <= i64::from(min_total)) {
+        return Ok(None);
+    }
+    load_rows(conn, key, Some(limit))
+}
+
+/// Delete everything cached for `key`, for a repository removed from the library.
+pub fn forget(conn: &Connection, key: &str) -> rusqlite::Result<()> {
+    if conn.execute("DELETE FROM repos WHERE key = ?1", params![key])? > 0 {
+        let _ = conn.execute_batch("PRAGMA incremental_vacuum;");
+    }
+    Ok(())
+}
+
+fn load_rows(conn: &Connection, key: &str, limit: Option<u32>) -> rusqlite::Result<Option<CachedGraph>> {
     let row: Option<(i64, i64, i64, i64)> = conn
         .query_row(
             "SELECT id, oid_len, truncated, schema_version FROM repos WHERE key = ?1",
@@ -57,11 +82,12 @@ pub fn load(conn: &Connection, key: &str) -> rusqlite::Result<Option<CachedGraph
 
     let mut store = CommitStore::new();
     {
+        // SQLite reads a negative LIMIT as no limit.
         let mut stmt = conn.prepare(
             "SELECT oid, parents, author_name, author_email, author_time, commit_time, subject
-             FROM commits WHERE repo_id = ?1 ORDER BY seq DESC",
+             FROM commits WHERE repo_id = ?1 ORDER BY seq DESC LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![repo_id], |r| {
+        let rows = stmt.query_map(params![repo_id, limit.map_or(-1, i64::from)], |r| {
             Ok((
                 r.get::<_, Vec<u8>>(0)?,
                 r.get::<_, Vec<u8>>(1)?,
@@ -355,5 +381,19 @@ mod tests {
         let removed = db.run_blocking(|c| evict(c, &["k2".to_string()], 5)).unwrap();
         assert_eq!(removed, 1);
         assert!(db.run_blocking(|c| load(c, "k1")).unwrap().is_none());
+
+        // The first page holds the top rows (d, then b) and every ref, and only for a cache
+        // holding more commits than the threshold.
+        let page = db.run_blocking(|c| load_first_page(c, "k2", 2, 2)).unwrap().expect("three commits is more than two");
+        let subjects: Vec<&str> = page.store.commits.iter().map(|c| &*c.subject).collect();
+        assert_eq!(subjects, vec!["sd", "sb"]);
+        assert_eq!(page.refs.refs.len(), 1);
+        assert!(db.run_blocking(|c| load_first_page(c, "k2", 2, 3)).unwrap().is_none());
+
+        // Removing a repository from the library forgets its cache.
+        db.run_blocking(|c| forget(c, "k2")).unwrap();
+        assert!(db.run_blocking(|c| load(c, "k2")).unwrap().is_none());
+        let commits: i64 = db.run_blocking(|c| c.query_row("SELECT COUNT(*) FROM commits", [], |r| r.get(0))).unwrap();
+        assert_eq!(commits, 0, "the commit rows went with the repository row");
     }
 }

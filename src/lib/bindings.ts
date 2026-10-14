@@ -114,7 +114,16 @@ export const commands = {
 	graphMeta: (key: string) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_meta", { key })),
 	graphRows: (key: string, version: number, start: number, count: number) => typedError<GraphRow[], GitError>(__TAURI_INVOKE("graph_rows", { key, version, start, count })),
 	graphFind: (key: string, version: number, oids: string[]) => typedError<(number | null)[], GitError>(__TAURI_INVOKE("graph_find", { key, version, oids })),
-	/**  Reload refs and history (full) or just the working tree row (status only). */
+	/**
+	 *  The graph's Find box: the next row from `from_row` in `direction` whose subject, author or
+	 *  oid matches `query`, wrapping around the ends, and how many rows match in all.
+	 */
+	graphSearch: (key: string, version: number, query: string, fromRow: number | null, direction: SearchDirection) => typedError<GraphSearchResult, GitError>(__TAURI_INVOKE("graph_search", { key, version, query, fromRow, direction })),
+	/**
+	 *  Reload refs and history (full) or just the working tree row (status only). The full reload
+	 *  reads the whole history again rather than only what changed, so it also repairs a cache that
+	 *  has gone wrong.
+	 */
 	graphRefresh: (key: string, full: boolean) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_refresh", { key, full })),
 	keysDefaultDirs: () => typedError<string[], GitError>(__TAURI_INVOKE("keys_default_dirs")),
 	/**  Every key in the default folders plus `extra_dirs`, with agent presence. */
@@ -727,6 +736,13 @@ export type GraphRow = {
 	worktree: WorktreeSummary | null,
 };
 
+export type GraphSearchResult = {
+	/**  The matching row to select, or None when nothing matches. */
+	row: number | null,
+	/**  How many rows match in the whole graph. */
+	matches: number,
+};
+
 export type GraphSnapshotEvent = {
 	repoId: string,
 	version: number,
@@ -1019,6 +1035,8 @@ export type ResetMode =
 export type ResolvedTransport = { type: "local"; gitExecutable: string } | { type: "wsl"; distro: string } | { type: "ssh"; host: string; user: string | null; port: number | null };
 
 export type RowKind = "commit" | "workingTree";
+
+export type SearchDirection = "forward" | "backward";
 
 /**  One changed line as the diff viewer showed it. */
 export type SelectedLine = {

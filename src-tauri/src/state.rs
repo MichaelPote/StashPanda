@@ -12,7 +12,7 @@ use crate::platform::Host;
 use crate::repo::{OperationRegistry, RepoHandle};
 use crate::persist::{self, PersistHandle, PersistRequest, PersistSource};
 use crate::settings::{load_json_migrated, load_json_or_default, migrate_settings, Settings};
-use crate::storage::{ui_prefs, Db};
+use crate::storage::{repo_cache, ui_prefs, Db};
 use crate::ui_state::UiState;
 
 pub struct AppPaths {
@@ -75,6 +75,7 @@ impl AppState {
         let (settings, w) = load_json_migrated::<Settings>(&paths.settings_file, migrate_settings);
         warnings.extend(w);
         let db = Db::open(&paths.cache_db)?;
+        evict_cache(&db, &settings);
         let ui_state = load_ui_state(&db, &paths.ui_state_file, &mut warnings);
 
         let inner = Arc::new(Inner {
@@ -150,6 +151,18 @@ impl AppState {
 
     pub fn flush(&self) {
         self.persist.flush_now(self.inner.as_ref());
+    }
+}
+
+/// Drop the cached graphs of repositories no longer in the library, then of the least recently
+/// opened beyond `cache.maxCachedRepos`. A failure only costs disk space, so it is logged.
+fn evict_cache(db: &Db, settings: &Settings) {
+    let keys: Vec<String> = settings.library.repos.iter().map(|r| r.key.clone()).collect();
+    let max = settings.cache.max_cached_repos;
+    match db.run_blocking(|c| repo_cache::evict(c, &keys, max)) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("evicted {n} repositories from the graph cache"),
+        Err(e) => tracing::warn!("could not evict old repositories from the graph cache: {e}"),
     }
 }
 

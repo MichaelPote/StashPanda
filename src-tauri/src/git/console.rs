@@ -158,8 +158,24 @@ impl ConsoleRecorder {
     }
 
     pub fn finish(&self, ticket: ConsoleTicket, output: Option<&Output>, error: Option<&GitError>) {
-        let (stdout, stdout_truncated, stderr, stderr_truncated, output_omitted) =
+        self.finish_counted(ticket, output, None, error);
+    }
+
+    /// `finish` for a command whose standard output went to the caller piece by piece as it
+    /// arrived (`GitClient::exec_streaming`): `output` holds no standard output, and
+    /// `stdout_bytes` says how much there was.
+    pub fn finish_streamed(&self, ticket: ConsoleTicket, output: Option<&Output>, stdout_bytes: u64, error: Option<&GitError>) {
+        self.finish_counted(ticket, output, Some(stdout_bytes), error);
+    }
+
+    fn finish_counted(&self, ticket: ConsoleTicket, output: Option<&Output>, streamed_bytes: Option<u64>, error: Option<&GitError>) {
+        let (stdout, stdout_truncated, stderr, stderr_truncated, mut output_omitted) =
             kept_output(ticket.category, output, error.is_some(), self.cap);
+        let stdout_bytes = streamed_bytes.unwrap_or_else(|| output.map(|o| o.stdout.len() as u64).unwrap_or(0));
+        // Streamed output is never kept, so any of it counts as left out.
+        if streamed_bytes.is_some_and(|n| n > 0) {
+            output_omitted = true;
+        }
         let ev = ConsoleEvent {
             repo_id: self.repo_id.clone(),
             seq: ticket.seq,
@@ -174,7 +190,7 @@ impl ConsoleRecorder {
             exit_code: output.and_then(|o| o.exit_code),
             stdout,
             stderr,
-            stdout_bytes: output.map(|o| o.stdout.len() as u64).unwrap_or(0),
+            stdout_bytes,
             stderr_bytes: output.map(|o| o.stderr.len() as u64).unwrap_or(0),
             stdout_truncated,
             stderr_truncated,

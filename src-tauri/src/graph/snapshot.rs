@@ -389,6 +389,67 @@ impl GraphSnapshot {
         let end = (start.saturating_add(count)).min(self.total());
         (start..end).filter_map(|i| self.row(i)).collect()
     }
+
+    /// The text search behind the graph's Find box. A commit row matches when its subject, author
+    /// name or author email contains `query` (ignoring case), or its oid starts with it. The
+    /// search starts next to `from_row` in `direction` and wraps around the ends, so `from_row`
+    /// itself is found last; with no `from_row` it starts at the top (or the bottom, backward).
+    pub fn search(&self, query: &str, from_row: Option<u32>, direction: SearchDirection) -> GraphSearchResult {
+        let needle = query.trim().to_lowercase();
+        if needle.is_empty() {
+            return GraphSearchResult { row: None, matches: 0 };
+        }
+        let oid_prefix = needle.bytes().all(|b| b.is_ascii_hexdigit()).then_some(needle.as_str());
+        // Authors are interned, so each is tested once rather than once per commit.
+        let author_hit: Vec<bool> = self
+            .store
+            .authors
+            .iter()
+            .map(|a| contains_ignore_case(&a.name, &needle) || contains_ignore_case(&a.email, &needle))
+            .collect();
+        let hits: Vec<u32> = (0..self.total())
+            .filter(|&row| {
+                let ci = self.order[row as usize];
+                let Some(c) = self.store.get(ci) else { return false };
+                author_hit[c.author as usize]
+                    || contains_ignore_case(&c.subject, &needle)
+                    || oid_prefix.is_some_and(|p| c.oid.to_hex().starts_with(p))
+            })
+            .collect();
+        let row = match (direction, from_row) {
+            (SearchDirection::Forward, None) => hits.first().copied(),
+            (SearchDirection::Backward, None) => hits.last().copied(),
+            (SearchDirection::Forward, Some(from)) => hits.iter().find(|&&r| r > from).or(hits.first()).copied(),
+            (SearchDirection::Backward, Some(from)) => hits.iter().rev().find(|&&r| r < from).or(hits.last()).copied(),
+        };
+        GraphSearchResult { row, matches: hits.len() as u32 }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SearchDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphSearchResult {
+    /// The matching row to select, or None when nothing matches.
+    pub row: Option<u32>,
+    /// How many rows match in the whole graph.
+    pub matches: u32,
+}
+
+/// Whether `hay` contains `needle`, which the caller has already lowercased.
+fn contains_ignore_case(hay: &str, needle: &str) -> bool {
+    if needle.is_ascii() {
+        let n = needle.as_bytes();
+        hay.len() >= n.len() && hay.as_bytes().windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+    } else {
+        hay.to_lowercase().contains(needle)
+    }
 }
 
 #[cfg(test)]
@@ -460,6 +521,36 @@ mod tests {
         assert_eq!(snap.find("WORKTREE"), Some(0));
         assert_eq!(snap.meta().version, 7);
         assert!(rows.iter().all(|r| r.lane == 0));
+    }
+
+    #[test]
+    fn search_finds_subject_author_and_oid_in_either_direction_and_wraps() {
+        let mut store = CommitStore::new();
+        let mut c = rec("c", &["b"], 3);
+        c.subject = "Fix the Parser".into();
+        let mut b = rec("b", &["a"], 2);
+        b.author_name = "Zoë Example".into();
+        let mut a = rec("a", &[], 1);
+        a.subject = "parser: first version".into();
+        for r in [&c, &b, &a] {
+            store.insert(r);
+        }
+        let wt = WorktreeSummary { staged: 0, unstaged: 1, untracked: 0, conflicted: 0 };
+        let snap = GraphSnapshot::build(Arc::new(store), Arc::new(RefsSnapshot::default()), Some(wt), GraphOptions::default(), 1, true, false, &HiddenRefs::default());
+        // Rows: 0 Working Tree, 1 c, 2 b, 3 a.
+        use SearchDirection::{Backward, Forward};
+        let hit = |q: &str, from: Option<u32>, d| snap.search(q, from, d);
+        assert_eq!(hit("PARSER", None, Forward), GraphSearchResult { row: Some(1), matches: 2 });
+        assert_eq!(hit("parser", Some(1), Forward).row, Some(3));
+        assert_eq!(hit("parser", Some(3), Forward).row, Some(1), "wraps past the bottom");
+        assert_eq!(hit("parser", Some(1), Backward).row, Some(3), "wraps past the top");
+        assert_eq!(hit("parser", None, Backward).row, Some(3));
+        assert_eq!(hit("zoë", None, Forward).row, Some(2), "author names, beyond ASCII too");
+        assert_eq!(hit("m@b", None, Forward).matches, 3, "author emails");
+        assert_eq!(hit(&format!("{:0>40}", "a"), None, Forward).row, Some(3), "a whole oid");
+        assert_eq!(hit(&"0".repeat(39), None, Forward).matches, 3, "an oid prefix");
+        assert_eq!(hit("working", None, Forward).matches, 0, "the Working Tree row is not a commit");
+        assert_eq!(hit("  ", None, Forward), GraphSearchResult { row: None, matches: 0 });
     }
 
     #[test]

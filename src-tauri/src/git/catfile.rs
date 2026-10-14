@@ -101,6 +101,36 @@ impl CatFile {
         unreachable!("the loop returns on its second attempt")
     }
 
+    /// Which of `oids` (full hex) Git does not have, with one `info` request for each and one
+    /// flush for all of them. A helper that has died is started again once.
+    pub async fn missing(self: &Arc<Self>, client: &GitClient, cancel: &CancellationToken, oids: &[String]) -> Result<Vec<String>> {
+        if oids.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(bad) = oids.iter().find(|o| o.is_empty() || !o.bytes().all(|b| b.is_ascii_hexdigit())) {
+            return Err(GitError::InvalidPath { path: bad.clone(), reason: "not an object id".into() });
+        }
+        let mut slot = self.helper.lock().await;
+        *self.last_used.lock().expect("last used lock") = Instant::now();
+        for attempt in 0..2 {
+            if slot.is_none() {
+                *slot = Some(self.spawn(client, cancel).await?);
+            }
+            let helper = slot.as_mut().expect("just spawned");
+            match request_missing(helper, oids).await {
+                Ok(m) => return Ok(m),
+                Err(e) => {
+                    let dead = slot.take().expect("helper present");
+                    stop(client, dead).await;
+                    if attempt == 1 {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        unreachable!("the loop returns on its second attempt")
+    }
+
     async fn spawn(self: &Arc<Self>, client: &GitClient, cancel: &CancellationToken) -> Result<Helper> {
         let mut cmd = client.build_cmd(&GitReq::new("cat-file", ["cat-file", "--batch-command", "--buffer"]));
         cmd.stdin = StdinMode::Piped;
@@ -178,6 +208,32 @@ async fn stop(client: &GitClient, mut h: Helper) {
     tracing::info!("cat-file helper stopped for {}", client.repo.0);
 }
 
+/// One `info` line for each oid, answered in order, one line each.
+async fn request_missing(h: &mut Helper, oids: &[String]) -> Result<Vec<String>> {
+    let io = |e: std::io::Error| GitError::Io { detail: format!("cat-file helper: {e}") };
+    let mut lines = String::new();
+    for oid in oids {
+        lines.push_str("info ");
+        lines.push_str(oid);
+        lines.push('\n');
+    }
+    lines.push_str("flush\n");
+    h.stdin.write_all(lines.as_bytes()).await.map_err(io)?;
+    h.stdin.flush().await.map_err(io)?;
+    let mut missing = Vec::new();
+    let mut line = String::new();
+    for oid in oids {
+        line.clear();
+        if h.stdout.read_line(&mut line).await.map_err(io)? == 0 {
+            return Err(GitError::Io { detail: "cat-file helper exited".into() });
+        }
+        if parse_info(&line)? == Info::Missing {
+            missing.push(oid.clone());
+        }
+    }
+    Ok(missing)
+}
+
 /// `info` first, so an object over `limit` is refused without being read, then `contents`.
 async fn request(h: &mut Helper, spec: &str, limit: usize) -> Result<Option<Vec<u8>>> {
     let io = |e: std::io::Error| GitError::Io { detail: format!("cat-file helper: {e}") };
@@ -231,6 +287,13 @@ mod tests {
         assert_eq!(cat.read(&client, &cancel, "HEAD:nope.txt", 1024).await.unwrap(), None);
         assert!(matches!(cat.read(&client, &cancel, "HEAD:a.txt", 4).await, Err(GitError::TooLarge { bytes: 8, limit: 4 })));
         assert!(matches!(cat.read(&client, &cancel, "a\nb", 4).await, Err(GitError::InvalidPath { .. })));
+        // Several oids checked at once: only the one Git lacks comes back.
+        let head = std::process::Command::new("git").arg("-C").arg(repo).args(["rev-parse", "HEAD"]).output().unwrap();
+        let head = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        let absent = "0123456789012345678901234567890123456789".to_string();
+        let asked = [head.clone(), absent.clone(), head];
+        assert_eq!(cat.missing(&client, &cancel, &asked).await.unwrap(), vec![absent]);
+        assert!(matches!(cat.missing(&client, &cancel, &["HEAD:a.txt".into()]).await, Err(GitError::InvalidPath { .. })));
         // A helper that died is started again on the next read.
         cat.helper.lock().await.as_mut().unwrap().process.kill().await.unwrap();
         assert_eq!(cat.read(&client, &cancel, "HEAD:a.txt", 1024).await.unwrap().as_deref(), Some(&b"one\ntwo\n"[..]));

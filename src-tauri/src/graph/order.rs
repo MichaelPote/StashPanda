@@ -31,9 +31,26 @@ pub fn order(store: &CommitStore, mode: GraphOrder) -> Vec<u32> {
     }
     let mut out = Vec::with_capacity(n);
     match mode {
-        GraphOrder::Date | GraphOrder::Topo => {
-            // Topo order refinement (keeping a branch's commits contiguous) is a
-            // later milestone; both modes use date order for now.
+        GraphOrder::Topo => {
+            // Git's own `--topo-order`: the tips are taken newest first, but after that the next
+            // row is always the commit made ready most recently (a stack, not a date heap), so a
+            // branch's commits follow one another down to where it forked. A merge readies its
+            // first parent before the others, so the merged branch is shown first, directly
+            // under the merge, and the line it was merged into continues after it.
+            let mut stack: Vec<u32> = heap.into_sorted_vec().into_iter().map(|(_, Reverse(i))| i).collect();
+            while let Some(i) = stack.pop() {
+                out.push(i);
+                for p in &store.commits[i as usize].parents {
+                    if let Some(pi) = store.index_of(p) {
+                        children_left[pi as usize] -= 1;
+                        if children_left[pi as usize] == 0 {
+                            stack.push(pi);
+                        }
+                    }
+                }
+            }
+        }
+        GraphOrder::Date => {
             while let Some((_, Reverse(i))) = heap.pop() {
                 out.push(i);
                 for p in &store.commits[i as usize].parents {
@@ -103,5 +120,28 @@ mod tests {
         assert!(pos("b") < pos("a"));
         assert!(pos("d") < pos("a"));
         assert_eq!(names.len(), 5);
+    }
+
+    #[test]
+    fn topo_order_keeps_a_branch_together_when_dates_interleave() {
+        // main: a(1) - b(3) - d(5) - 99(7), where the merge 99 brings in topic: c(2) - e(4) - f(6),
+        // forked from a. The oids must be hexadecimal, hence 99 and 88.
+        let mut s = CommitStore::new();
+        for r in [
+            rec("99", &["d", "f"], 7),
+            rec("f", &["e"], 6),
+            rec("d", &["b"], 5),
+            rec("e", &["c"], 4),
+            rec("b", &["a"], 3),
+            rec("c", &["a"], 2),
+            rec("a", &[], 1),
+            // A second tip, older than the merge, on a branch of its own from b.
+            rec("88", &["b"], 4),
+        ] {
+            s.insert(&r);
+        }
+        let names = |mode| order(&s, mode).iter().map(|i| s.commits[*i as usize].subject.to_string()).collect::<Vec<_>>().join(" ");
+        assert_eq!(names(GraphOrder::Date), "99 f d e 88 b c a", "date order interleaves the two lines");
+        assert_eq!(names(GraphOrder::Topo), "99 f e c d 88 b a", "the topic under the merge, then main");
     }
 }

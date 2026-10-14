@@ -274,6 +274,11 @@ pub async fn repo_remove(app: AppHandle, state: State<'_, AppState>, key: String
     settings.library.remove(&key);
     let revision = state.set_settings(settings.clone())?;
     SettingsChanged { revision, settings }.emit(&app)?;
+    // So does its cached graph. A failure only leaves rows that the next start evicts.
+    let cache_key = key.clone();
+    if let Err(e) = state.db.run(move |c| crate::storage::repo_cache::forget(c, &cache_key)).await {
+        tracing::warn!("could not remove the cached graph of {key}: {e}");
+    }
     // Its remembered UI state (hidden refs, last selected commit) goes with it.
     let mut ui = state.ui_state();
     if ui.per_repo.remove(&key).is_some() {

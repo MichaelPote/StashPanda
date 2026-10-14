@@ -71,6 +71,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::graph::graph_meta,
             ipc::graph::graph_rows,
             ipc::graph::graph_find,
+            ipc::graph::graph_search,
             ipc::graph::graph_refresh,
             ipc::keys::keys_default_dirs,
             ipc::keys::keys_scan,

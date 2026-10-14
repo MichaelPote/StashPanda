@@ -22,7 +22,7 @@ pub struct Author {
     pub email: Box<str>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct CommitStore {
     pub commits: Vec<CommitData>,
     pub by_oid: FxHashMap<Oid, u32>,
