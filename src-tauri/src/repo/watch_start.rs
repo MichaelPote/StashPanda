@@ -33,15 +33,8 @@ pub fn start(app: &AppHandle, db: &Arc<Db>, handle: &Arc<RepoHandle>, settings: 
         TransportKind::Local => {
             let worktree = if handle.info.is_bare { None } else { host_path_of(handle, &handle.info.toplevel) };
             let git_dir = host_path_of(handle, &handle.info.git_dir);
-            let common = if handle.info.common_dir.is_empty() || handle.info.common_dir == "." {
-                git_dir.clone()
-            } else {
-                // common_dir may be relative to git_dir
-                let c = &handle.info.common_dir;
-                if Path::new(c).is_absolute() || c.contains(':') { host_path_of(handle, c) } else {
-                    git_dir.as_ref().map(|g| HostPath(format!("{}/{}", g.0.trim_end_matches(['/', '\\']), c)))
-                }
-            };
+            // Absolute since `open_repo`; empty only for a repository opened before that.
+            let common = if handle.info.common_dir.is_empty() { git_dir.clone() } else { host_path_of(handle, &handle.info.common_dir) };
             match (git_dir, common) {
                 (Some(gd), Some(cd)) => match native::start(
                     worktree.as_ref().map(|w| Path::new(&w.0)),
@@ -169,13 +162,7 @@ fn try_remote_inotify(app: AppHandle, handle: Arc<RepoHandle>, client: Arc<crate
         let ignored = ignored_dirs(&handle).await;
         let worktree = (!handle.info.is_bare).then(|| handle.info.toplevel.trim_end_matches('/').to_string());
         let git_dir = handle.info.git_dir.trim_end_matches('/').to_string();
-        let common_dir = if handle.info.common_dir.is_empty() || handle.info.common_dir == "." {
-            git_dir.clone()
-        } else if handle.info.common_dir.starts_with('/') {
-            handle.info.common_dir.trim_end_matches('/').to_string()
-        } else {
-            format!("{git_dir}/{}", handle.info.common_dir.trim_end_matches('/'))
-        };
+        let common_dir = if handle.info.common_dir.is_empty() { git_dir.clone() } else { handle.info.common_dir.trim_end_matches('/').to_string() };
         let on_exit = {
             let (app, handle, tx) = (app.clone(), handle.clone(), tx.clone());
             move |stderr: String| {

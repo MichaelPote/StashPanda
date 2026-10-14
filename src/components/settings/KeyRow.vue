@@ -47,6 +47,18 @@ const emit = defineEmits<{
 
 const algorithm = computed(() => keyAlgorithmLabel(props.info));
 const isOpenSsh = computed(() => props.info.format === "openSsh");
+
+// Why each greyed-out action is unavailable, shown as its tooltip.
+const unreadable = computed(() => (props.info.error !== null ? "StashPanda cannot read this key." : null));
+const convertReason = computed(() => unreadable.value ?? (isOpenSsh.value ? "The key is in OpenSSH format already." : null));
+const agentReason = computed(
+  () =>
+    unreadable.value ??
+    (!props.agentAvailable ? "No SSH agent is running, or StashPanda cannot reach it." : props.info.inAgent ? "The agent has this key already." : null),
+);
+const passphraseReason = computed(() => unreadable.value ?? (!isOpenSsh.value ? "Convert the key to OpenSSH first." : null));
+/** shadcn's item turns pointer events off when disabled, which would hide the tooltip too. */
+const REASON_CLASS = "data-disabled:pointer-events-auto";
 /** Repositories already set to log in with this key. */
 const usedBy = computed(() =>
   props.sshRepos.filter((r) => r.connection?.type === "ssh" && r.connection.identityFile === props.info.path).map(repoDisplayName),
@@ -97,19 +109,19 @@ const rememberedLabel = computed(() => {
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
-            <DropdownMenuItem :disabled="isOpenSsh || info.error !== null" @select="emit('action', 'convert')">
+            <DropdownMenuItem :disabled="convertReason !== null" :title="convertReason ?? undefined" :class="REASON_CLASS" @select="emit('action', 'convert')">
               Convert to OpenSSH
             </DropdownMenuItem>
             <DropdownMenuItem :disabled="info.error !== null" @select="emit('action', 'export')">Export…</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem :disabled="!agentAvailable || info.inAgent || info.error !== null" @select="emit('action', 'addToAgent')">
+            <DropdownMenuItem :disabled="agentReason !== null" :title="agentReason ?? undefined" :class="REASON_CLASS" @select="emit('action', 'addToAgent')">
               Add to agent
             </DropdownMenuItem>
-            <DropdownMenuItem :disabled="!agentAvailable || info.inAgent || info.error !== null" @select="emit('action', 'addToAgentForHours')">
+            <DropdownMenuItem :disabled="agentReason !== null" :title="agentReason ?? undefined" :class="REASON_CLASS" @select="emit('action', 'addToAgentForHours')">
               Add to agent for 8 hours
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem :disabled="!isOpenSsh || info.error !== null" @select="emit('action', 'changePassphrase')">
+            <DropdownMenuItem :disabled="passphraseReason !== null" :title="passphraseReason ?? undefined" :class="REASON_CLASS" @select="emit('action', 'changePassphrase')">
               Change passphrase…
             </DropdownMenuItem>
             <DropdownMenuItem v-if="info.passphraseRemembered !== 'none'" @select="emit('action', 'forgetPassphrase')">

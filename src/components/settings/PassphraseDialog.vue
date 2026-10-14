@@ -119,9 +119,9 @@ async function submit(): Promise<void> {
             <input v-model="remember" type="radio" name="passphrase-remember" class="size-3.5 accent-primary" :value="choice.value" :disabled="choice.disabled" />
             {{ choice.label }}
           </label>
-          <p v-if="keychain && !keychain.available" class="text-xs text-muted-foreground">
+          <!-- The keychain's own error is for diagnosing, so it is the tooltip rather than the text. -->
+          <p v-if="keychain && !keychain.available" class="text-xs text-muted-foreground" :title="keychain.detail ?? undefined">
             No system keychain is available here, so a passphrase can only be remembered until StashPanda closes.
-            <span v-if="keychain.detail" class="block break-words">{{ keychain.detail }}</span>
           </p>
           <p v-if="request.forConnection" class="text-xs text-muted-foreground">
             The connection needs it again if it drops and reconnects, so it is kept at least until StashPanda closes.
