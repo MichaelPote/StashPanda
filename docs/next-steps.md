@@ -5,8 +5,10 @@ milestone 2 planned on 2026-09-23, the commit dialog and a round of interface an
 added on 2026-09-30, and stashes, a second round of interface work and pull added on 2026-10-01
 (see "Interface, merge and checkout work" and "Milestone 3" below), and the first run in the real
 app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"), the rest of
-milestone 2 the same day, and the rest of milestone 1 after it (the open items left there need a real
-SSH host or the Windows window). Everything not listed here is done and tested; see
+milestone 2 the same day, the rest of milestone 1 after it, and most of milestone 3 after that
+(conflicts, merge and rebase, file history and blame, automatic fetch, SSH reconnect and syntax
+colours; only the SSH fallback and `ProxyJump` are left there). Everything not listed here is done
+and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
@@ -856,9 +858,32 @@ and anything over WSL or SSH.
       `clones_into_missing_empty_and_non_empty_folders`. There is no toolbar button yet. Tried
       in the running Linux build on 2026-10-14, into a missing folder and a folder with files;
       not yet over WSL or SSH.
-- [ ] **Merge, rebase, cherry-pick, revert** with conflict detection (`u` entries in status), a
-      conflict list using the `:1:`, `:2:`, `:3:` blob stages (`get_blob_content` already accepts
-      those specs), and continue / abort actions.
+- [x] **Merge, rebase, cherry-pick and revert, with conflicts** (2026-10-14).
+      - Status now carries `inProgress` (`git/queries/in_progress.rs`): the merge, rebase,
+        cherry-pick or revert under way, read from the git directory through the transport's
+        file functions (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`,
+        `MERGE_MSG` and the `rebase-merge` or `rebase-apply` folder), with the rebase's branch,
+        its `onto` commit and its step out of the total.
+      - `OperationBanner.vue`, a bar above the commits, names the operation, counts the files
+        still conflicted and offers Continue, Skip and Abort (`op_continue`, `op_skip`, and the
+        existing aborts). Continue runs with `GIT_EDITOR=true`, so Git keeps its prepared message
+        without opening an editor.
+      - A conflicted file can take one side's version (`op_resolve_conflicts`, which deletes the
+        file when that side deleted it) or be marked resolved. Both are in the Files panel's
+        right-click menu and in the diff panel, and the sides are named by branch or commit
+        (`lib/conflicts.ts`). Resolving one selects the next conflicted file.
+      - The diff panel compares a conflicted file's base, either side and the working tree file
+        (`DiffTarget` `conflict`, reading the `:1:`, `:2:` and `:3:` stages).
+      - The toolbar's Merge and Rebase buttons, and Repository › Merge and Rebase, open
+        `MergeDialog.vue` and `RebaseDialog.vue` (`op_merge`, `op_rebase`, `get_merge_info`).
+      - During a merge, cherry-pick or revert, the Commit dialog commits the whole index with
+        Git's prepared message (`get_pending_message` reads `MERGE_MSG` without its comment
+        lines), because Git refuses a partial commit then. During a rebase it points at
+        Continue instead, and with files still conflicted it says to resolve them first.
+      - The conflict notices from merge, pull, sync, cherry-pick and revert point at the bar.
+      Tests: `merge_cherry_pick_and_revert_conflicts_resolved_and_continued` and
+      `rebase_continue_skip_abort_and_the_operation_in_progress`. Tried in the running Linux
+      build on 2026-10-14.
 - [ ] **SSH tier 2 fallback** (`transport/ssh_exec.rs`): long-lived `ssh -T host sh` helper with
       sentinel framing, only if a real host needs `ProxyJump`, `ProxyCommand`, GSSAPI, certificates
       or an algorithm `russh` cannot negotiate. `resolve_target` currently returns
@@ -868,12 +893,47 @@ and anything over WSL or SSH.
 - [x] **Console filter buttons remembered** (2026-09-30). The User, Internal and Watcher buttons
       are kept in the UI state (`console.*` rows in the database), not in a setting; the unused
       `console.showInternal` setting is left out of the Settings dialog.
-- [ ] **Blame and file history** views (the toolbar has Blame and Investigate buttons; neither
-      is planned in detail yet).
-- [ ] **Auto-fetch** on `polling.autoFetchMinutes`.
-- [ ] **Reconnect with backoff** for SSH: the pool reconnects lazily when a connection is found
-      closed, but there is no `transport_state` event yet (Connecting, Ready, Degraded,
-      Disconnected) and no backoff schedule.
+- [x] **File history and blame** (2026-10-14). Both open from the Files panel's right-click menu
+      (Show History, Blame) and from History and Blame buttons in the diff panel's header, and
+      work over every transport.
+      - `FileHistoryDialog.vue` (`get_file_history`, `git/queries/history.rs`): every commit
+        that changed the file, newest first, following renames, with the file's path in each
+        commit. The selected commit's diff of the file shows below the list; Show in Commit Graph
+        and Blame at This Commit act on it. It runs `git log --follow --cc --name-status -z`.
+        **Found:** `git log --follow` prints nothing at all when given `--skip`, so a long history
+        is read 500 commits at a time by asking again with a larger `--max-count`. Without
+        `--cc`, `--follow` left out every merge, even one that resolved a conflict in the file.
+      - `BlameDialog.vue` (`get_file_blame`, `git/queries/blame.rs`, which parses `git blame
+        --porcelain`): the file's lines with the commit that last changed each block, shaded by
+        how recent it is, for the working tree version or a commit's. Blame Before This Change
+        blames the version the lines came from, and Back returns. The version is read first
+        through the long-lived `cat-file`, so a binary or too large file is never blamed.
+      Tests: the parsers on captured output (renames, tabs, non-ASCII text, a boundary commit,
+      uncommitted lines, quoted names, CRLF lines, a merge) and
+      `file_history_and_blame_against_a_real_repository`.
+- [x] **Automatic fetch** (2026-10-14) on `polling.autoFetchMinutes`. Every half minute, each open
+      repository whose last fetch is that old fetches quietly (`autoFetchDue` in
+      `lib/repoActions.ts`). A failure is reported once, and not again until a fetch works.
+- [x] **SSH reconnect with backoff** (2026-10-14, `transport/ssh_pool.rs`). After a network
+      failure the pool waits 1, 2, 5, 10, 30 and then 60 s between attempts, and fails at once
+      in between rather than blocking. It reports Connecting, Ready, Degraded or Disconnected as
+      a `transport_state` event, which the status bar shows with a countdown to the next
+      attempt. When the connection is back, the remote `inotifywait` watcher starts again, and
+      a graph whose first load failed loads by itself (`GraphLoadFailedEvent`, where it used to
+      show "Loading" for ever). Test: `reconnects_with_backoff_after_the_server_goes_away`.
+- [x] **Syntax colours in the diff** (2026-10-14). Shiki colours the diff in a Web Worker
+      (`lib/diff/syntax.worker.ts`), using its JavaScript regular expression engine, so no
+      WebAssembly is loaded. The language comes from the file's name or extension, from a list
+      of 62 common languages; any other file stays plain. Each hunk's old side and new side go
+      to the worker as whole runs, so a comment or string spanning several lines is coloured
+      correctly, and `mergeSpans` in `lib/diff/syntax.ts` cuts the colours and the
+      changed-word marks into one set of pieces. Diffs over 20,000 lines stay plain. Each
+      grammar loads the first time a file of its language is shown. **Found:** importing
+      Shiki's full language list put all 346 grammars into the build as separate files, about
+      10 MB more in the program, because Tauri builds every asset into it; the 62 chosen ones
+      add about 0.5 MB after Tauri's compression. Settings › Diff › "Colour the code" turns it
+      off, and the Settings preview follows the box. Tried in the running Linux build on
+      2026-10-14 with TypeScript, Rust and an unknown extension.
 
 ## Packaging and CI
 

@@ -235,7 +235,7 @@ Whatever the override, the `RepoEntry.key` is computed from the canonical native
 - **Local**: `tokio::process::Command`, `kill_on_drop(true)`, on Windows `creation_flags(CREATE_NO_WINDOW)` and never inherit stdio. Discovery: settings override, then `which`, then well-known paths (`%ProgramFiles%\Git\bin\git.exe`, `/usr/bin/git`, `/mnt/<d>/Program Files/Git/bin/git.exe`).
 - **WSL**: `wsl.exe -d <distro> -e env GIT_TERMINAL_PROMPT=0 LC_ALL=C.UTF-8 git ... -C /linux/path ...`. Distro list from `wsl.exe -l -q` (UTF-16LE). Cancellable commands are wrapped as `setsid -w sh -c 'echo $$; exec "$@"' sh <argv>` and the first stdout line is the pid of the new session's process group, which terminate signals through a second `wsl.exe`. (As implemented 2026-10-01: killing `wsl.exe` does end the Linux processes it started directly, contrary to the original plan, but abruptly, and not ones in a session of their own.) Startup self-test passes an argument with a space and a quote, and falls back to `-e sh -c '<quoted>'` if `wsl.exe` re-splits it.
 - **SSH, tier 1 (M1, the default): in-process `russh` client.** No `ssh.exe` involved, so Windows and Linux behave identically and the Windows ControlMaster problem disappears.
-  - **Connection pool** (`ssh_pool.rs`): one authenticated `russh::client::Handle` per `(host, port, user)`, shared by every repo on that host. `Config { keepalive_interval: 15 s, keepalive_max: 3, inactivity_timeout: None }`. A dropped connection emits `transport_state: Disconnected`, reconnects with exponential backoff (1, 2, 4, 8 s, cap 30 s), then re-opens the pinned channels. Channel concurrency per connection is bounded by a `Semaphore(8)` because OpenSSH servers default `MaxSessions` to 10; a second connection is opened when the bound is saturated.
+  - **Connection pool** (`ssh_pool.rs`): one authenticated `russh::client::Handle` per `(host, port, user)`, shared by every repo on that host. `Config { keepalive_interval: 15 s, keepalive_max: 3, inactivity_timeout: None }`. A dropped connection emits `transport_state: Disconnected` and reconnects with backoff (1, 2, 5, 10, 30, then 60 s between attempts, failing at once in between), then re-opens the pinned channels. Channel concurrency per connection is bounded by a `Semaphore(8)` because OpenSSH servers default `MaxSessions` to 10; a second connection is opened when the bound is saturated.
   - **One command = one channel** (`ssh.rs`): `channel_open_session()` then `exec(true, "env GIT_TERMINAL_PROMPT=0 LC_ALL=C.UTF-8 git -C /srv/repo ...")` with the remote argv shlex-quoted, because `exec` goes through the remote login shell. `SshChannelProcess` implements the `Process` trait: stdin is `channel.data()` plus `eof()`, stdout is the `Data` messages, stderr is `ExtendedData(1)`, `wait()` resolves on `ExitStatus` (or `ExitSignal`), `kill()` sends `signal(Sig::TERM)` and falls back to `kill -TERM <pid>` on another channel using the echoed-pid wrapper. No sentinel framing, no lost stderr separation, no CRLF translation (no pty is ever requested).
   - **Pinned helpers are long-lived channels**: `git cat-file --batch-command --buffer` and `inotifywait -m` each hold one channel for the life of the repo session. `run_batch` becomes `sh -c` of several commands on one channel with `printf '\0'` separators only when the round trip matters; with channels this cheap it is an optimisation, not a necessity.
   - **Authentication** (`ssh_auth.rs`), tried in this order and shown step by step in the console as Internal entries: (1) `~/.ssh/config` is resolved with `russh-config` for the alias, so `Host`, `HostName`, `User`, `Port`, `IdentityFile` and `IdentitiesOnly` are honoured; the per-repo settings override any of them. (2) SSH agent: `SSH_AUTH_SOCK` on Linux, the `\\.\pipe\openssh-ssh-agent` named pipe on Windows (verify that `russh::keys::agent` supports the Windows named pipe; if not, `keys/agent.rs` implements the small agent protocol over `tokio::net::windows::named_pipe`). (3) Identity files in **any format the key manager reads** (PPK, PEM, OpenSSH, PKCS#8): the file is loaded through `KeyManager::load`, decrypted with a passphrase dialog if needed, and handed to `russh` as an `ssh_key::PrivateKey` in memory. No file is ever converted just to log in. (4) Password, via a UI dialog, only if the server offers it.
@@ -468,7 +468,7 @@ Add `pinia` (4.x). Stores in `src/stores/`: `settings.ts` and `uiState.ts` (mirr
 - `src/App.vue` becomes `AppShell.vue`: toolbar, left sidebar with a vertical splitter between `RepositoriesPanel.vue` (global) and `BranchesPanel.vue` (active repo), main area with `RepoTabStrip.vue` and one `RepoWorkspace.vue` per open tab kept alive with `v-show` so scroll positions and selections survive tab switches, and `ConsolePanel.vue` under the main area bound to the active repo.
 - `RepoWorkspace.vue`: top row is a horizontal splitter between `CommitGraphView.vue` and `FilesPanel.vue`; a vertical splitter separates that row from `DiffViewer.vue`. Selecting the Working Tree row switches the files panel to working tree mode; selecting a commit switches it to that commit's files. Selecting a file loads its diff.
 - shadcn-vue components to add with `npx shadcn-vue@latest add`: `resizable` (reka-ui Splitter, for every panel divider), `tabs`, `scroll-area`, `context-menu`, `dropdown-menu`, `tooltip`, `dialog`, `command`, `badge`, `separator`, `toggle`, `popover`, `collapsible`, `tree` if available (otherwise a small recursive `LibraryTree.vue`).
-- `DiffViewer.vue`: hunks parsed in TypeScript from the unified diff text returned by Part 1 (`src/lib/diff/parseUnified.ts`), rendered with the same hand-rolled virtualisation as the graph (fixed row height, `overscan`), unified and side-by-side modes, per-word intra-line highlighting with a small LCS on changed line pairs, whitespace and CRLF toggles mapped to `-w` and `--ignore-cr-at-eol`, binary and "too large" placeholders, `eol` badge. Syntax highlighting is deferred to a later milestone (Shiki in a Web Worker is the candidate).
+- `DiffViewer.vue`: hunks parsed in TypeScript from the unified diff text returned by Part 1 (`src/lib/diff/parseUnified.ts`), rendered with the same hand-rolled virtualisation as the graph (fixed row height, `overscan`), unified and side-by-side modes, per-word intra-line highlighting with a small LCS on changed line pairs, whitespace and CRLF toggles mapped to `-w` and `--ignore-cr-at-eol`, binary and "too large" placeholders, `eol` badge. Syntax colours come from Shiki in a Web Worker (`src/lib/diff/syntax.worker.ts`, 62 chosen languages, each grammar loaded on first use).
 - `FilesPanel.vue`: flat list with path, status letter and colour, rename arrows, added and deleted counts from numstat; tree view toggle later.
 - `BranchesPanel.vue`: local branches (current in bold, ahead and behind badges), remotes grouped by remote, tags, stashes; clicking a ref selects its commit in the graph.
 - `ConsolePanel.vue`: rows from the session's console buffer, newest at the bottom, each with the display command line, duration and exit code, expandable output, a copy button, and filter chips wired to the `Category` enum. The later preference `console.hide_internal` defaults the Internal and Watcher chips off.
@@ -668,23 +668,25 @@ files; this is what a reader of the plan above needs to know.
 
 Done: M0 and M1 entirely, since 2026-10-14, apart from PPK export (left until a tool needs it) and
 the checks that need a real SSH host and the Windows window; M2 entirely, since 2026-10-14. M3 so
-far: pull, fetch, push, sync and clone. See `next-steps.md` for each item.
+far: pull, fetch, push, sync, clone, merge, rebase, cherry-pick and revert with conflict
+resolution, file history and blame, automatic fetch, SSH reconnect with backoff and a
+`transport_state` event, and syntax colours in the diff viewer. See `next-steps.md` for each item.
 
-Not done yet: in M3, conflict resolution, blame and file history, auto-fetch, SSH reconnect with
-backoff and a `transport_state` event, `ProxyJump`, and syntax highlighting in the diff viewer.
+Not done yet: in M3, the SSH tier 2 fallback and `ProxyJump`, both only if a real host needs them.
 
 ### Tests
 
-`cd src-tauri && cargo test` runs 105 tests, on Linux and Windows: path mapper table, every parser on
+`cd src-tauri && cargo test` runs 116 tests, on Linux and Windows: path mapper table, every parser on
 captured bytes, ordering (date and topological) and lane sweep fixtures, snapshot and cache round
 trips, the incremental refresh against a full load, the graph search, end-to-end runs of every query
 and every write operation against throwaway repositories (including line staging, reset,
-cherry-pick, revert and `safe.directory`), pull, fetch, push, sync and clone against throwaway
+cherry-pick, revert, conflicts with Continue, Skip and Abort, and `safe.directory`), file history
+and blame, pull, fetch, push, sync and clone against throwaway
 remotes, stopping commands on each transport, the WSL batch and the long-lived `cat-file` through
 `wsl.exe`, `inotifywait` through the local and WSL transports, opening a WSL repository from the
 Windows build and a Windows folder with Windows Git from WSL, the keychain against an in-memory
 store, the TypeScript bindings export, and the SSH transport against a private `sshd` (host keys,
-passphrases, refused passwords). Tests that need WSL interop or `inotifywait` skip themselves
+passphrases, refused passwords, reconnecting with backoff). Tests that need WSL interop or `inotifywait` skip themselves
 elsewhere. Three ignored tests need this machine or a large repository:
 `cargo test -- --ignored agrees_with_wslpath`, `cargo test -- --ignored probe_real_keys --nocapture`,
 and `STASHPANDA_TIMING_REPO=<path> cargo test --lib time_large_repository -- --ignored --nocapture`.
