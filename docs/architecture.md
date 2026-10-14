@@ -666,34 +666,25 @@ files; this is what a reader of the plan above needs to know.
 
 ### Status against the milestones
 
-Done: M0 entirely; M1 steps 8 to 13 (queries, graph, frontend panels, cache, native and polling
-watchers), 15b (key manager) and 16 (SSH transport over `russh`, tested against a private `sshd`
-started by the test on a free port with throwaway keys). M2 entirely, since 2026-10-14: checkout,
-branch create, rename and delete, tags, merge, reset, cherry-pick and revert with their aborts,
-stage, unstage, discard and commit, stashes, `safe.directory`, and staging, unstaging and
-discarding single lines and hunks (`git/ops/lines.rs`), with the Files panel's menu and toolbar
-buttons, the stale-lock and `safe.directory` prompts, and the diff viewer's hunk and line buttons.
-M3 so far: pull, fetch, push, sync and clone. Plus the interface work in the notes above.
+Done: M0 and M1 entirely, since 2026-10-14, apart from PPK export (left until a tool needs it) and
+the checks that need a real SSH host and the Windows window; M2 entirely, since 2026-10-14. M3 so
+far: pull, fetch, push, sync and clone. See `next-steps.md` for each item.
 
-Not done yet: step 14 (the WSL transport is written but has not been exercised from the Windows
-build), step 15 (`inotifywait` over SSH and WSL; those repositories poll every 3 s), step 17
-(`run_batch`), the pinned `cat-file --batch-command` helper (blob reads spawn `cat-file blob` per
-request), the Settings dialog's SSH Keys page (the `keys_*` commands exist and are typed in
-`bindings.ts`), and the UI for the host-key trust and password prompts. In M3: conflict
-resolution, blame and file history.
+Not done yet: in M3, conflict resolution, blame and file history, auto-fetch, SSH reconnect with
+backoff and a `transport_state` event, `ProxyJump`, and syntax highlighting in the diff viewer.
 
 ### Tests
 
-`cd src-tauri && cargo test` runs 81 tests, on Linux and, since 2026-10-14, on Windows: path
-mapper table, every parser on captured bytes, ordering and lane sweep fixtures, snapshot and cache
-round trips, the graph with hidden refs, an end-to-end run of every query against a throwaway
-repository, modification times through the local transport, an end-to-end open, graph build,
-persist and cache reload, every write operation against a throwaway repository (including reset,
-cherry-pick, revert, rename, line staging with CRLF, a missing final newline and a new file, and
-`safe.directory` through Git's `GIT_TEST_ASSUME_DIFFERENT_OWNER`), pull, fetch, push, sync and
-clone against throwaway remotes, stopping commands on each transport, reading old saved column
-widths, the TypeScript bindings export, and the SSH transport against a private `sshd`.
-Two ignored tests need this machine:
-`cargo test -- --ignored agrees_with_wslpath` (cross-checks the path mapper with `wslpath`) and
-`cargo test -- --ignored probe_real_keys --nocapture` (lists every key in the Windows and WSL
-`.ssh` folders with format, algorithm and fingerprint, read-only).
+`cd src-tauri && cargo test` runs 105 tests, on Linux and Windows: path mapper table, every parser on
+captured bytes, ordering (date and topological) and lane sweep fixtures, snapshot and cache round
+trips, the incremental refresh against a full load, the graph search, end-to-end runs of every query
+and every write operation against throwaway repositories (including line staging, reset,
+cherry-pick, revert and `safe.directory`), pull, fetch, push, sync and clone against throwaway
+remotes, stopping commands on each transport, the WSL batch and the long-lived `cat-file` through
+`wsl.exe`, `inotifywait` through the local and WSL transports, opening a WSL repository from the
+Windows build and a Windows folder with Windows Git from WSL, the keychain against an in-memory
+store, the TypeScript bindings export, and the SSH transport against a private `sshd` (host keys,
+passphrases, refused passwords). Tests that need WSL interop or `inotifywait` skip themselves
+elsewhere. Three ignored tests need this machine or a large repository:
+`cargo test -- --ignored agrees_with_wslpath`, `cargo test -- --ignored probe_real_keys --nocapture`,
+and `STASHPANDA_TIMING_REPO=<path> cargo test --lib time_large_repository -- --ignored --nocapture`.

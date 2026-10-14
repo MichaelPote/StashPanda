@@ -4,8 +4,9 @@ Status as of 2026-10-14. Written on 2026-09-18, with the Windows workflow update
 milestone 2 planned on 2026-09-23, the commit dialog and a round of interface and graph work
 added on 2026-09-30, and stashes, a second round of interface work and pull added on 2026-10-01
 (see "Interface, merge and checkout work" and "Milestone 3" below), and the first run in the real
-app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"), and the rest of
-milestone 2 the same day. Everything not listed here is done and tested; see
+app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"), the rest of
+milestone 2 the same day, and the rest of milestone 1 after it (the open items left there need a real
+SSH host or the Windows window). Everything not listed here is done and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
 
@@ -59,84 +60,103 @@ Each item names the files it touches so it can be picked up cold.
 
 ### Backend
 
-- [ ] **Step 14: test the WSL transport from the Windows build.** `src-tauri/src/transport/wsl.rs`
-      is written but has only unit tests for UTF-16 decoding. Start the Windows build with
-      `npm run win:ux` from WSL, then in the app open
-      `\\wsl.localhost\Ubuntu\home\me\code\stashpanda`, confirm the console shows
-      `wsl.exe -d Ubuntu -e env ... git -C /home/me/code/stashpanda ...`, confirm `wsl_list_distros`
-      returns `Ubuntu`, and verify the argument self-test the plan calls for (an argument with a
-      space and a quote through `wsl.exe -e`) with a fallback to `-e sh -c '<quoted>'` if `wsl.exe`
-      re-splits it. The remote-pid wrapper for cancellable commands exists since 2026-10-01 (see
-      "Stopping a command properly" under milestone 3), and an argument with a space and a quote
-      was seen to pass through `wsl.exe -e` unsplit from WSL interop that day.
-- [ ] **Windows git from Linux for `/mnt/<d>/` paths.** `repo/resolve.rs` builds a `LocalTransport`
-      with `windows_git_from_linux = true` and a `WindowsFromLinuxMapper`; untested against a real
-      `/mnt/c/...` repository. Open one from the Linux build and check the console shows `C:\...`
-      paths and that `dubious ownership` is handled (`fix_safe_directory` command does not exist yet).
-- [ ] **Step 15: `inotifywait` over SSH and WSL** (`src-tauri/src/watch/remote.rs`, new). Probe
-      `command -v inotifywait` on the target; stream
-      `inotifywait -m -r -q -e modify,close_write,create,delete,move,attrib --exclude '(/\.git/(objects|lfs|logs)/|\.lock$)' --format '%w%f|%e' <worktree> <gitdir>`
-      through the transport with `Program::Other`; map lines with the same `classify_git_dir_path`
-      the native watcher uses; downgrade to polling on exit and emit `watcher_state`. Today SSH and
-      WSL repositories poll every `polling.status_interval_ms` (3 s) via `watch/polling.rs`.
-- [ ] **Watcher activity levels.** `Watcher::set_activity(Focused | Background | Hidden)` from the
-      plan is not implemented; polling uses one interval. Add a `set_repo_activity(key, activity)`
-      command called from the frontend on window focus/blur and tab visibility, and honour
-      `polling.status_background_interval_ms`.
-- [ ] **Step 11: pinned `cat-file --batch-command --buffer` helper** (`src-tauri/src/git/catfile.rs`,
-      new). `queries/blob.rs::get_blob` spawns `git cat-file blob <spec>` per request; over SSH or
-      `wsl.exe` that is one round trip or one process per file. Keep one long-lived process (or SSH
-      channel) per repository behind an async mutex: `info <spec>` first to refuse anything over
-      `BLOB_CAP`, then `contents <spec>`, then `flush`; respawn lazily if it dies; shut down after
-      10 minutes idle. Log spawn and exit as `Internal`; log per-request traffic only when
-      `console.verbose_helpers` is on.
-- [ ] **Step 17: `run_batch` for `wsl.exe`.** `Transport::run_batch` does not exist. For the WSL
-      transport combine the refresh's `for-each-ref`, `status` and `stash list` into one
-      `wsl.exe -e sh -c '...'` spawn with NUL separators between outputs. Not needed for SSH
-      (channels are cheap) or Local.
-- [ ] **Incremental graph refresh** (`graph/loader.rs::refresh_full`). Every refresh runs a full
-      `git log`. Implement the plan's incremental path: diff the new `RefsSnapshot` against the
-      snapshot's refs, feed new or moved tips as positives and unchanged tips plus the old oids of
-      moved refs (checked with `cat-file --batch-check` or the pinned helper) as negatives to
-      `queries/log.rs::get_log_between` (already written), insert into a cloned `CommitStore`,
-      `retain_reachable_from(new tips)`, fall back to full when more than 20,000 commits arrive or
-      the incremental log fails. Persist deletions (the cache `persist` already deletes oids missing
-      from the store).
-- [ ] **Cache eviction at startup.** `storage/repo_cache.rs::evict` exists and is tested but nothing
-      calls it. Call it from `AppState::init` (or the first `graph_open`) with the library keys and
-      `cache.max_cached_repos`, and remove cache rows when `repo_remove` runs.
-- [ ] **500-row fast first paint.** `load_from_cache` loads the whole cached store and rebuilds the
-      snapshot. For very large repositories add the plan's first page (`ORDER BY seq DESC LIMIT 500`,
-      partial sweep, `complete: false`) followed by the full load. Measure a 100k-commit clone first;
-      only build this if the whole-store load exceeds roughly 200 ms.
-- [ ] **Partial snapshots while a live load streams.** `get_log` collects all output before parsing.
-      For a repository with no cache the user sees nothing until Git finishes. Stream stdout through
-      `Transport::spawn`, parse NUL records as they arrive, emit `graph_progress` every 2,000 records
-      and swap a `complete: false` snapshot every 500 ms.
+- [x] **Step 14: the WSL transport from the Windows build** (2026-10-14). The test
+      `windows_opens_a_wsl_repository_through_its_unc_path` (`repo/cross_e2e.rs`, Windows only)
+      makes a repository inside WSL, opens it through `\\wsl.localhost\<distro>\tmp\…` with
+      `Connection::Auto` the way the Windows build does, and checks that the WSL transport was
+      chosen, then runs status, refs, a commit of a file with a space in its name, a file read, and
+      `rev-parse --sq-quote` on an argument with a space and both quotes. That argument arrives
+      unsplit through `wsl.exe -e`, so no `sh -c` fallback is needed. Run on Windows from the mirror.
+- [x] **Windows Git for `/mnt/<d>/` paths** (2026-10-14). The test
+      `wsl_opens_a_windows_folder_with_windows_git` makes a repository in the Windows `%TEMP%`
+      folder and opens it from the Linux build: it runs
+      `/mnt/c/Program Files/Git/bin/git.exe -C C:\Users\…`, and status, refs and a commit work.
+      No "dubious ownership" came up there; where it does, the "Trust this folder…" notice from
+      milestone 2 handles it.
+- [x] **Step 15: `inotifywait` over SSH and WSL** (2026-10-14, `watch/remote.rs`). A remote
+      repository starts by polling; meanwhile the app checks for `inotifywait` on the other system
+      and, when it is there, runs `inotifywait -m -r` through the repository's own transport (in a
+      session of its own, so stopping reaches it) and swaps it in. Its `--exclude` leaves out Git's
+      object store, logs and lock files and every folder Git ignores, so a `node_modules` neither
+      floods it nor uses up the limit on watched folders. Lines map to the native watcher's events.
+      Without `inotifywait`, or when it stops, polling takes over and `watcher_state.detail` says
+      why ("Install inotify-tools there…"). Over SSH it holds one of the connection's eight
+      channels for as long as the repository is open. Tests: `watches_through_the_local_and_wsl_transports`
+      (an ignored write is not reported, an edit and a commit are, stopping ends the process).
+      Tried in the running Linux build over SSH to a private `sshd`: a change on the server showed
+      in 0.4 s, against 2.3 s when polling.
+- [x] **Watcher activity levels** (2026-10-14). `set_repo_activity(key, activity)` with
+      `Focused`, `Background` or `Hidden`, sent by `stores/sessions.ts` when the active tab, window
+      focus or page visibility changes. Polling checks status every `polling.statusIntervalMs`,
+      `statusBackgroundIntervalMs`, or four times that for a hidden tab, and checks at once when the
+      tab becomes the focused one again; it checks the refs at `polling.refsIntervalMs`. Watchers
+      that are told about changes ignore the activity.
+- [x] **Step 11: one long-lived `cat-file`** (2026-10-14, `git/catfile.rs`, `RepoHandle::catfile`).
+      Blob reads (`get_blob_content`) go through one `git cat-file --batch-command --buffer` per
+      repository when Git is 2.36 or newer: `info` first, so a blob over `BLOB_CAP` is refused
+      with `tooLarge` without being read, then `contents`. It starts on the first read, starts again
+      once if it has died, and stops after ten minutes unused or when the tab closes. The console
+      shows it as one entry for its lifetime, and each request too with `console.verboseHelpers`.
+      The incremental graph refresh also uses it (`CatFile::missing`). Test:
+      `reads_blobs_through_one_process`, through the local transport and `wsl.exe`.
+- [x] **Step 17: `run_batch` for WSL** (2026-10-14). `Transport::run_batch` runs several
+      commands; the WSL transport runs them in one `wsl.exe -e sh -c` script that prints each
+      command's exit code and output lengths, then the bytes (lengths, because `status -z` output
+      has NUL bytes). `queries::refs_and_status` uses it for a refresh's `for-each-ref`,
+      `rev-parse HEAD`, `symbolic-ref`, remotes and `status`: one `wsl.exe` start instead of five.
+      Other transports keep running `get_refs` and `get_status` side by side. Tests:
+      `batch_matches_separate_runs`, `refs_and_status_agree_between_batch_and_separate_runs`.
+- [x] **Incremental graph refresh** (2026-10-14, `incremental_store` in `graph/loader.rs`).
+      New tips the store lacks are walked from; tips it already holds, and old tips that
+      `cat-file` still finds, stop the walk; `retain_reachable_from` then drops what no tip reaches,
+      and the cache deletes those rows. Unchanged tips reuse the store without calling Git. It falls
+      back to a full load for more than 20,000 new commits, any Git failure, an incomplete snapshot,
+      or a result over `cache.maxCommitsPerRepo`. The toolbar's Refresh still reads everything
+      (`force_full`). On git.git (85,563 commits) a refresh after one new commit takes 299 ms in a
+      release build, against about 1.7 s before. Test: `incremental_refresh_matches_a_full_load`
+      (new commits, a moved branch, a force-push with pruned commits, a deleted branch, the
+      fallbacks), comparing rows and cache with a fresh full load.
+- [x] **Cache eviction** (2026-10-14). `AppState::init` calls `repo_cache::evict` with the library
+      keys and `cache.maxCachedRepos`; `repo_remove` deletes the repository's rows
+      (`repo_cache::forget`). Rows under a key that `repo_update` replaced stay until the next start.
+- [x] **500-row first paint** (2026-10-14). Measured on git.git: loading the whole cache took 260 ms
+      in a release build (1,231 ms in debug), over the 200 ms threshold, so
+      `repo_cache::load_first_page` paints the newest 500 rows first (2.6 ms) when the cache holds
+      more than 10,000 commits, then swaps in the whole store.
+- [x] **Partial snapshots while a load streams** (2026-10-14). `log::stream_log` parses `git log`
+      output as it arrives (`GitClient::exec_reading_stdout`), emits `graph_progress` every 2,000
+      commits, and, while nothing complete is on screen, swaps in a `complete: false` snapshot at
+      the first 2,000 commits and then every 500 ms. On git.git the first rows show 221 ms into a
+      1.7 s load.
 - **`fix_safe_directory` command:** moved to milestone 2, step 2e.
-- [ ] **`GraphOrder::Topo`.** `graph/order.rs` treats `Topo` the same as `Date`. Implement the
-      grouped tie-break (keep a branch's commits contiguous) or drop the setting.
-- [ ] **Text filter on the graph** (`graph_search` command). Planned, not started: return the next
-      row index whose subject, author or oid matches, in a direction, for the Ctrl+F box.
-- [ ] **`lastSelectedOid` restore.** The UI state's `perRepo[key].lastSelectedOid` is written on
-      every selection but never read back. Decide whether to select and scroll to it on the first
-      snapshot after open, then do it in `stores/sessions.ts`.
-- [ ] **Passphrase storage in the OS keychain.** `keys/secrets.rs::PassphraseCache` is
-      session-only. The plan names the `keyring` crate (Windows Credential Manager, Secret Service);
-      add an opt-in "store in system keychain" path with a session-only fallback where no backend
-      exists (likely inside WSL).
-- [ ] **`eol` on `DiffText`.** The diff toolbar has no line-ending badge because `get_file_diff`
-      returns no EOL information. Either detect it from the diff text in Rust or fetch it from the
-      blob query when a file is selected.
-- [ ] **Windows `.ssh` folders from the Windows build.** `keys::default_key_dirs` scans the platform
-      home and, from WSL, `/mnt/c/Users/*/.ssh`. From Windows it should also scan
-      `\\wsl.localhost\<distro>\home\*\.ssh` for each distro `wsl_list_distros` returns.
+- [x] **`GraphOrder::Topo`** (2026-10-14). Matches `git log --topo-order`: tips newest first, then a
+      stack instead of the date heap, so a merged branch's commits sit together under the merge.
+      Tests: `topo_order_keeps_a_branch_together_when_dates_interleave`, `topo_order_matches_git`.
+- [x] **`graph_search`** (2026-10-14). The next or previous row whose subject, author name or email
+      contains the text, or whose oid starts with it, wrapping at the ends, with the number of
+      matches; 3.5 to 4.7 ms on git.git.
+- [x] **Restoring the last selected commit** (2026-10-14, `restoreLastSelected` in
+      `stores/sessions.ts`). The first snapshot holding it selects it and scrolls to it, unless the
+      user has selected something already. Tried in the running app: close and reopen the tab.
+- [x] **Passphrases in the system keychain** (2026-10-14, `keys/keychain.rs`, the `keyring`
+      crate). `keysUnlock` takes `PassphraseMemory` (`none`, `session` or `keychain`); a passphrase
+      the keychain refuses is still kept for the session, and `KeyInfo.passphraseRemembered` says
+      where it went. Inside WSL there is usually no Secret Service, so the dialog offers the session
+      only and says why. Not yet tried with Windows Credential Manager in the running app.
+- [x] **Line endings on the diff** (2026-10-14). `DiffText.oldEol` and `newEol` come from the diff's
+      own lines, and the diff header shows "LF", "CRLF" or "Mixed", or "LF → CRLF" highlighted when
+      they change. Tried in the running app.
+- [x] **WSL `.ssh` folders from the Windows build** (2026-10-14). `default_key_dirs` adds
+      `\\wsl.localhost\<distro>\home\*\.ssh` for each running distribution
+      (`wsl::list_running_distros`); a stopped one is left out, because reading its files would
+      start it each time the key list is scanned. Not yet run on Windows.
 - [ ] **PPK export.** `keys::export_private` writes OpenSSH and PKCS#8 only; the `ssh-key` crate
-      reads PPK but does not write it. Add a PPK v3 writer only if a tool that still needs PPK
-      turns up.
-- [ ] **Password authentication prompt flow.** `ssh_set_password` stores a password for
-      `user@host:port`; the open then has to be retried by the caller. Consider retrying inside
-      `repo_open` once a password arrives.
+      reads PPK but does not write it. Left for when a tool that still needs PPK turns up.
+- [x] **Password prompt and retry** (2026-10-14). `sshAuthFailed` now carries `port`, `user`,
+      `passwordAllowed` (from the server's own list of methods) and `passwordRejected`; a refused
+      password is forgotten. The frontend asks and retries the open through `reportOpenFailure`.
+      A password that succeeds cannot be tested here: an `sshd` run as a normal user cannot check
+      passwords.
 
 ### Frontend
 
@@ -215,45 +235,51 @@ Each item names the files it touches so it can be picked up cold.
       values. `src/lib/diff/font.ts` turns the settings into the styles both the viewer and the
       preview use; the line-number gutters are now `5.5ch` and the marker `1.7ch`, so 5-digit line
       numbers fit at any font size. The font applies to the diff rows only.
-- [ ] **SSH Keys page** (`src/components/settings/KeyManagerPage.vue`, `KeyRow.vue`,
-      `KeyImportDropzone.vue`, `PassphraseDialog.vue`, new). Commands exist and are typed:
-      `keysDefaultDirs`, `keysScan(extraDirs)`, `keysInspect`, `keysUnlock(path, passphrase, remember)`,
-      `keysForgetPassphrase`, `keysExportPublic`, `keysConvert(path, format, outPath, passphrase, newPassphrase, overwrite)`,
-      `keysGenerate(algorithm, comment, outPath, passphrase, overwrite)`, `keysChangePassphrase`,
-      `keysImport(text, outPath, passphrase, newPassphrase, overwrite)`, `keysAgentList`,
-      `keysAgentAdd(path, passphrase, lifetimeSecs)`. Show name, format badge (PPK 2, PPK 3, PEM,
-      OpenSSH, PKCS#8), algorithm and bits, SHA-256 fingerprint, encrypted and in-agent badges,
-      matching `.pub`; actions Use for repo, Convert to OpenSSH, Export, Copy public key, Add to
-      agent, Change passphrase, Reveal in folder, Delete; drag-and-drop or paste import; Generate.
-- [ ] **Identity picker in the Add Repository dialog** (`src/components/shell/AddRepoDialog.vue`).
-      The SSH advanced section has a plain text field for the identity file; replace it with a
-      picker fed by `keysScan`, and prompt for a passphrase through `keysUnlock` when the open
-      returns `sshNeedsPassphrase`.
-- [ ] **Host key trust dialog.** When `repoOpen` fails with `sshHostKeyUnknown { host, fingerprint }`
-      show the fingerprint with Trust / Cancel; Trust calls `sshTrustHost(host, port)` and retries
-      the open. `sshHostKeyChanged` gets a hard error dialog with no override.
-- [ ] **Password dialog.** On `sshAuthFailed` offer a password field; call
-      `sshSetPassword(host, port, user, password)` and retry the open.
+- [x] **SSH Keys page** (2026-10-14, `KeyManagerPage.vue`, `KeyRow.vue`, `KeyImportDropzone.vue`,
+      `PassphraseDialog.vue`). Every key in the `.ssh` folders and `keys.extraDirs`, with its
+      format, algorithm, fingerprint and badges, and Copy public key, Use for repository, Convert to
+      OpenSSH, Export, Add to agent, Change or Forget passphrase, Reveal in folder and Delete; Generate,
+      Import (drop, choose or paste) and Add Folder. New commands `keysDelete`, `keysReadFile`,
+      `keysDefaultComment`, `keysKeychainStatus`. Passphrase, host key and password dialogs open on
+      top of Settings. Tried in the running app (list, actions menu); dropping a file from the
+      desktop has not been tried.
+- [x] **Key picker in Add Repository** (2026-10-14). The SSH key field is a list fed by
+      `keysScan`, with Automatic first and the chosen key's fingerprint under it. Tried in the
+      running app. Switching the connection to SSH does not yet fill Host and User from a
+      `user@host:path` already typed.
+- [x] **Host key dialog** (2026-10-14, `HostKeyDialog.vue`). An unknown key shows its fingerprint
+      with Trust and Connect; a changed key is a red warning that only closes and says how to remove
+      the old line. Tried in the running app against a private `sshd`, then the passphrase dialog
+      (a wrong passphrase is said to be wrong) and the open.
+- [x] **Password dialog** (2026-10-14, `SshPasswordDialog.vue`): calls `sshSetPassword`, then the
+      open is retried; a refused password shows "The server refused the last password."
 - [x] **Stash list in the Branches panel** (2026-10-01; see milestone 2, step 3). The Stashes
       heading lists each stash with its message and a relative time, and right-clicking one offers
       Apply, Pop and Drop.
-- [ ] **Watcher hint.** `watcherStateEvent.detail` (for example "filesystem notifications are not
-      available for this connection; polling instead") is stored in the session but only the kind is
-      shown in the status bar. Surface the detail as a tooltip or an info strip.
-- [ ] **Startup warnings and app warnings** are shown as strips; check they also cover
-      `RepoInfo.warnings` (Windows git over UNC, Linux git for a Windows folder) after a repo opens.
-- [ ] **Page cache eviction.** `session.graph.pages` is never evicted until the next snapshot;
-      scrolling a 100k-commit history keeps every fetched page. Drop pages far from the viewport.
-- [ ] **Graph text filter box** (Ctrl+F) once `graph_search` exists.
+- [x] **Watcher hint** (2026-10-14). `watcherDetail` is the status bar watcher label's tooltip, with
+      a mark beside the label when there is one. The first watcher state, which arrives before the
+      tab's session exists, is now held until it does (before, the label never showed), and
+      `repo_open` announces it again to a frontend that reloaded.
+- [x] **Repository warnings** (2026-10-14). The active repository's `RepoInfo.warnings` show as
+      strips under the startup warnings, each dismissible for that tab.
+- [x] **Dropping far pages** (2026-10-14, `useGraphPages.dropFarPages`, `lib/graph/pageWindow.ts`):
+      pages more than five from the visible rows are dropped when the view moves.
+- [x] **Find box** (2026-10-14, `GraphFindBar.vue`): Ctrl+F or Edit > Find Commit; Enter and
+      Shift+Enter move through matches, Escape closes it. Tried in the running app.
 - [ ] **Syntax highlighting in the diff viewer** (Shiki in a Web Worker was the candidate). Planned
       for milestone 3; listed here because the diff viewer is otherwise complete.
-- [ ] **Gravatar opt-in** for the author cell (`appearance.avatarSource` exists in settings).
+- [x] **Gravatar** (2026-10-14, `lib/avatars.ts`). With `appearance.avatarSource` set to Gravatar,
+      the author cell shows the picture for the SHA-256 hash of the email address, and keeps the
+      initials when there is none.
 
 ### Verification still owed for milestone 1
 
-- [ ] Smooth scrolling on a 100k-commit clone (for example the `git` or `linux` repository): first
-      paint from cache, page fetch latency, SVG repaint cost. Not yet measured on anything larger
-      than 370 commits.
+- [x] Large history (2026-10-14, git.git, 85,563 commits, release build): first paint from cache
+      2.6 ms, a 200-row page 0.3 to 2.3 ms, a refresh after one commit 299 ms. **Found:** git.git's
+      graph is 282 lanes wide, and a page in the middle carries 2.4 MB of JSON (43,520 edges) to
+      draw lanes the column clips anyway; that, not the backend, is the likely cost of scrolling.
+      Leaving out edges beyond the column's width would fix it. Debug builds build snapshots about
+      nine times slower, so timings in `tauri dev` look worse than the shipped app.
 - [x] Manual check of the rendered UI (2026-09-23): Michael looked at the running app and was
       happy with it.
 - [ ] Cross-side runs from the Windows build (`npm run win:ux`; see step 14 above) and against a real Brave Digital
