@@ -1,5 +1,6 @@
 //! `GitClient`: the single place a Git request becomes a process.
 
+pub mod catfile;
 pub mod console;
 pub mod ops;
 pub mod parse;
@@ -76,6 +77,7 @@ impl GitReq {
     }
 }
 
+#[derive(Clone)]
 pub struct GitClient {
     pub transport: SharedTransport,
     pub repo: NativePath,
@@ -170,6 +172,28 @@ impl GitClient {
             }
             Err(err) => {
                 self.console.finish(ticket, None, Some(&err));
+                Err(err)
+            }
+        }
+    }
+
+    /// Like `exec_allow_failure` for several commands at once, through `Transport::run_batch`
+    /// (one process start over WSL). Each command is logged in the console on its own, with the
+    /// batch's duration.
+    pub async fn exec_batch(&self, reqs: Vec<GitReq>) -> Result<Vec<Output>> {
+        let cmds: Vec<Cmd> = reqs.iter().map(|r| self.build_cmd(r)).collect();
+        let tickets: Vec<_> = cmds.iter().map(|c| self.console.start(c, self.transport.render(c))).collect();
+        match self.transport.run_batch(cmds).await {
+            Ok(outs) => {
+                for (t, out) in tickets.into_iter().zip(&outs) {
+                    self.console.finish(t, Some(out), None);
+                }
+                Ok(outs)
+            }
+            Err(err) => {
+                for t in tickets {
+                    self.console.finish(t, None, Some(&err));
+                }
                 Err(err)
             }
         }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { CircleCheckIcon, EyeIcon, GitBranchIcon, LoaderCircleIcon, MonitorIcon, ServerIcon, XIcon } from "@lucide/vue";
+import { CircleCheckIcon, EyeIcon, GitBranchIcon, InfoIcon, LoaderCircleIcon, MonitorIcon, ServerIcon, XIcon } from "@lucide/vue";
 import { Separator } from "@/components/ui/separator";
 import { hostLabel, transportDetail } from "@/lib/format";
 import { stopOperation } from "@/lib/repoActions";
@@ -67,9 +67,11 @@ const watcherText = computed(() => {
       </span>
       <template v-if="watcherText">
         <Separator orientation="vertical" class="h-3" />
-        <span class="inline-flex shrink-0 items-center gap-1" title="How changes in this repository are detected">
+        <span class="inline-flex shrink-0 items-center gap-1" :title="active?.watcherDetail ?? 'How changes in this repository are detected'">
           <EyeIcon class="size-3" />
           {{ watcherText }}
+          <!-- The watcher has something to explain, such as why it polls; the tooltip says what. -->
+          <InfoIcon v-if="active?.watcherDetail" class="size-3 text-modified-fg" aria-label="See the tooltip for why" />
         </span>
       </template>
     </template>

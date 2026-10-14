@@ -5,6 +5,7 @@ use specta::Type;
 
 use crate::error::{GitError, Result};
 use crate::git::parse::looks_binary;
+use crate::git::queries::blob::{detect_eol, Eol};
 use crate::git::{GitClient, GitReq};
 use crate::transport::paths::NativePath;
 
@@ -45,6 +46,37 @@ pub struct DiffText {
     pub is_binary: bool,
     pub truncated: bool,
     pub bytes: u64,
+    /// Line endings of the lines the diff shows from the old version (context and removed lines),
+    /// and from the new version (context and added lines). A diff shows only part of a file, so
+    /// this describes those lines, which is where a change of line endings shows.
+    pub old_eol: Eol,
+    pub new_eol: Eol,
+}
+
+/// The line endings of the old and new sides of the hunk lines in a unified diff.
+pub fn diff_eols(diff: &[u8]) -> (Eol, Eol) {
+    let (mut old, mut new) = (Vec::new(), Vec::new());
+    let mut in_hunk = false;
+    for line in diff.split_inclusive(|b| *b == b'\n') {
+        if line.starts_with(b"@@ ") {
+            in_hunk = true;
+            continue;
+        }
+        if !in_hunk {
+            continue;
+        }
+        match line.first() {
+            Some(b' ') => {
+                old.extend_from_slice(line);
+                new.extend_from_slice(line);
+            }
+            Some(b'-') => old.extend_from_slice(line),
+            Some(b'+') => new.extend_from_slice(line),
+            Some(b'\\') => {}
+            _ => in_hunk = false,
+        }
+    }
+    (detect_eol(&old), detect_eol(&new))
 }
 
 const DIFF_CAP: usize = 8 * 1024 * 1024;
@@ -57,11 +89,14 @@ pub fn finish(mut stdout: Vec<u8>) -> DiffText {
     }
     let is_binary = looks_binary(&stdout)
         || String::from_utf8_lossy(&stdout[..stdout.len().min(4096)]).contains("Binary files ");
+    let (old_eol, new_eol) = if is_binary { (Eol::None, Eol::None) } else { diff_eols(&stdout) };
     DiffText {
         text: String::from_utf8_lossy(&stdout).into_owned(),
         is_binary,
         truncated,
         bytes,
+        old_eol,
+        new_eol,
     }
 }
 
@@ -91,6 +126,8 @@ pub fn synthesize_untracked(path: &str, content: &[u8]) -> DiffText {
             is_binary: true,
             truncated: false,
             bytes: content.len() as u64,
+            old_eol: Eol::None,
+            new_eol: Eol::None,
         };
     }
     let text = String::from_utf8_lossy(content);
@@ -106,7 +143,7 @@ pub fn synthesize_untracked(path: &str, content: &[u8]) -> DiffText {
     if !text.is_empty() && !text.ends_with('\n') {
         out.push_str("\\ No newline at end of file\n");
     }
-    DiffText { text: out, is_binary: false, truncated: false, bytes: content.len() as u64 }
+    DiffText { text: out, is_binary: false, truncated: false, bytes: content.len() as u64, old_eol: Eol::None, new_eol: detect_eol(content) }
 }
 
 pub async fn get_diff(
@@ -195,6 +232,15 @@ mod tests {
         assert!(d.text.contains("@@ -0,0 +1,2 @@\n+a\n+b\n\\ No newline at end of file\n"));
         assert!(!d.is_binary);
         assert!(synthesize_untracked("x.bin", b"\0\x01").is_binary);
+    }
+
+    #[test]
+    fn finds_line_endings_on_each_side() {
+        let d = b"diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n same\n-old\n+new\r\n";
+        assert_eq!(diff_eols(d), (Eol::Lf, Eol::Mixed));
+        assert_eq!(diff_eols(b"@@ -1 +1 @@\n-a\r\n+a\n"), (Eol::CrLf, Eol::Lf));
+        assert_eq!(diff_eols(b"@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+a\n"), (Eol::Lf, Eol::Lf));
+        assert_eq!(synthesize_untracked("n.txt", b"x\r\ny\r\n").new_eol, Eol::CrLf);
     }
 
     #[test]

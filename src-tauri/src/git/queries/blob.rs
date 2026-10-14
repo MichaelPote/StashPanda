@@ -3,7 +3,12 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use crate::error::Result;
+use std::sync::Arc;
+
+use tokio_util::sync::CancellationToken;
+
+use crate::error::{GitError, Result};
+use crate::git::catfile::CatFile;
 use crate::git::parse::looks_binary;
 use crate::git::queries::diff::join_repo_path;
 use crate::git::{GitClient, GitReq};
@@ -59,8 +64,16 @@ pub fn from_bytes(bytes: Vec<u8>, truncated: bool) -> BlobContent {
 }
 
 /// `spec` is anything `cat-file` accepts: `<sha>:<path>`, `:0:<path>`
-/// (index), `:2:<path>` / `:3:<path>` (ours / theirs in a conflict).
-pub async fn get_blob(client: &GitClient, spec: &str) -> Result<BlobContent> {
+/// (index), `:2:<path>` / `:3:<path>` (ours / theirs in a conflict). With `helper`, through the
+/// repository's long-lived `cat-file` when this Git has `--batch-command` (2.36); a blob over
+/// `BLOB_CAP` is then refused with `tooLarge` instead of being read and cut short.
+pub async fn get_blob(client: &GitClient, helper: Option<(&Arc<CatFile>, &CancellationToken)>, spec: &str) -> Result<BlobContent> {
+    if let Some((catfile, cancel)) = helper.filter(|_| client.caps.batch_command) {
+        return match catfile.read(client, cancel, spec, BLOB_CAP).await? {
+            Some(bytes) => Ok(from_bytes(bytes, false)),
+            None => Err(GitError::ObjectNotFound { spec: spec.to_string() }),
+        };
+    }
     let out = client
         .exec(GitReq::new("cat-file", ["cat-file", "blob", spec]))
         .await?;

@@ -215,6 +215,22 @@ pub trait Transport: Send + Sync {
     async fn remove_dir_all(&self, path: &NativePath) -> Result<()>;
     async fn shutdown(&self) {}
 
+    /// True when `run_batch` runs its commands in one process start, which is worth more than
+    /// running them side by side (WSL, where every command is a `wsl.exe` start).
+    fn batches(&self) -> bool {
+        false
+    }
+
+    /// Run several commands with no stdin and return their outputs in order. One after another
+    /// here; a transport where each process start is costly overrides it.
+    async fn run_batch(&self, cmds: Vec<Cmd>) -> Result<Vec<Output>> {
+        let mut outs = Vec::with_capacity(cmds.len());
+        for cmd in cmds {
+            outs.push(self.run(cmd).await?);
+        }
+        Ok(outs)
+    }
+
     /// Spawn, feed stdin, drain both pipes, wait. Honors `cmd.timeout`.
     async fn run(&self, cmd: Cmd) -> Result<Output> {
         let timeout = cmd.timeout;

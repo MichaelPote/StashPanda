@@ -74,7 +74,9 @@ pub fn spawn(
                         repo_id: handle.key.clone(),
                         status: changes.status,
                         refs: changes.refs,
-                        cause: kind,
+                        // The watcher in use now: remote repositories switch between
+                        // polling and `inotifywait` while open.
+                        cause: handle.watcher.lock().ok().and_then(|w| w.as_ref().map(|w| w.kind())).unwrap_or(kind),
                     }
                     .emit(&app);
                 }

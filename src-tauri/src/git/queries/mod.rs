@@ -8,6 +8,32 @@ pub mod log;
 pub mod refs;
 pub mod status;
 
+use crate::error::Result;
+use crate::git::GitClient;
+
+/// The refs and the status together, as every refresh needs them: in one batch where each
+/// process start is costly (`Transport::batches`, over WSL), side by side otherwise.
+pub async fn refs_and_status(client: &GitClient) -> (Result<refs::RefsSnapshot>, Result<status::StatusSnapshot>) {
+    if !client.transport.batches() {
+        return tokio::join!(refs::get_refs(client), status::get_status(client));
+    }
+    let mut reqs = refs::refs_requests(client);
+    reqs.push(status::status_request(client));
+    match client.exec_batch(reqs).await {
+        Ok(outs) => {
+            let (refs_outs, status_out) = outs.split_at(outs.len() - 1);
+            let status = &status_out[0];
+            let status = if status.success() {
+                Ok(status::parse_status(&status.stdout))
+            } else {
+                Err(crate::error::classify_git_failure("status", vec![], status.exit_code, &status.stderr, &client.transport.kind()))
+            };
+            (refs::refs_from(refs_outs), status)
+        }
+        Err(e) => (Err(e.clone()), Err(e)),
+    }
+}
+
 /// End-to-end checks against a throwaway repository through the real local
 /// transport. Skipped when `git` is not on PATH.
 #[cfg(test)]
@@ -70,6 +96,29 @@ mod e2e {
             caps: Capabilities::for_version(info.git_version),
             console: Arc::new(ConsoleRecorder::new(None, "test".into(), 4096)),
         }
+    }
+
+    /// The refresh's refs and status come out the same from one WSL batch as from separate local
+    /// commands. Only inside WSL with interop.
+    #[tokio::test]
+    async fn refs_and_status_agree_between_batch_and_separate_runs() {
+        use crate::transport::paths::WslMapper;
+        use crate::transport::wsl::WslTransport;
+        let Ok(distro) = std::env::var("WSL_DISTRO_NAME") else { return };
+        if which::which("git").is_err() || !Path::new("/mnt/c/Windows/System32/wsl.exe").exists() {
+            return;
+        }
+        let dir = fixture();
+        let local = client_for(&dir).await;
+        let wsl = GitClient {
+            transport: Arc::new(WslTransport { distro: distro.clone(), git: "git".into(), mapper: WslMapper { distro, automount_root: "/mnt/".into() } }),
+            ..local.clone()
+        };
+        assert!(wsl.transport.batches() && !local.transport.batches());
+        let (lr, ls) = super::refs_and_status(&local).await;
+        let (wr, ws) = super::refs_and_status(&wsl).await;
+        assert_eq!(lr.unwrap(), wr.unwrap());
+        assert_eq!(ls.unwrap(), ws.unwrap());
     }
 
     #[tokio::test]
@@ -173,7 +222,7 @@ mod e2e {
         .unwrap();
         assert!(untracked.text.contains("+u\n"));
 
-        let blob = super::blob::get_blob(&client, &format!("{}:renamed.txt", second_commit.oid)).await.unwrap();
+        let blob = super::blob::get_blob(&client, None, &format!("{}:renamed.txt", second_commit.oid)).await.unwrap();
         assert_eq!(blob.text, "hello\nworld\nmore\n");
         let wt = super::blob::get_worktree_file(&client, "renamed.txt").await.unwrap();
         assert!(wt.text.ends_with("wip\n"));

@@ -6,6 +6,8 @@ import RefLabels from "@/components/graph/RefLabels.vue";
 import { formatAbsoluteTime, formatRelativeTime, hashString, initials, isoTime, shortOid } from "@/lib/format";
 import { laneColour, PALETTE_SIZE } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
+import { gravatarMissing, gravatarUrl } from "@/lib/avatars";
+import { useSettingsStore } from "@/stores/settings";
 
 const props = defineProps<{
   row: GraphRow;
@@ -16,6 +18,9 @@ const ctx = inject(GRAPH_CONTEXT, null);
 
 const avatarColour = computed(() => laneColour(hashString(props.row.authorEmail.toLowerCase()) % PALETTE_SIZE));
 const avatarText = computed(() => initials(props.row.authorName));
+const settings = useSettingsStore();
+/** The author's Gravatar picture when the setting asks for it and Gravatar has one. */
+const pictureUrl = computed(() => (settings.settings?.appearance?.avatarSource === "gravatar" ? gravatarUrl(props.row.authorEmail) : null));
 const detachedHead = computed(() => props.row.isHead && !props.row.refs.some((r) => r.isCurrent));
 
 const dateText = computed(() =>
@@ -42,7 +47,16 @@ const dateText = computed(() =>
     <!-- A size container, so the name can hide once the column is too narrow for even one letter
          and an ellipsis; the column then shows only the avatars. -->
     <div class="@container flex min-w-0 items-center gap-1.5 px-1.5">
+      <img
+        v-if="pictureUrl"
+        :src="pictureUrl"
+        class="size-4 shrink-0 rounded-full"
+        alt=""
+        aria-hidden="true"
+        @error="gravatarMissing(row.authorEmail)"
+      />
       <span
+        v-else
         class="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[0.55rem] leading-none font-semibold text-black/80"
         :style="{ backgroundColor: avatarColour }"
         aria-hidden="true"

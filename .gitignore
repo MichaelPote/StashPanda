@@ -29,3 +29,6 @@ dist-ssr
 *.tsbuildinfo
 /vite.config.js
 /vite.config.d.ts
+
+# Git worktrees that Claude Code creates for its background agents.
+/.claude/worktrees/

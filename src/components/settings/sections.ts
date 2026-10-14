@@ -148,7 +148,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         key: "avatarSource",
         label: "Author pictures",
         help: "Gravatar sends a hash of each author's email address to gravatar.com.",
-        applies: "unused",
         options: [
           { value: "initials", label: "Initials" },
           { value: "gravatar", label: "Gravatar" },
@@ -317,7 +316,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         key: "verboseHelpers",
         label: "Log requests to helper processes",
         help: "Each request sent to the long-running git cat-file and inotifywait processes.",
-        applies: "unused",
+        applies: "reopen",
       },
       {
         kind: "number",
@@ -372,7 +371,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         min: 1,
         max: 3600,
         step: 0.5,
-        applies: "unused",
+        applies: "reopen",
       },
       {
         kind: "number",
@@ -384,7 +383,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         min: 1,
         max: 3600,
         step: 0.5,
-        applies: "unused",
+        applies: "reopen",
       },
       {
         kind: "number",

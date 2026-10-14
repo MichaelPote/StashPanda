@@ -76,6 +76,12 @@ export const commands = {
 	 *  Windows folder from WSL. Null for an SSH repository, whose files are on another machine.
 	 */
 	getHostPath: (key: string, path: string) => typedError<string | null, GitError>(__TAURI_INVOKE("get_host_path", { key, path })),
+	/**
+	 *  Whether the user is looking at the repository: the active tab in the focused window, the
+	 *  active tab in a window in the background, or a tab that is not shown. Polling checks a
+	 *  repository less often the less it is looked at; watchers that are told about changes ignore it.
+	 */
+	setRepoActivity: (key: string, activity: Activity) => typedError<null, GitError>(__TAURI_INVOKE("set_repo_activity", { key, activity })),
 	getRepoRefs: (key: string) => typedError<RefsSnapshot, GitError>(__TAURI_INVOKE("get_repo_refs", { key })),
 	getCommitChanges: (key: string, commit: string, parent: string | null) => typedError<FileChange[], GitError>(__TAURI_INVOKE("get_commit_changes", { key, commit, parent })),
 	getCommitMessage: (key: string, commit: string) => typedError<string, GitError>(__TAURI_INVOKE("get_commit_message", { key, commit })),
@@ -290,6 +296,18 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  How much the user is looking at a repository, which sets how often polling checks it. Watchers
+ *  that are told about changes (native, `inotifywait`) do not need it.
+ */
+export type Activity = 
+/**  The active tab in the focused window: `polling.statusIntervalMs`. */
+"focused" | 
+/**  The active tab while the window is in the background: `polling.statusBackgroundIntervalMs`. */
+"background" | 
+/**  A tab that is not shown, or a minimised window: four times the background interval. */
+"hidden";
+
 /**  Non-fatal problems the UI shows as a toast (corrupt config file, etc.). */
 export type AppWarning = {
 	message: string,
@@ -542,6 +560,13 @@ export type DiffText = {
 	isBinary: boolean,
 	truncated: boolean,
 	bytes: number,
+	/**
+	 *  Line endings of the lines the diff shows from the old version (context and removed lines),
+	 *  and from the new version (context and added lines). A diff shows only part of a file, so
+	 *  this describes those lines, which is where a change of line endings shows.
+	 */
+	oldEol: Eol,
+	newEol: Eol,
 };
 
 /**  The diff header's choices and the side-by-side divider. */

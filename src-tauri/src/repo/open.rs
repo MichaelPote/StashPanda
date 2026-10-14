@@ -138,6 +138,8 @@ pub async fn open_repo(
         graph_version: std::sync::atomic::AtomicU64::new(0),
         last_status: RwLock::new(None),
         watcher: std::sync::Mutex::new(None),
+        activity: tokio::sync::watch::Sender::new(crate::watch::Activity::Focused),
+        catfile: Arc::new(crate::git::catfile::CatFile::new(settings.console.verbose_helpers)),
         hidden: std::sync::RwLock::new(Default::default()),
     }))
 }

@@ -188,7 +188,8 @@ fn make_entry(path: String, orig: Option<String>, xy: &str, sub: &str, score: Op
     }
 }
 
-pub async fn get_status(client: &GitClient) -> Result<StatusSnapshot> {
+/// The command `get_status` runs. Separate from reading its output so it can go in a batch.
+pub fn status_request(client: &GitClient) -> GitReq {
     let mut args = vec![
         "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ahead-behind",
     ]
@@ -198,7 +199,11 @@ pub async fn get_status(client: &GitClient) -> Result<StatusSnapshot> {
     if client.caps.status_show_stash {
         args.push("--show-stash".into());
     }
-    let out = client.exec(GitReq::new("status", args)).await?;
+    GitReq::new("status", args)
+}
+
+pub async fn get_status(client: &GitClient) -> Result<StatusSnapshot> {
+    let out = client.exec(status_request(client)).await?;
     Ok(parse_status(&out.stdout))
 }
 

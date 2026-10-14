@@ -6,6 +6,7 @@ use specta::Type;
 use crate::error::{GitError, Result};
 use crate::git::parse::{lossy, parse_i64};
 use crate::git::{GitClient, GitReq};
+use crate::transport::Output;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -177,22 +178,38 @@ pub fn parse_remotes(bytes: &[u8]) -> Vec<Remote> {
     remotes
 }
 
-pub async fn get_refs(client: &GitClient) -> Result<RefsSnapshot> {
+/// The commands `get_refs` runs: the refs, HEAD's oid and name, the branch name on an unborn
+/// branch, and the remotes. Separate from reading their output so they can go in one batch.
+pub fn refs_requests(client: &GitClient) -> Vec<GitReq> {
     let mut args = vec!["for-each-ref".to_string(), format!("--format={FOR_EACH_REF_FORMAT}")];
     if !client.caps.worktreepath {
         args[1] = args[1].replace("%00%(worktreepath)", "%00");
     }
     args.extend(["refs/heads", "refs/remotes", "refs/tags"].map(String::from));
-    let out = client.exec(GitReq::new("for-each-ref", args)).await?;
-    let refs = parse_for_each_ref(&out.stdout);
+    vec![
+        GitReq::new("for-each-ref", args),
+        // Fails in an empty repository; that is fine.
+        GitReq::new("rev-parse", ["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"]),
+        // On an unborn branch `symbolic-ref` still names it.
+        GitReq::new("symbolic-ref", ["symbolic-ref", "-q", "HEAD"]),
+        GitReq::new("config", ["config", "-z", "--get-regexp", r"^remote\..*\.(url|pushurl)$"]),
+    ]
+}
 
-    // HEAD: oid and symbolic name. Fails in an empty repository; that is fine.
-    let head_out = client
-        .exec_allow_failure(GitReq::new(
-            "rev-parse",
-            ["rev-parse", "HEAD", "--symbolic-full-name", "HEAD"],
-        ))
-        .await?;
+/// Reads the output of `refs_requests`, in its order.
+pub fn refs_from(outs: &[Output]) -> Result<RefsSnapshot> {
+    let [refs_out, head_out, sym_out, remotes_out] = outs else {
+        return Err(GitError::Internal { detail: format!("expected 4 outputs for the refs, got {}", outs.len()) });
+    };
+    if !refs_out.success() {
+        return Err(GitError::CommandFailed {
+            label: "for-each-ref".into(),
+            argv: vec![],
+            exit_code: refs_out.exit_code,
+            stderr: String::from_utf8_lossy(&refs_out.stderr).into_owned(),
+        });
+    }
+    let refs = parse_for_each_ref(&refs_out.stdout);
     let (head, head_ref, detached) = if head_out.success() {
         let text = String::from_utf8_lossy(&head_out.stdout);
         let mut lines = text.lines().map(str::trim);
@@ -201,20 +218,9 @@ pub async fn get_refs(client: &GitClient) -> Result<RefsSnapshot> {
         let detached = sym == "HEAD";
         (Some(oid), if detached { None } else { Some(sym) }, detached)
     } else {
-        // Unborn branch: `symbolic-ref` still tells us its name.
-        let sym = client
-            .exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "-q", "HEAD"]))
-            .await?;
-        let name = String::from_utf8_lossy(&sym.stdout).trim().to_string();
+        let name = String::from_utf8_lossy(&sym_out.stdout).trim().to_string();
         (None, if name.is_empty() { None } else { Some(name) }, false)
     };
-
-    let remotes_out = client
-        .exec_allow_failure(GitReq::new(
-            "config",
-            ["config", "-z", "--get-regexp", r"^remote\..*\.(url|pushurl)$"],
-        ))
-        .await?;
     // exit 1 = no matches; anything else is a real failure
     if !remotes_out.success() && remotes_out.exit_code != Some(1) {
         return Err(GitError::CommandFailed {
@@ -231,6 +237,19 @@ pub async fn get_refs(client: &GitClient) -> Result<RefsSnapshot> {
         detached,
         remotes: parse_remotes(&remotes_out.stdout),
     })
+}
+
+pub async fn get_refs(client: &GitClient) -> Result<RefsSnapshot> {
+    let mut outs = Vec::with_capacity(4);
+    for (i, req) in refs_requests(client).into_iter().enumerate() {
+        // `symbolic-ref` only matters when `rev-parse HEAD` failed.
+        if i == 2 && outs.get(1).is_some_and(|o: &Output| o.success()) {
+            outs.push(Output { exit_code: Some(0), stdout: Vec::new(), stderr: Vec::new() });
+            continue;
+        }
+        outs.push(client.exec_allow_failure(req).await?);
+    }
+    refs_from(&outs)
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 pub mod coalesce;
 pub mod native;
 pub mod polling;
+pub mod remote;
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -16,6 +17,19 @@ pub enum WatcherKind {
     RemoteInotify,
     Polling,
     Off,
+}
+
+/// How much the user is looking at a repository, which sets how often polling checks it. Watchers
+/// that are told about changes (native, `inotifywait`) do not need it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum Activity {
+    /// The active tab in the focused window: `polling.statusIntervalMs`.
+    Focused,
+    /// The active tab while the window is in the background: `polling.statusBackgroundIntervalMs`.
+    Background,
+    /// A tab that is not shown, or a minimised window: four times the background interval.
+    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

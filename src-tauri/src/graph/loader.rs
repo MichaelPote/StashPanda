@@ -96,7 +96,7 @@ pub async fn refresh_full(
     let client = &handle.client;
     let _shared = handle.lock.read().await;
 
-    let (refs_res, status_res) = tokio::join!(refs::get_refs(client), status::get_status(client));
+    let (refs_res, status_res) = crate::git::queries::refs_and_status(client).await;
     rebuild(app, db, handle, options, cache, reason, refs_res?, status_res?).await
 }
 
@@ -131,7 +131,7 @@ pub async fn refresh_if_changed(
     let _shared = handle.lock.read().await;
 
     let (refs_snap, status_snap) = if check_refs {
-        let (r, s) = tokio::join!(refs::get_refs(client), status::get_status(client));
+        let (r, s) = crate::git::queries::refs_and_status(client).await;
         (Some(r?), s?)
     } else {
         (None, status::get_status(client).await?)

@@ -5,6 +5,9 @@ pub mod open;
 pub mod resolve;
 pub mod watch_start;
 
+#[cfg(test)]
+mod cross_e2e;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -67,6 +70,10 @@ pub struct RepoHandle {
     pub graph_version: AtomicU64,
     pub last_status: RwLock<Option<StatusSnapshot>>,
     pub watcher: std::sync::Mutex<Option<Box<dyn WatcherHandle>>>,
+    /// The long-lived `cat-file` that blob reads go through.
+    pub catfile: Arc<crate::git::catfile::CatFile>,
+    /// Whether the user is looking at this repository; polling slows down when not.
+    pub activity: tokio::sync::watch::Sender<crate::watch::Activity>,
     /// Refs switched off in the graph; read by every snapshot build.
     pub hidden: std::sync::RwLock<Arc<HiddenRefs>>,
 }
@@ -94,6 +101,7 @@ impl RepoHandle {
             // Stopping joins the debouncer thread; keep it off the async runtime.
             let _ = tokio::task::spawn_blocking(move || w.stop()).await;
         }
+        self.catfile.shutdown(&self.client).await;
         self.transport.shutdown().await;
     }
 }

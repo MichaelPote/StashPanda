@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEventListener } from "@vueuse/core";
 import { FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
@@ -116,6 +116,20 @@ async function refresh(): Promise<void> {
 
 /** Files the Commit dialog would list for the active repository, shown on the toolbar's Commit button. */
 const commitCount = computed(() => commitFileCount(sessions.active?.status ?? null));
+/** Repository warnings dismissed in this run of the app, by repository key. */
+const dismissedRepoWarnings = reactive(new Map<string, Set<string>>());
+const repoWarnings = computed(() => {
+  const s = sessions.active;
+  if (!s) return [];
+  const dismissed = dismissedRepoWarnings.get(s.key);
+  return s.info.warnings.filter((w) => !dismissed?.has(w));
+});
+function dismissRepoWarning(warning: string): void {
+  const key = sessions.activeKey;
+  if (key === null) return;
+  dismissedRepoWarnings.set(key, new Set([...(dismissedRepoWarnings.get(key) ?? []), warning]));
+}
+
 /** Stage, Unstage and Discard act on the files selected in the Files panel. */
 const toolbarReasons = computed(() => ({
   stage: fileActionReason(sessions.active, "stage"),
@@ -164,6 +178,21 @@ const toolbarReasons = computed(() => ({
         <TriangleAlertIcon class="size-3.5 shrink-0" />
         <span class="truncate">{{ warning }}</span>
         <button type="button" class="ml-auto rounded p-0.5 hover:bg-modified/20" aria-label="Dismiss" @click="host.dismissWarning(i)">
+          <XIcon class="size-3.5" />
+        </button>
+      </div>
+
+      <!-- What the active repository's connection warned about when it opened (Windows Git over a
+           \\wsl.localhost path, Linux Git for a Windows folder), until dismissed for that tab. -->
+      <div
+        v-for="warning in repoWarnings"
+        :key="warning"
+        class="flex shrink-0 items-center gap-2 border-b border-modified/40 bg-modified/10 px-3 py-1 text-base text-modified-fg"
+        role="status"
+      >
+        <TriangleAlertIcon class="size-3.5 shrink-0" />
+        <span class="truncate" :title="warning">{{ sessions.active?.info.displayName }}: {{ warning }}</span>
+        <button type="button" class="ml-auto rounded p-0.5 hover:bg-modified/20" aria-label="Dismiss" @click="dismissRepoWarning(warning)">
           <XIcon class="size-3.5" />
         </button>
       </div>

@@ -142,7 +142,7 @@ pub async fn get_file_diff(
 #[specta::specta]
 pub async fn get_blob_content(state: State<'_, AppState>, key: String, spec: String) -> Result<BlobContent> {
     let h = repo(&state, &key).await?;
-    with_read_slot!(h, get_blob(&h.client, &spec).await)
+    with_read_slot!(h, get_blob(&h.client, Some((&h.catfile, &h.cancel)), &spec).await)
 }
 
 #[tauri::command]
@@ -150,6 +150,17 @@ pub async fn get_blob_content(state: State<'_, AppState>, key: String, spec: Str
 pub async fn get_worktree_file_content(state: State<'_, AppState>, key: String, path: String) -> Result<BlobContent> {
     let h = repo(&state, &key).await?;
     with_read_slot!(h, get_worktree_file(&h.client, &path).await)
+}
+
+/// Whether the user is looking at the repository: the active tab in the focused window, the
+/// active tab in a window in the background, or a tab that is not shown. Polling checks a
+/// repository less often the less it is looked at; watchers that are told about changes ignore it.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_repo_activity(state: State<'_, AppState>, key: String, activity: crate::watch::Activity) -> Result<()> {
+    let h = repo(&state, &key).await?;
+    h.activity.send_replace(activity);
+    Ok(())
 }
 
 /// Where the app can open or reveal `path` (relative to the top of the working tree), as this

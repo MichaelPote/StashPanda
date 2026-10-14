@@ -3,6 +3,7 @@ import { defineStore } from "pinia";
 import {
   commands,
   events,
+  type Activity,
   type Category,
   type ConsoleEvent,
   type DiffTarget,
@@ -134,6 +135,8 @@ export interface RepoSession {
   /** A row index the graph view should scroll into view (set by the Branches panel). */
   reveal: { index: number } | null;
   watcherKind: WatcherKind | null;
+  /** Why the watcher is what it is, when that needs saying ("inotifywait is not installed on …"). */
+  watcherDetail: string | null;
   /** The fetch, pull or push running in this repository, shown in the status bar. */
   operation: RunningOperation | null;
 }
@@ -346,8 +349,36 @@ export const useSessionsStore = defineStore("sessions", () => {
 
   function onWatcherState(ev: WatcherStateEvent): void {
     const session = sessions.get(ev.repoId);
-    if (session) session.watcherKind = ev.kind;
+    if (!session) return;
+    session.watcherKind = ev.kind;
+    session.watcherDetail = ev.detail;
   }
+
+  // ---- Activity: how much each repository is looked at, which sets how often polling checks it.
+
+  /** The activity last sent for each repository, so only changes reach the backend. */
+  const sentActivity = new Map<string, Activity>();
+
+  function activityOf(key: string): Activity {
+    if (key !== activeKey.value || document.visibilityState === "hidden") return "hidden";
+    return document.hasFocus() ? "focused" : "background";
+  }
+
+  function reportActivity(): void {
+    for (const key of sessions.keys()) {
+      const activity = activityOf(key);
+      if (sentActivity.get(key) === activity) continue;
+      sentActivity.set(key, activity);
+      // Only sets how often polling checks; a failure leaves it at the last level.
+      void commands.setRepoActivity(key, activity);
+    }
+    for (const key of sentActivity.keys()) if (!sessions.has(key)) sentActivity.delete(key);
+  }
+
+  watch([activeKey, () => sessions.size], reportActivity);
+  window.addEventListener("focus", reportActivity);
+  window.addEventListener("blur", reportActivity);
+  document.addEventListener("visibilitychange", reportActivity);
 
   async function loadStatus(session: RepoSession): Promise<void> {
     session.status = await unwrap(commands.getRepoStatus(session.key));
@@ -451,6 +482,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         scrollTop: 0,
         reveal: null,
         watcherKind: null,
+        watcherDetail: null,
         operation: null,
       });
       sessions.set(key, session);

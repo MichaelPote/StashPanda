@@ -2,7 +2,7 @@
 import { computed, ref, shallowRef, watch } from "vue";
 import { useDebounceFn, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon } from "@lucide/vue";
-import { commands, type DiffText, type LineAction, type SelectedLine } from "@/lib/bindings";
+import { commands, type DiffText, type Eol, type LineAction, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
@@ -381,6 +381,20 @@ function prevHunk(): void {
 // ---- Presentation --------------------------------------------------------------------------
 
 const selected = computed(() => props.session.selectedFile);
+
+const EOL_NAMES: Record<Eol, string | null> = { lf: "LF", crLf: "CRLF", mixed: "Mixed", none: null };
+/**
+ * The line endings of the lines the diff shows: one name when both versions agree ("CRLF"), the
+ * change when they differ ("LF → CRLF"), or null when the diff shows no line ends.
+ */
+const eolText = computed(() => {
+  const d = diff.value;
+  if (!d || d.isBinary) return null;
+  const [before, after] = [EOL_NAMES[d.oldEol], EOL_NAMES[d.newEol]];
+  if (before && after && before !== after) return `${before} → ${after}`;
+  return after ?? before;
+});
+const eolChanged = computed(() => eolText.value?.includes("→") ?? false);
 const headerPath = computed(() => {
   const s = selected.value;
   if (!s) return "";
@@ -542,6 +556,13 @@ function toggleContext(value: string): void {
     <PanelHeader title="Diff">
       <!-- The same look as the path beside the Commits header (CommitGraphView.vue), and selectable like it. -->
       <span v-if="selected" class="truncate text-xs text-muted-foreground select-text" :title="headerPath">{{ headerPath }}</span>
+      <span
+        v-if="eolText"
+        :class="cn('shrink-0 rounded-sm border px-1 font-mono text-[0.65rem] leading-[14px]', eolChanged ? 'border-modified/60 text-modified-fg' : 'border-border-soft text-muted-foreground')"
+        :title="eolChanged ? 'The line endings change in this diff' : 'Line endings of the lines this diff shows'"
+      >
+        {{ eolText }}
+      </span>
       <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
       <template #actions>
         <div v-if="selected" class="flex items-center gap-1 text-[0.7rem]">
