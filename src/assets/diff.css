@@ -120,4 +120,41 @@
   .diff-gutter-space {
     width: calc(2px + var(--diff-num-w) + var(--diff-mark-w));
   }
+
+  /* The Blame dialog's rows (`components/dialogs/BlameDialog.vue`): the commit column and the
+     line number, which stay in place while the text scrolls sideways, then the line itself. */
+  .blame-row {
+    @apply flex h-(--diff-row-h) whitespace-pre;
+  }
+  .blame-fixed {
+    @apply sticky left-0 z-[1] flex shrink-0;
+  }
+  /* The commit column: a bar in the commit's colour, then its short ID, author, date and
+     summary on a block's first line. Its background is the block's age shade, set inline. */
+  .blame-commit {
+    @apply grid w-(--blame-commit-w) shrink-0 cursor-pointer grid-cols-[3px_7.5ch_minmax(0,6.5rem)_6rem_minmax(0,1fr)] items-center gap-2 pr-2 font-sans text-xs select-none;
+  }
+  .blame-commit-bar {
+    @apply h-full;
+  }
+  /* The lines of the commit that was clicked: tinted with the primary colour, which no age shade
+     uses (the light theme's `--row-selected` is too close to a grey shade). Important, to win over
+     the inline age shade. */
+  .blame-commit-selected {
+    color: var(--foreground);
+    background-color: color-mix(in srgb, var(--primary) 38%, var(--background)) !important;
+    box-shadow: inset -2px 0 0 var(--primary);
+  }
+  .blame-line-selected .diff-code {
+    background-color: color-mix(in srgb, var(--primary) 9%, transparent);
+  }
+  /* A hairline above the first line of each block, drawn as a background image so the row keeps
+     its height and the cells' own backgrounds still show. */
+  .blame-block-start,
+  .blame-block-start .blame-commit,
+  .blame-block-start .diff-num {
+    background-image: linear-gradient(color-mix(in srgb, var(--foreground) 14%, transparent), color-mix(in srgb, var(--foreground) 14%, transparent));
+    background-size: 100% 1px;
+    background-repeat: no-repeat;
+  }
 }

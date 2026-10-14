@@ -8,10 +8,12 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { TooltipProvider } from "@/components/ui/tooltip";
 import AboutDialog from "@/components/dialogs/AboutDialog.vue";
 import ApplyStashDialog from "@/components/dialogs/ApplyStashDialog.vue";
+import BlameDialog from "@/components/dialogs/BlameDialog.vue";
 import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
 import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
+import FileHistoryDialog from "@/components/dialogs/FileHistoryDialog.vue";
 import HostKeyDialog from "@/components/dialogs/HostKeyDialog.vue";
 import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
 import SshPasswordDialog from "@/components/dialogs/SshPasswordDialog.vue";
@@ -281,6 +283,8 @@ const toolbarReasons = computed(() => ({
     <ApplyStashDialog />
     <PullDialog />
     <PushDialog />
+    <FileHistoryDialog />
+    <BlameDialog />
     <ConfirmDialog />
     <SettingsDialog />
     <PassphraseDialog />

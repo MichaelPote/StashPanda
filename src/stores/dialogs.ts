@@ -151,6 +151,24 @@ export interface SshPasswordPayload {
   subject: string;
 }
 
+export interface FileHistoryPayload {
+  key: string;
+  /** The file's path at `rev`. Older commits may know it by another name. */
+  path: string;
+  /** The commit the history starts from; null for HEAD. */
+  rev: string | null;
+}
+
+export interface BlamePayload {
+  key: string;
+  /** The file's path at `rev`. */
+  path: string;
+  /** The commit whose version is blamed; null for the working tree version. */
+  rev: string | null;
+  /** A line (counting from 1) to scroll into view once the lines have loaded. */
+  line?: number;
+}
+
 /** The Add Repository dialog's tabs: add a folder that is a repository already, or clone one. */
 export type AddRepoTab = "existing" | "clone";
 
@@ -165,6 +183,8 @@ export interface DialogSpecs {
   pull: { payload: PullPayload; result: OpResult | null };
   push: { payload: PushPayload; result: PushChoice | null };
   confirm: { payload: ConfirmPayload; result: boolean };
+  fileHistory: { payload: FileHistoryPayload; result: null };
+  blame: { payload: BlamePayload; result: null };
   passphrase: { payload: PassphrasePayload; result: PassphraseResult | null };
   /** Resolves true once the host key has been recorded in known_hosts. */
   sshHostKey: { payload: SshHostKeyPayload; result: boolean };
@@ -188,6 +208,8 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   pull: null,
   push: null,
   confirm: false,
+  fileHistory: null,
+  blame: null,
   passphrase: null,
   sshHostKey: false,
   sshPassword: false,

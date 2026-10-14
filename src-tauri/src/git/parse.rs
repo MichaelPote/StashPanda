@@ -30,6 +30,51 @@ pub fn looks_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8000).any(|b| *b == 0)
 }
 
+/// A path as Git prints it outside `-z` output: as it is, or, when it holds a double quote, a
+/// backslash or a control character, in double quotes with C escapes (`"a\tb"`, `"\303\274"`
+/// for a byte Git chose to escape). `core.quotepath=false` keeps other non-ASCII text as it is.
+pub fn unquote_path(bytes: &[u8]) -> String {
+    let [b'"', inner @ .., b'"'] = bytes else { return lossy(bytes) };
+    let mut out = Vec::with_capacity(inner.len());
+    let mut i = 0;
+    while i < inner.len() {
+        let b = inner[i];
+        i += 1;
+        if b != b'\\' || i >= inner.len() {
+            out.push(b);
+            continue;
+        }
+        let e = inner[i];
+        i += 1;
+        let plain = match e {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b't' => b'\t',
+            b'n' => b'\n',
+            b'v' => 0x0b,
+            b'f' => 0x0c,
+            b'r' => b'\r',
+            b'0'..=b'7' => {
+                // Three octal digits.
+                let mut value = u32::from(e - b'0');
+                for _ in 0..2 {
+                    match inner.get(i) {
+                        Some(d @ b'0'..=b'7') => {
+                            value = value * 8 + u32::from(d - b'0');
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                value as u8
+            }
+            other => other,
+        };
+        out.push(plain);
+    }
+    lossy(&out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -42,5 +87,15 @@ mod tests {
         assert!(looks_binary(b"ab\0cd"));
         assert!(!looks_binary(b"plain text"));
         assert_eq!(parse_i64(b" 42\n"), Some(42));
+    }
+
+    #[test]
+    fn unquotes_c_style_paths() {
+        assert_eq!(unquote_path(b"plain name.txt"), "plain name.txt");
+        assert_eq!(unquote_path("fünf.txt".as_bytes()), "fünf.txt");
+        assert_eq!(unquote_path(b"\"tab\\there.txt\""), "tab\there.txt");
+        assert_eq!(unquote_path(b"\"say \\\"hi\\\" \\\\ back\""), "say \"hi\" \\ back");
+        assert_eq!(unquote_path(b"\"f\\303\\274nf\""), "fünf");
+        assert_eq!(unquote_path(b"\""), "\"", "a lone quote is a name, not a quoted one");
     }
 }

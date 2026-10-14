@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from "vue";
 import { useDebounceFn, useResizeObserver } from "@vueuse/core";
-import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon } from "@lucide/vue";
+import { ChevronDownIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanTextIcon } from "@lucide/vue";
 import { commands, type DiffText, type Eol, type LineAction, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { fileViewReason, fileViewRev, openBlame, openFileHistory } from "@/lib/fileViews";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import { useVirtualRows } from "@/composables/useVirtualRows";
@@ -13,18 +15,27 @@ import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { opFailureText, runOp } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
-import { useSessionsStore, type RepoSession } from "@/stores/sessions";
+import { useSessionsStore, type RepoSession, type SelectedFile } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
-const props = defineProps<{
-  session: RepoSession;
-}>();
+const props = withDefaults(
+  defineProps<{
+    session: RepoSession;
+    /** The file to show in place of the session's selected file, as the File History dialog passes its commits' diffs. */
+    file?: SelectedFile | null;
+    /** Show the History and Blame buttons for the shown file in the header. */
+    fileActions?: boolean;
+  }>(),
+  { file: undefined, fileActions: true },
+);
 
 const settings = useSettingsStore();
 const uiState = useUiStateStore();
 const sessions = useSessionsStore();
 const dialogs = useDialogsStore();
+
+const selected = computed<SelectedFile | null>(() => (props.file !== undefined ? props.file : props.session.selectedFile));
 
 /** Font, size, line height, tab width and ligatures from the `diff` section of settings.json. */
 const font = computed(() => resolveDiffFont(settings.settings?.diff));
@@ -60,7 +71,7 @@ const error = ref<string | null>(null);
 let request = 0;
 
 async function load(): Promise<void> {
-  const file = props.session.selectedFile;
+  const file = selected.value;
   const id = (request += 1);
   if (!file) {
     diff.value = null;
@@ -94,7 +105,7 @@ async function load(): Promise<void> {
 const loadDebounced = useDebounceFn(load, 50);
 
 watch(
-  () => [props.session.selectedFile, contextLines.value, ignoreWhitespace.value, ignoreCrAtEol.value] as const,
+  () => [selected.value, contextLines.value, ignoreWhitespace.value, ignoreCrAtEol.value] as const,
   () => {
     void loadDebounced();
   },
@@ -380,7 +391,24 @@ function prevHunk(): void {
 
 // ---- Presentation --------------------------------------------------------------------------
 
-const selected = computed(() => props.session.selectedFile);
+/** Why the shown file's history and blame cannot be opened, or null. */
+const fileViewBlocked = computed(() => fileViewReason(selected.value?.target ?? null));
+
+function showHistory(): void {
+  const f = selected.value;
+  if (f && !fileViewBlocked.value) openFileHistory(props.session.key, f.path, fileViewRev(f.target));
+}
+
+function showBlame(): void {
+  const f = selected.value;
+  if (f && !fileViewBlocked.value) openBlame(props.session.key, f.path, fileViewRev(f.target));
+}
+
+/** The header's buttons for the shown file, with the tooltip each shows when it can be used. */
+const FILE_VIEW_BUTTONS = [
+  { label: "History", title: "Every commit that changed this file", icon: HistoryIcon, run: showHistory },
+  { label: "Blame", title: "The commit that last changed each line of this file", icon: ScanTextIcon, run: showBlame },
+];
 
 const EOL_NAMES: Record<Eol, string | null> = { lf: "LF", crLf: "CRLF", mixed: "Mixed", none: null };
 /**
@@ -566,6 +594,26 @@ function toggleContext(value: string): void {
       <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
       <template #actions>
         <div v-if="selected" class="flex items-center gap-1 text-[0.7rem]">
+          <template v-if="fileActions">
+            <Tooltip v-for="action in FILE_VIEW_BUTTONS" :key="action.label">
+              <TooltipTrigger as-child>
+                <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->
+                <span class="inline-flex">
+                  <button
+                    type="button"
+                    class="toggle inline-flex h-[18px] items-center gap-1 rounded-sm border px-2 leading-none font-medium disabled:opacity-50 [&_svg]:size-3"
+                    :disabled="fileViewBlocked !== null"
+                    @click="action.run"
+                  >
+                    <component :is="action.icon" />
+                    {{ action.label }}
+                  </button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" class="max-w-72">{{ fileViewBlocked ?? action.title }}</TooltipContent>
+            </Tooltip>
+            <span class="mx-0.5 h-3 w-px bg-border-soft" aria-hidden="true" />
+          </template>
           <div class="inline-flex overflow-hidden rounded-md border border-border-soft">
             <button
               type="button"

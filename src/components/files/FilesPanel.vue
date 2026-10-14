@@ -20,6 +20,7 @@ import {
   stageSelected,
   unstageSelected,
 } from "@/lib/repoActions";
+import { fileViewReason, fileViewRev, openBlame, openFileHistory } from "@/lib/fileViews";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import {
@@ -431,6 +432,9 @@ const openReason = computed(() => {
   return openFileReason(props.session);
 });
 
+/** Show History and Blame: from the commit for a commit's file, from the working tree otherwise. */
+const fileViewMenuReason = computed(() => (menuItem.value ? fileViewReason(menuItem.value.target) : "Right-click a file."));
+
 // ---- Name and path columns -----------------------------------------------------------------
 //
 // Unless the list is grouped by folder (where the heading has the path), each row shows the file
@@ -631,6 +635,9 @@ function pathText(item: FileItem): string {
             {{ mode === "commit" ? "Open the Working Tree Version" : "Open" }}
           </ActionMenuItem>
           <ActionMenuItem :reason="openReason" @select="menuItem && revealWorktreeFile(session.key, menuItem.path)">Show in Folder</ActionMenuItem>
+          <ContextMenuSeparator />
+          <ActionMenuItem :reason="fileViewMenuReason" @select="menuItem && openFileHistory(session.key, menuItem.path, fileViewRev(menuItem.target))">Show History</ActionMenuItem>
+          <ActionMenuItem :reason="fileViewMenuReason" @select="menuItem && openBlame(session.key, menuItem.path, fileViewRev(menuItem.target))">Blame</ActionMenuItem>
           <ContextMenuSeparator />
           <ActionMenuItem :reason="menuItem ? null : 'Right-click a file.'" @select="menuItem && copyText(menuItem.path, 'the path')">Copy Path</ActionMenuItem>
           <ActionMenuItem :reason="menuItem ? null : 'Right-click a file.'" @select="menuItem && copyFullPath(session, menuItem.path)">Copy Full Path</ActionMenuItem>
