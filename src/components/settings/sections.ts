@@ -256,7 +256,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         kind: "toggle",
         group: "diff",
         key: "syntaxHighlight",
-        label: "Colour the code",
+        label: "Syntax Highlighting",
         help: "Colour keywords, strings and comments by the file's language, chosen from its extension. Files without a known extension stay plain.",
       },
     ],

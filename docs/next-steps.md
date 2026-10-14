@@ -1118,9 +1118,31 @@ and anything over WSL or SSH.
       grammar loads the first time a file of its language is shown. **Found:** importing
       Shiki's full language list put all 346 grammars into the build as separate files, about
       10 MB more in the program, because Tauri builds every asset into it; the 62 chosen ones
-      add about 0.5 MB after Tauri's compression. Settings › Diff › "Colour the code" turns it
+      add about 0.5 MB after Tauri's compression. Settings › Diff › "Syntax Highlighting" turns it
       off, and the Settings preview follows the box. Tried in the running Linux build on
       2026-10-14 with TypeScript, Rust and an unknown extension.
+- [x] **Curves in the side-by-side diff** (2026-10-14). Side by side no longer pads the shorter
+      side of a change with blank rows. Each side shows only its own lines, and a 36 px gap
+      between them draws each change as a band from its old lines to its new lines, with curved
+      top and bottom edges (`src/lib/diff/sideLayout.ts`).
+      - A band has the changed lines' own background, outlined in the stronger changed-word
+        colour. A deletion is red, an insertion green, and a change with lines on both sides
+        fades from red to green. Hunk headers are joined by a band in the hunk colour.
+      - Where a change has no lines on one side, the band narrows to a point, and a line across
+        that side marks where the lines would go.
+      - Scrolling: both sides follow one scrollbar, measured in rows, where a change takes as
+        many rows as its longer side. Inside a change the shorter side moves more slowly
+        (`sideLine`). The two sides are lined up at a point that moves from the top of the view
+        to its bottom as the view scrolls from start to end (`sideOffsets`), so both sides start
+        at the top together and finish at the bottom together.
+      - The curves are inline SVG over the rows, not a canvas. Chromium gives a canvas a
+        compositor layer of its own, and text near such a layer can lose ClearType (see
+        "Font smoothing setting" and "ClearType in dialogs" above).
+      - The divider's line now shows only on hover and while dragging, so it does not cut
+        through the curves. A "No newline at end of file" note goes on the side it is about.
+      Tried in the running Linux build on 2026-10-14: an insertion, a deletion, three lines
+      changed into one, picking a line by its number, Stage hunk, hunk navigation and switching
+      to Unified. Not yet looked at in the Windows window.
 
 ## Packaging and CI
 

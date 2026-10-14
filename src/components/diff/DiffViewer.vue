@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from "vue";
+import { computed, ref, shallowRef, useId, watch } from "vue";
 import { useDebounceFn, usePreferredDark, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanTextIcon } from "@lucide/vue";
 import { commands, type DiffText, type Eol, type LineAction, type ResolveSide, type SelectedLine } from "@/lib/bindings";
@@ -11,6 +11,7 @@ import EmptyState from "@/components/shell/EmptyState.vue";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
+import { BandBuilder, bandEdges, bandPath, sideOffsets, type Band } from "@/lib/diff/sideLayout";
 import { highlightRuns, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
@@ -134,19 +135,25 @@ interface UnifiedRow {
   pair?: number;
 }
 
-interface SideRow {
-  kind: "hunk" | "pair" | "meta";
+/** One row on one side of the side-by-side layout, which shows each side's own lines only. */
+interface SideItem {
+  kind: "hunk" | "line" | "meta";
   hunk: number;
   header?: string;
-  left?: DiffLine;
-  right?: DiffLine;
+  line?: DiffLine;
   pair?: number;
   text?: string;
 }
 
 interface Built {
   unified: UnifiedRow[];
-  side: SideRow[];
+  /** Side by side: the old file's lines, the new file's lines, and how they line up. */
+  left: SideItem[];
+  right: SideItem[];
+  bands: Band[];
+  /** Rows the side-by-side layout scrolls through, and the row of each hunk header. */
+  sideRows: number;
+  sideHunks: number[];
   pairs: Pair[];
   maxLen: number;
   /** Longest line on each side of the side-by-side view, in characters with tabs expanded. */
@@ -156,25 +163,36 @@ interface Built {
 
 const built = computed<Built>(() => {
   const unified: UnifiedRow[] = [];
-  const side: SideRow[] = [];
+  const left: SideItem[] = [];
+  const right: SideItem[] = [];
+  const bands = new BandBuilder();
+  const sideHunks: number[] = [];
   const pairs: Pair[] = [];
   let maxLen = 0;
   let leftMax = 0;
   let rightMax = 0;
+  const done = (): Built => ({ unified, left, right, bands: bands.bands, sideRows: bands.rows, sideHunks, pairs, maxLen, leftMax, rightMax });
   const f = file.value;
-  if (!f) return { unified, side, pairs, maxLen, leftMax, rightMax };
+  if (!f) return done();
   const tab = font.value.tabWidth;
 
   f.hunks.forEach((hunk, h) => {
     unified.push({ kind: "hunk", hunk: h, header: hunk.header });
-    side.push({ kind: "hunk", hunk: h, header: hunk.header });
+    sideHunks.push(bands.rows);
+    left.push({ kind: "hunk", hunk: h, header: hunk.header });
+    right.push({ kind: "hunk", hunk: h, header: hunk.header });
+    bands.add("hunk", 1, 1);
     maxLen = Math.max(maxLen, hunk.header.length);
 
     let dels: DiffLine[] = [];
     let adds: DiffLine[] = [];
     // `\ No newline at end of file` lines sit between a del run and its add run; they must not
-    // break the pairing, so they are held back and emitted after the run.
+    // break the pairing, so they are held back and emitted after the run. Side by side, each
+    // goes on the side of the line it is about, at the end of that side's run.
     let metas: DiffLine[] = [];
+    let leftMetas: SideItem[] = [];
+    let rightMetas: SideItem[] = [];
+    let previous: DiffLine["kind"] | null = null;
     const flush = (): void => {
       const n = Math.max(dels.length, adds.length);
       const pairIds: (number | undefined)[] = [];
@@ -189,46 +207,58 @@ const built = computed<Built>(() => {
         pairIds.push(pair);
         if (d) leftMax = Math.max(leftMax, displayLength(d.text, tab));
         if (a) rightMax = Math.max(rightMax, displayLength(a.text, tab));
-        side.push({ kind: "pair", hunk: h, left: d, right: a, pair });
       }
       dels.forEach((d, i) => unified.push({ kind: "line", hunk: h, line: d, pair: pairIds[i] }));
       adds.forEach((a, i) => unified.push({ kind: "line", hunk: h, line: a, pair: pairIds[i] }));
-      for (const m of metas) {
-        unified.push({ kind: "line", hunk: h, line: m });
-        side.push({ kind: "meta", hunk: h, text: m.text });
-      }
+      for (const m of metas) unified.push({ kind: "line", hunk: h, line: m });
+      dels.forEach((d, i) => left.push({ kind: "line", hunk: h, line: d, pair: pairIds[i] }));
+      adds.forEach((a, i) => right.push({ kind: "line", hunk: h, line: a, pair: pairIds[i] }));
+      left.push(...leftMetas);
+      right.push(...rightMetas);
+      bands.add("change", dels.length + leftMetas.length, adds.length + rightMetas.length);
       dels = [];
       adds = [];
       metas = [];
+      leftMetas = [];
+      rightMetas = [];
     };
 
     for (const line of hunk.lines) {
       maxLen = Math.max(maxLen, displayLength(line.text, tab));
       if (line.kind === "del") {
         dels.push(line);
-        continue;
-      }
-      if (line.kind === "add") {
+      } else if (line.kind === "add") {
         adds.push(line);
-        continue;
-      }
-      if (line.kind === "meta") {
+      } else if (line.kind === "meta") {
         metas.push(line);
-        continue;
+        const item: SideItem = { kind: "meta", hunk: h, text: line.text };
+        if (previous === "del") leftMetas.push(item);
+        else if (previous === "add") rightMetas.push(item);
+        else {
+          // After an unchanged line: neither file ends with a newline.
+          flush();
+          left.push(item);
+          right.push({ ...item });
+          bands.add("same", 1, 1);
+        }
+      } else {
+        flush();
+        unified.push({ kind: "line", hunk: h, line });
+        const len = displayLength(line.text, tab);
+        leftMax = Math.max(leftMax, len);
+        rightMax = Math.max(rightMax, len);
+        left.push({ kind: "line", hunk: h, line });
+        right.push({ kind: "line", hunk: h, line });
+        bands.add("same", 1, 1);
       }
-      flush();
-      unified.push({ kind: "line", hunk: h, line });
-      const len = displayLength(line.text, tab);
-      leftMax = Math.max(leftMax, len);
-      rightMax = Math.max(rightMax, len);
-      side.push({ kind: "pair", hunk: h, left: line, right: line });
+      if (line.kind !== "meta") previous = line.kind;
     }
     flush();
   });
-  return { unified, side, pairs, maxLen, leftMax, rightMax };
+  return done();
 });
 
-const rowCount = computed(() => (mode.value === "unified" ? built.value.unified.length : built.value.side.length));
+const rowCount = computed(() => (mode.value === "unified" ? built.value.unified.length : built.value.sideRows));
 
 const segmentCache = new Map<number, { old: Segment[]; new: Segment[] }>();
 watch(built, () => segmentCache.clear());
@@ -313,7 +343,90 @@ const scroller = ref<HTMLDivElement | null>(null);
 const virtual = useVirtualRows(scroller, { rowHeight: () => rowPx.value, total: () => rowCount.value, overscan: 10 });
 
 const visibleUnified = computed(() => built.value.unified.slice(virtual.start.value, virtual.end.value));
-const visibleSide = computed(() => built.value.side.slice(virtual.start.value, virtual.end.value));
+// ---- Side by side: each side's own lines, and the curves between them -----------------------
+
+/** Width of the gap between the two sides, where the curves are drawn. */
+const GAP_PX = 36;
+const OVERSCAN = 10;
+
+/** Where each side's first line sits in the scrolled content, for the current scroll position. */
+const offsets = computed(() =>
+  sideOffsets(built.value.bands, built.value.sideRows, rowPx.value, virtual.scrollTop.value, virtual.viewportHeight.value),
+);
+
+interface SideView {
+  items: SideItem[];
+  /** Index of the first item drawn, and the pixel offset of the block holding them. */
+  start: number;
+  top: number;
+}
+
+function sideView(items: SideItem[], offset: number): SideView {
+  const px = rowPx.value;
+  const top = virtual.scrollTop.value;
+  const first = Math.max(0, Math.floor((top - offset) / px) - OVERSCAN);
+  const last = Math.min(items.length, Math.ceil((top + virtual.viewportHeight.value - offset) / px) + OVERSCAN);
+  return { items: items.slice(first, Math.max(first, last)), start: first, top: offset + first * px };
+}
+
+const leftView = computed(() => sideView(built.value.left, offsets.value.left));
+const rightView = computed(() => sideView(built.value.right, offsets.value.right));
+
+interface Curve {
+  key: number;
+  /** The filled band, and its top and bottom edges. */
+  d: string;
+  edges: string;
+  kind: "del" | "add" | "both" | "hunk";
+}
+
+/** The bands to draw in the gap, in the gap's own coordinates (0 is the top of the view). */
+const curves = computed<Curve[]>(() => {
+  const px = rowPx.value;
+  const top = virtual.scrollTop.value;
+  const view = virtual.viewportHeight.value;
+  const { left, right } = offsets.value;
+  const out: Curve[] = [];
+  built.value.bands.forEach((b, i) => {
+    if (b.kind === "same") return;
+    const lt = left + b.l * px - top;
+    const lb = lt + b.lh * px;
+    const rt = right + b.r * px - top;
+    const rb = rt + b.rh * px;
+    if (Math.max(lb, rb) < 0 || Math.min(lt, rt) > view) return;
+    const kind = b.kind === "hunk" ? "hunk" : b.lh === 0 ? "add" : b.rh === 0 ? "del" : "both";
+    // Edges on the half pixel, so a 1px line covers one row of pixels instead of two half rows.
+    out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, lt + 0.5, lb - 0.5, rt + 0.5, rb - 0.5), kind });
+  });
+  return out;
+});
+
+/** The two columns of the side-by-side layout, left of the gap and right of it. */
+const sideColumns = computed(() => [
+  { side: "left" as const, left: 0, width: leftTextPx.value, view: leftView.value, change: "del" as const },
+  { side: "right" as const, left: leftTextPx.value + GAP_PX, width: rightTextPx.value, view: rightView.value, change: "add" as const },
+]);
+
+/** Unique per viewer, since the File History dialog shows a second one. */
+const gradientId = `diff-curve-${useId()}`;
+
+/**
+ * Where a change has no lines on one side, a line across that side marks where they would go,
+ * leading into the curve. In the gap's coordinates, as for the curves.
+ */
+const insertMarks = computed<{ key: number; side: Side; y: number }[]>(() => {
+  const px = rowPx.value;
+  const top = virtual.scrollTop.value;
+  const view = virtual.viewportHeight.value;
+  const out: { key: number; side: Side; y: number }[] = [];
+  built.value.bands.forEach((b, i) => {
+    if (b.kind !== "change" || (b.lh > 0 && b.rh > 0)) return;
+    const side: Side = b.lh === 0 ? "left" : "right";
+    const y = (side === "left" ? offsets.value.left + b.l * px : offsets.value.right + b.r * px) - top;
+    if (y >= -1 && y <= view + 1) out.push({ key: i, side, y });
+  });
+  return out;
+});
 
 /**
  * Unified only: the rows are as wide as the longest line and the whole view scrolls sideways. The
@@ -341,9 +454,12 @@ useResizeObserver(scroller, () => {
   scrollbarPx.value = el.offsetWidth - el.clientWidth;
 });
 
+/** Where the divider sits: the middle of the gap. Each side's text ends half a gap short of it. */
 const leftPx = computed(() => Math.round(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, split.value)) * rowsWidth.value));
 const rightPx = computed(() => Math.max(0, rowsWidth.value - leftPx.value));
-const sideStyle = computed(() => ({ "--left-w": `${leftPx.value}px`, "--right-w": `${rightPx.value}px` }));
+const leftTextPx = computed(() => Math.max(0, leftPx.value - GAP_PX / 2));
+const rightTextPx = computed(() => Math.max(0, rightPx.value - GAP_PX / 2));
+const sideStyle = computed(() => ({ "--left-w": `${leftTextPx.value}px`, "--right-w": `${rightTextPx.value}px` }));
 
 const splitDragging = ref(false);
 
@@ -430,9 +546,9 @@ watch(mode, () => resetSideScroll());
 // ---- Hunk navigation -----------------------------------------------------------------------
 
 const hunkRows = computed<number[]>(() => {
-  const rows = mode.value === "unified" ? built.value.unified : built.value.side;
+  if (mode.value === "side") return built.value.sideHunks;
   const out: number[] = [];
-  rows.forEach((r, i) => {
+  built.value.unified.forEach((r, i) => {
     if (r.kind === "hunk") out.push(i);
   });
   return out;
@@ -870,7 +986,7 @@ function toggleContext(value: string): void {
           <!-- No will-change-transform here: it would put the rows on a compositor layer of their own,
                where Chromium never draws ClearType, so the text would come out grayscale and soft
                whatever diff.fontSmoothing says. See smoothingStyle in lib/diff/font.ts. -->
-          <div class="absolute inset-x-0 top-0" :style="{ transform: `translateY(${virtual.start.value * rowPx}px)` }">
+          <div v-if="mode === 'unified'" class="absolute inset-x-0 top-0" :style="{ transform: `translateY(${virtual.start.value * rowPx}px)` }">
             <!-- Unified -->
             <template v-if="mode === 'unified'">
               <template v-for="(row, k) in visibleUnified" :key="virtual.start.value + k">
@@ -898,63 +1014,108 @@ function toggleContext(value: string): void {
               </template>
             </template>
 
-            <!-- Side by side -->
-            <template v-else>
-              <template v-for="(row, k) in visibleSide" :key="virtual.start.value + k">
-                <div v-if="row.kind === 'hunk'" class="diff-hunk overflow-hidden">
-                  <span v-if="lineMode" class="diff-hunk-actions">
-                    <template v-if="lineMode === 'stage'">
-                      <button type="button" class="diff-action" :disabled="busy" @click="applyLines('stage', hunkLines(row.hunk), 'this hunk')">Stage hunk</button>
-                      <button type="button" class="diff-action diff-action-destructive" :disabled="busy" @click="applyLines('discard', hunkLines(row.hunk), 'this hunk')">Discard…</button>
+          </div>
+
+          <!-- Side by side: each side's own lines in a column of its own, placed by sideOffsets. -->
+          <template v-if="mode === 'side'">
+            <div
+              v-for="col in sideColumns"
+              :key="col.side"
+              class="absolute top-0"
+              :style="{ left: `${col.left}px`, width: `${col.width}px`, transform: `translateY(${col.view.top}px)` }"
+              :data-diff-side="col.side"
+            >
+              <template v-for="(item, k) in col.view.items" :key="col.view.start + k">
+                <div v-if="item.kind === 'hunk'" class="diff-hunk overflow-hidden">
+                  <template v-if="col.side === 'left'">
+                    <span v-if="lineMode" class="diff-hunk-actions">
+                      <template v-if="lineMode === 'stage'">
+                        <button type="button" class="diff-action" :disabled="busy" @click="applyLines('stage', hunkLines(item.hunk), 'this hunk')">Stage hunk</button>
+                        <button type="button" class="diff-action diff-action-destructive" :disabled="busy" @click="applyLines('discard', hunkLines(item.hunk), 'this hunk')">Discard…</button>
+                      </template>
+                      <button v-else type="button" class="diff-action" :disabled="busy" @click="applyLines('unstage', hunkLines(item.hunk), 'this hunk')">Unstage hunk</button>
+                    </span>
+                    <span class="diff-glyphs"> {{ item.header }}</span>
+                  </template>
+                </div>
+                <div v-else-if="item.kind === 'meta'" class="diff-side-meta">
+                  <span class="diff-glyphs"> \ {{ item.text }}</span>
+                </div>
+                <div
+                  v-else-if="item.line"
+                  :class="['diff-line min-w-0 overflow-hidden', lineClass(item.line.kind === 'context' ? 'context' : col.change), item.line.kind !== 'context' && isPicked(item.line) && 'diff-line-picked']"
+                >
+                  <span
+                    :class="['diff-num', item.line.kind !== 'context' && canPick(item.line) && 'diff-num-pick']"
+                    @mousedown="item.line.kind !== 'context' && onPick(item.line, $event)"
+                  ><span class="diff-glyphs">{{ (col.side === 'left' ? item.line.oldNo : item.line.newNo) ?? "" }}</span></span>
+                  <span class="diff-sign">{{ marker(item.line.kind === 'context' ? 'context' : col.change) }}</span>
+                  <span :class="['diff-side-code', col.side === 'left' ? 'diff-text-left' : 'diff-text-right']"><span>
+                    <template v-for="(seg, i) in spans(item.line, item.pair, col.side === 'left' ? 'old' : 'new', item.line.text)" :key="i">
+                      <mark v-if="seg.changed" :class="col.side === 'left' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+                      <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
                     </template>
-                    <button v-else type="button" class="diff-action" :disabled="busy" @click="applyLines('unstage', hunkLines(row.hunk), 'this hunk')">Unstage hunk</button>
-                  </span>
-                  <span class="diff-glyphs"> {{ row.header }}</span>
-                </div>
-                <div v-else-if="row.kind === 'meta'" class="diff-side-meta">
-                  <span class="diff-glyphs"> \ {{ row.text }}</span>
-                </div>
-                <div v-else class="diff-side-row h-(--diff-row-h)">
-                  <div :class="['diff-line min-w-0 overflow-hidden', row.left ? lineClass(row.left.kind === 'context' ? 'context' : 'del') : 'diff-line-empty', row.left?.kind === 'del' && isPicked(row.left) && 'diff-line-picked']">
-                    <span :class="['diff-num', row.left?.kind === 'del' && canPick(row.left) && 'diff-num-pick']" @mousedown="row.left?.kind === 'del' && onPick(row.left, $event)"><span class="diff-glyphs">{{ row.left?.oldNo ?? "" }}</span></span>
-                    <span class="diff-sign">{{ row.left ? marker(row.left.kind === 'context' ? 'context' : 'del') : "" }}</span>
-                    <span class="diff-side-code diff-text-left"><span>
-                      <template v-if="row.left">
-                        <template v-for="(seg, i) in spans(row.left, row.pair, 'old', row.left.text)" :key="i">
-                          <mark v-if="seg.changed" class="diff-word-del"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
-                          <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
-                        </template>
-                      </template>
-                    </span></span>
-                  </div>
-                  <div :class="['diff-line min-w-0 overflow-hidden', row.right ? lineClass(row.right.kind === 'context' ? 'context' : 'add') : 'diff-line-empty', row.right?.kind === 'add' && isPicked(row.right) && 'diff-line-picked']">
-                    <span :class="['diff-num', row.right?.kind === 'add' && canPick(row.right) && 'diff-num-pick']" @mousedown="row.right?.kind === 'add' && onPick(row.right, $event)"><span class="diff-glyphs">{{ row.right?.newNo ?? "" }}</span></span>
-                    <span class="diff-sign">{{ row.right ? marker(row.right.kind === 'context' ? 'context' : 'add') : "" }}</span>
-                    <span class="diff-side-code diff-text-right"><span>
-                      <template v-if="row.right">
-                        <template v-for="(seg, i) in spans(row.right, row.pair, 'new', row.right.text)" :key="i">
-                          <mark v-if="seg.changed" class="diff-word-add"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
-                          <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
-                        </template>
-                      </template>
-                    </span></span>
-                  </div>
+                  </span></span>
                 </div>
               </template>
-            </template>
-          </div>
+            </div>
+          </template>
         </div>
       </div>
 
+      <!-- Side by side: the curves joining each change's old lines to its new lines, over the rows
+           so they line up with them. Inline SVG rather than a canvas: a canvas gets a compositor
+           layer of its own, which would stop Chromium drawing ClearType on the text near it. -->
+      <svg
+        v-if="mode === 'side' && rowsWidth > 0"
+        class="pointer-events-none absolute top-0 left-0 overflow-visible"
+        :width="rowsWidth"
+        :height="virtual.viewportHeight.value"
+        aria-hidden="true"
+        data-diff-curves
+      >
+        <defs>
+          <!-- In the gap's own units: the default units follow each shape's box, which has no
+               height for a level edge, and the gradient would then not draw it at all. -->
+          <linearGradient :id="gradientId" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
+            <stop offset="0" class="diff-curve-stop-del" />
+            <stop offset="1" class="diff-curve-stop-add" />
+          </linearGradient>
+          <linearGradient :id="`${gradientId}-edge`" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
+            <stop offset="0" class="diff-curve-edge-stop-del" />
+            <stop offset="1" class="diff-curve-edge-stop-add" />
+          </linearGradient>
+        </defs>
+        <line
+          v-for="m in insertMarks"
+          :key="`m${m.key}`"
+          :class="m.side === 'left' ? 'diff-curve-mark-add' : 'diff-curve-mark-del'"
+          :x1="m.side === 'left' ? 0 : leftTextPx + GAP_PX"
+          :x2="m.side === 'left' ? leftTextPx : rowsWidth"
+          :y1="m.y + 0.5"
+          :y2="m.y + 0.5"
+        />
+        <g :transform="`translate(${leftTextPx} 0)`">
+          <template v-for="c in curves" :key="c.key">
+            <path :d="c.d" :class="`diff-curve-${c.kind}`" :style="c.kind === 'both' ? { fill: `url(#${gradientId})` } : undefined" />
+            <path
+              v-if="c.kind !== 'hunk'"
+              :d="c.edges"
+              :class="`diff-curve-edge diff-curve-edge-${c.kind}`"
+              :style="c.kind === 'both' ? { stroke: `url(#${gradientId}-edge)` } : undefined"
+            />
+          </template>
+        </g>
+      </svg>
       <!-- Side by side: one horizontal scrollbar under each side's text, level with the rows above. -->
       <div v-if="mode === 'side'" class="flex shrink-0" :style="[textStyle, { paddingRight: `${scrollbarPx}px`, lineHeight: 'normal' }]">
-        <div class="flex" :style="{ width: `${leftPx}px` }">
+        <div class="flex" :style="{ width: `${leftTextPx}px`, marginRight: `${GAP_PX}px` }">
           <div class="diff-gutter-space shrink-0" />
           <div ref="stripLeft" class="min-w-0 flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin" @scroll="onStripScroll('left')">
             <div class="h-px" :style="{ width: `calc(${built.leftMax}ch + 0.5rem)` }" />
           </div>
         </div>
-        <div class="flex" :style="{ width: `${rightPx}px` }">
+        <div class="flex" :style="{ width: `${rightTextPx}px` }">
           <div class="diff-gutter-space shrink-0" />
           <div ref="stripRight" class="min-w-0 flex-1 overflow-x-auto overflow-y-hidden scrollbar-thin" @scroll="onStripScroll('right')">
             <div class="h-px" :style="{ width: `calc(${built.rightMax}ch + 0.5rem)` }" />
@@ -962,7 +1123,8 @@ function toggleContext(value: string): void {
         </div>
       </div>
 
-      <!-- Divider between the two sides: drag to move it, double-click to go back to half and half. -->
+      <!-- Divider between the two sides: drag to move it, double-click to go back to half and half.
+           Its line shows only on hover and while dragging, so it does not cut through the curves. -->
       <button
         v-if="mode === 'side' && rowsWidth > 0"
         type="button"
@@ -973,7 +1135,7 @@ function toggleContext(value: string): void {
         @pointerdown="startSplitDrag"
         @dblclick="split = 0.5"
       >
-        <span :class="['h-full w-px transition-colors', splitDragging ? 'w-[2px] bg-primary' : 'bg-border group-hover:w-[2px] group-hover:bg-primary/70']" />
+        <span :class="['h-full w-px transition-colors', splitDragging ? 'w-[2px] bg-primary' : 'bg-transparent group-hover:w-[2px] group-hover:bg-primary/70']" />
       </button>
       </div>
     </template>
