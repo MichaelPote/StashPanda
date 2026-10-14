@@ -136,6 +136,7 @@ pub async fn get_conflict_file(client: &GitClient, helper: Option<(&Arc<CatFile>
     let attribute = GitReq::new("check-attr", ["check-attr", "-z", "conflict-marker-size", "--", path]);
     let (unmerged, attribute) = tokio::try_join!(client.exec(unmerged), client.exec(attribute))?;
     let stages = parse_unmerged(&unmerged.stdout).remove(path).unwrap_or_default();
+    let oids = stage_oids(&unmerged.stdout, path);
     if stages.is_empty() {
         return Ok(ConflictFile::refused(path, ConflictRefusal::NotConflicted));
     }
@@ -147,9 +148,9 @@ pub async fn get_conflict_file(client: &GitClient, helper: Option<(&Arc<CatFile>
     // The stages one after another, since the helper takes one request at a time anyway, and
     // the working tree file meanwhile.
     let stages_read = async {
-        let base = read_stage(client, helper, path, 1, &stages).await?;
-        let ours = read_stage(client, helper, path, 2, &stages).await?;
-        let theirs = read_stage(client, helper, path, 3, &stages).await?;
+        let base = read_stage(client, helper, 1, &oids).await?;
+        let ours = read_stage(client, helper, 2, &oids).await?;
+        let theirs = read_stage(client, helper, 3, &oids).await?;
         Ok::<_, GitError>((base, ours, theirs))
     };
     let full_path = join_repo_path(&client.repo, path);
@@ -189,13 +190,41 @@ pub async fn get_conflict_file(client: &GitClient, helper: Option<(&Arc<CatFile>
     })
 }
 
-/// The bytes of stage `stage` of `path`, or None when the conflict has no such stage. Fails with
-/// `tooLarge` for a version over `CONFLICT_FILE_CAP`.
-async fn read_stage(client: &GitClient, helper: Option<(&Arc<CatFile>, &CancellationToken)>, path: &str, stage: u8, stages: &[u8]) -> Result<Option<Vec<u8>>> {
-    if !stages.contains(&stage) {
-        return Ok(None);
+/// Each stage's blob of `path`, from `git ls-files -u -z` (`<mode> <oid> <stage>\t<path>` NUL).
+///
+/// The stages are read by these object IDs rather than by `:<stage>:<path>`: the long-lived
+/// `cat-file` reads the index the first time it is asked for a stage and keeps that copy for as
+/// long as it runs, so after a merge is aborted and done again it would hand back the old
+/// conflict's versions, or none. `ls-files` runs afresh for every request, and an object never
+/// changes.
+fn stage_oids(stdout: &[u8], path: &str) -> std::collections::HashMap<u8, String> {
+    let mut out = std::collections::HashMap::new();
+    for record in stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let text = String::from_utf8_lossy(record);
+        let Some((meta, file)) = text.split_once('\t') else { continue };
+        if file != path {
+            continue;
+        }
+        let mut fields = meta.split(' ');
+        let (Some(_mode), Some(oid), Some(stage)) = (fields.next(), fields.next(), fields.next()) else { continue };
+        if let Ok(stage) = stage.parse::<u8>() {
+            out.insert(stage, oid.to_string());
+        }
     }
-    let spec = format!(":{stage}:{path}");
+    out
+}
+
+/// The bytes of stage `stage`, by its object ID in `oids`, or None when the conflict has no such
+/// stage. Fails with `tooLarge` for a version over `CONFLICT_FILE_CAP`.
+async fn read_stage(
+    client: &GitClient,
+    helper: Option<(&Arc<CatFile>, &CancellationToken)>,
+    stage: u8,
+    oids: &std::collections::HashMap<u8, String>,
+) -> Result<Option<Vec<u8>>> {
+    let Some(spec) = oids.get(&stage).cloned() else {
+        return Ok(None);
+    };
     if let Some((catfile, cancel)) = helper.filter(|_| client.caps.batch_command) {
         return match catfile.read(client, cancel, &spec, CONFLICT_FILE_CAP).await? {
             Some(bytes) => Ok(Some(bytes)),

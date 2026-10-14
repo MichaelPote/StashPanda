@@ -508,6 +508,46 @@ mod e2e {
     }
 
     #[tokio::test]
+    async fn conflict_file_is_current_after_the_merge_is_done_again() {
+        // The long-lived `cat-file` keeps the index it first read. A conflict read through it,
+        // then aborted and replaced by another merge's conflict, must give the new versions.
+        use super::conflict_file::get_conflict_file;
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("stashpanda-conflict-again-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("f.txt"), "base\n").unwrap();
+        git(&dir, &["add", "f.txt"]);
+        git(&dir, &["commit", "-qm", "base"]);
+        for (branch, text) in [("one", "one\n"), ("two", "two\n")] {
+            git(&dir, &["checkout", "-qb", branch, "main"]);
+            std::fs::write(dir.join("f.txt"), text).unwrap();
+            git(&dir, &["commit", "-qam", branch]);
+        }
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("f.txt"), "main\n").unwrap();
+        git(&dir, &["commit", "-qam", "main"]);
+        let merge = |branch: &str| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(["-c", "user.email=t@t", "-c", "user.name=T", "merge", branch]).output().unwrap();
+            assert!(!out.status.success(), "the merge of {branch} stops on a conflict");
+        };
+        let client = client_for(&dir).await;
+        let catfile = Arc::new(crate::git::catfile::CatFile::new(false));
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        merge("one");
+        let first = get_conflict_file(&client, Some((&catfile, &cancel)), "f.txt").await.unwrap();
+        assert_eq!(first.theirs.as_deref(), Some("one\n"));
+        git(&dir, &["merge", "--abort"]);
+        merge("two");
+        let second = get_conflict_file(&client, Some((&catfile, &cancel)), "f.txt").await.unwrap();
+        assert_eq!((second.ours.as_deref(), second.theirs.as_deref()), (Some("main\n"), Some("two\n")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn every_query_runs_against_a_real_repository() {
         if which::which("git").is_err() {
             eprintln!("git not on PATH, skipping");
