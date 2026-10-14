@@ -7,7 +7,9 @@ use specta::Type;
 use tauri::State;
 
 use crate::error::{GitError, Result};
+use crate::git::queries::blame::{get_blame, FileBlame};
 use crate::git::queries::blob::{get_blob, get_worktree_file, BlobContent};
+use crate::git::queries::history::{get_file_history as history_of, FileHistory};
 use crate::git::queries::commit_files::{get_commit_files, FileChange};
 use crate::git::queries::diff::{get_diff, join_repo_path, DiffOptions, DiffTarget, DiffText};
 use crate::git::queries::log::{get_commit_body, get_stashes, get_unchanged_parents as unchanged_parents, StashEntry};
@@ -143,6 +145,31 @@ pub async fn get_file_diff(
 pub async fn get_blob_content(state: State<'_, AppState>, key: String, spec: String) -> Result<BlobContent> {
     let h = repo(&state, &key).await?;
     with_read_slot!(h, get_blob(&h.client, Some((&h.catfile, &h.cancel)), &spec).await)
+}
+
+/// The commits that changed `path`, newest first, following renames, from `rev` (HEAD when
+/// null), at most `maxCount` of them. A longer history is read by asking again with a larger
+/// count: `git log --follow` cannot skip.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_file_history(
+    state: State<'_, AppState>,
+    key: String,
+    path: String,
+    rev: Option<String>,
+    max_count: u32,
+) -> Result<FileHistory> {
+    let h = repo(&state, &key).await?;
+    with_read_slot!(h, history_of(&h.client, &path, rev.as_deref(), max_count).await)
+}
+
+/// Who last changed each line of `path`: as it is in commit `rev`, or in the working tree when
+/// `rev` is null.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_file_blame(state: State<'_, AppState>, key: String, path: String, rev: Option<String>) -> Result<FileBlame> {
+    let h = repo(&state, &key).await?;
+    with_read_slot!(h, get_blame(&h.client, Some((&h.catfile, &h.cancel)), &path, rev.as_deref()).await)
 }
 
 #[tauri::command]

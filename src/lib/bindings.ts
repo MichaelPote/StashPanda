@@ -109,6 +109,17 @@ export const commands = {
 	graphSetHiddenRefs: (key: string, hidden: string[]) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_set_hidden_refs", { key, hidden })),
 	getBlobContent: (key: string, spec: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_blob_content", { key, spec })),
 	getWorktreeFileContent: (key: string, path: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_worktree_file_content", { key, path })),
+	/**
+	 *  The commits that changed `path`, newest first, following renames, from `rev` (HEAD when
+	 *  null), at most `maxCount` of them. A longer history is read by asking again with a larger
+	 *  count: `git log --follow` cannot skip.
+	 */
+	getFileHistory: (key: string, path: string, rev: string | null, maxCount: number) => typedError<FileHistory, GitError>(__TAURI_INVOKE("get_file_history", { key, path, rev, maxCount })),
+	/**
+	 *  Who last changed each line of `path`: as it is in commit `rev`, or in the working tree when
+	 *  `rev` is null.
+	 */
+	getFileBlame: (key: string, path: string, rev: string | null) => typedError<FileBlame, GitError>(__TAURI_INVOKE("get_file_blame", { key, path, rev })),
 	getRepoStashes: (key: string) => typedError<StashEntry[], GitError>(__TAURI_INVOKE("get_repo_stashes", { key })),
 	/**
 	 *  Current snapshot metadata. When none exists yet a live load starts in the
@@ -375,6 +386,75 @@ export type Appearance = {
 };
 
 export type AvatarSource = "initials" | "gravatar";
+
+/**  A commit that last changed at least one line. */
+export type BlameCommit = {
+	oid: string,
+	authorName: string,
+	authorEmail: string,
+	authorTime: number,
+	summary: string,
+	/**
+	 *  The walk stopped at this commit: the first commit of the history, so its lines may be
+	 *  older than it.
+	 */
+	boundary: boolean,
+	/**
+	 *  Lines changed in the working tree or the index and not committed yet. Git names them
+	 *  `0000000` with the author "Not Committed Yet".
+	 */
+	uncommitted: boolean,
+};
+
+/**  What `get_blame` found. */
+export type BlameContent = 
+/**  The file's lines, and the commit that last changed each. */
+"lines" | 
+/**  A binary file, which has no lines to blame. */
+"binary" | 
+/**
+ *  The working tree file is in no commit yet: Git does not track it, or the branch has no
+ *  commits.
+ */
+"notCommitted" | 
+/**  The file is not in that commit, or has been deleted from the working tree. */
+"missing";
+
+/**
+ *  A run of lines that came from one origin, in the order Git reports them. Neighbouring groups
+ *  can share a commit, when its lines were not next to each other in that commit.
+ */
+export type BlameGroup = {
+	/**  Index into `FileBlame::origins`. */
+	origin: number,
+	/**  Index of the group's first line in `FileBlame::lines`. */
+	start: number,
+	count: number,
+	/**  Line number of the first line in the origin's version of the file, counting from 1. */
+	origStart: number,
+};
+
+/**
+ *  A commit together with the path the file had in it. A commit usually has one; a file
+ *  assembled from two files in one commit has two.
+ */
+export type BlameOrigin = {
+	/**  Index into `FileBlame::commits`. */
+	commit: number,
+	path: string,
+	/**
+	 *  The same file in the commit before this one, for blaming the lines as they were before
+	 *  it changed them. None when the commit added the file.
+	 */
+	previous: BlamePrevious | null,
+};
+
+/**  The file in the commit before, where its lines last came from. */
+export type BlamePrevious = {
+	oid: string,
+	/**  The file's path in that commit, which differs from `BlameOrigin::path` across a rename. */
+	path: string,
+};
 
 export type BlobContent = {
 	/**  Lossy UTF-8 text with `\r` stripped for display; empty when binary. */
@@ -650,6 +730,16 @@ export type Eol = "lf" | "crLf" | "mixed" | "none";
 
 export type ExportFormat = "openSsh" | "pkcs8";
 
+export type FileBlame = {
+	content: BlameContent,
+	commits: BlameCommit[],
+	origins: BlameOrigin[],
+	groups: BlameGroup[],
+	/**  The file's lines, with any `\r` before the line break removed. */
+	lines: string[],
+	eol: Eol,
+};
+
 export type FileChange = {
 	path: string,
 	oldPath: string | null,
@@ -662,6 +752,31 @@ export type FileChange = {
 	added: number | null,
 	deleted: number | null,
 	binary: boolean,
+};
+
+export type FileHistory = {
+	/**  Newest first. */
+	entries: FileHistoryEntry[],
+	/**  The history goes on past `entries`: ask again with a larger count to see more. */
+	more: boolean,
+};
+
+export type FileHistoryEntry = {
+	oid: string,
+	parents: string[],
+	authorName: string,
+	authorEmail: string,
+	authorTime: number,
+	subject: string,
+	/**  The file's path in this commit. It changes across renames. */
+	path: string,
+	/**  Where the file came from when this commit renamed or copied it. */
+	oldPath: string | null,
+	/**
+	 *  What this commit did to the file. A merge that Git lists without a file change is
+	 *  `modified`.
+	 */
+	status: ChangeStatus,
 };
 
 export type FilesGroupBy = "status" | "folder" | 

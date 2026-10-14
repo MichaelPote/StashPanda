@@ -57,7 +57,7 @@ fn valid_ref_name(name: &str) -> Result<()> {
 
 /// A revision the user selected (`HEAD~1`, `abc123`, `origin/dev`): only guard
 /// against option injection and control characters.
-fn valid_revision(rev: &str) -> Result<()> {
+pub(crate) fn valid_revision(rev: &str) -> Result<()> {
     if rev.is_empty() || rev.starts_with('-') || rev.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err(GitError::InvalidPath { path: rev.to_string(), reason: "not a valid Git revision".into() });
     }

@@ -1,9 +1,11 @@
 //! One module per Git query: the command line, and a parser tested on
 //! captured bytes. Every query takes the repository's `GitClient`.
 
+pub mod blame;
 pub mod blob;
 pub mod commit_files;
 pub mod diff;
+pub mod history;
 pub mod log;
 pub mod refs;
 pub mod status;
@@ -137,6 +139,146 @@ mod e2e {
         };
         assert_eq!(times, vec![Some(on_disk("untracked.txt")), Some(on_disk("renamed.txt")), None]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// File history follows a rename and lists a merge that changed the file; blame covers the
+    /// working tree, a commit, the commit before a change, and the files it cannot blame.
+    #[tokio::test]
+    async fn file_history_and_blame_against_a_real_repository() {
+        use super::blame::{get_blame, BlameContent};
+        use super::commit_files::ChangeStatus;
+        use super::history::get_file_history;
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("stashpanda-blame-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let commit = |msg: &str| git(&dir, &["commit", "-qm", msg]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(dir.join("bin.dat"), [0u8, 1, 2, 3]).unwrap();
+        git(&dir, &["add", "-A"]);
+        commit("add a");
+        std::fs::write(dir.join("a.txt"), "one\ntwo\tTAB\nthree\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        commit("tab");
+        git(&dir, &["mv", "a.txt", "b ü.txt"]);
+        std::fs::write(dir.join("b ü.txt"), "one\ntwo\tTAB\nthree\nfünf\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        commit("rename");
+        // Both sides change the file, so the merge has to combine them and the history lists it.
+        git(&dir, &["checkout", "-qb", "side"]);
+        std::fs::write(dir.join("b ü.txt"), "ONE\ntwo\tTAB\nthree\nfünf\n").unwrap();
+        git(&dir, &["commit", "-qam", "side change"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("b ü.txt"), "one\ntwo\tTAB\nthree\nfünf\nsix\n").unwrap();
+        git(&dir, &["commit", "-qam", "main change"]);
+        git(&dir, &["merge", "-q", "--no-ff", "side", "-m", "merge side"]);
+        git(&dir, &["rm", "-q", "bin.dat"]);
+        commit("drop the binary");
+        // Uncommitted: a changed line, a staged new file, an untracked file.
+        std::fs::write(dir.join("b ü.txt"), "ONE\ntwo\tTAB\nthree\nfünf\nsix\nwip\n").unwrap();
+        std::fs::write(dir.join("staged.txt"), "s\n").unwrap();
+        git(&dir, &["add", "staged.txt"]);
+        std::fs::write(dir.join("untracked.txt"), "u\n").unwrap();
+        let client = client_for(&dir).await;
+
+        let history = get_file_history(&client, "b ü.txt", None, 100).await.unwrap();
+        // The commits share one second, so only the merge's place at the top is certain.
+        let mut subjects: Vec<&str> = history.entries.iter().map(|e| e.subject.as_str()).collect();
+        assert_eq!(subjects[0], "merge side", "{history:?}");
+        subjects.sort_unstable();
+        assert_eq!(subjects, ["add a", "main change", "merge side", "rename", "side change", "tab"]);
+        assert!(!history.more);
+        let merge = &history.entries[0];
+        assert_eq!((merge.parents.len(), merge.path.as_str()), (2, "b ü.txt"));
+        let rename = history.entries.iter().find(|e| e.subject == "rename").unwrap();
+        assert_eq!((rename.status, rename.old_path.as_deref()), (ChangeStatus::Renamed, Some("a.txt")));
+        let first = history.entries.last().unwrap();
+        assert_eq!((first.status, first.path.as_str()), (ChangeStatus::Added, "a.txt"));
+        // Each entry's diff of the file, as the history view asks for it.
+        let rename_diff = super::diff::get_diff(
+            &client,
+            &super::diff::DiffTarget::Commit { commit: rename.oid.clone(), parent: None },
+            &rename.path,
+            rename.old_path.as_deref(),
+            &super::diff::DiffOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert!(rename_diff.text.contains("+fünf"), "{}", rename_diff.text);
+        let merge_diff = super::diff::get_diff(
+            &client,
+            &super::diff::DiffTarget::Commit { commit: merge.oid.clone(), parent: Some(merge.parents[0].clone()) },
+            &merge.path,
+            None,
+            &super::diff::DiffOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert!(merge_diff.text.contains("+ONE"), "against its first parent the merge brings in the side change: {}", merge_diff.text);
+
+        // A cap that stops short says there is more; asking with a larger one reads further.
+        let capped = get_file_history(&client, "b ü.txt", None, 2).await.unwrap();
+        assert_eq!((capped.entries.len(), capped.more), (2, true));
+        // From an older commit, by the name the file had there.
+        let tab = history.entries.iter().find(|e| e.subject == "tab").unwrap();
+        let older = get_file_history(&client, "a.txt", Some(&tab.oid), 100).await.unwrap();
+        assert_eq!(older.entries.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(), ["tab", "add a"]);
+        // A deleted file still has a history, ending with its deletion.
+        let deleted = get_file_history(&client, "bin.dat", None, 100).await.unwrap();
+        assert_eq!(deleted.entries.first().map(|e| e.status), Some(ChangeStatus::Deleted));
+
+        let blame = get_blame(&client, None, "b ü.txt", None).await.unwrap();
+        assert_eq!(blame.content, BlameContent::Lines);
+        assert_eq!(blame.lines, ["ONE", "two\tTAB", "three", "fünf", "six", "wip"]);
+        let summary_of = |b: &super::blame::FileBlame, line: u32| {
+            let g = b.groups.iter().find(|g| g.start <= line && line < g.start + g.count).unwrap();
+            let o = &b.origins[g.origin as usize];
+            (b.commits[o.commit as usize].clone(), o.clone())
+        };
+        assert_eq!(summary_of(&blame, 0).0.summary, "side change");
+        let (tab_commit, tab_origin) = summary_of(&blame, 1);
+        assert_eq!((tab_commit.summary.as_str(), tab_origin.path.as_str()), ("tab", "a.txt"), "blame follows the rename");
+        assert!(summary_of(&blame, 5).0.uncommitted);
+        let (root, root_origin) = summary_of(&blame, 2);
+        assert!(root.boundary && root_origin.previous.is_none(), "{root:?}");
+
+        // Blame before the "tab" change: its previous version, at the root commit, under the old name.
+        let previous = tab_origin.previous.clone().unwrap();
+        assert_eq!(previous.path, "a.txt");
+        let before = get_blame(&client, None, &previous.path, Some(&previous.oid)).await.unwrap();
+        assert_eq!(before.lines, ["one", "two", "three"]);
+        assert_eq!(before.commits.len(), 1);
+
+        let at_commit = get_blame(&client, None, "b ü.txt", Some("HEAD")).await.unwrap();
+        assert!(!at_commit.commits.iter().any(|c| c.uncommitted));
+        assert_eq!(get_blame(&client, None, "bin.dat", Some(&tab.oid)).await.unwrap().content, BlameContent::Binary);
+        assert_eq!(get_blame(&client, None, "nowhere.txt", Some("HEAD")).await.unwrap().content, BlameContent::Missing);
+        assert_eq!(get_blame(&client, None, "bin.dat", None).await.unwrap().content, BlameContent::Missing, "deleted from the working tree");
+        assert_eq!(get_blame(&client, None, "untracked.txt", None).await.unwrap().content, BlameContent::NotCommitted);
+        let staged = get_blame(&client, None, "staged.txt", None).await.unwrap();
+        assert!(staged.commits.iter().all(|c| c.uncommitted) && staged.lines == ["s"]);
+        assert!(get_blame(&client, None, "b ü.txt", Some("--output=x")).await.is_err(), "an option is never taken for a revision");
+        // The same through the long-lived `cat-file`, as the app reads them.
+        let catfile = Arc::new(crate::git::catfile::CatFile::new(false));
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let helper = Some((&catfile, &cancel));
+        assert_eq!(get_blame(&client, helper, "bin.dat", Some(&tab.oid)).await.unwrap().content, BlameContent::Binary);
+        assert_eq!(get_blame(&client, helper, "nowhere.txt", Some("HEAD")).await.unwrap().content, BlameContent::Missing);
+        assert_eq!(get_blame(&client, helper, &previous.path, Some(&previous.oid)).await.unwrap().lines, before.lines);
+
+        // A repository with no commits: nothing is committed and there is no history.
+        let empty = std::env::temp_dir().join(format!("stashpanda-blame-empty-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&empty).unwrap();
+        git(&empty, &["init", "-q", "-b", "main"]);
+        std::fs::write(empty.join("new.txt"), "n\n").unwrap();
+        let empty_client = client_for(&empty).await;
+        assert_eq!(get_blame(&empty_client, None, "new.txt", None).await.unwrap().content, BlameContent::NotCommitted);
+        assert!(get_file_history(&empty_client, "new.txt", None, 10).await.unwrap().entries.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[tokio::test]

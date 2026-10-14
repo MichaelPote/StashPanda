@@ -66,6 +66,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::graph::graph_set_hidden_refs,
             ipc::query::get_blob_content,
             ipc::query::get_worktree_file_content,
+            ipc::query::get_file_history,
+            ipc::query::get_file_blame,
             ipc::query::get_repo_stashes,
             ipc::graph::graph_open,
             ipc::graph::graph_meta,

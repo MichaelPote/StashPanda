@@ -23,7 +23,7 @@ pub enum ChangeStatus {
 }
 
 impl ChangeStatus {
-    fn from_letter(c: u8) -> ChangeStatus {
+    pub(crate) fn from_letter(c: u8) -> ChangeStatus {
         match c {
             b'A' => ChangeStatus::Added,
             b'M' => ChangeStatus::Modified,
