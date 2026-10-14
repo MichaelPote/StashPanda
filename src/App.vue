@@ -15,8 +15,10 @@ import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
 import HostKeyDialog from "@/components/dialogs/HostKeyDialog.vue";
 import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
 import SshPasswordDialog from "@/components/dialogs/SshPasswordDialog.vue";
+import MergeDialog from "@/components/dialogs/MergeDialog.vue";
 import PullDialog from "@/components/dialogs/PullDialog.vue";
 import PushDialog from "@/components/dialogs/PushDialog.vue";
+import RebaseDialog from "@/components/dialogs/RebaseDialog.vue";
 import StashDialog from "@/components/dialogs/StashDialog.vue";
 import PassphraseDialog from "@/components/settings/PassphraseDialog.vue";
 import SettingsDialog from "@/components/settings/SettingsDialog.vue";
@@ -36,8 +38,11 @@ import {
   discardSelected,
   fetchAll,
   fileActionReason,
+  mergeRebaseReason,
   openCommitDialog,
+  openMergeDialog,
   openPullDialog,
+  openRebaseDialog,
   openStashDialog,
   pushCurrentBranch,
   stageSelected,
@@ -95,7 +100,7 @@ function onBodyLayout(sizes: number[]): void {
   if (sizes.length === 2) uiState.setPanelSize("leftWidth", sizes[0] as number);
 }
 
-/** Runs the notice's button (for example "Abort merge") and dismisses the notice. */
+/** Runs the notice's button (for example "Pull…" after a rejected push) and dismisses the notice. */
 function runNoticeAction(): void {
   const action = sessions.noticeAction;
   sessions.dismissNotice();
@@ -138,6 +143,8 @@ const toolbarReasons = computed(() => ({
   stage: fileActionReason(sessions.active, "stage"),
   unstage: fileActionReason(sessions.active, "unstage"),
   discard: fileActionReason(sessions.active, "discard"),
+  merge: mergeRebaseReason(sessions.active, "merge"),
+  rebase: mergeRebaseReason(sessions.active, "rebase"),
 }));
 </script>
 
@@ -148,7 +155,8 @@ const toolbarReasons = computed(() => ({
         @stash-save="openStashDialog(sessions.active)" @pull="openPullDialog(sessions.active)"
         @fetch="fetchAll(sessions.active)" @push="pushCurrentBranch(sessions.active)"
         @sync="syncCurrentBranch(sessions.active)" @stage="stageSelected(sessions.active)"
-        @unstage="unstageSelected(sessions.active)" @discard="discardSelected(sessions.active)" :reasons="toolbarReasons"
+        @unstage="unstageSelected(sessions.active)" @discard="discardSelected(sessions.active)"
+        @merge="openMergeDialog(sessions.active)" @rebase="openRebaseDialog(sessions.active)" :reasons="toolbarReasons"
       />
 
       <!-- An error notice: red, with a warning icon. Success messages show in the status bar instead. -->
@@ -276,6 +284,8 @@ const toolbarReasons = computed(() => ({
     <ApplyStashDialog />
     <PullDialog />
     <PushDialog />
+    <MergeDialog />
+    <RebaseDialog />
     <ConfirmDialog />
     <SettingsDialog />
     <PassphraseDialog />

@@ -105,7 +105,9 @@ export function worktreeSections(status: StatusSnapshot | null): FileSection[] {
   for (const e of status?.entries ?? []) {
     if (e.ignored) continue;
     if (e.conflicted) {
-      conflicted.push(worktreeItem(e.path, e.origPath, "conflicted", `${e.x}${e.y}`.replace(/\./g, ""), { type: "unstaged" }, "conflict"));
+      // The Files panel swaps in the comparison last chosen in the diff panel when the row is clicked.
+      const target: DiffTarget = { type: "conflict", from: "ours", to: "theirs" };
+      conflicted.push(worktreeItem(e.path, e.origPath, "conflicted", `${e.x}${e.y}`.replace(/\./g, ""), target, "conflict"));
       continue;
     }
     if (e.untracked) {
@@ -353,4 +355,9 @@ export function worktreeActionPaths(status: StatusSnapshot | null, selectedIds: 
   }
   out.discardFiles = [...new Set([...stagedPaths, ...unstagedRows.map((i) => i.path), ...out.discardUntracked])];
   return out;
+}
+
+/** The selected rows of the Files panel's Conflicted section: their paths, and their status letters (`UU`, `DU`…). */
+export function selectedConflicts(status: StatusSnapshot | null, selectedIds: ReadonlySet<string>): FileItem[] {
+  return (worktreeSections(status).find((s) => s.key === "conflicted")?.items ?? []).filter((i) => selectedIds.has(i.id));
 }

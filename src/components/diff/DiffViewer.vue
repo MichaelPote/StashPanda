@@ -2,7 +2,7 @@
 import { computed, ref, shallowRef, watch } from "vue";
 import { useDebounceFn, useResizeObserver } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon } from "@lucide/vue";
-import { commands, type DiffText, type Eol, type LineAction, type SelectedLine } from "@/lib/bindings";
+import { commands, type DiffText, type Eol, type LineAction, type ResolveSide, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
@@ -10,7 +10,9 @@ import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { opFailureText, runOp } from "@/lib/repoActions";
+import { conflictComparisons, conflictStages, conflictSummary, operationNames, type ConflictComparison } from "@/lib/conflicts";
+import type { FileItem } from "@/lib/files";
+import { markResolved, openFileReason, openWorktreeFile, opFailureText, runOp, takeVersion } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
@@ -545,6 +547,53 @@ async function applyLines(action: LineAction, lines: DiffLine[], what: string): 
   }
 }
 
+// ---- Conflicted files ----------------------------------------------------------------------
+//
+// A conflicted file has up to three versions in the index (the base both sides started from, and
+// each side's) besides the file on disk. The strip picks which two to compare, and resolves the
+// file: keep one side's version, or mark the file on disk as resolved.
+
+const conflictFile = computed(() => {
+  const s = selected.value;
+  if (s?.target.type !== "conflict") return null;
+  const entry = props.session.status?.entries.find((e) => e.conflicted && e.path === s.path);
+  const letters = entry ? `${entry.x}${entry.y}` : "UU";
+  const item: FileItem = { id: `conflicted:${s.path}`, path: s.path, oldPath: null, letter: letters, state: "conflict", added: null, deleted: null, binary: false, target: s.target };
+  return { item, stages: conflictStages(letters), letters };
+});
+const sideNames = computed(() => operationNames(props.session.status, props.session.refs));
+const comparisons = computed(() => conflictComparisons(sideNames.value));
+const openReason = computed(() => openFileReason(props.session));
+
+function isComparing(c: ConflictComparison): boolean {
+  const t = selected.value?.target;
+  return t?.type === "conflict" && t.from === c.from && t.to === c.to;
+}
+
+/** Why a comparison has nothing on one side for this file, or null. */
+function comparisonNote(c: ConflictComparison): string | null {
+  const stages = conflictFile.value?.stages;
+  if (!stages) return null;
+  const missing = [c.from, c.to].find((v) => v !== "workingTree" && !stages[v]);
+  if (missing === "base") return "Both sides added this file, so there is no base version: the other side shows as wholly added.";
+  if (missing) return `${missing === "ours" ? sideNames.value.ours : sideNames.value.theirs} deleted this file, so that side is empty.`;
+  return null;
+}
+
+function compare(c: ConflictComparison): void {
+  const s = selected.value;
+  if (!s) return;
+  props.session.conflictComparison = { from: c.from, to: c.to };
+  props.session.selectedFile = { ...s, target: { type: "conflict", from: c.from, to: c.to } };
+}
+
+function takeTitle(side: ResolveSide): string {
+  const f = conflictFile.value;
+  const name = side === "ours" ? sideNames.value.ours : sideNames.value.theirs;
+  if (f && !f.stages[side]) return `${name} deleted this file, so taking its version deletes the file and marks the conflict resolved.`;
+  return `Replace the file with ${name}'s version, throwing away the other side's changes and any edits to the file, and mark the conflict resolved.`;
+}
+
 function toggleContext(value: string): void {
   const n = Number(value);
   if (Number.isFinite(n) && n > 0) contextLines.value = n;
@@ -622,6 +671,52 @@ function toggleContext(value: string): void {
         </div>
       </template>
     </PanelHeader>
+
+    <!-- A conflicted file: what each side did, which versions to compare, and how to resolve it. -->
+    <div v-if="conflictFile" class="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border-soft band-conflict px-2 py-1 text-[0.7rem]" data-conflict-strip>
+      <span class="text-foreground">{{ conflictSummary(conflictFile.letters, sideNames) }}</span>
+      <span class="ml-1 text-muted-foreground">Compare</span>
+      <div class="inline-flex overflow-hidden rounded-md border border-border-soft">
+        <button
+          v-for="(c, i) in comparisons"
+          :key="`${c.from}-${c.to}`"
+          type="button"
+          :aria-pressed="isComparing(c)"
+          :class="cn('toggle h-[18px] rounded-none border-0 px-2 leading-none font-medium', i > 0 && 'border-l border-l-border-soft')"
+          :title="comparisonNote(c) ? `${c.title}. ${comparisonNote(c)}` : c.title"
+          :data-compare="`${c.from}-${c.to}`"
+          @click="compare(c)"
+        >
+          {{ c.label }}
+        </button>
+      </div>
+      <span class="ml-auto flex flex-wrap items-center gap-1">
+        <button type="button" class="diff-action" :title="takeTitle('ours')" data-resolve="ours" @click="takeVersion(session, [conflictFile.item], 'ours')">
+          Take the version from {{ sideNames.ours }}
+        </button>
+        <button type="button" class="diff-action" :title="takeTitle('theirs')" data-resolve="theirs" @click="takeVersion(session, [conflictFile.item], 'theirs')">
+          Take the version from {{ sideNames.theirs }}
+        </button>
+        <button
+          type="button"
+          class="diff-action"
+          title="After editing the file to resolve the conflict, stage it as it is on disk (git add)"
+          data-resolve="mark"
+          @click="markResolved(session, [conflictFile.item])"
+        >
+          Mark as resolved
+        </button>
+        <button
+          type="button"
+          :class="cn('diff-action', openReason && 'opacity-50')"
+          :title="openReason ?? 'Open the file in the program your system uses for it, to edit it by hand'"
+          :aria-disabled="openReason !== null"
+          @click="!openReason && openWorktreeFile(session.key, conflictFile.item.path)"
+        >
+          Open
+        </button>
+      </span>
+    </div>
 
     <EmptyState v-if="!selected" message="Select a file to see its changes." />
     <EmptyState v-else-if="error" :message="error" class="text-destructive" />

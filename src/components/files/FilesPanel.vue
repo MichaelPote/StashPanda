@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useEventListener, useResizeObserver } from "@vueuse/core";
 import { GitBranchIcon, GitForkIcon, LoaderCircleIcon } from "@lucide/vue";
-import { commands, type DiffTarget, type FileChange, type MergeInfo } from "@/lib/bindings";
+import { commands, type DiffTarget, type FileChange, type MergeInfo, type ResolveSide } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import MessageToggle from "@/components/files/MessageToggle.vue";
@@ -13,13 +13,17 @@ import {
   copyText,
   discardSelected,
   fileActionReason,
+  markResolved,
   openFileReason,
   openWorktreeFile,
   revealWorktreeFile,
+  selectedConflictItems,
   selectedWorktreePaths,
   stageSelected,
+  takeVersion,
   unstageSelected,
 } from "@/lib/repoActions";
+import { conflictStages, operationNames } from "@/lib/conflicts";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import {
@@ -321,7 +325,9 @@ function isFocus(item: FileItem): boolean {
 const multiple = computed(() => props.session.fileSelection.ids.size > 1);
 
 function showDiff(item: FileItem): void {
-  const next: SelectedFile = { path: item.path, oldPath: item.oldPath, target: item.target };
+  // A conflicted file opens on the comparison last chosen in the diff panel.
+  const target: DiffTarget = item.target.type === "conflict" ? { type: "conflict", ...props.session.conflictComparison } : item.target;
+  const next: SelectedFile = { path: item.path, oldPath: item.oldPath, target };
   props.session.selectedFile = next;
 }
 
@@ -423,6 +429,17 @@ const discardReason = computed(() => fileActionReason(props.session, "discard"))
 function countLabel(files: string[]): string {
   return files.length > 1 ? ` ${files.length} Files` : "";
 }
+/** The selected conflicted rows, and the names of the two sides they can be resolved to. */
+const menuConflicts = computed(() => selectedConflictItems(props.session));
+const sideNames = computed(() => operationNames(props.session.status, props.session.refs));
+/** "Take the Version from main", noting when every selected file was deleted on that side. */
+function takeLabel(side: ResolveSide): string {
+  const name = side === "ours" ? sideNames.value.ours : sideNames.value.theirs;
+  const items = menuConflicts.value;
+  const deletes = items.length > 0 && items.every((i) => !conflictStages(i.letter)[side]);
+  return `Take the Version from ${name}${deletes ? " (Delete the File)" : ""}${countLabel(items.map((i) => i.path))}`;
+}
+
 /** Open and Show in Folder use the file on disk; a deleted file is not there. */
 const openReason = computed(() => {
   const item = menuItem.value;
@@ -619,6 +636,14 @@ function pathText(item: FileItem): string {
           </div>
         </ContextMenuTrigger>
         <ContextMenuContent class="min-w-56">
+          <template v-if="mode === 'worktree' && menuConflicts.length > 0">
+            <ActionMenuItem :reason="null" data-resolve="ours" @select="takeVersion(session, menuConflicts, 'ours')">{{ takeLabel("ours") }}</ActionMenuItem>
+            <ActionMenuItem :reason="null" data-resolve="theirs" @select="takeVersion(session, menuConflicts, 'theirs')">{{ takeLabel("theirs") }}</ActionMenuItem>
+            <ActionMenuItem :reason="null" data-resolve="mark" @select="markResolved(session, menuConflicts)">
+              Mark as Resolved{{ countLabel(menuConflicts.map((i) => i.path)) }}
+            </ActionMenuItem>
+            <ContextMenuSeparator />
+          </template>
           <template v-if="mode === 'worktree'">
             <ActionMenuItem :reason="stageReason" @select="stageSelected(session)">Stage{{ countLabel(menuPaths.stageFiles) }}</ActionMenuItem>
             <ActionMenuItem :reason="unstageReason" @select="unstageSelected(session)">Unstage{{ countLabel(menuPaths.unstageFiles) }}</ActionMenuItem>

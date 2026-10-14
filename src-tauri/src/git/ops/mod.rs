@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::error::{classify_git_failure, GitError, Result};
+use crate::git::queries::in_progress::InProgressKind;
 use crate::git::{GitClient, GitReq};
 use crate::transport::TransportKind;
 
@@ -468,6 +469,125 @@ pub async fn revert(client: &GitClient, commit: &str, mainline: Option<u32>) -> 
 pub async fn revert_abort(client: &GitClient) -> Result<OpResult> {
     let out = client.exec_allow_failure(GitReq::new("revert", ["revert", "--abort"]).user()).await?;
     Ok(result(out))
+}
+
+/// Replay the current branch's own commits on top of `onto` (`git rebase <onto>`, not
+/// interactive). When a commit conflicts, Git stops with `conflicts` in the result and the rebase
+/// stays open: `continue_operation`, `skip_operation` or `rebase_abort` go on from there.
+pub async fn rebase(client: &GitClient, onto: &str) -> Result<OpResult> {
+    valid_revision(onto)?;
+    let out = client.exec_allow_failure(GitReq::new("rebase", ["rebase", onto]).user().timeout(Some(COMMIT_TIMEOUT))).await?;
+    Ok(result(out))
+}
+
+/// The Git command that owns an operation in progress.
+fn operation_command(kind: InProgressKind) -> &'static str {
+    match kind {
+        InProgressKind::Merge => "merge",
+        InProgressKind::Rebase => "rebase",
+        InProgressKind::CherryPick => "cherry-pick",
+        InProgressKind::Revert => "revert",
+    }
+}
+
+/// `git <merge|rebase|cherry-pick|revert> --continue`, once every conflict is resolved and staged.
+/// Each makes a commit, and Git would open an editor for its message; `GIT_EDITOR=true` keeps
+/// the message Git prepared (the merge message, or the original commit's) without one. Git
+/// refuses while a file is still unmerged, and a rebase or cherry-pick whose resolution left no
+/// change stops with "nothing to commit": skip that commit instead. A rebase that continues into
+/// the next commit's conflict reports `conflicts` again.
+pub async fn continue_operation(client: &GitClient, kind: InProgressKind) -> Result<OpResult> {
+    let command = operation_command(kind);
+    let req = GitReq::new(command, [command, "--continue"]).env("GIT_EDITOR", "true").user().timeout(Some(COMMIT_TIMEOUT));
+    Ok(result(client.exec_allow_failure(req).await?))
+}
+
+/// Leave out the commit a rebase or cherry-pick stopped at and go on with the next one
+/// (`--skip`), throwing away its changes and any resolution so far. A merge or revert has nothing
+/// to skip to.
+pub async fn skip_operation(client: &GitClient, kind: InProgressKind) -> Result<OpResult> {
+    if !matches!(kind, InProgressKind::Rebase | InProgressKind::CherryPick) {
+        return Err(GitError::InvalidPath { path: operation_command(kind).into(), reason: "only a rebase or a cherry-pick can skip a commit".into() });
+    }
+    let command = operation_command(kind);
+    let req = GitReq::new(command, [command, "--skip"]).env("GIT_EDITOR", "true").user().timeout(Some(COMMIT_TIMEOUT));
+    Ok(result(client.exec_allow_failure(req).await?))
+}
+
+/// Which version of a conflicted file to keep. In Git's terms: `Ours` is stage 2, the branch
+/// being merged into (for a rebase, the branch being rebased onto, with the commits already
+/// replayed); `Theirs` is stage 3, what is coming in (for a rebase, the commit being replayed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ResolveSide {
+    Ours,
+    Theirs,
+}
+
+/// The stages (1 base, 2 ours, 3 theirs) of every unmerged path in the index, from
+/// `git ls-files -u -z`: `<mode> <oid> <stage>\t<path>`.
+pub(crate) fn parse_unmerged(bytes: &[u8]) -> std::collections::HashMap<String, Vec<u8>> {
+    let mut stages: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+    for rec in bytes.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let text = String::from_utf8_lossy(rec);
+        let Some((meta, path)) = text.split_once('\t') else { continue };
+        let Some(stage) = meta.split(' ').nth(2).and_then(|s| s.parse::<u8>().ok()) else { continue };
+        stages.entry(path.to_string()).or_default().push(stage);
+    }
+    stages
+}
+
+/// Every unmerged path and its stages. Lists the whole index, since `ls-files` takes no pathspec
+/// on stdin; the unmerged entries are few.
+pub async fn unmerged_stages(client: &GitClient) -> Result<std::collections::HashMap<String, Vec<u8>>> {
+    let out = client.exec(GitReq::new("ls-files", ["ls-files", "-u", "-z"])).await?;
+    Ok(parse_unmerged(&out.stdout))
+}
+
+/// Resolve conflicted `paths` by keeping one side's version whole, and mark them resolved.
+/// Where that side has the file, `git checkout --ours|--theirs` writes it and `git add` stages
+/// it; where that side deleted it (deleted by us or by them), `git rm` deletes it. Refuses, and
+/// changes nothing, when a path is not conflicted any more.
+pub async fn resolve_conflicts(client: &GitClient, paths: &[String], side: ResolveSide) -> Result<OpResult> {
+    valid_paths(paths)?;
+    let stages = unmerged_stages(client).await?;
+    let wanted = match side {
+        ResolveSide::Ours => 2,
+        ResolveSide::Theirs => 3,
+    };
+    let (mut keep, mut delete) = (Vec::new(), Vec::new());
+    for p in paths {
+        match stages.get(p) {
+            Some(s) if s.contains(&wanted) => keep.push(p.clone()),
+            Some(_) => delete.push(p.clone()),
+            None => return Err(GitError::InvalidPath { path: p.clone(), reason: "the file is not conflicted any more".into() }),
+        }
+    }
+    let flag = match side {
+        ResolveSide::Ours => "--ours",
+        ResolveSide::Theirs => "--theirs",
+    };
+    let mut res: Option<OpResult> = None;
+    let steps: [(&'static str, &[&str], &Vec<String>); 3] = [
+        ("checkout", &["checkout", flag], &keep),
+        ("add", &["add", "-A"], &keep),
+        ("rm", &["rm", "-q"], &delete),
+    ];
+    for (label, args, list) in steps {
+        if list.is_empty() {
+            continue;
+        }
+        let r = exec_with_paths(client, label, args, list).await?;
+        let ok = r.ok;
+        res = Some(match res.take() {
+            Some(prev) => combine(prev, r),
+            None => r,
+        });
+        if !ok {
+            break;
+        }
+    }
+    Ok(res.expect("at least one path is given"))
 }
 
 /// `git config --global --add safe.directory <path>`, which tells Git to trust a repository owned
@@ -1108,6 +1228,212 @@ mod e2e {
         assert!(!clash.ok && clash.conflicts, "{clash:?}");
         assert!(revert_abort(&client).await.unwrap().ok);
         assert_eq!(out(&dir, &["log", "-1", "--format=%s"]), "three");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn rebase_continue_skip_abort_and_the_operation_in_progress() {
+        use crate::git::queries::in_progress::get_in_progress;
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-rebase-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&dir, &["config", k, v]);
+        }
+        let commit = |file: &str, text: &str, msg: &str| {
+            std::fs::write(dir.join(file), text).unwrap();
+            git(&dir, &["add", "-A"]);
+            git(&dir, &["commit", "-qm", msg]);
+        };
+        let git_dir = dir.join(".git").to_string_lossy().into_owned();
+        let client = client_for(&dir);
+        commit("a.txt", "base\n", "base");
+        commit("b.txt", "base b\n", "base b");
+        // topic: three commits; the second and third clash with main.
+        git(&dir, &["checkout", "-q", "-b", "topic"]);
+        commit("t1.txt", "t1\n", "topic one");
+        commit("a.txt", "topic\n", "topic two");
+        commit("b.txt", "topic b\n", "topic three");
+        let topic_two = out(&dir, &["rev-parse", "HEAD~1"]);
+        // clean: one commit that touches nothing main touches.
+        git(&dir, &["checkout", "-q", "-b", "clean", "main"]);
+        commit("c.txt", "c\n", "clean one");
+        git(&dir, &["checkout", "-q", "main"]);
+        commit("a.txt", "main\n", "main a");
+        commit("b.txt", "main b\n", "main b");
+        let main = out(&dir, &["rev-parse", "main"]);
+
+        // Nothing in progress.
+        assert_eq!(get_in_progress(&client, &git_dir).await, None);
+
+        // A clean rebase replays the commit on top of main.
+        git(&dir, &["checkout", "-q", "clean"]);
+        let clean = rebase(&client, "main").await.unwrap();
+        assert!(clean.ok && !clean.conflicts, "{clean:?}");
+        assert_eq!(out(&dir, &["rev-parse", "HEAD~1"]), main);
+        assert_eq!(get_in_progress(&client, &git_dir).await, None);
+
+        // A conflicting rebase stops at the second of three commits, and says so; abort puts
+        // the branch back.
+        git(&dir, &["checkout", "-q", "topic"]);
+        let before = out(&dir, &["rev-parse", "HEAD"]);
+        let stopped = rebase(&client, "main").await.unwrap();
+        assert!(!stopped.ok && stopped.conflicts, "{stopped:?}");
+        let op = get_in_progress(&client, &git_dir).await.expect("a rebase in progress");
+        assert_eq!(op.kind, InProgressKind::Rebase);
+        assert_eq!(op.branch.as_deref(), Some("refs/heads/topic"));
+        assert_eq!(op.onto.as_deref(), Some(main.as_str()));
+        assert_eq!((op.step, op.total), (Some(2), Some(3)));
+        assert_eq!(op.commit.as_deref(), Some(topic_two.as_str()));
+        assert_eq!(op.subject.as_deref(), Some("topic two"));
+        assert!(matches!(skip_operation(&client, InProgressKind::Merge).await, Err(GitError::InvalidPath { .. })));
+        assert!(rebase_abort(&client).await.unwrap().ok);
+        assert_eq!(out(&dir, &["rev-parse", "HEAD"]), before);
+        assert_eq!(get_in_progress(&client, &git_dir).await, None);
+
+        // Again: Continue is refused while a.txt is unmerged. Taking topic's version of a.txt
+        // ("theirs" during a rebase) resolves it; Continue then stops on the third commit's
+        // conflict, and Skip leaves that commit out and finishes.
+        assert!(rebase(&client, "main").await.unwrap().conflicts);
+        let refused = continue_operation(&client, InProgressKind::Rebase).await.unwrap();
+        assert!(!refused.ok, "{refused:?}");
+        let taken = resolve_conflicts(&client, &strs(&["a.txt"]), ResolveSide::Theirs).await.unwrap();
+        assert!(taken.ok, "{taken:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "topic\n");
+        let next = continue_operation(&client, InProgressKind::Rebase).await.unwrap();
+        assert!(!next.ok && next.conflicts, "{next:?}");
+        let op = get_in_progress(&client, &git_dir).await.expect("still rebasing");
+        assert_eq!((op.step, op.total, op.subject.as_deref()), (Some(3), Some(3), Some("topic three")));
+        let skipped = skip_operation(&client, InProgressKind::Rebase).await.unwrap();
+        assert!(skipped.ok, "{skipped:?}");
+        assert_eq!(get_in_progress(&client, &git_dir).await, None);
+        assert_eq!(out(&dir, &["log", "--format=%s", "-4"]), "topic two\ntopic one\nmain b\nmain a");
+        assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "main b\n");
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "");
+
+        // The apply backend keeps its state elsewhere; it reads the same.
+        git(&dir, &["checkout", "-q", "-b", "applied", &before]);
+        let st = Command::new("git").arg("-C").arg(&dir).args(["rebase", "--apply", "main"]).output().unwrap();
+        assert!(!st.status.success());
+        let op = get_in_progress(&client, &git_dir).await.expect("an apply rebase in progress");
+        assert_eq!(op.kind, InProgressKind::Rebase);
+        assert_eq!(op.branch.as_deref(), Some("refs/heads/applied"));
+        assert_eq!((op.step, op.total), (Some(2), Some(3)));
+        assert_eq!(op.commit.as_deref(), Some(topic_two.as_str()));
+        assert_eq!(op.subject.as_deref(), Some("topic two"));
+        assert!(rebase_abort(&client).await.unwrap().ok);
+        assert!(matches!(rebase(&client, "-x").await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn merge_cherry_pick_and_revert_conflicts_resolved_and_continued() {
+        use crate::git::queries::diff::{get_diff, ConflictVersion, DiffOptions, DiffTarget};
+        use crate::git::queries::in_progress::get_in_progress;
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-conflicts-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false"), ("core.autocrlf", "false")] {
+            git(&dir, &["config", k, v]);
+        }
+        let git_dir = dir.join(".git").to_string_lossy().into_owned();
+        let client = client_for(&dir);
+        let write = |file: &str, text: &str| std::fs::write(dir.join(file), text).unwrap();
+        for f in ["a.txt", "d.txt", "k.txt"] {
+            write(f, &format!("{f} base\n"));
+        }
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "base"]);
+        // feature changes a.txt, deletes d.txt and changes k.txt; main changes a.txt and d.txt
+        // and deletes k.txt: a.txt both modified, d.txt deleted by them, k.txt deleted by us.
+        git(&dir, &["checkout", "-q", "-b", "feature"]);
+        write("a.txt", "feature\n");
+        write("k.txt", "feature k\n");
+        git(&dir, &["rm", "-q", "d.txt"]);
+        git(&dir, &["commit", "-qam", "feature"]);
+        let feature = out(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        write("a.txt", "main\n");
+        write("d.txt", "main d\n");
+        git(&dir, &["rm", "-q", "k.txt"]);
+        git(&dir, &["commit", "-qam", "main"]);
+
+        let m = merge(&client, "feature", false).await.unwrap();
+        assert!(!m.ok && m.conflicts, "{m:?}");
+        let op = get_in_progress(&client, &git_dir).await.expect("a merge in progress");
+        assert_eq!(op.kind, InProgressKind::Merge);
+        assert_eq!(op.commit.as_deref(), Some(feature.as_str()));
+        assert_eq!(op.subject.as_deref(), Some("Merge branch 'feature'"));
+        // The status every refresh reads carries it.
+        let full = crate::git::queries::full_status(&client, &git_dir).await.unwrap();
+        assert_eq!((full.in_progress, full.conflicted_count), (Some(op), 3));
+        let st = status_of(&client).await;
+        assert_eq!(st.len(), 3, "{st:?}");
+
+        // Each comparison of the conflict versions; a version the conflict lacks is empty.
+        let diff = |path: &'static str, from: ConflictVersion, to: ConflictVersion| {
+            let c = &client;
+            async move { get_diff(c, &DiffTarget::Conflict { from, to }, path, None, &DiffOptions::default()).await.unwrap().text }
+        };
+        let base_ours = diff("a.txt", ConflictVersion::Base, ConflictVersion::Ours).await;
+        assert!(base_ours.contains("-a.txt base\n+main\n"), "{base_ours}");
+        let base_theirs = diff("a.txt", ConflictVersion::Base, ConflictVersion::Theirs).await;
+        assert!(base_theirs.contains("-a.txt base\n+feature\n"), "{base_theirs}");
+        let ours_theirs = diff("a.txt", ConflictVersion::Ours, ConflictVersion::Theirs).await;
+        assert!(ours_theirs.contains("-main\n+feature\n"), "{ours_theirs}");
+        let on_disk = diff("a.txt", ConflictVersion::Ours, ConflictVersion::WorkingTree).await;
+        assert!(on_disk.contains("+<<<<<<< HEAD") && !on_disk.contains("Unmerged path"), "{on_disk}");
+        let k_added = diff("k.txt", ConflictVersion::Ours, ConflictVersion::Theirs).await;
+        assert!(k_added.contains("@@ -0,0 +1,1 @@\n+feature k\n"), "{k_added}");
+        let d_removed = diff("d.txt", ConflictVersion::Ours, ConflictVersion::Theirs).await;
+        assert!(d_removed.contains("@@ -1,1 +0,0 @@\n-main d\n"), "{d_removed}");
+
+        // Theirs deleted d.txt and ours deleted k.txt, so taking those sides deletes the files;
+        // a.txt keeps ours. A file that is no longer conflicted is refused.
+        assert!(resolve_conflicts(&client, &strs(&["d.txt"]), ResolveSide::Theirs).await.unwrap().ok);
+        assert!(!dir.join("d.txt").exists());
+        let r = resolve_conflicts(&client, &strs(&["k.txt", "a.txt"]), ResolveSide::Ours).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert!(!dir.join("k.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "main\n");
+        assert!(matches!(resolve_conflicts(&client, &strs(&["a.txt"]), ResolveSide::Theirs).await, Err(GitError::InvalidPath { .. })));
+        let done = continue_operation(&client, InProgressKind::Merge).await.unwrap();
+        assert!(done.ok, "{done:?}");
+        assert_eq!(out(&dir, &["log", "-1", "--format=%s%n%P"]).lines().next(), Some("Merge branch 'feature'"));
+        assert_eq!(out(&dir, &["rev-parse", "HEAD^2"]), feature);
+        assert_eq!(get_in_progress(&client, &git_dir).await, None);
+
+        // A cherry-pick that conflicts, then is skipped.
+        git(&dir, &["checkout", "-q", "-b", "side", "HEAD~2"]);
+        write("a.txt", "side\n");
+        git(&dir, &["commit", "-qam", "side edit"]);
+        let side = out(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        assert!(cherry_pick(&client, &side, None).await.unwrap().conflicts);
+        let op = get_in_progress(&client, &git_dir).await.expect("a cherry-pick in progress");
+        assert_eq!((op.kind, op.commit.as_deref(), op.subject.as_deref()), (InProgressKind::CherryPick, Some(side.as_str()), Some("side edit")));
+        assert!(skip_operation(&client, InProgressKind::CherryPick).await.unwrap().ok);
+        assert_eq!(get_in_progress(&client, &git_dir).await, None);
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "");
+
+        // A revert that conflicts, resolved by hand and staged, then continued with Git's message.
+        write("a.txt", "one\n");
+        git(&dir, &["commit", "-qam", "set one"]);
+        write("a.txt", "two\n");
+        git(&dir, &["commit", "-qam", "set two"]);
+        let target = out(&dir, &["rev-parse", "HEAD~1"]);
+        assert!(revert(&client, &target, None).await.unwrap().conflicts);
+        let op = get_in_progress(&client, &git_dir).await.expect("a revert in progress");
+        assert_eq!(op.kind, InProgressKind::Revert);
+        assert_eq!(op.commit.as_deref(), Some(target.as_str()));
+        write("a.txt", "resolved by hand\n");
+        assert!(stage(&client, &strs(&["a.txt"])).await.unwrap().ok);
+        let done = continue_operation(&client, InProgressKind::Revert).await.unwrap();
+        assert!(done.ok, "{done:?}");
+        assert_eq!(out(&dir, &["log", "-1", "--format=%s"]), "Revert \"set one\"");
+        assert_eq!(get_in_progress(&client, &git_dir).await, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

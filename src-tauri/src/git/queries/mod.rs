@@ -4,6 +4,7 @@
 pub mod blob;
 pub mod commit_files;
 pub mod diff;
+pub mod in_progress;
 pub mod log;
 pub mod refs;
 pub mod status;
@@ -11,20 +12,30 @@ pub mod status;
 use crate::error::Result;
 use crate::git::GitClient;
 
+/// The status, with the merge, rebase, cherry-pick or revert in progress read from `git_dir`
+/// alongside it.
+pub async fn full_status(client: &GitClient, git_dir: &str) -> Result<status::StatusSnapshot> {
+    let (status, op) = tokio::join!(status::get_status(client), in_progress::get_in_progress(client, git_dir));
+    status.map(|s| status::StatusSnapshot { in_progress: op, ..s })
+}
+
 /// The refs and the status together, as every refresh needs them: in one batch where each
-/// process start is costly (`Transport::batches`, over WSL), side by side otherwise.
-pub async fn refs_and_status(client: &GitClient) -> (Result<refs::RefsSnapshot>, Result<status::StatusSnapshot>) {
+/// process start is costly (`Transport::batches`, over WSL), side by side otherwise. The
+/// operation in progress is read from `git_dir` at the same time, through the transport's file
+/// functions rather than a Git command.
+pub async fn refs_and_status(client: &GitClient, git_dir: &str) -> (Result<refs::RefsSnapshot>, Result<status::StatusSnapshot>) {
     if !client.transport.batches() {
-        return tokio::join!(refs::get_refs(client), status::get_status(client));
+        return tokio::join!(refs::get_refs(client), full_status(client, git_dir));
     }
     let mut reqs = refs::refs_requests(client);
     reqs.push(status::status_request(client));
-    match client.exec_batch(reqs).await {
+    let (batch, op) = tokio::join!(client.exec_batch(reqs), in_progress::get_in_progress(client, git_dir));
+    match batch {
         Ok(outs) => {
             let (refs_outs, status_out) = outs.split_at(outs.len() - 1);
             let status = &status_out[0];
             let status = if status.success() {
-                Ok(status::parse_status(&status.stdout))
+                Ok(status::StatusSnapshot { in_progress: op, ..status::parse_status(&status.stdout) })
             } else {
                 Err(crate::error::classify_git_failure("status", vec![], status.exit_code, &status.stderr, &client.transport.kind()))
             };
@@ -115,8 +126,9 @@ mod e2e {
             ..local.clone()
         };
         assert!(wsl.transport.batches() && !local.transport.batches());
-        let (lr, ls) = super::refs_and_status(&local).await;
-        let (wr, ws) = super::refs_and_status(&wsl).await;
+        let git_dir = dir.join(".git").to_string_lossy().into_owned();
+        let (lr, ls) = super::refs_and_status(&local, &git_dir).await;
+        let (wr, ws) = super::refs_and_status(&wsl, &git_dir).await;
         assert_eq!(lr.unwrap(), wr.unwrap());
         assert_eq!(ls.unwrap(), ws.unwrap());
     }
