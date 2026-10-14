@@ -24,6 +24,7 @@ pub struct Settings {
     pub cache: CacheSettings,
     pub commit: CommitSettings,
     pub diff: DiffSettings,
+    pub keys: KeySettings,
     pub library: RepoLibrary,
 }
 
@@ -38,9 +39,19 @@ impl Default for Settings {
             cache: CacheSettings::default(),
             commit: CommitSettings::default(),
             diff: DiffSettings::default(),
+            keys: KeySettings::default(),
             library: RepoLibrary::default(),
         }
     }
+}
+
+/// The SSH key manager.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KeySettings {
+    /// Folders scanned for keys besides the default ones (`~/.ssh`, and the other side of the
+    /// Windows and WSL boundary). Added on the Settings dialog's SSH Keys page.
+    pub extra_dirs: Vec<String>,
 }
 
 /// Which git executable to run when a repository has no override.

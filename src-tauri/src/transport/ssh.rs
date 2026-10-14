@@ -309,13 +309,16 @@ mod e2e {
         assert!(st.success());
     }
 
-    fn start_sshd(dir: &Path, port: u16) -> Sshd {
+    /// `passwords` turns on password authentication. The server runs as this user, so it cannot
+    /// read the shadow file and refuses every password, which is enough to test the prompt.
+    fn start_sshd(dir: &Path, port: u16, passwords: bool) -> Sshd {
         let host_key = dir.join("host_key");
         keygen(&host_key);
         let cfg = format!(
-            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nStrictModes no\nPidFile none\nLogLevel ERROR\n",
+            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPasswordAuthentication {}\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nUsePAM no\nStrictModes no\nPidFile none\nLogLevel ERROR\n",
             host_key.display(),
-            dir.join("authorized_keys").display()
+            dir.join("authorized_keys").display(),
+            if passwords { "yes" } else { "no" }
         );
         std::fs::write(dir.join("sshd_config"), cfg).unwrap();
         let log = std::fs::File::create(dir.join("sshd.log")).unwrap();
@@ -350,7 +353,7 @@ mod e2e {
         keygen(&client_key);
         std::fs::copy(dir.join("client_key.pub"), dir.join("authorized_keys")).unwrap();
         let port = free_port();
-        let _sshd = start_sshd(&dir, port);
+        let _sshd = start_sshd(&dir, port, false);
 
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -367,7 +370,7 @@ mod e2e {
 
         // Unknown host key is refused and remembered for "Trust this host".
         let err = transport.probe().await.expect_err("unknown host must be refused");
-        assert!(matches!(err, GitError::SshHostKeyUnknown { .. }), "{err:?}");
+        assert!(matches!(err, GitError::SshHostKeyUnknown { port: p, .. } if p == port), "{err:?}");
         ctx.trust_offered("127.0.0.1", port).unwrap();
         assert!(std::fs::read_to_string(dir.join("known_hosts")).unwrap().contains("ssh-ed25519"));
 
@@ -441,6 +444,88 @@ mod e2e {
             assert!(std::time::Instant::now() < deadline, "left running: {}", alive());
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+
+        ctx.pool.disconnect_all().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The errors the UI turns into prompts: an unknown host key (Trust), a key that needs its
+    /// passphrase, a remembered passphrase that is wrong, a key the server refuses where it
+    /// accepts passwords, a password it refuses, and a host key that has changed. Each must
+    /// carry what the UI needs to act on it.
+    #[tokio::test]
+    async fn ssh_prompts_against_private_sshd() {
+        if !std::path::Path::new("/usr/sbin/sshd").exists() || which::which("ssh-keygen").is_err() {
+            eprintln!("sshd or ssh-keygen missing; skipping");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("stashpanda-ssh-prompts-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let locked = dir.join("locked_key");
+        let st = Command::new("ssh-keygen").args(["-q", "-N", "secret", "-t", "ed25519", "-f"]).arg(&locked).status().unwrap();
+        assert!(st.success());
+        let stranger = dir.join("stranger_key");
+        keygen(&stranger);
+        std::fs::copy(dir.join("locked_key.pub"), dir.join("authorized_keys")).unwrap();
+        let port = free_port();
+        let _sshd = start_sshd(&dir, port, true);
+
+        let user = std::env::var("USER").unwrap();
+        let target = |key: &PathBuf| SshTarget {
+            host: "127.0.0.1".into(),
+            port,
+            user: user.clone(),
+            identity_files: vec![key.clone()],
+            identities_only: true,
+        };
+        let passphrases = Arc::new(PassphraseCache::default());
+        let ctx = Arc::new(SshContext::new(passphrases.clone(), dir.join("known_hosts")));
+        let locked_transport = SshTransport::new(target(&locked), None, ctx.clone());
+
+        let err = locked_transport.probe().await.expect_err("unknown host must be refused");
+        assert!(matches!(&err, GitError::SshHostKeyUnknown { host, port: p, fingerprint } if host == "127.0.0.1" && *p == port && fingerprint.starts_with("SHA256:")), "{err:?}");
+        ctx.trust_offered("127.0.0.1", port).unwrap();
+
+        let locked_path = locked.to_string_lossy().into_owned();
+        let err = locked_transport.probe().await.expect_err("an encrypted key needs its passphrase");
+        assert!(matches!(&err, GitError::SshNeedsPassphrase { path } if *path == locked_path), "{err:?}");
+
+        passphrases.remember(&locked_path, "not it");
+        let err = locked_transport.probe().await.expect_err("a wrong remembered passphrase is reported");
+        assert!(matches!(&err, GitError::SshWrongPassphrase { path } if *path == locked_path), "{err:?}");
+        assert!(passphrases.get(&locked_path).is_none(), "the wrong passphrase is forgotten");
+
+        passphrases.remember(&locked_path, "secret");
+        locked_transport.probe().await.expect("the right passphrase opens the connection");
+        // The next transport for this user and host must make its own connection.
+        ctx.pool.disconnect_all().await;
+
+        let stranger_transport = SshTransport::new(target(&stranger), None, ctx.clone());
+        let err = stranger_transport.probe().await.expect_err("an unknown key is refused");
+        match &err {
+            GitError::SshAuthFailed { port: p, user: u, password_allowed, password_rejected, .. } => {
+                assert_eq!((*p, u.as_deref()), (Some(port), Some(user.as_str())));
+                assert!(*password_allowed, "the server accepts passwords");
+                assert!(!*password_rejected);
+            }
+            other => panic!("{other:?}"),
+        }
+
+        let password_key = crate::transport::ssh_pool::password_key(&user, "127.0.0.1", port);
+        ctx.passwords.remember(&password_key, "not the password");
+        let err = stranger_transport.probe().await.expect_err("the server refuses every password");
+        assert!(matches!(err, GitError::SshAuthFailed { password_allowed: true, password_rejected: true, .. }), "{err:?}");
+        assert!(ctx.passwords.get(&password_key).is_none(), "a refused password is forgotten");
+
+        // A known_hosts entry for this host and port with another key: a hard error.
+        let other = dir.join("other_host_key");
+        keygen(&other);
+        let other_key = ssh_key::PublicKey::read_openssh_file(dir.join("other_host_key.pub")).unwrap();
+        let changed_hosts = dir.join("known_hosts_changed");
+        russh::keys::known_hosts::learn_known_hosts_path("127.0.0.1", port, &other_key, &changed_hosts).unwrap();
+        let changed_ctx = Arc::new(SshContext::new(passphrases.clone(), changed_hosts));
+        let err = SshTransport::new(target(&locked), None, changed_ctx).probe().await.expect_err("a changed key is refused");
+        assert!(matches!(err, GitError::SshHostKeyChanged { port: p, .. } if p == port), "{err:?}");
 
         ctx.pool.disconnect_all().await;
         let _ = std::fs::remove_dir_all(&dir);

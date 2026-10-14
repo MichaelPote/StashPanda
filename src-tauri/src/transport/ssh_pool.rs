@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::client::{self, AuthResult, Handle, Msg};
+use russh::{MethodKind, MethodSet};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::agent::AgentIdentity;
 use russh::keys::known_hosts::learn_known_hosts_path;
@@ -253,10 +254,10 @@ async fn connect(target: &SshTarget, ctx: &SshContext) -> Result<SshConn> {
                     if let Ok(mut m) = ctx.offered_keys.lock() {
                         m.insert(format!("{}:{}", target.host, target.port), pk.clone());
                     }
-                    GitError::SshHostKeyUnknown { host: target.host.clone(), fingerprint: fingerprint(&pk) }
+                    GitError::SshHostKeyUnknown { host: target.host.clone(), port: target.port, fingerprint: fingerprint(&pk) }
                 }
                 Some((HostKeyVerdict::Changed, pk)) => {
-                    GitError::SshHostKeyChanged { host: target.host.clone(), fingerprint: fingerprint(&pk) }
+                    GitError::SshHostKeyChanged { host: target.host.clone(), port: target.port, fingerprint: fingerprint(&pk) }
                 }
                 _ => GitError::SshConnectFailed { host: target.host.clone(), detail: e.to_string() },
             });
@@ -265,11 +266,13 @@ async fn connect(target: &SshTarget, ctx: &SshContext) -> Result<SshConn> {
     };
 
     let mut tried: Vec<String> = Vec::new();
+    // The methods the server still accepts, from its last refusal.
+    let mut methods: Option<MethodSet> = None;
     let rsa_hash = handle.best_supported_rsa_hash().await.ok().flatten().flatten();
 
     // 1. Agent (unless IdentitiesOnly).
     if !target.identities_only {
-        if let Some(ok) = try_agent(&mut handle, &target.user, rsa_hash, &mut tried).await {
+        if let Some(ok) = try_agent(&mut handle, &target.user, rsa_hash, &mut tried, &mut methods).await {
             if ok {
                 return Ok(SshConn { handle: tokio::sync::Mutex::new(handle), slots: Arc::new(Semaphore::new(8)) });
             }
@@ -283,6 +286,8 @@ async fn connect(target: &SshTarget, ctx: &SshContext) -> Result<SshConn> {
             files.push(home.join(".ssh").join(n));
         }
     }
+    // The first usual key file (`~/.ssh/id_ed25519` and the others) that needs its passphrase.
+    let mut locked: Option<GitError> = None;
     for f in files {
         let f = expand_tilde(&f);
         if !f.is_file() {
@@ -293,15 +298,29 @@ async fn connect(target: &SshTarget, ctx: &SshContext) -> Result<SshConn> {
             Ok(b) => b,
             Err(_) => continue,
         };
-        let pass = ctx.passphrases.get(&path_s);
-        let key = match crate::keys::load_private_key(&path_s, &bytes, pass.as_deref().map(|s| s.as_str())) {
+        // Explicit identity: the UI must ask for the passphrase when it is missing or wrong.
+        let explicit = target.identity_files.iter().any(|x| expand_tilde(x) == f);
+        // The passphrase cache (and so the keychain) is only asked for a key that needs one.
+        let key = match crate::keys::load_private_key(&path_s, &bytes, None) {
+            Err(GitError::SshNeedsPassphrase { .. }) => match ctx.passphrases.get(&path_s) {
+                Some(pass) => crate::keys::load_private_key(&path_s, &bytes, Some(pass.as_str())),
+                None => Err(GitError::SshNeedsPassphrase { path: path_s.clone() }),
+            },
+            other => other,
+        };
+        let key = match key {
             Ok(k) => k,
-            Err(GitError::SshNeedsPassphrase { .. }) => {
-                tried.push(format!("key {} (needs passphrase)", f.display()));
-                // Explicit identity: the UI must ask for the passphrase.
-                if target.identity_files.iter().any(|x| expand_tilde(x) == f) {
-                    return Err(GitError::SshNeedsPassphrase { path: path_s });
+            Err(e @ (GitError::SshNeedsPassphrase { .. } | GitError::SshWrongPassphrase { .. })) => {
+                if matches!(e, GitError::SshWrongPassphrase { .. }) {
+                    // A remembered passphrase that no longer fits (the key was re-encrypted
+                    // elsewhere) is dropped, so the next prompt is not overruled by it.
+                    let _ = ctx.passphrases.forget(&path_s);
                 }
+                tried.push(format!("key {} (needs passphrase)", f.display()));
+                if explicit {
+                    return Err(e);
+                }
+                locked.get_or_insert(e);
                 continue;
             }
             Err(e) => {
@@ -315,21 +334,60 @@ async fn connect(target: &SshTarget, ctx: &SshContext) -> Result<SshConn> {
             Ok(AuthResult::Success) => {
                 return Ok(SshConn { handle: tokio::sync::Mutex::new(handle), slots: Arc::new(Semaphore::new(8)) });
             }
-            Ok(AuthResult::Failure { .. }) => {}
+            Ok(AuthResult::Failure { remaining_methods, .. }) => methods = Some(remaining_methods),
             Err(e) => {
                 return Err(GitError::SshConnectFailed { host: target.host.clone(), detail: e.to_string() });
             }
         }
     }
-    // 3. Password supplied through the UI.
-    if let Some(pw) = ctx.passwords.get(&format!("{}@{}:{}", target.user, target.host, target.port)) {
-        tried.push("password".into());
-        if let Ok(AuthResult::Success) = handle.authenticate_password(target.user.clone(), pw.to_string()).await {
-            return Ok(SshConn { handle: tokio::sync::Mutex::new(handle), slots: Arc::new(Semaphore::new(8)) });
+    // 3. Password supplied through the UI. A refused one is forgotten, so the UI asks again.
+    let password_key = password_key(&target.user, &target.host, target.port);
+    // Nothing else got in, and a usual key file is encrypted: ask for its passphrase, as OpenSSH
+    // does, unless a password from the UI is waiting to be tried.
+    if let Some(e) = locked {
+        if ctx.passwords.get(&password_key).is_none() {
+            let _ = handle.disconnect(russh::Disconnect::ByApplication, "passphrase needed", "").await;
+            return Err(e);
         }
     }
+    let mut password_rejected = false;
+    if let Some(pw) = ctx.passwords.get(&password_key) {
+        tried.push("password".into());
+        match handle.authenticate_password(target.user.clone(), pw.to_string()).await {
+            Ok(AuthResult::Success) => {
+                return Ok(SshConn { handle: tokio::sync::Mutex::new(handle), slots: Arc::new(Semaphore::new(8)) });
+            }
+            Ok(AuthResult::Failure { remaining_methods, .. }) => {
+                methods = Some(remaining_methods);
+                password_rejected = true;
+                let _ = ctx.passwords.forget(&password_key);
+            }
+            Err(e) => {
+                return Err(GitError::SshConnectFailed { host: target.host.clone(), detail: e.to_string() });
+            }
+        }
+    }
+    // Nothing was tried (no agent, no key files): ask the server which methods it accepts.
+    if methods.is_none() {
+        if let Ok(AuthResult::Failure { remaining_methods, .. }) = handle.authenticate_none(target.user.clone()).await {
+            methods = Some(remaining_methods);
+        }
+    }
+    let password_allowed = methods.is_some_and(|m| m.contains(&MethodKind::Password));
     let _ = handle.disconnect(russh::Disconnect::ByApplication, "authentication failed", "").await;
-    Err(GitError::SshAuthFailed { host: target.host.clone(), methods_tried: tried })
+    Err(GitError::SshAuthFailed {
+        host: target.host.clone(),
+        port: Some(target.port),
+        user: Some(target.user.clone()),
+        methods_tried: tried,
+        password_allowed,
+        password_rejected,
+    })
+}
+
+/// How `ssh_set_password` and the connection files a password.
+pub fn password_key(user: &str, host: &str, port: u16) -> String {
+    format!("{user}@{host}:{port}")
 }
 
 fn expand_tilde(p: &Path) -> PathBuf {
@@ -344,7 +402,13 @@ fn expand_tilde(p: &Path) -> PathBuf {
 
 /// Returns Some(true) on success, Some(false) when the agent had keys but none
 /// worked, None when no agent was reachable.
-async fn try_agent(handle: &mut Handle<ClientHandler>, user: &str, rsa_hash: Option<HashAlg>, tried: &mut Vec<String>) -> Option<bool> {
+async fn try_agent(
+    handle: &mut Handle<ClientHandler>,
+    user: &str,
+    rsa_hash: Option<HashAlg>,
+    tried: &mut Vec<String>,
+    methods: &mut Option<MethodSet>,
+) -> Option<bool> {
     #[cfg(unix)]
     let mut agent = AgentClient::connect_env().await.ok()?;
     #[cfg(windows)]
@@ -365,7 +429,7 @@ async fn try_agent(handle: &mut Handle<ClientHandler>, user: &str, rsa_hash: Opt
         let hash = if key.algorithm().is_rsa() { rsa_hash } else { None };
         match handle.authenticate_publickey_with(user.to_string(), key, hash, &mut agent).await {
             Ok(AuthResult::Success) => return Some(true),
-            Ok(AuthResult::Failure { .. }) => continue,
+            Ok(AuthResult::Failure { remaining_methods, .. }) => *methods = Some(remaining_methods),
             Err(_) => return Some(false),
         }
     }

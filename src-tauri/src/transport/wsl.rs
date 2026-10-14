@@ -58,8 +58,25 @@ pub fn decode_wsl_text(bytes: &[u8]) -> String {
 
 /// `wsl.exe -l -q` output as distro names.
 pub async fn list_distros() -> Result<Vec<String>> {
+    list_with(&["-l", "-q"]).await
+}
+
+/// The distros running now. Reading a stopped distro's files through `\\wsl.localhost` starts
+/// it, so the SSH key scan only looks in these. With none running, `wsl.exe` prints a sentence
+/// and exits non-zero, which gives an empty list.
+pub async fn list_running_distros() -> Result<Vec<String>> {
     let mut c = base_command(wsl_exe());
-    c.args(["-l", "-q"]);
+    c.args(["-l", "--running", "-q"]);
+    let out = c.output().await.map_err(|e| GitError::Io { detail: e.to_string() })?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    Ok(distro_lines(&decode_wsl_text(&out.stdout)))
+}
+
+async fn list_with(args: &[&str]) -> Result<Vec<String>> {
+    let mut c = base_command(wsl_exe());
+    c.args(args);
     let out = c.output().await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             GitError::WslNotAvailable
@@ -67,12 +84,14 @@ pub async fn list_distros() -> Result<Vec<String>> {
             GitError::Io { detail: e.to_string() }
         }
     })?;
-    let text = decode_wsl_text(&out.stdout);
-    Ok(text
-        .lines()
+    Ok(distro_lines(&decode_wsl_text(&out.stdout)))
+}
+
+fn distro_lines(text: &str) -> Vec<String> {
+    text.lines()
         .map(|l| l.trim_matches(|c: char| c == '\0' || c == '\r' || c.is_whitespace()).to_string())
         .filter(|l| !l.is_empty())
-        .collect())
+        .collect()
 }
 
 impl WslTransport {

@@ -168,8 +168,19 @@ async function save(): Promise<void> {
           </button>
         </nav>
 
+        <!-- A page of its own (SSH Keys) scrolls under its title; it has forms of its own, so it is not inside the settings form. -->
+        <div v-if="section.page" class="flex min-h-0 flex-col">
+          <div class="shrink-0 px-6 pt-4 pb-4">
+            <h3 class="text-lg font-semibold">{{ section.label }}</h3>
+            <p class="text-base text-muted-foreground">{{ section.description }}</p>
+          </div>
+          <div class="min-h-0 flex-1 overflow-y-auto px-6 pb-4 scrollbar-thin">
+            <component :is="section.page" />
+          </div>
+        </div>
+
         <!-- The page's title, description and preview stay put; the fields scroll in the panel below them. -->
-        <form class="flex min-h-0 flex-col" @submit.prevent="save">
+        <form v-else class="flex min-h-0 flex-col" @submit.prevent="save">
           <div class="shrink-0 px-6 pt-4 pb-4">
             <h3 class="text-lg font-semibold">{{ section.label }}</h3>
             <p class="text-base text-muted-foreground">{{ section.description }}</p>

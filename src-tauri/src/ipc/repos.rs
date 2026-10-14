@@ -369,11 +369,13 @@ pub async fn ssh_trust_host(state: State<'_, AppState>, host: String, port: u16)
     state.ssh.trust_offered(&host, port)
 }
 
-/// Remember a password for `user@host:port` for this session.
+/// Remember a password for `user@host:port` for this session. `host`, `port` and `user` are the
+/// ones an `sshAuthFailed` error gave; call `repoOpen` again afterwards. A password the server
+/// refuses is forgotten, and the open fails with `sshAuthFailed` again with `passwordRejected`.
 #[tauri::command]
 #[specta::specta]
 pub async fn ssh_set_password(state: State<'_, AppState>, host: String, port: u16, user: String, password: String) -> Result<()> {
-    state.ssh.passwords.remember(&format!("{user}@{host}:{port}"), &password);
+    state.ssh.passwords.remember(&crate::transport::ssh_pool::password_key(&user, &host, port), &password);
     Ok(())
 }
 

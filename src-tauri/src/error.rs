@@ -20,12 +20,25 @@ pub enum GitError {
     WslDistroNotFound { distro: String, available: Vec<String> },
     #[error("cannot connect to {host}: {detail}")]
     SshConnectFailed { host: String, detail: String },
+    /// `user` and `port` are known when the built-in SSH client tried; they are None when the
+    /// failure came from Git's own `ssh` (a fetch to an SSH remote). `password_allowed` says the
+    /// server accepts password authentication, so the UI can ask for one and pass it to
+    /// `ssh_set_password`; `password_rejected` says a password supplied that way was tried and
+    /// refused, and has been forgotten.
     #[error("authentication to {host} failed (tried: {methods_tried:?})")]
-    SshAuthFailed { host: String, methods_tried: Vec<String> },
+    SshAuthFailed {
+        host: String,
+        port: Option<u16>,
+        user: Option<String>,
+        methods_tried: Vec<String>,
+        password_allowed: bool,
+        password_rejected: bool,
+    },
+    /// `ssh_trust_host(host, port)` records the key that was offered.
     #[error("unknown host key for {host} ({fingerprint})")]
-    SshHostKeyUnknown { host: String, fingerprint: String },
+    SshHostKeyUnknown { host: String, port: u16, fingerprint: String },
     #[error("host key for {host} has CHANGED ({fingerprint})")]
-    SshHostKeyChanged { host: String, fingerprint: String },
+    SshHostKeyChanged { host: String, port: u16, fingerprint: String },
     #[error("unsupported key format in {path}: {detected_header}")]
     SshKeyUnsupported { path: String, detected_header: String },
     #[error("key {path} needs a passphrase")]
@@ -168,7 +181,11 @@ pub fn classify_git_failure(
         {
             return GitError::SshAuthFailed {
                 host: host.clone(),
+                port: None,
+                user: None,
                 methods_tried: Vec::new(),
+                password_allowed: false,
+                password_rejected: false,
             };
         }
         if exit_code == Some(255) {

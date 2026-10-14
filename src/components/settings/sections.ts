@@ -10,9 +10,10 @@
  * viewer's header controls (layout, context lines, whitespace) are left out for the same reason.
  */
 import type { Component } from "vue";
-import { CpuIcon, DatabaseIcon, FileDiffIcon, GitCommitHorizontalIcon, SlidersHorizontalIcon, TerminalIcon, TimerIcon } from "@lucide/vue";
+import { CpuIcon, DatabaseIcon, FileDiffIcon, GitCommitHorizontalIcon, KeyRoundIcon, SlidersHorizontalIcon, TerminalIcon, TimerIcon } from "@lucide/vue";
 import type { Settings } from "@/lib/bindings";
 import DiffPreview from "./DiffPreview.vue";
+import KeyManagerPage from "./KeyManagerPage.vue";
 
 /** The sections of `settings.json` the dialog edits. `version` and `library` are left out. */
 export type SettingsGroup = "git" | "appearance" | "console" | "polling" | "cache" | "commit" | "diff";
@@ -81,6 +82,11 @@ export interface SettingsSection {
   fields: SettingsFieldDef[];
   /** Drawn under the fields with the form's current values, before they are saved. */
   preview?: Component;
+  /**
+   * Drawn in place of the field list, for a page that is not a form of settings (the SSH Keys
+   * page). Its changes take effect at once rather than on Save Changes.
+   */
+  page?: Component;
 }
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
@@ -304,6 +310,15 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         optional: true,
       },
     ],
+  },
+  {
+    id: "sshKeys",
+    label: "SSH Keys",
+    icon: KeyRoundIcon,
+    description:
+      "Every private key in your .ssh folders, in any format StashPanda reads. Its actions take effect straight away, without Save Changes.",
+    fields: [],
+    page: KeyManagerPage,
   },
   {
     id: "console",

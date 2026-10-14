@@ -3,6 +3,7 @@
 //! PKCS#8) and `russh` (PEM decoding); `pem_legacy` covers what they do not.
 
 pub mod agent;
+pub mod keychain;
 pub mod detect;
 pub mod pem_legacy;
 pub mod secrets;
@@ -18,6 +19,7 @@ use zeroize::Zeroizing;
 use crate::error::{GitError, Result};
 use crate::platform::Host;
 use detect::{detect, Detected, KeyFormat};
+use secrets::PassphraseMemory;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +38,8 @@ pub struct KeyInfo {
     pub error: Option<String>,
     /// Filled by the caller from the agent's identity list.
     pub in_agent: bool,
+    /// Where its passphrase is remembered, for an encrypted key. Filled by the caller.
+    pub passphrase_remembered: PassphraseMemory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -180,6 +184,7 @@ pub fn inspect(path: &Path) -> KeyInfo {
         public_key_file: None,
         error: None,
         in_agent: false,
+        passphrase_remembered: PassphraseMemory::None,
     };
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -253,7 +258,7 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<KeyInfo> {
             }
             let Ok(bytes) = std::fs::read(&p) else { continue };
             let d = detect(&bytes);
-            if matches!(d.format, KeyFormat::Unknown | KeyFormat::PublicOpenSsh | KeyFormat::PublicRfc4716) {
+            if !is_private_format(d.format) {
                 continue;
             }
             out.push(inspect(&p));
@@ -263,24 +268,123 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<KeyInfo> {
 }
 
 /// Where keys usually live on this machine, including the other side of the
-/// Windows/WSL boundary when it is reachable.
-pub fn default_key_dirs(host: &Host) -> Vec<PathBuf> {
+/// Windows/WSL boundary when it is reachable: `/mnt/c/Users/*/.ssh` from WSL,
+/// and `\\wsl.localhost\<distro>\home\*\.ssh` from Windows for each distro in
+/// `wsl_distros` (the caller passes the running ones, since reading a stopped
+/// distro's files starts it).
+pub fn default_key_dirs(host: &Host, wsl_distros: &[String]) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         dirs.push(PathBuf::from(home).join(".ssh"));
     }
-    if let Host::LinuxWsl { .. } = host {
-        if let Ok(rd) = std::fs::read_dir("/mnt/c/Users") {
-            for e in rd.flatten() {
-                let p = e.path().join(".ssh");
-                if p.is_dir() {
-                    dirs.push(p);
-                }
+    match host {
+        Host::LinuxWsl { .. } => dirs.extend(ssh_dirs_in_homes(Path::new("/mnt/c/Users"))),
+        Host::Windows => {
+            for distro in wsl_distros {
+                dirs.extend(ssh_dirs_in_homes(&wsl_home_root(distro)));
             }
         }
+        Host::Linux | Host::MacOs => {}
     }
     dirs.retain(|d| d.is_dir());
+    unique_paths(dirs)
+}
+
+/// The folder holding a WSL distro's home folders, as Windows sees it.
+pub fn wsl_home_root(distro: &str) -> PathBuf {
+    PathBuf::from(format!(r"\\wsl.localhost\{distro}\home"))
+}
+
+/// `<root>/<user>/.ssh` for every user folder under `root` that has one.
+pub fn ssh_dirs_in_homes(root: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path().join(".ssh")).filter(|p| p.is_dir()).collect();
+    dirs.sort();
     dirs
+}
+
+/// `paths` in their order with repeats removed.
+pub fn unique_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = std::collections::HashSet::new();
+    paths.into_iter().filter(|p| seen.insert(p.clone())).collect()
+}
+
+/// The public key of a key file, without its passphrase where the format allows: an unencrypted
+/// key, the public part of an encrypted OpenSSH or PPK key, or the matching `.pub` file.
+pub fn public_key_of(path: &Path) -> Option<PublicKey> {
+    let bytes = std::fs::read(path).ok()?;
+    let path_s = path.to_string_lossy();
+    match load_private_key(&path_s, &bytes, None) {
+        Ok(key) => return Some(key.public_key().clone()),
+        Err(GitError::SshNeedsPassphrase { .. }) => {}
+        Err(_) => return None,
+    }
+    let from_file = match detect(&bytes).format {
+        KeyFormat::PpkV2 | KeyFormat::PpkV3 => ppk_public(&String::from_utf8_lossy(&bytes)),
+        KeyFormat::OpenSsh => PrivateKey::from_openssh(&bytes).ok().map(|k| k.public_key().clone()),
+        _ => None,
+    };
+    from_file.or_else(|| PublicKey::read_openssh_file(Path::new(&format!("{path_s}.pub"))).ok())
+}
+
+/// `<dir>/<stem><ext>`, or `<stem>_2<ext>`, `<stem>_3<ext>` and so on when that file or its
+/// `.pub` exists already, so a conversion never lands on an existing file.
+pub fn unused_key_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
+    let taken = |p: &Path| p.exists() || PathBuf::from(format!("{}.pub", p.display())).exists();
+    let first = dir.join(format!("{stem}{ext}"));
+    if !taken(&first) {
+        return first;
+    }
+    (2..)
+        .map(|n| dir.join(format!("{stem}_{n}{ext}")))
+        .find(|p| !taken(p))
+        .expect("an unused name exists")
+}
+
+/// The comment a new key gets: `user@machine`.
+pub fn default_comment() -> String {
+    let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "user".into());
+    let machine = std::env::var("COMPUTERNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "localhost".into());
+    format!("{user}@{machine}")
+}
+
+/// Key text from a file dropped on the key manager, for `keys_import`. Refuses anything that is
+/// not a private key in a format the key manager reads, so it cannot be used to read other files.
+pub fn read_key_text(path: &Path) -> Result<String> {
+    let meta = std::fs::metadata(path)?;
+    if meta.len() > 64 * 1024 {
+        return Err(GitError::SshKeyUnsupported { path: path.display().to_string(), detected_header: "a file over 64 KiB".into() });
+    }
+    let bytes = std::fs::read(path)?;
+    let d = detect(&bytes);
+    if !is_private_format(d.format) {
+        return Err(GitError::SshKeyUnsupported { path: path.display().to_string(), detected_header: d.header });
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn is_private_format(format: KeyFormat) -> bool {
+    !matches!(format, KeyFormat::Unknown | KeyFormat::PublicOpenSsh | KeyFormat::PublicRfc4716)
+}
+
+/// Delete a private key file, and its `.pub` when `include_public` is set. Refuses a file that is
+/// not a private key.
+pub fn delete_key(path: &Path, include_public: bool) -> Result<()> {
+    let bytes = std::fs::read(path)?;
+    if !is_private_format(detect(&bytes).format) {
+        return Err(GitError::Io { detail: format!("{} is not a private key file, so it was not deleted", path.display()) });
+    }
+    std::fs::remove_file(path)?;
+    let public = PathBuf::from(format!("{}.pub", path.display()));
+    if include_public && public.is_file() {
+        std::fs::remove_file(public)?;
+    }
+    Ok(())
 }
 
 /// Serialise a private key, optionally encrypted with a new passphrase.
@@ -374,5 +478,75 @@ mod tests {
 
         assert!(public_line(&key).unwrap().starts_with("ssh-ed25519 "));
         assert!(matches!(load_private_key("mem", b"ssh-ed25519 AAAA", None), Err(GitError::SshKeyUnsupported { .. })));
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("stashpanda-keys-{tag}-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn wsl_folders_seen_from_windows() {
+        assert_eq!(wsl_home_root("Ubuntu").to_string_lossy(), r"\\wsl.localhost\Ubuntu\home");
+        assert_eq!(wsl_home_root("Ubuntu-24.04").to_string_lossy(), r"\\wsl.localhost\Ubuntu-24.04\home");
+
+        // The home folders stand in for `\\wsl.localhost\<distro>\home`: only users with a
+        // `.ssh` folder count.
+        let root = temp_dir("homes");
+        std::fs::create_dir_all(root.join("brave").join(".ssh")).unwrap();
+        std::fs::create_dir_all(root.join("alice").join(".ssh")).unwrap();
+        std::fs::create_dir_all(root.join("nobody")).unwrap();
+        std::fs::write(root.join("file"), "").unwrap();
+        assert_eq!(ssh_dirs_in_homes(&root), vec![root.join("alice").join(".ssh"), root.join("brave").join(".ssh")]);
+        assert!(ssh_dirs_in_homes(&root.join("missing")).is_empty());
+
+        let a = PathBuf::from("/a");
+        let b = PathBuf::from("/b");
+        assert_eq!(unique_paths(vec![a.clone(), b.clone(), a.clone()]), vec![a, b]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn key_file_helpers() {
+        let dir = temp_dir("files");
+        let key = generate(GenerateAlgorithm::Ed25519, "michael@test").unwrap();
+        let fingerprint = key.fingerprint(HashAlg::Sha256);
+
+        // An encrypted OpenSSH key still gives its public key without the passphrase.
+        let enc = dir.join("id_enc");
+        write_private_file(&enc, &export_private(&key, ExportFormat::OpenSsh, Some("pw")).unwrap(), false).unwrap();
+        assert_eq!(public_key_of(&enc).unwrap().fingerprint(HashAlg::Sha256), fingerprint);
+
+        // An encrypted PKCS#8 key has no public part: it comes from the `.pub` file, or not at all.
+        let p8 = dir.join("id_p8");
+        write_private_file(&p8, &export_private(&key, ExportFormat::Pkcs8, Some("pw")).unwrap(), false).unwrap();
+        assert!(public_key_of(&p8).is_none());
+        std::fs::write(dir.join("id_p8.pub"), format!("{}\n", public_line(&key).unwrap())).unwrap();
+        assert_eq!(public_key_of(&p8).unwrap().fingerprint(HashAlg::Sha256), fingerprint);
+
+        // Conversion targets skip names in use, by the private file or its `.pub`.
+        assert_eq!(unused_key_path(&dir, "id_new", ""), dir.join("id_new"));
+        assert_eq!(unused_key_path(&dir, "id_enc", ""), dir.join("id_enc_2"));
+        assert_eq!(unused_key_path(&dir, "id_p8", ".pem"), dir.join("id_p8.pem"));
+        std::fs::write(dir.join("id_x.pem.pub"), "").unwrap();
+        assert_eq!(unused_key_path(&dir, "id_x", ".pem"), dir.join("id_x_2.pem"));
+
+        assert!(read_key_text(&enc).unwrap().starts_with("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(matches!(read_key_text(&dir.join("id_p8.pub")), Err(GitError::SshKeyUnsupported { .. })));
+
+        // Delete refuses anything but a private key, and takes the `.pub` along when asked.
+        let notes = dir.join("notes.txt");
+        std::fs::write(&notes, "not a key").unwrap();
+        assert!(delete_key(&notes, true).is_err());
+        assert!(notes.exists());
+        delete_key(&p8, true).unwrap();
+        assert!(!p8.exists() && !dir.join("id_p8.pub").exists());
+        std::fs::write(dir.join("id_enc.pub"), format!("{}\n", public_line(&key).unwrap())).unwrap();
+        delete_key(&enc, false).unwrap();
+        assert!(!enc.exists() && dir.join("id_enc.pub").exists());
+
+        assert!(default_comment().contains('@'));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
