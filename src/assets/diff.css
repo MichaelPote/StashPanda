@@ -105,6 +105,17 @@
     @apply bg-diff-del-mark;
   }
 
+  /* A Find match (Ctrl+F in a diff view), in purple, a stronger magenta than the hunk headers'
+     blue-violet; the current match is darker and outlined. */
+  .diff-find {
+    border-radius: 2px;
+    background: var(--diff-find-bg);
+  }
+  .diff-find-current {
+    background: var(--diff-find-current-bg);
+    outline: 1px solid var(--diff-find-outline);
+  }
+
   /* Side by side: the band in the gap joining a change's old lines to its new lines. It has the
      changed lines' own background, so each band reads as those lines carried across the gap;
      a change with lines on both sides fades from the deleted colour to the added one. */

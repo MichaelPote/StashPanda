@@ -1098,6 +1098,12 @@ and anything over WSL or SSH.
       Tests: the parsers on captured output (renames, tabs, non-ASCII text, a boundary commit,
       uncommitted lines, quoted names, CRLF lines, a merge) and
       `file_history_and_blame_against_a_real_repository`.
+      **Fixed 2026-10-14:** `--follow` turns off the history simplification that drops merges
+      from a plain `git log -- <path>`, so the history listed every merge on the way, with an
+      empty file list and "No differences to show" (a test repository's `assets/scripts/rellax.js`
+      had 11 entries, 9 of them such merges). `parse_file_history` now leaves out a merge with no
+      file list, and `get_file_history` asks again for twice as many commits when that leaves
+      fewer entries than asked for.
 - [x] **Automatic fetch** (2026-10-14) on `polling.autoFetchMinutes`. Every half minute, each open
       repository whose last fetch is that old fetches quietly (`autoFetchDue` in
       `lib/repoActions.ts`). A failure is reported once, and not again until a fetch works.
@@ -1143,6 +1149,24 @@ and anything over WSL or SSH.
       Tried in the running Linux build on 2026-10-14: an insertion, a deletion, three lines
       changed into one, picking a line by its number, Stage hunk, hunk navigation and switching
       to Unified. Not yet looked at in the Windows window.
+- [x] **Find in a diff view** (2026-10-14). Ctrl+F with the keyboard focus in a diff view (the
+      main panel's, or the File History dialog's) opens a Find box in its top right corner.
+      - Every match is drawn in purple, a stronger magenta than the hunk headers' blue-violet,
+        and the current one darker with an outline. Case is ignored.
+      - The count reads "3 of 12". Enter and the > button go to the next match, and Shift+Enter
+        and < to the previous one, wrapping around at the ends. Escape closes the box and gives
+        the focus back to the diff.
+      - Typing picks the first match from the top of the view down. A match off screen is
+        scrolled to the middle of the view, and one past the edge of its text area is scrolled
+        to sideways (side by side, on its own side).
+      - The diff view's `<section>` takes the focus when clicked (`tabindex="-1"`) and marks
+        Ctrl+F handled, so the Commits panel's window-wide Ctrl+F leaves it alone. That
+        listener now also ignores Ctrl+F while a dialog is open.
+      - The matching is in `src/lib/diff/find.ts`. `markFound` cuts a line's coloured pieces at
+        the edges of the matches, so a match inside a changed word stays inside its highlight.
+        Past 10,000 matches the rest are neither drawn nor counted, and the count ends in "+".
+      Tried in the running Linux build on 2026-10-14, in both layouts: wrapping both ways, a
+      match on one side only, and a match at the end of a 300-character line.
 
 ## Packaging and CI
 

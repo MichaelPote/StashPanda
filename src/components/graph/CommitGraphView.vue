@@ -19,6 +19,7 @@ import { autoAuthorWidth, autoDateWidth, autoIdWidth, fontsVersion } from "@/lib
 import { autoGraphColumnWidth, ROW_HEIGHT } from "@/lib/graph/paths";
 import { isEditableTarget } from "@/lib/files";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
+import { useDialogsStore } from "@/stores/dialogs";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
@@ -314,10 +315,14 @@ function openFind(): void {
 }
 
 // Ctrl+F anywhere in the active tab opens the Find box, except in a text field, where it is
-// left to the field. The native Edit > Find Commit item does the same through `edit.find`.
+// left to the field, in a diff view, which has a Find box of its own and marks the key handled,
+// and while a dialog is open over the window. The native Edit > Find Commit item does the same
+// through `edit.find`.
+const dialogs = useDialogsStore();
 useEventListener(window, "keydown", (event: KeyboardEvent) => {
   if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey || (event.key !== "f" && event.key !== "F")) return;
   if (sessions.activeKey !== props.session.key || event.defaultPrevented || isEditableTarget(event.target)) return;
+  if (dialogs.active !== null) return;
   event.preventDefault();
   openFind();
 });

@@ -46,6 +46,8 @@ export interface Span {
   color: string | null;
   italic: boolean;
   bold: boolean;
+  /** Part of a Find match: 1 for a match, 2 for the current one (see `lib/diff/find.ts`). */
+  found?: 1 | 2;
 }
 
 /** A run of neighbouring spans that are all changed words, or all not: one mark is drawn per changed run. */
