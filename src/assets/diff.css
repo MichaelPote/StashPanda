@@ -90,12 +90,19 @@
     @apply inline-block pr-2;
   }
 
-  /* The changed words inside a changed line. */
+  /* The changed words inside a changed line. The highlight reaches 1px past the text on every
+     side; the negative margin takes the sideways padding back, so the text after it does not
+     move and monospaced columns stay lined up. Vertical padding on an inline element does not
+     change the row's height. */
+  .diff-word-add,
+  .diff-word-del {
+    @apply -mx-px rounded-sm p-px text-inherit;
+  }
   .diff-word-add {
-    @apply rounded-sm bg-diff-add-mark text-inherit;
+    @apply bg-diff-add-mark;
   }
   .diff-word-del {
-    @apply rounded-sm bg-diff-del-mark text-inherit;
+    @apply bg-diff-del-mark;
   }
 
   /* Side by side: the band in the gap joining a change's old lines to its new lines. It has the
