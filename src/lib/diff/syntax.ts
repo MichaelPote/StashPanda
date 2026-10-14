@@ -48,6 +48,27 @@ export interface Span {
   bold: boolean;
 }
 
+/** A run of neighbouring spans that are all changed words, or all not: one mark is drawn per changed run. */
+export interface SpanRun {
+  changed: boolean;
+  spans: Span[];
+}
+
+/**
+ * Groups neighbouring spans by whether they are changed words, so that changed text cut into
+ * several spans by its syntax colours (or by the words and spaces it is made of) is drawn as one
+ * highlight rather than a row of separate rounded boxes.
+ */
+export function spanRuns(spans: Span[]): SpanRun[] {
+  const runs: SpanRun[] = [];
+  for (const span of spans) {
+    const last = runs[runs.length - 1];
+    if (last && last.changed === span.changed) last.spans.push(span);
+    else runs.push({ changed: span.changed, spans: [span] });
+  }
+  return runs;
+}
+
 /** The inline style that draws a span's colour and font style, or nothing for plain text. */
 export function spanStyle(span: Span): Record<string, string> | undefined {
   if (!span.color && !span.italic && !span.bold) return undefined;

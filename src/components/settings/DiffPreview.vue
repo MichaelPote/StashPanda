@@ -4,7 +4,7 @@ import { usePreferredDark } from "@vueuse/core";
 import type { FontSmoothing } from "@/lib/bindings";
 import { diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, type Segment } from "@/lib/diff/parseUnified";
-import { highlightRuns, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
+import { highlightRuns, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { useSettingsStore } from "@/stores/settings";
 import type { FormValue } from "./sections";
@@ -93,9 +93,9 @@ watch(
   { immediate: true },
 );
 
-/** A row's text as the viewer draws it: syntax colours and changed-word marks together. */
-function spans(row: Row, index: number): Span[] {
-  return mergeSpans(rowTokens.value[index], segments(row));
+/** A row's text as the viewer draws it: syntax colours, with each run of changed words marked once. */
+function runs(row: Row, index: number): SpanRun[] {
+  return spanRuns(mergeSpans(rowTokens.value[index], segments(row)));
 }
 
 function segments(row: Row): Segment[] {
@@ -124,9 +124,9 @@ const MARKER: Record<Kind, string> = { context: " ", add: "+", del: "-" };
         <span class="diff-num"><span class="diff-glyphs">{{ row.newNo ?? "" }}</span></span>
         <span class="diff-sign">{{ MARKER[row.kind] }}</span>
         <span class="diff-code">
-          <template v-for="(seg, j) in spans(row, i)" :key="j">
-            <mark v-if="seg.changed" :class="row.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
-            <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
+          <template v-for="(run, j) in runs(row, i)" :key="j">
+            <mark v-if="run.changed" :class="row.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span v-for="(seg, k) in run.spans" :key="k" class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+            <template v-else><span v-for="(seg, k) in run.spans" :key="k" class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></template>
           </template>
         </span>
       </div>

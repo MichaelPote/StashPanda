@@ -12,7 +12,7 @@ import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
 import { BandBuilder, bandEdges, bandPath, sideOffsets, type Band } from "@/lib/diff/sideLayout";
-import { highlightRuns, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
+import { highlightRuns, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { conflictComparisons, conflictStages, conflictSummary, operationNames, type ConflictComparison } from "@/lib/conflicts";
@@ -332,9 +332,9 @@ watch(
   { immediate: true },
 );
 
-/** A line's text as the rows draw it: syntax colours and changed-word marks together. */
-function spans(line: DiffLine | undefined, pair: number | undefined, sideOf: "old" | "new", fallback: string): Span[] {
-  return mergeSpans(line ? lineTokens.value.get(line) : undefined, segments(pair, sideOf, fallback));
+/** A line's text as the rows draw it: syntax colours, with each run of changed words marked once. */
+function runs(line: DiffLine | undefined, pair: number | undefined, sideOf: "old" | "new", fallback: string): SpanRun[] {
+  return spanRuns(mergeSpans(line ? lineTokens.value.get(line) : undefined, segments(pair, sideOf, fallback)));
 }
 
 // ---- Virtualisation ------------------------------------------------------------------------
@@ -1011,9 +1011,9 @@ function toggleContext(value: string): void {
                   <span :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.newNo ?? "" }}</span></span>
                   <span class="diff-sign">{{ marker(row.line?.kind) }}</span>
                   <span class="diff-code">
-                    <template v-for="(seg, i) in spans(row.line, row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
-                      <mark v-if="seg.changed" :class="row.line?.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
-                      <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
+                    <template v-for="(run, i) in runs(row.line, row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
+                      <mark v-if="run.changed" :class="row.line?.kind === 'del' ? 'diff-word-del' : 'diff-word-add'"><span v-for="(seg, j) in run.spans" :key="j" class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+                      <template v-else><span v-for="(seg, j) in run.spans" :key="j" class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></template>
                     </template>
                   </span>
                 </div>
@@ -1057,9 +1057,9 @@ function toggleContext(value: string): void {
                   ><span class="diff-glyphs">{{ (col.side === 'left' ? item.line.oldNo : item.line.newNo) ?? "" }}</span></span>
                   <span class="diff-sign">{{ marker(item.line.kind === 'context' ? 'context' : col.change) }}</span>
                   <span :class="['diff-side-code', col.side === 'left' ? 'diff-text-left' : 'diff-text-right']"><span>
-                    <template v-for="(seg, i) in spans(item.line, item.pair, col.side === 'left' ? 'old' : 'new', item.line.text)" :key="i">
-                      <mark v-if="seg.changed" :class="col.side === 'left' ? 'diff-word-del' : 'diff-word-add'"><span class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
-                      <span v-else class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span>
+                    <template v-for="(run, i) in runs(item.line, item.pair, col.side === 'left' ? 'old' : 'new', item.line.text)" :key="i">
+                      <mark v-if="run.changed" :class="col.side === 'left' ? 'diff-word-del' : 'diff-word-add'"><span v-for="(seg, j) in run.spans" :key="j" class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></mark>
+                      <template v-else><span v-for="(seg, j) in run.spans" :key="j" class="diff-glyphs" :style="spanStyle(seg)">{{ seg.text }}</span></template>
                     </template>
                   </span></span>
                 </div>
