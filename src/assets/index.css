@@ -228,10 +228,10 @@
     --band-untracked: #e4e1da;
     --band-dir: rgba(0, 0, 0, 0.5);
 
-    --diff-add-bg: rgba(43, 167, 178, 0.14);
+    --diff-add-bg: rgba(43, 167, 178, 0.19);
     --diff-add-mark: rgba(43, 167, 178, 0.38);
     --diff-add-fg: #1d8c96;
-    --diff-del-bg: rgba(201, 67, 47, 0.12);
+    --diff-del-bg: rgba(201, 67, 47, 0.16);
     --diff-del-mark: rgba(201, 67, 47, 0.34);
     --diff-del-fg: #b03a27;
     --diff-hunk-bg: rgba(138, 99, 214, 0.1);
@@ -392,10 +392,10 @@
     --band-untracked: #2f3237;
     --band-dir: rgba(255, 255, 255, 0.55);
 
-    --diff-add-bg: rgba(122, 231, 126, 0.13);
+    --diff-add-bg: rgba(122, 231, 126, 0.18);
     --diff-add-mark: rgba(94, 196, 98, 0.36);
     --diff-add-fg: #7ae77e;
-    --diff-del-bg: rgba(204, 71, 82, 0.13);
+    --diff-del-bg: rgba(204, 71, 82, 0.18);
     --diff-del-mark: rgba(204, 71, 82, 0.4);
     --diff-del-fg: #e8788a;
     --diff-hunk-bg: rgba(125, 122, 255, 0.12);
