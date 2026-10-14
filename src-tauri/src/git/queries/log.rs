@@ -53,18 +53,69 @@ pub fn graph_rev_args() -> Vec<String> {
     ["--branches", "--tags", "--remotes", "HEAD"].map(String::from).to_vec()
 }
 
+/// Splits a stream of NUL-terminated records that arrives in pieces of any size, so a record cut
+/// in two by a read is joined back together before it is parsed.
+#[derive(Default)]
+pub struct NulRecords {
+    carry: Vec<u8>,
+}
+
+impl NulRecords {
+    /// Calls `each` with every record that `chunk` completes.
+    pub fn push(&mut self, chunk: &[u8], mut each: impl FnMut(&[u8])) {
+        let mut rest = chunk;
+        while let Some(at) = rest.iter().position(|b| *b == 0) {
+            if self.carry.is_empty() {
+                each(&rest[..at]);
+            } else {
+                self.carry.extend_from_slice(&rest[..at]);
+                each(&self.carry);
+                self.carry.clear();
+            }
+            rest = &rest[at + 1..];
+        }
+        self.carry.extend_from_slice(rest);
+    }
+
+    /// Calls `each` with what is left after the last NUL, if anything: the last record of a
+    /// stream that does not end in a NUL.
+    pub fn finish(&mut self, mut each: impl FnMut(&[u8])) {
+        if !self.carry.is_empty() {
+            each(&self.carry);
+            self.carry.clear();
+        }
+    }
+}
+
 /// All commits reachable from the graph refs, up to `max_count`, in Git's
 /// default (reverse chronological, streaming) order. Ordering for display is
 /// done in the graph module.
 pub async fn get_log(client: &GitClient, max_count: u32) -> Result<Vec<CommitRecord>> {
+    let mut records = Vec::new();
+    stream_log(client, max_count, &mut |r| records.push(r)).await?;
+    Ok(records)
+}
+
+/// `get_log`, handing each record to `on_record` as soon as Git has printed it, so a long history
+/// can be shown while it loads. Returns the number of records.
+pub async fn stream_log(client: &GitClient, max_count: u32, on_record: &mut (dyn FnMut(CommitRecord) + Send)) -> Result<u32> {
     let mut args = vec!["log".to_string()];
     args.extend(graph_rev_args());
     args.push("-z".into());
     args.push(format!("--max-count={max_count}"));
     args.push(format!("--format={LOG_FORMAT}"));
+    let mut splitter = NulRecords::default();
+    let mut count = 0u32;
+    let mut each = |rec: &[u8]| {
+        if let Some(r) = parse_record(rec) {
+            count += 1;
+            on_record(r);
+        }
+    };
     let out = client
-        .exec_allow_failure(GitReq::new("log", args).timeout(None))
+        .exec_reading_stdout(GitReq::new("log", args).timeout(None), &mut |chunk| splitter.push(chunk, &mut each))
         .await?;
+    splitter.finish(&mut each);
     // An empty repository exits 128 ("does not have any commits yet"); treat as no commits.
     if !out.success() {
         let err = String::from_utf8_lossy(&out.stderr).to_ascii_lowercase();
@@ -72,7 +123,7 @@ pub async fn get_log(client: &GitClient, max_count: u32) -> Result<Vec<CommitRec
             || err.contains("bad default revision")
             || (err.contains("ambiguous argument 'head'") && err.contains("unknown revision"))
         {
-            return Ok(Vec::new());
+            return Ok(count);
         }
         return Err(crate::error::GitError::CommandFailed {
             label: "log".into(),
@@ -81,7 +132,30 @@ pub async fn get_log(client: &GitClient, max_count: u32) -> Result<Vec<CommitRec
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         });
     }
-    Ok(parse_log(&out.stdout))
+    Ok(count)
+}
+
+/// Which of `oids` (full hex) are no longer in the object database, for instance a commit that
+/// a force push replaced and `git gc` has since pruned. One `cat-file --batch-check` for all.
+pub async fn missing_objects(client: &GitClient, oids: &[String]) -> Result<Vec<String>> {
+    if oids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stdin = String::new();
+    for o in oids {
+        stdin.push_str(o);
+        stdin.push('\n');
+    }
+    let out = client
+        .exec(GitReq::new("cat-file", ["cat-file", "--batch-check"]).stdin(stdin.into_bytes()))
+        .await?;
+    Ok(parse_missing(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// The `<oid> missing` lines of `cat-file --batch-check`; an object that exists prints
+/// `<oid> <type> <size>` instead.
+fn parse_missing(text: &str) -> Vec<String> {
+    text.lines().filter_map(|l| l.strip_suffix(" missing")).map(String::from).collect()
 }
 
 /// Commits reachable from `positives` but not from `negatives`, for the
@@ -171,6 +245,22 @@ mod tests {
         assert_eq!(flags("m1 t3 p1 p2\np1 t1 g1\np2 t2 g1\n"), vec![false, false]);
         assert_eq!(flags("m1 t1 p1\np1 t1\n"), vec![true], "a root parent's line has no parents");
         assert!(parse_unchanged_parents("").is_empty());
+    }
+
+    #[test]
+    fn records_cut_across_reads_are_joined() {
+        let bytes = b"a\x1fone\x00bb\x1ftwo\x00\x00ccc\x1fthree";
+        for size in [1, 2, 3, 5, bytes.len()] {
+            let mut splitter = NulRecords::default();
+            let mut seen: Vec<Vec<u8>> = Vec::new();
+            for chunk in bytes.chunks(size) {
+                splitter.push(chunk, |r| seen.push(r.to_vec()));
+            }
+            splitter.finish(|r| seen.push(r.to_vec()));
+            let expected: Vec<Vec<u8>> = vec![b"a\x1fone".to_vec(), b"bb\x1ftwo".to_vec(), Vec::new(), b"ccc\x1fthree".to_vec()];
+            assert_eq!(seen, expected, "read size {size}");
+        }
+        assert_eq!(parse_missing("abc missing\ndef commit 281\n"), vec!["abc".to_string()]);
     }
 
     #[test]

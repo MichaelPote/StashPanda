@@ -217,6 +217,89 @@ impl GitClient {
             }
         }
     }
+
+    /// Like `exec_allow_failure`, but standard output goes to `on_stdout` piece by piece as it
+    /// arrives instead of being collected, so the caller can work on the first records of a long
+    /// `git log` while Git is still walking. The returned `Output` holds no standard output.
+    /// (`exec_streaming` is the other way round: it streams standard error, for progress.)
+    pub async fn exec_reading_stdout(&self, req: GitReq, on_stdout: &mut (dyn FnMut(&[u8]) + Send)) -> Result<Output> {
+        let cmd = self.build_cmd(&req);
+        let argv = self.transport.render(&cmd);
+        let ticket = self.console.start(&cmd, argv);
+        let mut stdout_bytes = 0u64;
+        let result = self.read_stdout(cmd, req.timeout, &mut stdout_bytes, on_stdout).await;
+        match result {
+            Ok(out) => {
+                self.console.finish_streamed(ticket, Some(&out), stdout_bytes, None);
+                Ok(out)
+            }
+            Err(err) => {
+                self.console.finish_streamed(ticket, None, stdout_bytes, Some(&err));
+                Err(err)
+            }
+        }
+    }
+
+    async fn read_stdout(
+        &self,
+        cmd: Cmd,
+        timeout: Option<Duration>,
+        stdout_bytes: &mut u64,
+        on_stdout: &mut (dyn FnMut(&[u8]) + Send),
+    ) -> Result<Output> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let stdin_bytes = match &cmd.stdin {
+            crate::transport::StdinMode::Bytes(b) => Some(b.clone()),
+            _ => None,
+        };
+        let mut child = self.transport.spawn(cmd).await?;
+        let fut = async {
+            let mut stdin = child.stdin();
+            let mut stdout = child.stdout();
+            let mut stderr = child.stderr();
+            let write = async {
+                if let (Some(mut w), Some(bytes)) = (stdin.take(), stdin_bytes) {
+                    w.write_all(&bytes).await?;
+                    w.shutdown().await?;
+                }
+                Ok::<_, std::io::Error>(())
+            };
+            let read_out = async {
+                if let Some(mut r) = stdout.take() {
+                    let mut buf = vec![0u8; 64 * 1024];
+                    loop {
+                        let n = r.read(&mut buf).await?;
+                        if n == 0 {
+                            break;
+                        }
+                        *stdout_bytes += n as u64;
+                        on_stdout(&buf[..n]);
+                    }
+                }
+                Ok::<_, std::io::Error>(())
+            };
+            let read_err = async {
+                let mut buf = Vec::new();
+                if let Some(mut r) = stderr.take() {
+                    r.read_to_end(&mut buf).await?;
+                }
+                Ok::<_, std::io::Error>(buf)
+            };
+            let (w, o, e) = tokio::join!(write, read_out, read_err);
+            w?;
+            o?;
+            let stderr = e?;
+            let exit_code = child.wait().await?;
+            Ok::<Output, GitError>(Output { exit_code, stdout: Vec::new(), stderr })
+        };
+        match timeout {
+            Some(t) => match tokio::time::timeout(t, fut).await {
+                Ok(r) => r,
+                Err(_) => Err(GitError::Timeout { secs: t.as_secs() }),
+            },
+            None => fut.await,
+        }
+    }
 }
 
 #[allow(dead_code)]

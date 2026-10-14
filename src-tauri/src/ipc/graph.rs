@@ -6,7 +6,7 @@ use crate::error::{GitError, Result};
 use std::sync::Arc;
 
 use crate::graph::loader::{open_pipeline, rebuild_filtered, refresh_full, refresh_status_only, SnapshotReason};
-use crate::graph::snapshot::{GraphMeta, GraphRow};
+use crate::graph::snapshot::{GraphMeta, GraphRow, GraphSearchResult, SearchDirection};
 use crate::ipc::query::repo;
 use crate::state::AppState;
 
@@ -97,14 +97,39 @@ pub async fn graph_find(
     Ok(oids.iter().map(|o| snap.find(o)).collect())
 }
 
-/// Reload refs and history (full) or just the working tree row (status only).
+/// The graph's Find box: the next row from `from_row` in `direction` whose subject, author or
+/// oid matches `query`, wrapping around the ends, and how many rows match in all.
+#[tauri::command]
+#[specta::specta]
+pub async fn graph_search(
+    state: State<'_, AppState>,
+    key: String,
+    version: u64,
+    query: String,
+    from_row: Option<u32>,
+    direction: SearchDirection,
+) -> Result<GraphSearchResult> {
+    let h = repo(&state, &key).await?;
+    let snap = h.graph.load_full().ok_or(GitError::StaleVersion { requested: version, current: 0 })?;
+    if snap.version != version {
+        return Err(GitError::StaleVersion { requested: version, current: snap.version });
+    }
+    // About 10 ms for 85,000 commits in a release build; keep it off the async workers anyway.
+    tokio::task::spawn_blocking(move || snap.search(&query, from_row, direction))
+        .await
+        .map_err(|e| GitError::internal(e.to_string()))
+}
+
+/// Reload refs and history (full) or just the working tree row (status only). The full reload
+/// reads the whole history again rather than only what changed, so it also repairs a cache that
+/// has gone wrong.
 #[tauri::command]
 #[specta::specta]
 pub async fn graph_refresh(app: AppHandle, state: State<'_, AppState>, key: String, full: bool) -> Result<GraphMeta> {
     let h = repo(&state, &key).await?;
     let settings = state.settings();
     let snap = if full {
-        refresh_full(Some(&app), Some(&state.db), &h, settings.appearance.graph_options(), &settings.cache, SnapshotReason::Refresh).await?
+        refresh_full(Some(&app), Some(&state.db), &h, settings.appearance.graph_options(), &settings.cache, SnapshotReason::Refresh, true).await?
     } else {
         refresh_status_only(Some(&app), &h, settings.appearance.graph_options(), &settings.cache).await?
     };

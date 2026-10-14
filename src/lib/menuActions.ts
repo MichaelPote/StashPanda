@@ -69,7 +69,7 @@ export async function dispatch(id: string): Promise<void> {
       await dialogs.open("settings", {});
       return;
     case "edit.find":
-      sessions.notify("Commit search is coming.");
+      sessions.openFind();
       return;
     case "view.refresh":
     case "repo.refresh":
