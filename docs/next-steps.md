@@ -7,7 +7,8 @@ added on 2026-09-30, and stashes, a second round of interface work and pull adde
 app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"), the rest of
 milestone 2 the same day, the rest of milestone 1 after it, and most of milestone 3 after that
 (conflicts, merge and rebase, file history and blame, automatic fetch, SSH reconnect and syntax
-colours; only the SSH fallback and `ProxyJump` are left there). Everything not listed here is done
+colours). Left in milestone 3: the three-pane merge editor, planned on 2026-10-14, and the SSH
+fallback and `ProxyJump`. Everything not listed here is done
 and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
 [architecture.md](architecture.md) for what exists and how it deviates from the original plan.
@@ -884,6 +885,192 @@ and anything over WSL or SSH.
       Tests: `merge_cherry_pick_and_revert_conflicts_resolved_and_continued` and
       `rebase_continue_skip_abort_and_the_operation_in_progress`. Tried in the running Linux
       build on 2026-10-14.
+- [ ] **Three-pane merge editor** (planned 2026-10-14). Today a conflicted file can only take one
+      side's whole version, or be edited in another editor and marked resolved. The merge editor
+      resolves it in the app, block by block.
+
+      **Layout.** Three panes side by side, all in the diff font
+      (`resolveDiffFont`, with ligatures, tab width and font smoothing) and with syntax colours
+      from the existing Shiki worker:
+      - Left: the version on the branch being built on, read-only.
+      - Middle: the result, which is editable and is what gets saved to the working tree.
+      - Right: the incoming version, read-only.
+
+      **Names.** Each side pane's header names the branch in bold, followed by the short commit
+      ID and subject. The words "ours", "theirs", "HEAD", "local", "remote" and "upstream" never
+      appear. The names come from `operationNames` in `lib/conflicts.ts`, which the conflict bar
+      already uses:
+
+      | Operation | Left pane | Right pane |
+      | --- | --- | --- |
+      | Merge | the checked-out branch (`dev`) | the branch merged in (`feature/something`) |
+      | Pull | the checked-out branch (`dev`) | the remote branch (`origin/dev`) |
+      | Rebase | the branch being rebased onto (`main`) | the commit being replayed (`a1b2c3d from feature/something`) |
+      | Cherry-pick | the checked-out branch | the picked commit |
+      | Revert | the checked-out branch | `before a1b2c3d` |
+      | Stash pop | the checked-out branch | the stash (`stash@{0}`) |
+
+      A commit that no branch points at is named by its short ID and subject. The stash row is
+      new work: Git leaves no marker file in the git directory after a stash conflicts, so
+      `operationNames` says "the other side" today. The app knows which stash it applied, so it
+      can keep that on the session and name it.
+
+      **Where it opens.** Each of these opens `MergeEditorDialog.vue`:
+      - Files panel › right-click › "Resolve in Merge Editor…", the first item for a conflicted
+        file;
+      - double-clicking a conflicted file;
+      - a "Merge Editor" button next to the conflict comparisons in the diff panel's header.
+
+      The dialog uses the shared dialog sizing (a `size-key` and `data-dialog-grow`), opens at
+      nearly the whole window, and remembers its size. It only offers files where both sides
+      have the file (`UU`, `AA`). A file one side deleted (`DU`, `UD`) keeps the take-a-side
+      actions. Binary files, files that are not UTF-8, and files over 5 MB are refused with the
+      reason, and with "Open in your editor" instead.
+
+      **Step 1: backend.**
+      - `get_conflict_file(key, path)` in a new `git/queries/conflict_file.rs`. It returns the
+        base, left and right versions (stages 1, 2 and 3, read through the long-lived `cat-file`)
+        and the working tree file. For the working tree file it also returns its line ending
+        (LF, CRLF or mixed), whether it starts with a byte order mark, whether it ends with a
+        newline, and a hash of its bytes.
+      - The conflict markers are parsed in Rust, so they can be tested against real Git output.
+        Git writes three marker styles, and all three are read:
+        - `merge`: `<<<<<<<`, `=======` and `>>>>>>>`;
+        - `diff3`: adds a `|||||||` section with the base text;
+        - `zdiff3`: like `diff3`, with the lines both sides share moved out of the block.
+      - The marker length follows the file's `conflict-marker-size` attribute (`git check-attr`),
+        which defaults to 7. A line that only looks like a marker, outside a complete
+        `<<<<<<<`, `=======`, `>>>>>>>` sequence, stays as ordinary text.
+      - The query returns the result text, which is the working tree file with each marker block
+        replaced by its base text (or by nothing when the markers carry no base). It also
+        returns the blocks, each with its line range in that text and its left, right and base
+        text.
+      - Starting from the working tree file, rather than merging the three versions again in
+        TypeScript, keeps everything Git and the user have already done to it: changes that
+        merged cleanly, a merge driver's output, `rerere`'s earlier resolutions and hand edits.
+        A file with no markers left opens with no conflict blocks, and the arrows still work.
+      - `Transport::write_file(path, bytes)` is new on all three transports:
+        - Local: a plain write.
+        - WSL and SSH: `cat > "$1"`, with the bytes on standard input.
+        It writes in place rather than to a new file renamed over the old one, so the file's
+        mode is kept.
+      - `write_worktree_file(key, path, bytes, expectedHash)` saves the result under the write
+        gate. It refuses, with a "changed on disk" error, when the file's hash no longer matches
+        the one from opening. The dialog then offers to reload the file or overwrite it.
+      - `op_restore_conflict(key, path)` runs `git checkout --conflict=diff3 -- <path>`, which
+        writes Git's merge of that file again, with base sections. This is for "Start again from
+        Git's merge", after asking first.
+
+      **Step 2: editor panes** (`src/components/merge/`, loaded with a dynamic `import()` so the
+      main bundle does not grow).
+      - The panes use CodeMirror 6: `@codemirror/state`, `view`, `commands` and `search`, plus
+        `@codemirror/merge` for `Chunk.build`, `Chunk.updateA` and `Chunk.updateB`.
+      - CodeMirror's own two-pane `MergeView` is not used; the three panes, the curves and the
+        arrows are drawn by StashPanda.
+      - Why CodeMirror: it is modular (about 250 kB for these packages, to be measured), it
+        draws only the lines on screen, and it gives undo, search and multiple cursors for free.
+        Monaco is several megabytes and needs its own workers. A hand-made editable pane would
+        have to build cursor movement, selection and input-method support from nothing.
+      - Syntax colours are applied as CodeMirror mark decorations, built from the Shiki tokens.
+        The result pane asks the worker again 300 ms after the last edit.
+      - Each conflict block is tracked as a range in the result document, in a CodeMirror
+        `StateField`, so it moves correctly as the user types.
+      - An unresolved block with no base text shows a one-line placeholder: "Unresolved: take
+        dev's or feature/something's version, or type here".
+      - A block counts as resolved once an arrow fills it or the user types in it.
+
+      **Step 3: connecting curves.**
+      - A canvas sits in each gap between two panes, about 40 px wide.
+      - The differences between the left pane and the result, and between the result and the
+        right pane, come from `Chunk.build`. After each edit to the result they are updated with
+        `Chunk.updateA` or `updateB`, rather than compared again from the start.
+      - Each difference is drawn as a filled shape joining its lines in one pane to its lines in
+        the next. The top and bottom edges are cubic Bézier curves with horizontal ends (control
+        points at half the gap's width), as in the reference screenshot.
+      - A difference that is empty on one side narrows to a line at the point where the text
+        would go.
+      - Colours come from the existing diff tokens: added, removed, changed, and
+        `--state-conflict` for conflict blocks. The same colours are drawn behind those lines in
+        the panes, as CodeMirror line decorations.
+      - The canvases are redrawn in a `requestAnimationFrame` after any scroll, edit or resize.
+        Only the differences that are on screen are drawn, at the screen's device pixel ratio.
+
+      **Step 4: arrows in the gaps.**
+      - Next to each difference, the left gap has "»", which copies the left pane's lines into
+        the result over that block. The right gap has "«", which does the same from the right.
+      - For a conflict block, this replaces the block with that side's version, which is the
+        quick overwrite. Ctrl-click, or the arrow's right-click menu, offers "Add below the
+        current text" instead, for keeping both sides.
+      - "×" dismisses one side's difference: its arrow goes and its curve is drawn faded.
+      - Every arrow is one undoable CodeMirror transaction, so Ctrl+Z puts the block back.
+      - A toolbar above the panes has:
+        - Previous and Next conflict;
+        - "Take dev for all conflicts" and "Take feature/something for all conflicts", using the
+          real names;
+        - a "3 of 5 conflicts left" count;
+        - Start again from Git's merge;
+        - a Sync scrolling toggle.
+
+      **Step 5: synchronised scrolling.**
+      - All three panes have the same line height, so their positions can be compared in lines.
+      - A function `mapLine(chunks, line)` in `src/lib/merge/scroll.ts` maps a line in one pane
+        to the matching line in the next:
+        - between differences it moves line for line;
+        - inside a difference it moves in proportion, so a 4-line block on one side and a
+          13-line block on the other line up at their tops and at their bottoms.
+      - The pane the user scrolls (by wheel, scroll bar, keyboard or the cursor moving) leads,
+        and the other two follow through `mapLine`. The line at the middle of the leading pane is
+        used as the anchor, so the differences line up where the eye is.
+      - A flag set during the following panes' own scroll events stops them leading in turn.
+      - Horizontal scrolling moves all three panes together.
+      - The toggle is kept in the UI state (`mergeEditor.syncScroll`), on by default.
+
+      **Step 6: saving.**
+      - The result is written back with the file's own line endings (CodeMirror holds `\n`
+        internally), its byte order mark and its final newline as they were. A file with mixed
+        line endings is saved with its most common one, and the editor says so before saving.
+      - A block still unresolved when saving is written back with Git's markers around both
+        sides (and the base, where it was known), so a conflict is never dropped silently. The
+        existing "Mark as resolved" check then still catches it.
+      - The buttons:
+        - Save;
+        - "Save and Mark Resolved", which saves, then runs `op_stage`, and is disabled while any
+          block is unresolved, with the reason in its tooltip;
+        - "Save, Resolve and Open Next", which does the same and then opens the next conflicted
+          file;
+        - Cancel, which asks before discarding edits.
+      - Keyboard:
+        - F7 and Shift+F7: next and previous conflict. (Alt+Up and Alt+Down are not used,
+          because CodeMirror's default keymap already uses them to move a line up and down.)
+        - Alt+Shift+Left and Alt+Shift+Right: take the left or right version for the block at
+          the cursor. (Plain Alt+Left can act as the browser's Back key in WebView2; check
+          these keys in the Windows window before settling on them.)
+        - Ctrl+S: save.
+
+      **Step 7, after the rest works.**
+      - Folding unchanged runs of more than 8 lines into a "153 lines hidden · show" row in all
+        three panes at once, as in the reference screenshot.
+      - Marks on the scroll bars for each difference and conflict.
+
+      **Tests.**
+      - Rust:
+        - marker parsing on files produced by real merges in all three marker styles, with CRLF
+          lines, a byte order mark, no final newline, a `conflict-marker-size` attribute, and a
+          lone marker-like line in the code;
+        - `write_file` on each transport, keeping the file's mode;
+        - the changed-on-disk refusal;
+        - `op_restore_conflict`.
+      - Frontend: the project has no frontend unit tests yet. This would add Vitest, for the
+        pure functions in `src/lib/merge/`: `mapLine`, writing unresolved blocks back with
+        markers, and keeping line endings.
+      - In the Linux app through WebDriver, on the `conflict` test repository:
+        - check the pane headers show the branch names;
+        - take the left side for one block and the right side for another;
+        - type into a third block;
+        - save, and compare the file with what was expected;
+        - scroll the middle pane and check the other two panes' positions;
+        - take a screenshot of the curves.
+      - On Windows: look at the curves and the scrolling in the real window.
 - [ ] **SSH tier 2 fallback** (`transport/ssh_exec.rs`): long-lived `ssh -T host sh` helper with
       sentinel framing, only if a real host needs `ProxyJump`, `ProxyCommand`, GSSAPI, certificates
       or an algorithm `russh` cannot negotiate. `resolve_target` currently returns
