@@ -5,7 +5,7 @@
  * panes stay lined up.
  */
 import { StateEffect, StateField, type Extension, type Range, type Text } from "@codemirror/state";
-import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
+import { BlockType, Decoration, EditorView, WidgetType, type BlockInfo, type DecorationSet } from "@codemirror/view";
 
 /** A run of lines `[from, to)`, counted from 0, to hide; `key` names it in every pane. */
 export interface FoldRange {
@@ -82,19 +82,33 @@ export function foldsEffect(doc: Text, ranges: readonly FoldRange[], rowPx: numb
   return setFolds.of(Decoration.set(decorations, true));
 }
 
+/** A line's text part: a line block also holds any block widget drawn above the line. */
+function textPart(block: BlockInfo): BlockInfo {
+  const parts = block.type;
+  return Array.isArray(parts) ? ((parts as readonly BlockInfo[]).find((b) => b.type === BlockType.Text) ?? block) : block;
+}
+
 /**
  * The top of line `line` (a fraction, counted from 0), from the top of the document, with folds
- * taken into account: a line inside a fold sits at its share of the fold's one row.
+ * taken into account: a line inside a fold sits at its share of the fold's one row. It is the
+ * top of the line's text, below any block widget drawn above it (see `lineAbove`).
  */
 export function lineTop(view: EditorView, line: number): number {
   const doc = view.state.doc;
-  if (line <= 0) return 0;
   if (line >= doc.lines) return view.lineBlockAt(doc.length).bottom;
-  const whole = Math.floor(line);
+  const whole = Math.max(0, Math.floor(line));
   const block = view.lineBlockAt(doc.line(whole + 1).from);
   const first = doc.lineAt(block.from).number - 1;
   const span = Math.max(1, doc.lineAt(block.to).number - first);
-  return block.top + ((line - first) / span) * block.height;
+  const text = textPart(block);
+  return text.top + ((Math.max(0, line) - first) / span) * text.height;
+}
+
+/** The top of line `line` (counted from 0) including any block widget drawn above it, such as an empty conflict's placeholder. */
+export function lineAbove(view: EditorView, line: number): number {
+  const doc = view.state.doc;
+  if (line >= doc.lines) return lineTop(view, line);
+  return view.lineBlockAt(doc.line(Math.max(0, Math.floor(line)) + 1).from).top;
 }
 
 /** The line (a fraction, counted from 0) at height `y` from the top of the document: the inverse of `lineTop`. */

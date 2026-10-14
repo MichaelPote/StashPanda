@@ -768,7 +768,7 @@ export async function continueOperation(session: RepoSession | null): Promise<vo
     return;
   }
   const key = session.key;
-  const names = operationNames(session.status, session.refs);
+  const names = operationNames(session.status, session.refs, session.stashConflict);
   const verb = OPERATION_VERBS[op.kind];
   try {
     const result = await runOp(key, () => commands.opContinue(key, op.kind));
@@ -804,7 +804,7 @@ export async function skipOperation(session: RepoSession | null): Promise<void> 
     sessions.notify("Only a rebase or a cherry-pick in progress can skip a commit.");
     return;
   }
-  const names = operationNames(session.status, session.refs);
+  const names = operationNames(session.status, session.refs, session.stashConflict);
   const verb = OPERATION_VERBS[op.kind];
   const confirmed = await useDialogsStore().open("confirm", {
     title: `Skip ${names.theirs}?`,
@@ -871,7 +871,7 @@ export async function takeVersion(session: RepoSession | null, items: FileItem[]
     return;
   }
   const key = session.key;
-  const names = operationNames(session.status, session.refs);
+  const names = operationNames(session.status, session.refs, session.stashConflict);
   const who = side === "ours" ? names.ours : names.theirs;
   const paths = items.map((i) => i.path);
   try {
@@ -1329,12 +1329,18 @@ async function stashOp(
   what: string,
   done: string,
   conflictNote: string,
+  /** The stash applied, which names the "Stashed changes" side of any conflicts. */
+  stashName: string,
 ): Promise<void> {
   const sessions = useSessionsStore();
   try {
     const result = await runOp(key, op);
     if (result.ok) sessions.notifySuccess(done);
-    else if (result.conflicts) sessions.notify(conflictNote);
+    else if (result.conflicts) {
+      const session = sessions.sessions.get(key);
+      if (session) session.stashConflict = stashName;
+      sessions.notify(conflictNote);
+    }
     else sessions.notify(opFailureText(result, what));
   } catch (e) {
     sessions.notify(errorMessage(e));
@@ -1350,6 +1356,7 @@ export async function applyStash(key: string, stash: StashEntry): Promise<void> 
     `Applying ${name}`,
     `Applied ${name}. The stash is kept.`,
     `Applied ${name} with conflicts. Resolve them in the working tree; the stash is kept.`,
+    name,
   );
 }
 
@@ -1362,6 +1369,7 @@ export async function popStash(key: string, stash: StashEntry): Promise<void> {
     `Popping ${name}`,
     `Applied and dropped ${name}.`,
     `Applying ${name} caused conflicts, so Git kept the stash. Resolve them, then drop it.`,
+    name,
   );
 }
 
@@ -1376,7 +1384,7 @@ export async function dropStash(key: string, stash: StashEntry, label: string): 
     destructive: true,
   });
   if (!confirmed) return;
-  await stashOp(key, () => commands.opStashDrop(key, stash.index, stash.oid), `Dropping ${name}`, `Dropped ${name}.`, "");
+  await stashOp(key, () => commands.opStashDrop(key, stash.index, stash.oid), `Dropping ${name}`, `Dropped ${name}.`, "", name);
 }
 
 /** The working tree rows selected in the Files panel, sorted into what each file action would do. */

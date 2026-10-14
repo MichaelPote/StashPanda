@@ -207,6 +207,25 @@
   .merge-dismiss {
     @apply font-normal text-muted-foreground hover:bg-destructive hover:text-white;
   }
+  /* A pane's strip of marks beside its scroll bar: green differences, yellow conflicts. */
+  .merge-ruler {
+    @apply pointer-events-none absolute top-0 bottom-0 z-[1] w-1.5;
+  }
+  .merge-ruler > button {
+    @apply pointer-events-auto absolute right-0 left-0 cursor-pointer rounded-[1px];
+  }
+  .merge-ruler-change {
+    background-color: var(--diff-add-fg);
+    opacity: 0.6;
+  }
+  .merge-ruler-conflict {
+    background-color: var(--state-conflict);
+  }
+  /* The row standing in for an unresolved conflict with no lines in the result. */
+  .merge-placeholder {
+    @apply flex h-(--diff-row-h) cursor-text items-center px-2 font-sans text-[0.7rem] text-muted-foreground italic;
+    background-color: color-mix(in srgb, var(--state-conflict) 22%, transparent);
+  }
   /* A fold standing in for a run of unchanged lines: one row, as tall as a line, in every pane. */
   .merge-fold {
     @apply flex h-(--diff-row-h) items-center gap-2 border-y border-border-soft bg-muted/40 px-2 font-sans text-[0.7rem] text-muted-foreground;

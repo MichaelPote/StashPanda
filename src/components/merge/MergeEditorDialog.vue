@@ -15,9 +15,9 @@ import { diffRowPx, diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { bandPath } from "@/lib/diff/sideLayout";
 import { themeFor } from "@/lib/diff/syntax";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { blocksField, dismissedChunks, initialBlocks, saveText, setChunkDismissed, setDismissed, setTaken, type MergeBlock } from "@/lib/merge/blocks";
+import { blocksField, dismissedChunks, initialBlocks, placeholders, saveText, setChunkDismissed, setDismissed, setTaken, type MergeBlock } from "@/lib/merge/blocks";
 import { buildChunks, chunkLines, mapLine, updateChunks, type LineChunk } from "@/lib/merge/chunks";
-import { folds, foldsEffect, lineAtHeight, lineTop, type FoldRange } from "@/lib/merge/folds";
+import { folds, foldsEffect, lineAbove, lineAtHeight, lineTop, type FoldRange } from "@/lib/merge/folds";
 import { lineMarks, lineMarksEffect, type LineMark } from "@/lib/merge/lines";
 import { syntaxColours } from "@/lib/merge/syntax";
 import { openWorktreeFile, runOp } from "@/lib/repoActions";
@@ -46,7 +46,13 @@ const request = computed(() => dialogs.current("mergeEditor"));
 /** The file shown; "Save, Resolve and Open Next" moves on to another without closing. */
 const path = ref<string | null>(null);
 const session = computed(() => (request.value ? (sessions.sessions.get(request.value.key) ?? null) : null));
-const names = computed(() => operationNames(session.value?.status ?? null, session.value?.refs ?? null));
+const names = computed(() => {
+  const s = session.value;
+  const n = operationNames(s?.status ?? null, s?.refs ?? null, s?.stashConflict ?? null);
+  // A stash put back by a pull's --autostash is not recorded; Git's own label says what it is.
+  if (n.title === "" && file.value?.blocks[0]?.theirsLabel === "Stashed changes") return { ...n, title: `Putting stashed changes back on ${n.ours}`, theirs: "your stashed changes" };
+  return n;
+});
 
 const file = shallowRef<ConflictFile | null>(null);
 const loading = ref(false);
@@ -189,6 +195,7 @@ function createPanes(f: ConflictFile): void {
         history(),
         keymap.of([...historyKeymap, ...defaultKeymap]),
         tracked.extension,
+        placeholders(tracked.field, `Unresolved conflict: copy ${names.value.ours}'s or ${names.value.theirs}'s lines across with the arrows, or type here`, diffRowPx(font.value)),
         EditorView.updateListener.of(onMiddleUpdate),
       ],
     }),
@@ -374,6 +381,65 @@ interface GapShape {
   index: number;
 }
 
+/** A mark on a pane's scroll bar strip, in percent of the strip's height. */
+interface RulerMark {
+  key: string;
+  top: number;
+  height: number;
+  kind: LineMark["kind"];
+  line: number;
+}
+
+type PaneName = "left" | "middle" | "right";
+const rulers = shallowRef<Record<PaneName, { marks: RulerMark[]; right: number }>>({
+  left: { marks: [], right: 0 },
+  middle: { marks: [], right: 0 },
+  right: { marks: [], right: 0 },
+});
+
+/** Each pane's scroll bar marks: its differences and, in the result, its unresolved conflicts. */
+function drawRulers(): void {
+  if (!panes) return;
+  const ranges: Record<PaneName, { from: number; to: number; kind: LineMark["kind"] }[]> = { left: [], middle: [], right: [] };
+  for (const [side, lines] of [["left", leftLines.value], ["right", rightLines.value]] as const) {
+    for (const c of lines) {
+      if (dismissed.value.has(chunkKey(side, c))) continue;
+      const kind: LineMark["kind"] = isConflict(c) ? "conflict" : "change";
+      ranges[side].push({ from: c.a0, to: c.a1, kind });
+      ranges.middle.push({ from: c.b0, to: c.b1, kind });
+    }
+  }
+  for (const b of unresolved.value) {
+    const [from, to] = blockLines(b);
+    ranges.middle.push({ from, to, kind: "conflict" });
+  }
+  const next = { ...rulers.value };
+  for (const name of ["left", "middle", "right"] as const) {
+    const view = panes[name];
+    // A file shorter than its pane maps to the pane's height, so each mark sits level with its lines.
+    const total = Math.max(1, view.contentHeight, view.scrollDOM.clientHeight);
+    const marks = ranges[name]
+      // Conflicts last, so they are drawn over a plain difference at the same place.
+      .sort((x, y) => (x.kind === y.kind ? 0 : x.kind === "conflict" ? 1 : -1))
+      .map((r, i): RulerMark => {
+        const top = r.from === r.to ? lineAbove(view, r.from) : lineTop(view, r.from);
+        const bottom = r.from === r.to ? lineTop(view, r.from) : lineAbove(view, r.to);
+        return { key: `${i}`, top: (100 * top) / total, height: (100 * Math.max(0, bottom - top)) / total, kind: r.kind, line: r.from };
+      });
+    next[name] = { marks, right: view.scrollDOM.offsetWidth - view.scrollDOM.clientWidth };
+  }
+  rulers.value = next;
+}
+
+/** Scrolls a pane so that `line` is in the middle; the other panes follow. */
+function scrollToLine(name: PaneName, line: number): void {
+  const view = panes?.[name];
+  if (!view) return;
+  const doc = view.state.doc;
+  const pos = doc.line(Math.min(doc.lines, line + 1)).from;
+  view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+}
+
 const leftShapes = shallowRef<GapShape[]>([]);
 const rightShapes = shallowRef<GapShape[]>([]);
 const gapHeight = ref(0);
@@ -392,6 +458,16 @@ function lineY(view: EditorView, line: number, gapTop: number): number {
   return view.documentTop + lineTop(view, line) - gapTop;
 }
 
+/**
+ * The top and bottom of lines `[from, to)` of a pane, from the top of `gap`. Lines end where the
+ * next line's placeholder starts; no lines at all span the placeholder at that place, if any,
+ * so an unresolved conflict with no lines in the result is drawn reaching its placeholder row.
+ */
+function rangeY(view: EditorView, from: number, to: number, gapTop: number): [number, number] {
+  if (from === to) return [view.documentTop + lineAbove(view, from) - gapTop, lineY(view, from, gapTop)];
+  return [lineY(view, from, gapTop), view.documentTop + lineAbove(view, to) - gapTop];
+}
+
 function draw(): void {
   if (!panes || !leftGap.value || !rightGap.value) return;
   const { left, middle, right } = panes;
@@ -402,10 +478,8 @@ function draw(): void {
     const sideName: Side = sideOnLeft ? "left" : "right";
     const out: GapShape[] = [];
     lines.forEach((c, index) => {
-      const st = lineY(side, c.a0, gapTop);
-      const sb = lineY(side, c.a1, gapTop);
-      const mt = lineY(middle, c.b0, gapTop);
-      const mb = lineY(middle, c.b1, gapTop);
+      const [st, sb] = rangeY(side, c.a0, c.a1, gapTop);
+      const [mt, mb] = rangeY(middle, c.b0, c.b1, gapTop);
       if (Math.max(sb, mb) < -40 || Math.min(st, mt) > height + 40) return;
       const kind: LineMark["kind"] = isConflict(c) ? "conflict" : "change";
       const d = sideOnLeft ? bandPath(GAP_PX, st, sb, mt, mb) : bandPath(GAP_PX, mt, mb, st, sb);
@@ -415,6 +489,7 @@ function draw(): void {
   };
   leftShapes.value = shapes(leftLines.value, left, true, lg.top, lg.height);
   rightShapes.value = shapes(rightLines.value, right, false, rg.top, rg.height);
+  drawRulers();
 }
 
 // ---- Taking a side's lines -----------------------------------------------------------------
@@ -556,7 +631,7 @@ async function save(resolve: boolean, openNext = false): Promise<void> {
   if (resolve && unresolved.value.length > 0) return;
   saving.value = true;
   try {
-    const content = saveText(panes.middle.state, blocks.value, { crlf: f.eol === "crLf", bom: f.bom });
+    const content = saveText(panes.middle.state, blocks.value, { crlf: f.crlf, bom: f.bom, markerSize: f.markerSize });
     try {
       fileHash = await unwrap(commands.writeWorktreeFile(r.key, p, content, fileHash));
     } catch (e) {
@@ -711,7 +786,21 @@ const resolveBlocked = computed(() => {
 
           <!-- Panes and gaps -->
           <div class="merge-columns min-h-0 flex-1" :style="{ '--merge-gap': `${GAP_PX}px` }">
-            <div ref="leftHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="left" />
+            <div class="relative min-h-0 min-w-0">
+              <div ref="leftHost" class="h-full overflow-hidden" data-merge-pane="left" />
+              <!-- Marks for the pane's differences and conflicts, beside its scroll bar: click one to go there. -->
+              <div class="merge-ruler" :style="{ right: `${rulers.left.right}px` }" aria-hidden="true" data-merge-ruler="left">
+                <button
+                  v-for="m in rulers.left.marks"
+                  :key="m.key"
+                  type="button"
+                  tabindex="-1"
+                  :class="`merge-ruler-${m.kind}`"
+                  :style="{ top: `${m.top}%`, height: `max(2px, ${m.height}%)` }"
+                  @click="scrollToLine('left', m.line)"
+                />
+              </div>
+            </div>
             <div ref="leftGap" class="relative min-h-0 overflow-hidden" data-merge-gap="left">
               <svg class="pointer-events-none absolute inset-0" :width="GAP_PX" :height="gapHeight" aria-hidden="true">
                 <path v-for="s in leftShapes" :key="s.key" :d="s.d" :class="[`merge-curve-${s.kind}`, s.dismissed && 'merge-curve-dismissed']" />
@@ -741,7 +830,21 @@ const resolveBlocked = computed(() => {
                 </template>
               </template>
             </div>
-            <div ref="middleHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="middle" />
+            <div class="relative min-h-0 min-w-0">
+              <div ref="middleHost" class="h-full overflow-hidden" data-merge-pane="middle" />
+              <!-- Marks for the pane's differences and conflicts, beside its scroll bar: click one to go there. -->
+              <div class="merge-ruler" :style="{ right: `${rulers.middle.right}px` }" aria-hidden="true" data-merge-ruler="middle">
+                <button
+                  v-for="m in rulers.middle.marks"
+                  :key="m.key"
+                  type="button"
+                  tabindex="-1"
+                  :class="`merge-ruler-${m.kind}`"
+                  :style="{ top: `${m.top}%`, height: `max(2px, ${m.height}%)` }"
+                  @click="scrollToLine('middle', m.line)"
+                />
+              </div>
+            </div>
             <div ref="rightGap" class="relative min-h-0 overflow-hidden" data-merge-gap="right">
               <svg class="pointer-events-none absolute inset-0" :width="GAP_PX" :height="gapHeight" aria-hidden="true">
                 <path v-for="s in rightShapes" :key="s.key" :d="s.d" :class="[`merge-curve-${s.kind}`, s.dismissed && 'merge-curve-dismissed']" />
@@ -771,7 +874,21 @@ const resolveBlocked = computed(() => {
                 </template>
               </template>
             </div>
-            <div ref="rightHost" class="min-h-0 min-w-0 overflow-hidden" data-merge-pane="right" />
+            <div class="relative min-h-0 min-w-0">
+              <div ref="rightHost" class="h-full overflow-hidden" data-merge-pane="right" />
+              <!-- Marks for the pane's differences and conflicts, beside its scroll bar: click one to go there. -->
+              <div class="merge-ruler" :style="{ right: `${rulers.right.right}px` }" aria-hidden="true" data-merge-ruler="right">
+                <button
+                  v-for="m in rulers.right.marks"
+                  :key="m.key"
+                  type="button"
+                  tabindex="-1"
+                  :class="`merge-ruler-${m.kind}`"
+                  :style="{ top: `${m.top}%`, height: `max(2px, ${m.height}%)` }"
+                  @click="scrollToLine('right', m.line)"
+                />
+              </div>
+            </div>
           </div>
         </section>
       </div>

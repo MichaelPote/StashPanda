@@ -36,12 +36,14 @@ export interface OperationNames {
 
 /**
  * The names for the operation in `status`. Without one (conflicts left by applying a stash),
- * the checked-out branch and "the other side".
+ * the checked-out branch and the stash when it is known, else "the other side".
  */
-export function operationNames(status: StatusSnapshot | null, refs: RefsSnapshot | null): OperationNames {
+export function operationNames(status: StatusSnapshot | null, refs: RefsSnapshot | null, stash: string | null = null): OperationNames {
   const op = status?.inProgress ?? null;
   const head = status?.branch ?? "HEAD";
-  if (!op) return { title: "", ours: head, theirs: "the other side" };
+  // Git leaves no marker in the git directory when applying a stash conflicts; `stash` is the
+  // one the app applied (RepoSession.stashConflict), which Git's "Stashed changes" side is.
+  if (!op) return stash ? { title: `Applying ${stash} to ${head}`, ours: head, theirs: stash } : { title: "", ours: head, theirs: "the other side" };
   return namesFor(op, head, refs);
 }
 

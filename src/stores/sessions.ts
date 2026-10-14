@@ -165,6 +165,11 @@ export interface RepoSession {
   lastFetchAt: number;
   /** An automatic fetch failed and the user was told; later failures stay quiet until one works. */
   autoFetchFailed: boolean;
+  /**
+   * The stash (`stash@{0}`) whose apply or pop stopped on conflicts, which names that side of
+   * them; cleared once no file is conflicted.
+   */
+  stashConflict: string | null;
   /** The fetch, pull or push running in this repository, shown in the status bar. */
   operation: RunningOperation | null;
   /** Which two versions of a conflicted file the diff panel compares; kept from one file to the next. */
@@ -492,6 +497,7 @@ export const useSessionsStore = defineStore("sessions", () => {
 
   async function loadStatus(session: RepoSession): Promise<void> {
     session.status = await unwrap(commands.getRepoStatus(session.key));
+    if (session.status.conflictedCount === 0) session.stashConflict = null;
     // A stash push or pop changes the count in status; a watcher event may not report it as a
     // refs change, so a count that no longer matches the list reloads the list too.
     if (session.stashes !== null && session.stashes.length !== session.status.stashCount) await loadStashes(session);
@@ -604,6 +610,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         connection: null,
         lastFetchAt: Date.now(),
         autoFetchFailed: false,
+        stashConflict: null,
         operation: null,
         conflictComparison: DEFAULT_COMPARISON,
       });

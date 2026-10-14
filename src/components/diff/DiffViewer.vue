@@ -940,7 +940,7 @@ const conflictFile = computed(() => {
   const item: FileItem = { id: `conflicted:${s.path}`, path: s.path, oldPath: null, letter: letters, state: "conflict", added: null, deleted: null, binary: false, target: s.target };
   return { item, stages: conflictStages(letters), letters };
 });
-const sideNames = computed(() => operationNames(props.session.status, props.session.refs));
+const sideNames = computed(() => operationNames(props.session.status, props.session.refs, props.session.stashConflict));
 const comparisons = computed(() => conflictComparisons(sideNames.value));
 const openReason = computed(() => openFileReason(props.session));
 

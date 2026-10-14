@@ -6,6 +6,7 @@
  */
 import { StateEffect, StateField, type EditorState, type Extension, type Text } from "@codemirror/state";
 import { invertedEffects } from "@codemirror/commands";
+import { Decoration, EditorView, WidgetType } from "@codemirror/view";
 
 /** What the backend says about one block (the fields of `ConflictBlock` this needs). */
 export interface BlockSource {
@@ -129,22 +130,73 @@ export function blocksField(initial: MergeBlock[]): { field: StateField<MergeBlo
   return { field, extension: [field, dismissedChunks, undoMarks] };
 }
 
-/** The markers Git writes, at its default length of seven characters. */
-const MARK = { ours: "<<<<<<<", base: "|||||||", split: "=======", theirs: ">>>>>>>" };
+/**
+ * The row standing in for an unresolved conflict that has no lines in the result: Git's default
+ * marker style carries no base text, so without it the conflict would be invisible there.
+ * Clicking it puts the cursor at the conflict, where typing resolves it.
+ */
+class PlaceholderWidget extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly rowPx: number,
+  ) {
+    super();
+  }
 
-/** A block as Git wrote it: both sides, and the base when it was known, between conflict markers. */
-export function blockWithMarkers(source: BlockSource): string {
+  eq(other: PlaceholderWidget): boolean {
+    return other.text === this.text && other.rowPx === this.rowPx;
+  }
+
+  toDOM(): HTMLElement {
+    const row = document.createElement("div");
+    row.className = "merge-placeholder";
+    row.dataset.mergePlaceholder = "";
+    row.textContent = this.text;
+    return row;
+  }
+
+  get estimatedHeight(): number {
+    return this.rowPx;
+  }
+
+  /** The editor handles clicks on it, placing the cursor at the conflict. */
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+/** Draws `text` as a one-row placeholder above every unresolved block that has no lines. */
+export function placeholders(field: StateField<MergeBlock[]>, text: string, rowPx: number): Extension {
+  const widget = new PlaceholderWidget(text, rowPx);
+  return EditorView.decorations.compute([field], (state) =>
+    Decoration.set(
+      state
+        .field(field)
+        .filter((b) => !b.resolved && b.from === b.to)
+        .map((b) => Decoration.widget({ widget, block: true, side: -1 }).range(b.from)),
+      true,
+    ),
+  );
+}
+
+/**
+ * A block as Git wrote it: both sides, and the base when it was known, between conflict markers
+ * `size` characters long (the file's `conflict-marker-size`, 7 unless set).
+ */
+export function blockWithMarkers(source: BlockSource, size = 7): string {
+  const mark = (c: string): string => c.repeat(size);
   const label = (text: string | null): string => (text ? ` ${text}` : "");
-  let out = `${MARK.ours}${label(source.oursLabel)}\n${source.ours}`;
-  if (source.base !== null) out += `${MARK.base}${label(source.baseLabel)}\n${source.base}`;
-  out += `${MARK.split}\n${source.theirs}${MARK.theirs}${label(source.theirsLabel)}\n`;
+  let out = `${mark("<")}${label(source.oursLabel)}\n${source.ours}`;
+  if (source.base !== null) out += `${mark("|")}${label(source.baseLabel)}\n${source.base}`;
+  out += `${mark("=")}\n${source.theirs}${mark(">")}${label(source.theirsLabel)}\n`;
   return out;
 }
 
-/** How to write the file back: its line endings, byte order mark, and whether the final newline is kept as the document has it. */
+/** How to write the file back: its line endings, its byte order mark, and its marker length. */
 export interface SaveFormat {
   crlf: boolean;
   bom: boolean;
+  markerSize: number;
 }
 
 /**
@@ -157,7 +209,7 @@ export function saveText(state: EditorState, blocks: readonly MergeBlock[], form
   let at = 0;
   for (const b of [...blocks].sort((x, y) => x.from - y.from)) {
     if (b.resolved) continue;
-    out += doc.slice(at, b.from) + blockWithMarkers(b.source);
+    out += doc.slice(at, b.from) + blockWithMarkers(b.source, format.markerSize);
     at = b.to;
   }
   out += doc.slice(at);

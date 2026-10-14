@@ -17,7 +17,7 @@ const props = defineProps<{
 const dialogs = useDialogsStore();
 
 const op = computed(() => props.session.status?.inProgress ?? null);
-const names = computed(() => operationNames(props.session.status, props.session.refs));
+const names = computed(() => operationNames(props.session.status, props.session.refs, props.session.stashConflict));
 const conflicted = computed(() => props.session.status?.conflictedCount ?? 0);
 const verb = computed(() => (op.value ? OPERATION_VERBS[op.value.kind] : ""));
 const canSkip = computed(() => op.value?.kind === "rebase" || op.value?.kind === "cherryPick");

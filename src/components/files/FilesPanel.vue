@@ -448,7 +448,7 @@ const mergeMenuReason = computed(() => {
 function onRowDoubleClick(item: FileItem): void {
   if (mode.value === "worktree" && item.state === "conflict" && mergeEditorReason(item.letter) === null) openMergeEditor(props.session.key, item.path);
 }
-const sideNames = computed(() => operationNames(props.session.status, props.session.refs));
+const sideNames = computed(() => operationNames(props.session.status, props.session.refs, props.session.stashConflict));
 /** "Take the Version from main", noting when every selected file was deleted on that side. */
 function takeLabel(side: ResolveSide): string {
   const name = side === "ours" ? sideNames.value.ours : sideNames.value.theirs;
