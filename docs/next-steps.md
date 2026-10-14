@@ -920,8 +920,26 @@ and anything over WSL or SSH.
       - When the long-lived `cat-file` cannot find a version, the query asks a fresh one, which
         sees the repository as it is now.
 
-      **Left:** the stash's name (below), scroll bar marks (step 7), Vitest for
-      `src/lib/merge/`, and a look at the editor in the Windows window, ClearType included.
+      - An unresolved conflict with no lines in the result, which is every conflict in Git's
+        default `merge` marker style, shows as a one-row placeholder that the curves reach and
+        where typing resolves it (`placeholders` in `lib/merge/blocks.ts`).
+      - Each pane has a strip of marks beside its scroll bar, green for differences and yellow
+        for unresolved conflicts; clicking one goes there.
+      - Applying or popping a stash that conflicts records it on the session
+        (`RepoSession.stashConflict`), so the sides are named `main` and `stash@{0}`; a stash
+        put back by `--autostash` is named from Git's "Stashed changes" label.
+      - Saving writes unresolved blocks with the file's own marker length, and a file with
+        mixed line endings with the one most of its lines use (`markerSize`, `crlf`).
+      - Ctrl+F opens the shared Find box over all three panes, opening a fold that hides a
+        match; the editor opens with the cursor on the first conflict.
+      - `npm test` runs Vitest (pinned at 5.0.3) on `lib/merge/chunks`, `lib/merge/blocks`,
+        `lib/diff/find`, `lib/diff/pairLines` and `lib/diff/sideLayout`.
+
+      **Left:** a look at the editor in the Windows window. CodeMirror's only animation, the
+      blinking cursor, belongs to `drawSelection`, which the panes do not use; but its line
+      number gutter is `position: sticky`, which Chromium may give a compositor layer, so the
+      line numbers could lose ClearType. If they do, `gutters({ fixed: false })` makes them
+      scroll with the text instead.
 
       **Layout.** Three panes side by side, all in the diff font
       (`resolveDiffFont`, with ligatures, tab width and font smoothing) and with syntax colours
@@ -944,10 +962,9 @@ and anything over WSL or SSH.
       | Revert | the checked-out branch | `before a1b2c3d` |
       | Stash pop | the checked-out branch | the stash (`stash@{0}`) |
 
-      A commit that no branch points at is named by its short ID and subject. The stash row is
-      new work: Git leaves no marker file in the git directory after a stash conflicts, so
-      `operationNames` says "the other side" today. The app knows which stash it applied, so it
-      can keep that on the session and name it.
+      A commit that no branch points at is named by its short ID and subject. Git leaves no
+      marker file in the git directory after a stash conflicts, so the app keeps the stash it
+      applied on the session to name it (done 2026-10-14).
 
       **Where it opens.** Each of these opens `MergeEditorDialog.vue`:
       - Files panel › right-click › "Resolve in Merge Editor…", the first item for a conflicted
