@@ -68,7 +68,11 @@ pub fn start(
                 _ = c2.cancelled() => break,
                 _ = tokio::time::sleep(interval) => {}
                 changed = activity.changed() => {
-                    if changed.is_err() || *activity.borrow() != Activity::Focused {
+                    // The repository has gone.
+                    if changed.is_err() {
+                        break;
+                    }
+                    if *activity.borrow() != Activity::Focused {
                         continue;
                     }
                 }
