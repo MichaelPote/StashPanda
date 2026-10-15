@@ -23,6 +23,9 @@ const parityRemote = computed(() =>
   props.label.kind.type === "localBranch" && props.label.upstreamAtSameCommit ? (props.upstreamRemote ?? null) : null,
 );
 
+/** The checked-out branch: its pill gets a HEAD ring before the name and a sheen over its fill. */
+const isCurrent = computed(() => props.label.kind.type === "localBranch" && props.label.isCurrent);
+
 /** A remote branch's remote, shown before a chevron and the branch name (`origin > dev`). */
 const remoteName = computed(() => (props.label.kind.type === "remoteBranch" ? props.label.kind.remote : null));
 
@@ -78,7 +81,7 @@ const title = computed(() => {
   const parts = [label.fullName];
   if (label.ahead) parts.push(`↑${label.ahead}`);
   if (label.behind) parts.push(`↓${label.behind}`);
-  return parts.join(" ");
+  return parts.join(" ") + (isCurrent.value ? " (checked out)" : "");
 });
 </script>
 
@@ -98,7 +101,15 @@ const title = computed(() => {
     <span :class="cn('pill-head inline-flex items-center', remoteClass)">
       <span class="pill-text">{{ parityRemote }}</span>
     </span>
-    <span :class="cn('pill-tail inline-flex items-center', localClass)" :style="{ marginLeft: 'calc(-1 * var(--pill-notch) - 1px)' }">
+    <span
+      :class="cn('pill-tail inline-flex items-center gap-1', localClass, isCurrent && 'pill-current')"
+      :style="{ marginLeft: 'calc(-1 * var(--pill-notch) - 1px)' }"
+    >
+      <!-- The HEAD ring: not a Lucide icon, so the global svg.lucide stroke rule leaves it alone. -->
+      <svg v-if="isCurrent" width="9" height="9" viewBox="0 0 9 9" class="shrink-0" aria-hidden="true">
+        <circle cx="4.5" cy="4.5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <circle cx="4.5" cy="4.5" r="1.4" fill="currentColor" />
+      </svg>
       <span class="pill-text">{{ text }}</span>
     </span>
   </button>
@@ -110,6 +121,7 @@ const title = computed(() => {
         'inline-flex shrink-0 items-center gap-1 text-sm leading-none font-normal whitespace-nowrap',
         shapeClass,
         colourClass,
+        isCurrent && 'pill-current',
       )
     "
     :style="laneVars(colour)"
@@ -120,6 +132,12 @@ const title = computed(() => {
       <span class="pill-text">{{ remoteName }}</span>
       <ChevronRightIcon class="-mx-0.5 size-3 shrink-0 [stroke-width:1.5px]" aria-hidden="true" />
     </template>
+    <!-- The HEAD ring on the checked-out branch: not a Lucide icon, so the global svg.lucide stroke
+         rule leaves it alone, and currentColor gives it the pill's text colour. -->
+    <svg v-if="isCurrent" width="9" height="9" viewBox="0 0 9 9" class="shrink-0" aria-hidden="true">
+      <circle cx="4.5" cy="4.5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5" />
+      <circle cx="4.5" cy="4.5" r="1.4" fill="currentColor" />
+    </svg>
     <span class="pill-text">{{ text }}</span>
   </button>
 </template>

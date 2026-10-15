@@ -615,6 +615,7 @@
   border-width: 1px;
   border-radius: var(--radius-sm);
   background-color: var(--pill-fill);
+  background-image: var(--pill-sheen, none);
   border-color: var(--pill-edge);
   box-shadow: none;
   text-shadow: none;
@@ -637,6 +638,7 @@
     z-index: -1;
     border-radius: 0 calc(var(--radius-sm) - 1px) calc(var(--radius-sm) - 1px) 0;
     background-color: var(--pill-fill);
+    background-image: var(--pill-sheen, none);
     clip-path: polygon(0.65px 0, 100% 0, 100% 100%, 0.65px 100%, calc(var(--pill-notch) + 0.13px) 50%);
   }
 }
@@ -657,6 +659,7 @@
     z-index: -1;
     border-radius: calc(var(--radius-sm) - 1px) 0 0 calc(var(--radius-sm) - 1px);
     background-color: var(--pill-fill);
+    background-image: var(--pill-sheen, none);
     clip-path: polygon(
       0 0,
       calc(100% - var(--pill-notch) + 0.4px) 0,
@@ -702,6 +705,11 @@
   --pill-fill: var(--neutral);
   --pill-edge: var(--border-soft);
   color: var(--muted-foreground);
+}
+/* The checked-out branch: a radial sheen over the pill's fill, which the shape utilities paint as
+   a background image on top of the fill colour, so it lightens the edges without replacing it. */
+@utility pill-current {
+  --pill-sheen: radial-gradient(ellipse at center, rgba(255, 255, 255, 0) 35%, rgba(255, 255, 255, 0.25) 100%);
 }
 
 /* Recessed strip along the bottom of a dialog that holds its action buttons. */
