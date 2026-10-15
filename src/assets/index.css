@@ -14,9 +14,13 @@
  *     are bundled from their @fontsource packages, imported in main.ts.
  *   - Editor areas float on a darker window colour with 4px gaps and 4px corners. The panel header
  *     strip is the only visible gradient; top bars, selections, pills and badges are flat.
- *   - Cyan is the one action colour. Six hues (violet, cyan, green, yellow, orange, magenta) carry
- *     Git meaning: graph lanes, ref pills and file states. Each has a solid colour and a dark
- *     background for chip fills and selection bands.
+ *   - One action colour: cyan in the dark theme, teal in the light theme. Twelve hues (violet,
+ *     cyan, green, yellow, orange, magenta, amber, blue, lime, orchid, mint, rose) carry Git
+ *     meaning: graph lanes, ref pills and file states. Each has the hue itself, three tints
+ *     (strong, chip fill and subtle) and an ink for text on a solid plate. The light theme draws
+ *     darker versions of the same twelve, so a lane keeps its identity across themes.
+ *   - The colours come from the Stashpanda Design System:
+ *     the design system page
  */
 
 @theme inline {
@@ -86,7 +90,7 @@
     --color-primary-fill-foreground: var(--primary-fill-foreground);
     --color-primary-tint: var(--primary-tint);
 
-    /* The six Git hues, for the few places that use a hue directly rather than a role. */
+    /* Two of the Git hues, for the few places that use a hue directly rather than a role. */
     --color-violet: var(--violet);
     --color-cyan: var(--cyan);
 
@@ -124,9 +128,10 @@
     --radius-xl: 8px;
 }
 
-/* Light theme: the design canvas only specifies the dark look, so this is a "bone" derivative of
-   the earlier palette. It defines every variable the dark theme does, so the utilities below work
-   in both. */
+/* Light theme: the design canvas only specifies the dark look, so the surfaces are a "bone"
+   derivative of the earlier palette. The lane hues and the teal action colour come from the
+   design system's light palette. It defines every variable the dark theme does, so the utilities
+   below work in both. */
 :root {
     /* Tells the web view which theme native controls (`<select>`, scrollbars) are drawn in.
        Without it WebKitGTK draws a `<select>` as a white GTK box in the dark theme too, with the
@@ -139,8 +144,8 @@
     --card-foreground: #25282e;
     --popover: #faf9f5;
     --popover-foreground: #25282e;
-    --primary: #b88c3f;
-    --primary-foreground: #2b220f;
+    --primary: #2ba7b2;             /* teal: the one action colour */
+    --primary-foreground: #ffffff;
     --secondary: #e4e1da;
     --secondary-foreground: #25282e;
     --muted: #e9e6df;
@@ -150,7 +155,7 @@
     --destructive: #c9432f;
     --border: #d5d1c8;
     --input: #ffffff;
-    --ring: #b88c3f;
+    --ring: #2ba7b2;
     --chart-1: #b88c3f;
     --chart-2: #2ba7b2;
     --chart-3: #d96f12;
@@ -159,12 +164,12 @@
     --radius: 0.625rem;
     --sidebar: #eeece7;
     --sidebar-foreground: #25282e;
-    --sidebar-primary: #b88c3f;
-    --sidebar-primary-foreground: #2b220f;
+    --sidebar-primary: #2ba7b2;
+    --sidebar-primary-foreground: #ffffff;
     --sidebar-accent: #ddd9d0;
     --sidebar-accent-foreground: #25282e;
     --sidebar-border: #d5d1c8;
-    --sidebar-ring: #b88c3f;
+    --sidebar-ring: #2ba7b2;
 
     --window: #d9d5cc;
     --bar: #e9e6df;
@@ -183,11 +188,11 @@
     --dim: #6c717c;
     --faint: #70757f;
 
-    --primary-fill: #8f6a2a;
+    --primary-fill: #08808a;
     --primary-fill-foreground: #ffffff;
-    --primary-tint: #7a5a22;
-    --primary-lip: #7d5f29;
-    --primary-edge: #6b5023;
+    --primary-tint: #08727a;
+    --primary-lip: #07676e;
+    --primary-edge: #04575e;
 
     --key: #ffffff;
     --key-hover: #f7f5f0;
@@ -200,12 +205,13 @@
     --field-inset: inset 0 1px 3px rgba(0, 0, 0, 0.12);
     --dialog-well: #e9e6df;         /* dialog footer strip, a step darker than the dialog body */
 
-    --violet: #8a63d6;
-    --cyan: #2ba7b2;
+    --violet: #5e5acd;
+    --cyan: #077576;
 
-    --state-added: #2ba7b2;
-    --state-added-fg: #1d8c96;
-    --state-added-ink: #0b2a2d;
+    /* Added files are green, so they never look like the teal action colour. */
+    --state-added: #47a94c;
+    --state-added-fg: #0f7f21;
+    --state-added-ink: #0c290e;
     --state-modified: #d96f12;
     --state-modified-fg: #b85c0c;
     --state-modified-ink: #2e1602;
@@ -229,9 +235,9 @@
     --band-untracked: #e4e1da;
     --band-dir: rgba(0, 0, 0, 0.5);
 
-    --diff-add-bg: rgba(43, 167, 178, 0.19);
-    --diff-add-mark: rgba(43, 167, 178, 0.38);
-    --diff-add-fg: #1d8c96;
+    --diff-add-bg: rgba(71, 169, 76, 0.19);
+    --diff-add-mark: rgba(71, 169, 76, 0.38);
+    --diff-add-fg: #0f7f21;
     --diff-del-bg: rgba(201, 67, 47, 0.16);
     --diff-del-mark: rgba(201, 67, 47, 0.34);
     --diff-del-fg: #b03a27;
@@ -256,43 +262,70 @@
     --row-selected: #e4e1da;
     --row-selected-text: #25282e;
 
-    /* Commit graph lane colours, then the chip fill and solid-pill text for each lane. */
-    --graph-lane-0: #b88c3f;
-    --graph-lane-1: #2ba7b2;
-    --graph-lane-2: #d96f12;
-    --graph-lane-3: #8a63d6;
-    --graph-lane-4: #c9432f;
-    --graph-lane-5: #6c717c;
-    --graph-lane-6: #3fbcc7;
-    --graph-lane-7: #c99a4c;
-    --graph-lane-8: #9a74e6;
-    --graph-lane-9: #e87a1e;
-    --graph-lane-10: #d1503f;
-    --graph-lane-11: #23909a;
-    --graph-lane-bg-0: color-mix(in oklch, var(--graph-lane-0) 14%, var(--background));
-    --graph-lane-bg-1: color-mix(in oklch, var(--graph-lane-1) 14%, var(--background));
-    --graph-lane-bg-2: color-mix(in oklch, var(--graph-lane-2) 14%, var(--background));
-    --graph-lane-bg-3: color-mix(in oklch, var(--graph-lane-3) 14%, var(--background));
-    --graph-lane-bg-4: color-mix(in oklch, var(--graph-lane-4) 14%, var(--background));
-    --graph-lane-bg-5: color-mix(in oklch, var(--graph-lane-5) 14%, var(--background));
-    --graph-lane-bg-6: color-mix(in oklch, var(--graph-lane-6) 14%, var(--background));
-    --graph-lane-bg-7: color-mix(in oklch, var(--graph-lane-7) 14%, var(--background));
-    --graph-lane-bg-8: color-mix(in oklch, var(--graph-lane-8) 14%, var(--background));
-    --graph-lane-bg-9: color-mix(in oklch, var(--graph-lane-9) 14%, var(--background));
-    --graph-lane-bg-10: color-mix(in oklch, var(--graph-lane-10) 14%, var(--background));
-    --graph-lane-bg-11: color-mix(in oklch, var(--graph-lane-11) 14%, var(--background));
-    --graph-lane-ink-0: #1c1d20;
-    --graph-lane-ink-1: #1c1d20;
-    --graph-lane-ink-2: #1c1d20;
-    --graph-lane-ink-3: #1c1d20;
-    --graph-lane-ink-4: #1c1d20;
-    --graph-lane-ink-5: #1c1d20;
-    --graph-lane-ink-6: #1c1d20;
-    --graph-lane-ink-7: #1c1d20;
-    --graph-lane-ink-8: #1c1d20;
-    --graph-lane-ink-9: #1c1d20;
-    --graph-lane-ink-10: #1c1d20;
-    --graph-lane-ink-11: #1c1d20;
+    /* Twelve hues, each with four colours: the hue itself (lines, dots, chip edges and text,
+       solid plates), a strong tint kept spare for emphasis such as a hovered chip, the chip fill
+       of an outlined pill, the subtle tint behind selected file rows, and the ink for text on a
+       solid plate. They are darker versions of the dark theme's hues, so the ink is near-white. */
+    --graph-lane-0: #5e5acd;
+    --graph-lane-1: #077576;
+    --graph-lane-2: #017b1b;
+    --graph-lane-3: #806602;
+    --graph-lane-4: #be3705;
+    --graph-lane-5: #bf2375;
+    --graph-lane-6: #995902;
+    --graph-lane-7: #276aba;
+    --graph-lane-8: #627003;
+    --graph-lane-9: #9b3cb7;
+    --graph-lane-10: #07785e;
+    --graph-lane-11: #b73e4f;
+    --graph-lane-strong-0: #d3d7fa;
+    --graph-lane-strong-1: #bbe1e1;
+    --graph-lane-strong-2: #c5e2c4;
+    --graph-lane-strong-3: #e4d9ba;
+    --graph-lane-strong-4: #f9cec3;
+    --graph-lane-strong-5: #f9cbdc;
+    --graph-lane-strong-6: #efd4bb;
+    --graph-lane-strong-7: #c6dbf7;
+    --graph-lane-strong-8: #d6ddbc;
+    --graph-lane-strong-9: #ead0f2;
+    --graph-lane-strong-10: #bee3d5;
+    --graph-lane-strong-11: #f7cfcf;
+    --graph-lane-bg-0: #e5e8ff;
+    --graph-lane-bg-1: #d0f1f1;
+    --graph-lane-bg-2: #dcf0db;
+    --graph-lane-bg-3: #f2e9d0;
+    --graph-lane-bg-4: #ffe2da;
+    --graph-lane-bg-5: #fee0eb;
+    --graph-lane-bg-6: #fbe5d2;
+    --graph-lane-bg-7: #dcebff;
+    --graph-lane-bg-8: #e7edd3;
+    --graph-lane-bg-9: #f4e3f9;
+    --graph-lane-bg-10: #d4f2e6;
+    --graph-lane-bg-11: #fee2e2;
+    --graph-lane-subtle-0: #ecedf6;
+    --graph-lane-subtle-1: #e2f2ef;
+    --graph-lane-subtle-2: #e8f1e4;
+    --graph-lane-subtle-3: #f3eedf;
+    --graph-lane-subtle-4: #faeae3;
+    --graph-lane-subtle-5: #f9e9ec;
+    --graph-lane-subtle-6: #f8ece0;
+    --graph-lane-subtle-7: #e8eff6;
+    --graph-lane-subtle-8: #edf0e0;
+    --graph-lane-subtle-9: #f4ebf3;
+    --graph-lane-subtle-10: #e4f2e9;
+    --graph-lane-subtle-11: #f9eae7;
+    --graph-lane-ink-0: #f9fafe;
+    --graph-lane-ink-1: #f1fdfd;
+    --graph-lane-ink-2: #f5fcf5;
+    --graph-lane-ink-3: #fdfaf1;
+    --graph-lane-ink-4: #fef9f7;
+    --graph-lane-ink-5: #fff8fa;
+    --graph-lane-ink-6: #fef9f5;
+    --graph-lane-ink-7: #f7fafe;
+    --graph-lane-ink-8: #f9fbf2;
+    --graph-lane-ink-9: #fdf8ff;
+    --graph-lane-ink-10: #f3fdf9;
+    --graph-lane-ink-11: #fef9f9;
 }
 
 /* Dark theme: the Blender pass palette (Stashpanda design system, tokens.json). */
@@ -317,7 +350,7 @@
     --border: #1e2024;
     --input: #222429;               /* field */
     --ring: #339fcd;
-    --chart-1: #7d7aff;
+    --chart-1: #8788ff;
     --chart-2: #4bc6c7;
     --chart-3: #7ae77e;
     --chart-4: #efc226;
@@ -365,7 +398,7 @@
     --field-inset: inset 0 1px 3px rgba(0, 0, 0, 0.45);
     --dialog-well: #26282d;         /* dialog footer strip, a step darker than the dialog body */
 
-    --violet: #7d7aff;
+    --violet: #8788ff;
     --cyan: #4bc6c7;
 
     --state-added: #7ae77e;         /* green */
@@ -385,11 +418,12 @@
     --state-untracked: #3d4149;     /* neutral */
     --state-untracked-ink: #dcdad4;
 
-    --band-added: #263427;
-    --band-modified: #382521;
-    --band-deleted: #331f29;
-    --band-renamed: #20302f;
-    --band-conflict: #37301e;
+    /* Selected file rows take the subtle tint of their state's hue. */
+    --band-added: var(--graph-lane-subtle-2);
+    --band-modified: var(--graph-lane-subtle-4);
+    --band-deleted: var(--graph-lane-subtle-5);
+    --band-renamed: var(--graph-lane-subtle-1);
+    --band-conflict: var(--graph-lane-subtle-3);
     --band-untracked: #2f3237;
     --band-dir: rgba(255, 255, 255, 0.55);
 
@@ -409,44 +443,70 @@
     --row-selected: #22485c;        /* commit and branch rows */
     --row-selected-text: #e8f4f9;
 
-    /* Six hues, each a lane colour, a chip fill and the text on a solid pill. The backend hands
-       out twelve lane indices, so lanes 6 to 11 repeat lanes 0 to 5. */
-    --graph-lane-0: #7d7aff;
+    /* Twelve hues, each with four colours: the hue itself (lines, dots, chip edges and text,
+       solid plates), a strong tint kept spare for emphasis such as a hovered chip, the chip fill
+       of an outlined pill, the subtle tint behind selected file rows, and the ink for text on a
+       solid plate. */
+    --graph-lane-0: #8788ff;
     --graph-lane-1: #4bc6c7;
     --graph-lane-2: #7ae77e;
     --graph-lane-3: #efc226;
     --graph-lane-4: #ff744d;
     --graph-lane-5: #dc418d;
-    --graph-lane-6: #7d7aff;
-    --graph-lane-7: #4bc6c7;
-    --graph-lane-8: #7ae77e;
-    --graph-lane-9: #efc226;
-    --graph-lane-10: #ff744d;
-    --graph-lane-11: #dc418d;
-    --graph-lane-bg-0: #26273c;
-    --graph-lane-bg-1: #20302f;
-    --graph-lane-bg-2: #263427;
-    --graph-lane-bg-3: #37301e;
-    --graph-lane-bg-4: #382521;
-    --graph-lane-bg-5: #331f29;
-    --graph-lane-bg-6: #26273c;
-    --graph-lane-bg-7: #20302f;
-    --graph-lane-bg-8: #263427;
-    --graph-lane-bg-9: #37301e;
-    --graph-lane-bg-10: #382521;
-    --graph-lane-bg-11: #331f29;
-    --graph-lane-ink-0: #14143a;
+    --graph-lane-6: #ff9b20;
+    --graph-lane-7: #67aaff;
+    --graph-lane-8: #c0d744;
+    --graph-lane-9: #e080fe;
+    --graph-lane-10: #40dab0;
+    --graph-lane-11: #ff7f8b;
+    --graph-lane-strong-0: #38395f;
+    --graph-lane-strong-1: #2a4b4a;
+    --graph-lane-strong-2: #365438;
+    --graph-lane-strong-3: #584a25;
+    --graph-lane-strong-4: #5c342b;
+    --graph-lane-strong-5: #52283b;
+    --graph-lane-strong-6: #5c3f23;
+    --graph-lane-strong-7: #2e435d;
+    --graph-lane-strong-8: #49502b;
+    --graph-lane-strong-9: #4f3458;
+    --graph-lane-strong-10: #2b5044;
+    --graph-lane-strong-11: #5b3336;
+    --graph-lane-bg-0: #303251;
+    --graph-lane-bg-1: #26403f;
+    --graph-lane-bg-2: #304731;
+    --graph-lane-bg-3: #4a4022;
+    --graph-lane-bg-4: #4d2e27;
+    --graph-lane-bg-5: #452434;
+    --graph-lane-bg-6: #4e3621;
+    --graph-lane-bg-7: #293a4f;
+    --graph-lane-bg-8: #3e4427;
+    --graph-lane-bg-9: #422c49;
+    --graph-lane-bg-10: #27443a;
+    --graph-lane-bg-11: #4c2c2e;
+    --graph-lane-subtle-0: #26273c;
+    --graph-lane-subtle-1: #20302f;
+    --graph-lane-subtle-2: #263427;
+    --graph-lane-subtle-3: #37301e;
+    --graph-lane-subtle-4: #382521;
+    --graph-lane-subtle-5: #331f29;
+    --graph-lane-subtle-6: #392a1d;
+    --graph-lane-subtle-7: #212c3a;
+    --graph-lane-subtle-8: #2f3221;
+    --graph-lane-subtle-9: #2f2234;
+    --graph-lane-subtle-10: #21322c;
+    --graph-lane-subtle-11: #372223;
+    --graph-lane-ink-0: #0e0b2f;
     --graph-lane-ink-1: #0a2a2a;
     --graph-lane-ink-2: #0f2a10;
     --graph-lane-ink-3: #2a2208;
     --graph-lane-ink-4: #3a180c;
     --graph-lane-ink-5: #2a0c1f;
-    --graph-lane-ink-6: #14143a;
-    --graph-lane-ink-7: #0a2a2a;
-    --graph-lane-ink-8: #0f2a10;
-    --graph-lane-ink-9: #2a2208;
-    --graph-lane-ink-10: #3a180c;
-    --graph-lane-ink-11: #2a0c1f;
+    --graph-lane-ink-6: #241100;
+    --graph-lane-ink-7: #021630;
+    --graph-lane-ink-8: #141900;
+    --graph-lane-ink-9: #210b27;
+    --graph-lane-ink-10: #001c13;
+    --graph-lane-ink-11: #2c070d;
 }
 
 @layer base {
@@ -545,7 +605,7 @@
 
 /* Selected commit, branch and repository row: a flat solid colour. */
 /* A repository's colour as the interface's accent, while its tab is active: App.vue puts the hue
-   (palette index 0 to 5, lib/hues.ts) in `data-accent` on <html>, and these redefine --primary
+   (palette index 0 to 11, lib/hues.ts) in `data-accent` on <html>, and these redefine --primary
    and its relatives from that lane colour, which each theme draws in its own way. The active tab,
    filled buttons, toggles, focus rings and selected rows all follow. */
 :root[data-accent="0"] { --accent-hue: var(--graph-lane-0); --accent-ink: var(--graph-lane-ink-0); }
@@ -554,27 +614,34 @@
 :root[data-accent="3"] { --accent-hue: var(--graph-lane-3); --accent-ink: var(--graph-lane-ink-3); }
 :root[data-accent="4"] { --accent-hue: var(--graph-lane-4); --accent-ink: var(--graph-lane-ink-4); }
 :root[data-accent="5"] { --accent-hue: var(--graph-lane-5); --accent-ink: var(--graph-lane-ink-5); }
-/* Light theme: the hues are mid-tones, so filled buttons darken them under white text. */
+:root[data-accent="6"] { --accent-hue: var(--graph-lane-6); --accent-ink: var(--graph-lane-ink-6); }
+:root[data-accent="7"] { --accent-hue: var(--graph-lane-7); --accent-ink: var(--graph-lane-ink-7); }
+:root[data-accent="8"] { --accent-hue: var(--graph-lane-8); --accent-ink: var(--graph-lane-ink-8); }
+:root[data-accent="9"] { --accent-hue: var(--graph-lane-9); --accent-ink: var(--graph-lane-ink-9); }
+:root[data-accent="10"] { --accent-hue: var(--graph-lane-10); --accent-ink: var(--graph-lane-ink-10); }
+:root[data-accent="11"] { --accent-hue: var(--graph-lane-11); --accent-ink: var(--graph-lane-ink-11); }
+/* Both themes: filled buttons are the hue itself under the hue's ink, which each theme's palette
+   pairs to be readable (a dark hue with near-white ink in the light theme, a bright hue with dark
+   ink in the dark theme). The hue as text, and the primary key's lip and edge, are darker shades
+   of it; the dark theme changes the fill and the text below. */
 :root[data-accent] {
   --primary: var(--accent-hue);
-  --primary-foreground: #ffffff;
+  --primary-foreground: var(--accent-ink);
   --ring: var(--accent-hue);
   --sidebar-primary: var(--accent-hue);
-  --sidebar-primary-foreground: #ffffff;
+  --sidebar-primary-foreground: var(--accent-ink);
   --sidebar-ring: var(--accent-hue);
-  --primary-fill: color-mix(in oklch, var(--accent-hue) 80%, black);
-  --primary-fill-foreground: #ffffff;
-  --primary-tint: color-mix(in oklch, var(--accent-hue) 75%, black);
-  --primary-lip: color-mix(in oklch, var(--accent-hue) 65%, black);
-  --primary-edge: color-mix(in oklch, var(--accent-hue) 55%, black);
+  --primary-fill: var(--accent-hue);
+  --primary-fill-foreground: var(--accent-ink);
+  --primary-tint: color-mix(in oklch, var(--accent-hue) 88%, black);
+  --primary-lip: color-mix(in oklch, var(--accent-hue) 80%, black);
+  --primary-edge: color-mix(in oklch, var(--accent-hue) 68%, black);
   --row-selected: color-mix(in oklch, var(--accent-hue) 20%, var(--background));
 }
-/* Dark theme: the hues are bright, so filled buttons keep them under the hue's dark ink. */
+/* Dark theme: the hues are bright, so the filled button dims the hue a little, and the hue as
+   text is lightened to stand out on graphite. */
 .dark[data-accent] {
-  --primary-foreground: var(--accent-ink);
-  --sidebar-primary-foreground: var(--accent-ink);
   --primary-fill: color-mix(in oklch, var(--accent-hue) 88%, black);
-  --primary-fill-foreground: var(--accent-ink);
   --primary-tint: color-mix(in oklch, var(--accent-hue) 75%, white);
   --primary-lip: color-mix(in oklch, var(--accent-hue) 55%, black);
   --primary-edge: color-mix(in oklch, var(--accent-hue) 42%, black);
@@ -606,8 +673,9 @@
   background-color: var(--band-untracked);
 }
 
-/* Ref pills take the colour of the lane they sit on. The element sets `--lane`, `--lane-bg` and
-   `--lane-ink` (see laneVars() in lib/graph/paths.ts). A colour utility (pill-lane, pill-lane-solid,
+/* Ref pills take the colour of the lane they sit on. The element sets `--lane`, `--lane-strong`,
+   `--lane-bg`, `--lane-subtle` and `--lane-ink` (see laneVars() in lib/graph/paths.ts); the strong
+   and subtle tints are not used by the pills yet. A colour utility (pill-lane, pill-lane-solid,
    pill-remote) picks the fill, edge and text colours; a shape utility (pill-flat, pill-tail,
    pill-head) paints them. */
 @utility pill-flat {
@@ -693,12 +761,13 @@
   --pill-edge: var(--lane);
   color: var(--lane);
 }
-/* Solid lane colour, with text in the lane's own chip fill colour: local branches (or remote ones
-   when `appearance.solidRemotePills` is on), tags and a detached HEAD. */
+/* Solid lane colour, with text in the lane's ink, the colour each theme pairs with the hue for
+   text on a solid plate: local branches (or remote ones when `appearance.solidRemotePills` is on),
+   tags and a detached HEAD. */
 @utility pill-lane-solid {
   --pill-fill: var(--lane);
   --pill-edge: var(--lane);
-  color: var(--lane-bg);
+  color: var(--lane-ink);
 }
 /* Refs that are not on a lane, and the "+N more" button. */
 @utility pill-remote {

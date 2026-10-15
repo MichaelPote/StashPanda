@@ -31,12 +31,17 @@ export function laneColour(colour: number): string {
   return `var(--graph-lane-${paletteIndex(colour)})`;
 }
 
-/** Inline style that gives a ref pill its lane's colour, chip fill and solid-pill text. */
+/**
+ * Inline style that gives a ref pill its lane's colour, strong tint, chip fill, subtle tint and
+ * solid-pill text.
+ */
 export function laneVars(colour: number): Record<string, string> {
   const i = paletteIndex(colour);
   return {
     "--lane": `var(--graph-lane-${i})`,
+    "--lane-strong": `var(--graph-lane-strong-${i})`,
     "--lane-bg": `var(--graph-lane-bg-${i})`,
+    "--lane-subtle": `var(--graph-lane-subtle-${i})`,
     "--lane-ink": `var(--graph-lane-ink-${i})`,
   };
 }
