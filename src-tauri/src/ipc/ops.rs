@@ -420,6 +420,28 @@ pub async fn op_push(
     })
 }
 
+/// Delete `branch` (the name on the remote, `feature/x`) on `remote`, for everyone who uses that
+/// remote: `git push <remote> --delete refs/heads/<branch>`, which also removes the
+/// remote-tracking branch here. Cannot be undone from here; confirm with the user first. A remote
+/// that no longer has the branch still returns `ok`, with "deleting a non-existent ref" in
+/// stderr; one that refuses returns `ok: false` with `[remote rejected]` in stderr. `opId` works
+/// as for `opPull`; `opCancel` stops it at any point.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_delete_remote_branch(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, remote: String, branch: String) -> Result<OpResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| ops::delete_remote_branch(&h.client, &remote, &branch, &progress, cancel).await)
+}
+
+/// Make local `branch` track the remote branch whose remote-tracking branch is `upstream`, given
+/// by its full name (`refs/remotes/origin/dev`), or with null stop it tracking any branch. Fails
+/// with `invalidPath` when `upstream` is not under `refs/remotes/`. Git refuses an upstream that
+/// does not exist, and unsetting when the branch tracks nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_branch_set_upstream(app: AppHandle, state: State<'_, AppState>, key: String, branch: String, upstream: Option<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::branch_set_upstream(c, &branch, upstream.as_deref()).await)
+}
+
 /// The remote branch local `branch` tracks (`branch.<branch>.remote` and `.merge`), or null.
 #[tauri::command]
 #[specta::specta]

@@ -225,6 +225,13 @@ export const commands = {
 	/**  Rename local branch `oldName` to `newName`, keeping its upstream. */
 	opBranchRename: (key: string, oldName: string, newName: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_rename", { key, oldName, newName })),
 	/**
+	 *  Make local `branch` track the remote branch whose remote-tracking branch is `upstream`, given
+	 *  by its full name (`refs/remotes/origin/dev`), or with null stop it tracking any branch. Fails
+	 *  with `invalidPath` when `upstream` is not under `refs/remotes/`. Git refuses an upstream that
+	 *  does not exist, and unsetting when the branch tracks nothing.
+	 */
+	opBranchSetUpstream: (key: string, branch: string, upstream: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_set_upstream", { key, branch, upstream })),
+	/**
 	 *  Move the current branch to `target`. `hard` also throws away every uncommitted change, so the
 	 *  frontend confirms first.
 	 */
@@ -371,6 +378,15 @@ export const commands = {
 	/**  The branch name on the remote, without `refs/heads/`. */
 	branch: string,
 } | null, setUpstream: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push", { key, opId, branch, target, setUpstream })),
+	/**
+	 *  Delete `branch` (the name on the remote, `feature/x`) on `remote`, for everyone who uses that
+	 *  remote: `git push <remote> --delete refs/heads/<branch>`, which also removes the
+	 *  remote-tracking branch here. Cannot be undone from here; confirm with the user first. A remote
+	 *  that no longer has the branch still returns `ok`, with "deleting a non-existent ref" in
+	 *  stderr; one that refuses returns `ok: false` with `[remote rejected]` in stderr. `opId` works
+	 *  as for `opPull`; `opCancel` stops it at any point.
+	 */
+	opDeleteRemoteBranch: (key: string, opId: string, remote: string, branch: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_delete_remote_branch", { key, opId, remote, branch })),
 	/**
 	 *  Pull local `branch`'s upstream into it, then push it back there: one operation under the write
 	 *  gate, so no other write runs in between. The pull works as for `opPull`. The push runs only

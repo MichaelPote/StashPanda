@@ -10,6 +10,8 @@ import {
   createBranchHere,
   currentBranch,
   deleteBranch,
+  deleteRemoteBranch,
+  deleteRemoteBranchReason,
   dirtyTreeReason,
   isDetached,
   mergeInto,
@@ -17,6 +19,7 @@ import {
   renameBranch,
   requestCheckout,
   stripRemote,
+  trackRemoteBranch,
 } from "@/lib/repoActions";
 import { useSessionsStore } from "@/stores/sessions";
 
@@ -80,6 +83,11 @@ const mergeReason = computed(() => {
 });
 
 const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch cannot be deleted." : null));
+/** A fetch, pull or push already running would have to finish first. */
+const deleteRemoteReason = computed(() => deleteRemoteBranchReason(session.value));
+
+/** The remote of a remote branch, for the delete; empty for any other kind of ref. */
+const remoteName = computed(() => (props.kind.type === "remoteBranch" ? props.kind.remote : ""));
 
 /** The colour chosen for this ref, or null for the automatic one. */
 const chosenColour = computed(() => session.value?.refColours[props.fullName] ?? null);
@@ -105,8 +113,15 @@ function chooseColour(colour: number | null): void {
 
       <template v-if="kind.type === 'localBranch'">
         <ContextMenuSeparator />
+        <ActionMenuItem @select="trackRemoteBranch(sessionKey, short)">Track Remote Branch…</ActionMenuItem>
         <ActionMenuItem @select="renameBranch(sessionKey, short)">Rename Branch…</ActionMenuItem>
         <ActionMenuItem destructive :reason="deleteReason" @select="deleteBranch(sessionKey, short)">Delete Branch…</ActionMenuItem>
+      </template>
+      <template v-else-if="kind.type === 'remoteBranch'">
+        <ContextMenuSeparator />
+        <ActionMenuItem destructive :reason="deleteRemoteReason" @select="deleteRemoteBranch(sessionKey, short, remoteName)">
+          Delete Remote Branch…
+        </ActionMenuItem>
       </template>
       <template v-else-if="kind.type === 'tag'">
         <ContextMenuSeparator />

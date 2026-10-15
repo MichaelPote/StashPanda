@@ -403,6 +403,51 @@ pub async fn branch_rename(client: &GitClient, old: &str, new: &str) -> Result<O
     Ok(result(out))
 }
 
+/// Make local branch `branch` track the remote branch `upstream`, given by the full name of its
+/// remote-tracking branch (`refs/remotes/origin/dev`), with `git branch --set-upstream-to=<upstream>
+/// -- <branch>`. Git then writes `branch.<branch>.remote` and `branch.<branch>.merge`. The full
+/// name cannot be mistaken for a local branch that happens to be called `origin/dev`, and Git
+/// refuses one that does not exist. With no `upstream`, `git branch --unset-upstream -- <branch>`
+/// stops the branch tracking anything; Git fails when it tracks nothing already.
+pub async fn branch_set_upstream(client: &GitClient, branch: &str, upstream: Option<&str>) -> Result<OpResult> {
+    valid_ref_name(branch)?;
+    let args: Vec<String> = match upstream {
+        Some(u) => {
+            valid_ref_name(u)?;
+            if !u.starts_with("refs/remotes/") {
+                return Err(GitError::InvalidPath { path: u.to_string(), reason: "not a remote branch (refs/remotes/…)".into() });
+            }
+            vec!["branch".into(), format!("--set-upstream-to={u}"), "--".into(), branch.to_string()]
+        }
+        None => vec!["branch".into(), "--unset-upstream".into(), "--".into(), branch.to_string()],
+    };
+    let out = client.exec_allow_failure(GitReq::new("branch", args).user()).await?;
+    Ok(result(out))
+}
+
+/// Delete `branch` on `remote`: `git push --progress <remote> --delete refs/heads/<branch>`. The
+/// full ref name means a tag of the same name on the remote cannot be deleted instead, and it also
+/// makes Git remove the remote-tracking branch `<remote>/<branch>` here. When the remote no longer
+/// has the branch, Git 2.43 still exits 0 and the remote prints "warning: deleting a non-existent
+/// ref" in stderr; the frontend looks for that. A remote can refuse the deletion (a protected
+/// branch, the branch its HEAD points at, no permission), which comes back as `[remote rejected]`
+/// in stderr. Stopping it is safe for the local repository; if the remote had already deleted the
+/// branch, the next fetch shows it.
+pub async fn delete_remote_branch(
+    client: &GitClient,
+    remote: &str,
+    branch: &str,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_ref_name(remote)?;
+    valid_ref_name(branch)?;
+    let refname = format!("refs/heads/{branch}");
+    let req = GitReq::new("push", ["push", "--progress", remote, "--delete", refname.as_str()]).user().timeout(None).own_session();
+    let out = client.exec_streaming(req, progress, cancel).await?;
+    Ok(result(out))
+}
+
 /// How much `reset` puts back besides moving the branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -1864,6 +1909,73 @@ mod e2e {
         cancel.cancel();
         assert!(matches!(fetch_all(&client, &progress, &cancel).await, Err(GitError::Cancelled)));
         assert!(matches!(push(&client, "main", &PushTarget { remote: "-o".into(), branch: "main".into() }, false, &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn set_and_unset_upstream_then_delete_a_remote_branch() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-upstream-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local) = (root.join("origin.git"), root.join("local"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), local.as_os_str()]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&local, &["push", "-q", "origin", "main", "main:refs/heads/feature/x"]);
+        git(&local, &["fetch", "-q"]);
+        git(&local, &["branch", "topic"]);
+        // A local branch named like the remote branch, which the full name must not pick.
+        git(&local, &["branch", "origin/feature/x"]);
+        let client = client_for(&local);
+        let upstream = |branch: &str| out(&local, &["rev-parse", "--symbolic-full-name", &format!("{branch}@{{upstream}}")]);
+
+        // Track a remote branch, then another, then none.
+        let set = branch_set_upstream(&client, "topic", Some("refs/remotes/origin/feature/x")).await.unwrap();
+        assert!(set.ok, "{set:?}");
+        assert_eq!(upstream("topic"), "refs/remotes/origin/feature/x");
+        assert!(branch_set_upstream(&client, "topic", Some("refs/remotes/origin/main")).await.unwrap().ok);
+        assert_eq!(out(&local, &["rev-parse", "--abbrev-ref", "topic@{upstream}"]), "origin/main");
+        assert_eq!(upstream_of(&client, "topic").await.unwrap(), Some(PushTarget { remote: "origin".into(), branch: "main".into() }));
+        assert!(branch_set_upstream(&client, "topic", None).await.unwrap().ok);
+        assert_eq!(upstream_of(&client, "topic").await.unwrap(), None);
+        // Unsetting again fails in Git; a missing remote branch, a local branch and option-like
+        // names are refused.
+        assert!(!branch_set_upstream(&client, "topic", None).await.unwrap().ok);
+        let missing = branch_set_upstream(&client, "topic", Some("refs/remotes/origin/nope")).await.unwrap();
+        assert!(!missing.ok && missing.stderr.contains("does not exist"), "{missing:?}");
+        assert!(matches!(branch_set_upstream(&client, "topic", Some("refs/heads/main")).await, Err(GitError::InvalidPath { .. })));
+        assert!(matches!(branch_set_upstream(&client, "-d", Some("refs/remotes/origin/main")).await, Err(GitError::InvalidPath { .. })));
+
+        // Delete feature/x on the remote: it goes there and from the remote-tracking branches here.
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let ls_remote = || out(&local, &["ls-remote", "--heads", "origin"]);
+        assert!(ls_remote().contains("refs/heads/feature/x"));
+        let deleted = delete_remote_branch(&client, "origin", "feature/x", &progress, &cancel).await.unwrap();
+        assert!(deleted.ok, "{deleted:?}");
+        assert!(!ls_remote().contains("refs/heads/feature/x"), "{}", ls_remote());
+        assert!(ls_remote().contains("refs/heads/main"));
+        assert!(Command::new("git").arg("-C").arg(&local).args(["rev-parse", "--verify", "-q", "refs/remotes/origin/feature/x"]).status().unwrap().code() == Some(1));
+        // The local branch of the same name is left alone.
+        assert!(out(&local, &["branch", "--list", "origin/feature/x"]).contains("origin/feature/x"));
+
+        // A branch the remote no longer has: Git succeeds, the remote warns, and the stale
+        // remote-tracking branch here is removed.
+        git(&local, &["update-ref", "refs/remotes/origin/stale", "HEAD"]);
+        let stale = delete_remote_branch(&client, "origin", "stale", &progress, &cancel).await.unwrap();
+        assert!(stale.ok && stale.stderr.contains("non-existent ref"), "{stale:?}");
+        assert!(Command::new("git").arg("-C").arg(&local).args(["rev-parse", "--verify", "-q", "refs/remotes/origin/stale"]).status().unwrap().code() == Some(1));
+
+        // The remote refuses to delete the branch its HEAD points at.
+        let refused = delete_remote_branch(&client, "origin", "main", &progress, &cancel).await.unwrap();
+        assert!(!refused.ok && refused.stderr.contains("[remote rejected]"), "{refused:?}");
+        assert!(ls_remote().contains("refs/heads/main"));
+
+        assert!(matches!(delete_remote_branch(&client, "-o", "main", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        assert!(matches!(delete_remote_branch(&client, "origin", "--all", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        cancel.cancel();
+        assert!(matches!(delete_remote_branch(&client, "origin", "main", &progress, &cancel).await, Err(GitError::Cancelled)));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

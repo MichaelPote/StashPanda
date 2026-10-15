@@ -129,6 +129,29 @@ export interface PushChoice {
   setUpstream: boolean;
 }
 
+/** A remote branch the Track Remote Branch dialog offers. */
+export interface TrackChoice {
+  /** `origin/dev` */
+  short: string;
+  /** The remote-tracking branch's full name, `refs/remotes/origin/dev`, which the command takes. */
+  fullName: string;
+  remote: string;
+}
+
+export interface TrackRemoteBranchPayload {
+  key: string;
+  /** The local branch whose upstream is chosen. */
+  branch: string;
+  /** Every remote branch, in the order the refs list gives them. */
+  choices: TrackChoice[];
+  /**
+   * What `branch` tracks now, as Git reports it (`refs/remotes/origin/dev`), or null when it
+   * tracks nothing. It may be missing from `choices`: a remote branch that has gone, or a local
+   * branch.
+   */
+  upstream: string | null;
+}
+
 export interface SettingsPayload {
   /** The page to show first (a section `id` from `components/settings/sections.ts`); General when absent. */
   section?: string;
@@ -224,6 +247,8 @@ export interface DialogSpecs {
   merge: { payload: MergePayload; result: OpResult | null };
   rebase: { payload: RebasePayload; result: OpResult | null };
   push: { payload: PushPayload; result: PushChoice | null };
+  /** Resolves with the command's result, or null when nothing ran (cancelled, or nothing changed). */
+  trackRemoteBranch: { payload: TrackRemoteBranchPayload; result: OpResult | null };
   confirm: { payload: ConfirmPayload; result: boolean };
   fileHistory: { payload: FileHistoryPayload; result: null };
   blame: { payload: BlamePayload; result: null };
@@ -252,6 +277,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   merge: null,
   rebase: null,
   push: null,
+  trackRemoteBranch: null,
   confirm: false,
   fileHistory: null,
   blame: null,

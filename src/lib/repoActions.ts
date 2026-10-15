@@ -1113,6 +1113,80 @@ export async function deleteBranch(key: string, name: string): Promise<void> {
 }
 
 /**
+ * Opens the Track Remote Branch dialog for local branch `name`, listing every remote branch with
+ * the one it tracks now picked first. The dialog runs the command itself.
+ */
+export async function trackRemoteBranch(key: string, name: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const refs = sessions.sessions.get(key)?.refs?.refs;
+  if (!refs) {
+    sessions.notify("The repository is still loading.");
+    return;
+  }
+  const upstream = refs.find((r) => r.kind.type === "localBranch" && r.short === name)?.upstream ?? null;
+  const choices = refs.flatMap((r) => (r.kind.type === "remoteBranch" ? [{ short: r.short, fullName: r.fullName, remote: r.kind.remote }] : []));
+  if (choices.length === 0 && upstream === null) {
+    sessions.notify(`This repository has no remote branches for ${name} to track. Fetch from a remote, or push ${name} to one, first.`);
+    return;
+  }
+  await useDialogsStore().open("trackRemoteBranch", { key, branch: name, choices, upstream });
+}
+
+/**
+ * What a remote says when asked to delete a branch it does not have. Git 2.43 sends the deletion
+ * of a full ref name anyway, and the remote answers "warning: deleting a non-existent ref" and
+ * succeeds; with a short name, or from some servers, Git fails with "remote ref does not exist".
+ */
+const REMOTE_BRANCH_MISSING = /deleting a non-existent ref|remote ref does not exist/i;
+
+/** Why a remote branch cannot be deleted right now, or null when it can. */
+export function deleteRemoteBranchReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  return busyReason(session);
+}
+
+/**
+ * Asks for confirmation, then deletes remote branch `short` (`origin/feature/x`) on `remote`
+ * with `git push origin --delete refs/heads/feature/x`, with progress and Stop in the status bar.
+ * Git also removes `origin/feature/x` from this repository. Local branches, including one that
+ * tracks it, are left alone.
+ */
+export async function deleteRemoteBranch(key: string, short: string, remote: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = deleteRemoteBranchReason(sessions.sessions.get(key));
+  if (reason) {
+    sessions.notify(reason);
+    return;
+  }
+  const branch = stripRemote(short, remote);
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: `Delete ${branch} on ${remote}?`,
+    message:
+      `The branch ${branch} is deleted on the remote ${remote}, for everyone who uses that remote, not only in this repository. ` +
+      `Commits that no other branch there contains can then be lost.\n\nLocal branches, including any that track ${short}, are kept.`,
+    confirmLabel: "Delete remote branch",
+    destructive: true,
+  });
+  if (!confirmed) return;
+  const what = `Deleting ${branch} on ${remote}`;
+  try {
+    const result = await runOperation(key, what, (opId) => commands.opDeleteRemoteBranch(key, opId, remote, branch));
+    const missing = REMOTE_BRANCH_MISSING.test(`${result.stdout}\n${result.stderr}`);
+    if (result.ok && missing) {
+      sessions.notifySuccess(`${remote} no longer had a branch ${branch}, so there was nothing to delete there. ${short} has been removed from this repository.`);
+    } else if (result.ok) {
+      sessions.notifySuccess(`Deleted ${branch} on ${remote}.`);
+    } else if (missing) {
+      sessions.notify(`${remote} has no branch ${branch}, so there is nothing to delete. Fetch to bring the remote branches here up to date.`);
+    } else {
+      sessions.notify(networkFailureText(result, what));
+    }
+  } catch (e) {
+    sessions.notify(isCancelled(e) ? `The deletion was stopped. ${remote} may already have deleted ${branch}; the next fetch shows whether it did.` : errorMessage(e));
+  }
+}
+
+/**
  * Opens a library entry in a tab, or makes it the active tab. A failure goes to
  * `reportOpenFailure`, which may ask the user to fix it and then open the repository again.
  * Resolves true once the tab is open.

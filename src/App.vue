@@ -22,6 +22,7 @@ import PullDialog from "@/components/dialogs/PullDialog.vue";
 import PushDialog from "@/components/dialogs/PushDialog.vue";
 import RebaseDialog from "@/components/dialogs/RebaseDialog.vue";
 import StashDialog from "@/components/dialogs/StashDialog.vue";
+import TrackRemoteBranchDialog from "@/components/dialogs/TrackRemoteBranchDialog.vue";
 import PassphraseDialog from "@/components/settings/PassphraseDialog.vue";
 import SettingsDialog from "@/components/settings/SettingsDialog.vue";
 import AddRepoDialog from "@/components/shell/AddRepoDialog.vue";
@@ -309,6 +310,7 @@ const toolbarReasons = computed(() => ({
     <MergeEditorDialog v-if="dialogs.current('mergeEditor')" />
     <MergeDialog />
     <RebaseDialog />
+    <TrackRemoteBranchDialog />
     <ConfirmDialog />
     <SettingsDialog />
     <PassphraseDialog />
