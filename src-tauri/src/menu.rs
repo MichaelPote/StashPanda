@@ -113,10 +113,19 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .build()?;
 
     let menu = MenuBuilder::new(app).items(&[&file, &edit, &view, &repository, &help]).build()?;
+    // Debug builds get a Developer menu: WebView2's own shortcut for the inspector is off (see
+    // `webview::disable_browser_shortcuts`), and the other platforms never had one.
+    #[cfg(debug_assertions)]
+    menu.append(&SubmenuBuilder::new(app, "&Developer").text("dev.inspector", "Open Dev &Inspector").build()?)?;
     app.set_menu(menu)?;
     app.manage(ThemeMenu { dark: theme_dark, light: theme_light, system: theme_system });
     app.on_menu_event(|app, event| {
         let id = event.id().0.clone();
+        #[cfg(debug_assertions)]
+        if id == "dev.inspector" {
+            crate::webview::open_inspector(app);
+            return;
+        }
         // Put the ticks right at once; the frontend then saves the setting, and
         // settings_update syncs them again.
         if let Some(theme) = theme_for_id(&id) {

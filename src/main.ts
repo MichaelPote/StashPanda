@@ -24,6 +24,7 @@ import "@fontsource/ibm-plex-mono/400-italic.css";
 import "@/assets/index.css";
 import App from "./App.vue";
 import { useSettingsStore } from "@/stores/settings";
+import { disableBrowserContextMenu } from "@/lib/browserDefaults";
 
 // Dark is the default, so paint dark before settings arrive to avoid a light flash.
 document.documentElement.classList.add("dark");
@@ -39,5 +40,7 @@ watchEffect(() => {
   const dark = theme === "dark" || (theme === "system" && preferredDark.value);
   document.documentElement.classList.toggle("dark", dark);
 });
+
+disableBrowserContextMenu();
 
 app.mount("#app");

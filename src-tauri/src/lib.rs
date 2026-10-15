@@ -24,6 +24,7 @@ pub mod storage;
 pub mod transport;
 pub mod ui_state;
 pub mod watch;
+pub mod webview;
 #[cfg(test)]
 mod keys_probe_test;
 
@@ -189,6 +190,7 @@ pub fn run() {
             let state = state::AppState::init(app.handle())?;
             app.manage(state);
             menu::install(app.handle())?;
+            webview::disable_browser_shortcuts(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())
