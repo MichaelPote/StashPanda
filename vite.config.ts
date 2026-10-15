@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from "node:url";
 import process from "node:process";
 import { defineConfig } from "vite";
@@ -13,6 +14,11 @@ export default defineConfig(() => ({
   // ES module workers can split their code, so the syntax colouring worker loads each language's
   // grammar on first use instead of carrying all of them.
   worker: { format: "es" as const },
+
+  // Vitest: the tests in src only, not the copies in agents' git worktrees under .claude/.
+  test: {
+    include: ["src/**/*.test.ts"],
+  },
 
   resolve: {
     alias: {
