@@ -1,13 +1,14 @@
 # StashPanda: what is left to build
 
-Status as of 2026-10-14. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
+Status as of 2026-10-15. Written on 2026-09-18, with the Windows workflow updated on 2026-09-21,
 milestone 2 planned on 2026-09-23, the commit dialog and a round of interface and graph work
 added on 2026-09-30, and stashes, a second round of interface work and pull added on 2026-10-01
 (see "Interface, merge and checkout work" and "Milestone 3" below), and the first run in the real
 app plus the Windows test fix on 2026-10-14 (see "Checked in the running app"), the rest of
 milestone 2 the same day, the rest of milestone 1 after it, and most of milestone 3 after that
 (conflicts, merge and rebase, file history and blame, automatic fetch, SSH reconnect, syntax
-colours, Find in diffs and Blame, and the three-pane merge editor). Left in milestone 3: a few
+colours, Find in diffs and Blame, and the three-pane merge editor), and a round of branch,
+toolbar and colour work on 2026-10-15 (see "Branches, toolbar and design system colours"). Left in milestone 3: a few
 parts of the merge editor, and the SSH fallback and `ProxyJump`. Everything not listed here is
 done and tested; see
 the "Implementation notes" and "Status against the milestones" sections at the end of
@@ -631,7 +632,8 @@ none of it has been checked in the running app yet.
 - [x] **A colour per branch tip.** Several branch tips on one lane used to share its colour. Now
       the top-most tip keeps the lane's colour and each tip below it gets its own, picked so its
       hue (`index % 6`, since the dark theme repeats lanes 0 to 5 as 6 to 11) differs from the
-      lane's. The new `appearance.commitLaneColours` setting chooses between `keepLane` (the
+      lane's. (Since 2026-10-15 the palette has twelve distinct hues, so the whole index is
+      compared.) The new `appearance.commitLaneColours` setting chooses between `keepLane` (the
       default: only the pills and Branches panel tags change) and `changeAtEachTip` (the lane's
       colour switches at each tip too). A remote branch that a shown local branch tracks is not a
       tip of its own and wears that branch's colour. `GraphOptions` carries the setting and the
@@ -719,6 +721,67 @@ files of its own all did what the sections above describe. Fixed on the way:
 
 Not covered: the Windows build's look (ClearType, font smoothing), dialog resizing by mouse,
 and anything over WSL or SSH.
+
+## Branches, toolbar and design system colours (done 2026-10-15)
+
+Requested while using the Windows build. `cargo test` (138 tests), `cargo clippy --all-targets`,
+`vue-tsc`, `vite build` and `vitest` (45 tests) pass for all of it, and a `cargo check` of the
+Windows build passes. Each item was tried in the running Linux build through WebDriver against a
+throwaway repository with branch folders, a bare remote and a tag, unless it says otherwise.
+
+- [x] **Double-clicking a branch pill in the graph checks it out** (`RefLabels.vue`), through
+      `requestCheckout` as the Branches panel does: a local branch directly, a remote branch
+      through a local branch of the same name. The checked-out branch and tags do nothing.
+- [x] **Track Remote Branch…** in a local branch's right-click menu (`RefContextMenu.vue`,
+      `TrackRemoteBranchDialog.vue`) picks the branch's upstream from the remote branches, or
+      none. `op_branch_set_upstream` runs `git branch --set-upstream-to=refs/remotes/<remote>/<branch>`
+      (the full name, so a local branch called `origin/x` cannot be picked instead) or
+      `--unset-upstream`. Test: `set_and_unset_upstream_then_delete_a_remote_branch`.
+- [x] **Delete Remote Branch…** in a remote branch's right-click menu asks first, then runs
+      `git push <remote> --delete refs/heads/<branch>` as a network operation with progress and
+      Stop (`op_delete_remote_branch`). A remote that no longer has the branch gets a plain
+      message, and the stale remote-tracking branch is removed either way.
+- [x] **Branch folders in the Branches panel** (`lib/branchTree.ts`): `feature/email` and
+      `feature/sms` sit in a `feature` folder, nested as deep as the names go, with each branch
+      keeping its full name. Folders open and close like the other headings. Tests in
+      `branchTree.test.ts`.
+- [x] **Heading menus in the Branches panel** (`AddBranchMenu.vue`): right-clicking a section,
+      a remote or a folder offers "Add Branch…" at the checked-out commit; from a folder, the new
+      name starts with the folder's path (`fix/`).
+- [x] **The lane graph column fits the lanes again when their number changes**
+      (`CommitGraphView.vue`). A width dragged on the column's divider used to hold for good, in
+      every repository; it now lasts until commits load or refs are hidden or shown and the lane
+      count changes.
+- [x] **Lane colours start from the repository's colour** (`LaneSweep::with_first_colour`,
+      `RepoHandle::first_colour`): the first lane, usually the checked-out branch's, takes the
+      repository's own colour and later lanes go round the palette from it; without one they
+      start from cyan. `repo_set_colour` rebuilds an open repository's graph. Test:
+      `automatic_colours_start_from_the_first_colour_and_go_round`.
+- [x] **Colours from the Stashpanda Design System** (`index.css`,
+      the design system page). Twelve distinct hues in both themes
+      (violet, cyan, green, yellow, orange, magenta, amber, blue, lime, orchid, mint, rose), where
+      lanes 6 to 11 used to repeat 0 to 5. Each has the hue, a strong tint, the chip fill, a subtle
+      tint (the dark theme's selected file-row bands) and an ink for text on a solid pill, which
+      solid pills now use. The light theme's action colour is teal instead of gold, and its added
+      files are green. `HUE_COUNT` is 12, so all twelve can be chosen for refs and repositories,
+      under the same names in both themes (`lib/hues.ts`).
+- [x] **A customisable toolbar** (`lib/toolbarItems.ts`, `AppToolbar.vue`,
+      `settings/ToolbarPage.vue`). Right-clicking the toolbar offers "Customise…", which opens
+      the Settings dialog's new Toolbar page: the buttons in order, with drag handles, arrows and
+      remove buttons, and the items to add, including Divider, Flexible Spacer (it pushes the
+      items after it to the right) and new buttons for Clone, Apply Stash, Create Branch, Create
+      Tag, Find Commit, the sidebar and console toggles, and Settings. Saved as `toolbar` in the
+      settings, as `null` while it matches the default layout. Tests in `toolbarItems.test.ts`.
+- [x] **No browser right-click menu or browser shortcuts** (`lib/browserDefaults.ts`,
+      `src-tauri/src/webview.rs`). Right-clicking outside a text field shows no web view menu.
+      On Windows, WebView2's own shortcuts (Ctrl+F find bar, F5 and Ctrl+R reload, Ctrl+P print,
+      F12 developer tools) are switched off at start-up; Tauri does not expose this setting, so
+      it goes through `with_webview` with the `webview2-com` and `windows-core` versions wry uses.
+      Debug builds have a Developer menu with Open Dev Inspector. **Not yet tried in the Windows
+      app**: check that Ctrl+F outside the graph and F5 no longer act as a browser, and that the
+      menu's F5 Refresh still works.
+- [x] **The dev server no longer reloads the app when an agent's git worktree under `.claude/`
+      changes** (`vite.config.ts`).
 
 ## Milestone 3: remote and history operations
 
@@ -1273,6 +1336,8 @@ and anything over WSL or SSH.
       Tried in the running Linux build: Green on `main` (its pill, its lane from the Working Tree
       row down, and `origin › main`), Orange on a tag, Pink on the repository (accent, tab,
       Commit button, selected rows, icon), all kept after a restart and cleared again.
+      Since 2026-10-15 there are twelve hues with the same names in both themes, and filled
+      buttons use the hue under its ink in both; see "Branches, toolbar and design system colours".
 
 ## Packaging and CI
 
