@@ -9,6 +9,8 @@ export interface CreateBranchPayload {
   startPoint: string;
   /** How the dialog names the start point: a branch name or a short sha. */
   startLabel: string;
+  /** The name field's text to start with, such as `feature/` from a branch folder's menu. */
+  initialName?: string;
 }
 
 export interface RenameBranchPayload {

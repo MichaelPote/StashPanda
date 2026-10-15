@@ -5,6 +5,8 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CloudIcon,
+  FolderIcon,
+  FolderOpenIcon,
   GitBranchIcon,
   TagIcon,
 } from "@lucide/vue";
@@ -18,8 +20,10 @@ import {
 } from "@/components/ui/context-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
+import AddBranchMenu from "@/components/shell/AddBranchMenu.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import RefToggleTag from "@/components/shell/RefToggleTag.vue";
+import { branchTreeRows } from "@/lib/branchTree";
 import { formatRelativeTime } from "@/lib/format";
 import { applyStash, dropStash, popStash, requestCheckout } from "@/lib/repoActions";
 import { stashParts, stashTitle } from "@/lib/stash";
@@ -83,6 +87,28 @@ function isOpen(key: string): boolean {
 function toggle(key: string): void {
   if (collapsed.has(key)) collapsed.delete(key);
   else collapsed.add(key);
+}
+
+/**
+ * A heading's click, from the main button only. WebKitGTK (the Linux build) also sends a click
+ * for a right-click, with `button` 0 but the right button still held in `buttons`, so opening a
+ * heading's menu would fold it too.
+ */
+function onHeadingClick(event: MouseEvent, key: string): void {
+  if (event.button === 0 && (event.buttons & 2) === 0) toggle(key);
+}
+
+/** Local branches in folders by the parts of their names (`feature/email` in `feature`). */
+const localRows = computed(() => branchTreeRows(locals.value, (b) => b.short, "folder:local:", isOpen));
+
+/** Each remote's branches in folders the same way, by their names on the remote. */
+const remoteRows = computed(() =>
+  remoteGroups.value.map((group) => ({ ...group, rows: branchTreeRows(group.branches, remoteShort, `folder:remote:${group.name}:`, isOpen) })),
+);
+
+/** Indentation of a row `depth` folders deep below a heading indented `base` pixels. */
+function indent(base: number, depth: number): Record<string, string> {
+  return { paddingLeft: `${base + depth * 14}px` };
 }
 
 function remoteShort(entry: RefEntry): string {
@@ -152,117 +178,159 @@ async function reveal(entry: RefEntry): Promise<void> {
 
     <ScrollArea v-else class="min-h-0 flex-1">
       <div class="py-1 text-base select-none">
-        <!-- Local branches -->
-        <button type="button" class="flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('local')">
-          <component :is="isOpen('local') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
-          <GitBranchIcon class="size-3.5" />
-          Local Branches
-          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ locals.length }}</span>
-        </button>
+        <!-- Local branches, in folders by the parts of their names. -->
+        <AddBranchMenu :session-key="activeKey">
+          <button type="button" class="flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'local')">
+            <component :is="isOpen('local') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
+            <GitBranchIcon class="size-3.5" />
+            Local Branches
+            <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ locals.length }}</span>
+          </button>
+        </AddBranchMenu>
         <template v-if="isOpen('local')">
           <p v-if="locals.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No local branches</p>
-          <RefContextMenu
-            v-for="b in locals"
-            :key="b.fullName"
-            :session-key="activeKey"
-            :full-name="b.fullName"
-            :short="b.short"
-            :kind="b.kind"
-            :target="b.target"
-            :is-current="b.isHead"
-          >
-            <div
-              role="button"
-              tabindex="0"
-              :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
-              :title="`${b.fullName}\n${b.target}\n${b.subject}`"
-              @click="reveal(b)"
-              @dblclick="checkoutOnDoubleClick(b)"
-              @keydown.enter="reveal(b)"
+          <template v-for="row in localRows" :key="row.key">
+            <AddBranchMenu v-if="row.kind === 'folder'" :session-key="activeKey" :prefix="row.prefix">
+              <button
+                type="button"
+                class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left hover:bg-row-hover"
+                :style="indent(12, row.depth)"
+                :title="row.prefix"
+                data-branch-folder
+                @click="onHeadingClick($event, row.key)"
+              >
+                <component :is="isOpen(row.key) ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0 text-muted-foreground" />
+                <component :is="isOpen(row.key) ? FolderOpenIcon : FolderIcon" class="size-3.5 shrink-0 text-muted-foreground" />
+                <span class="truncate">{{ row.name }}</span>
+                <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ row.count }}</span>
+              </button>
+            </AddBranchMenu>
+            <RefContextMenu
+              v-else
+              :session-key="activeKey"
+              :full-name="row.entry.fullName"
+              :short="row.entry.short"
+              :kind="row.entry.kind"
+              :target="row.entry.target"
+              :is-current="row.entry.isHead"
             >
-              <!-- The checked-out branch: the graph's HEAD dot (GraphLanesSvg.vue), same size and colour. -->
-              <svg
-                v-if="b.isHead"
-                viewBox="0 0 12 12"
-                class="size-[12px] shrink-0 text-muted-foreground"
-                :style="colourOf(b) !== null ? { color: laneColour(colourOf(b)!) } : undefined"
-                role="img"
-                aria-label="Checked out"
+              <div
+                role="button"
+                tabindex="0"
+                :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left', selectedOid === row.entry.target ? 'row-selected' : 'hover:bg-row-hover')"
+                :style="indent(12, row.depth)"
+                :title="`${row.entry.fullName}\n${row.entry.target}\n${row.entry.subject}`"
+                @click="reveal(row.entry)"
+                @dblclick="checkoutOnDoubleClick(row.entry)"
+                @keydown.enter="reveal(row.entry)"
               >
-                <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="2" />
-                <circle cx="6" cy="6" r="2" fill="currentColor" />
-              </svg>
-              <span v-else class="size-[12px] shrink-0" />
-              <RefToggleTag :colour="colourOf(b)" :visible="isShown(b)" :name="b.short" @toggle="toggleShown(b)" />
-              <span :class="cn('min-w-0 truncate', b.isHead && 'font-semibold', !isShown(b) && 'text-muted-foreground')">{{ b.short }}</span>
-              <!-- The tracked branch gives way first when the row is narrow. -->
-              <span
-                v-if="upstreamName(b)"
-                class="flex min-w-0 shrink-[4] items-center gap-0.5 text-muted-foreground"
-                :title="`Tracks ${upstreamName(b)}`"
-              >
-                <ChevronRightIcon class="size-3 shrink-0" aria-hidden="true" />
-                <span class="min-w-0 truncate">{{ upstreamName(b) }}</span>
-              </span>
-              <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
-                <span v-if="b.upstreamGone" class="rounded-sm badge-deleted px-1">gone</span>
-                <span v-if="b.ahead" class="rounded-sm badge-modified px-1">↑{{ b.ahead }}</span>
-                <span v-if="b.behind" class="rounded-sm badge-primary px-1">↓{{ b.behind }}</span>
-              </span>
-            </div>
-          </RefContextMenu>
+                <!-- The checked-out branch: the graph's HEAD dot (GraphLanesSvg.vue), same size and colour. -->
+                <svg
+                  v-if="row.entry.isHead"
+                  viewBox="0 0 12 12"
+                  class="size-[12px] shrink-0 text-muted-foreground"
+                  :style="colourOf(row.entry) !== null ? { color: laneColour(colourOf(row.entry)!) } : undefined"
+                  role="img"
+                  aria-label="Checked out"
+                >
+                  <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="2" />
+                  <circle cx="6" cy="6" r="2" fill="currentColor" />
+                </svg>
+                <span v-else class="size-[12px] shrink-0" />
+                <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
+                <span :class="cn('min-w-0 truncate', row.entry.isHead && 'font-semibold', !isShown(row.entry) && 'text-muted-foreground')">{{ row.entry.short }}</span>
+                <!-- The tracked branch gives way first when the row is narrow. -->
+                <span
+                  v-if="upstreamName(row.entry)"
+                  class="flex min-w-0 shrink-[4] items-center gap-0.5 text-muted-foreground"
+                  :title="`Tracks ${upstreamName(row.entry)}`"
+                >
+                  <ChevronRightIcon class="size-3 shrink-0" aria-hidden="true" />
+                  <span class="min-w-0 truncate">{{ upstreamName(row.entry) }}</span>
+                </span>
+                <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
+                  <span v-if="row.entry.upstreamGone" class="rounded-sm badge-deleted px-1">gone</span>
+                  <span v-if="row.entry.ahead" class="rounded-sm badge-modified px-1">↑{{ row.entry.ahead }}</span>
+                  <span v-if="row.entry.behind" class="rounded-sm badge-primary px-1">↓{{ row.entry.behind }}</span>
+                </span>
+              </div>
+            </RefContextMenu>
+          </template>
         </template>
 
-        <!-- Remotes -->
-        <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('remotes')">
-          <component :is="isOpen('remotes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
-          <CloudIcon class="size-3.5" />
-          Remotes
-          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ remoteGroups.length }}</span>
-        </button>
+        <!-- Remotes, each with its branches in folders by the parts of their names. -->
+        <AddBranchMenu :session-key="activeKey">
+          <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'remotes')">
+            <component :is="isOpen('remotes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
+            <CloudIcon class="size-3.5" />
+            Remotes
+            <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ remoteGroups.length }}</span>
+          </button>
+        </AddBranchMenu>
         <template v-if="isOpen('remotes')">
           <p v-if="remoteGroups.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No remotes</p>
-          <template v-for="group in remoteGroups" :key="group.name">
-            <button type="button" class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-5 text-left hover:bg-row-hover" @click="toggle(`remote:${group.name}`)">
-              <component :is="isOpen(`remote:${group.name}`) ? ChevronDownIcon : ChevronRightIcon" class="size-3 text-muted-foreground" />
-              <span class="truncate font-medium">{{ group.name }}</span>
-              <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ group.branches.length }}</span>
-            </button>
+          <template v-for="group in remoteRows" :key="group.name">
+            <AddBranchMenu :session-key="activeKey">
+              <button type="button" class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-5 text-left hover:bg-row-hover" @click="onHeadingClick($event, `remote:${group.name}`)">
+                <component :is="isOpen(`remote:${group.name}`) ? ChevronDownIcon : ChevronRightIcon" class="size-3 text-muted-foreground" />
+                <span class="truncate font-medium">{{ group.name }}</span>
+                <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ group.branches.length }}</span>
+              </button>
+            </AddBranchMenu>
             <template v-if="isOpen(`remote:${group.name}`)">
-              <RefContextMenu
-                v-for="b in group.branches"
-                :key="b.fullName"
-                :session-key="activeKey"
-                :full-name="b.fullName"
-                :short="b.short"
-                :kind="b.kind"
-                :target="b.target"
-                :is-current="false"
-              >
-                <div
-                  role="button"
-                  tabindex="0"
-                  :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-8 text-left', selectedOid === b.target ? 'row-selected' : 'hover:bg-row-hover')"
-                  :title="`${b.fullName}\n${b.target}\n${b.subject}`"
-                  @click="reveal(b)"
-                  @dblclick="checkoutOnDoubleClick(b)"
-                  @keydown.enter="reveal(b)"
+              <template v-for="row in group.rows" :key="row.key">
+                <AddBranchMenu v-if="row.kind === 'folder'" :session-key="activeKey" :prefix="row.prefix">
+                  <button
+                    type="button"
+                    class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left hover:bg-row-hover"
+                    :style="indent(32, row.depth)"
+                    :title="`${group.name}/${row.prefix}`"
+                    data-branch-folder
+                    @click="onHeadingClick($event, row.key)"
+                  >
+                    <component :is="isOpen(row.key) ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0 text-muted-foreground" />
+                    <component :is="isOpen(row.key) ? FolderOpenIcon : FolderIcon" class="size-3.5 shrink-0 text-muted-foreground" />
+                    <span class="truncate">{{ row.name }}</span>
+                    <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ row.count }}</span>
+                  </button>
+                </AddBranchMenu>
+                <RefContextMenu
+                  v-else
+                  :session-key="activeKey"
+                  :full-name="row.entry.fullName"
+                  :short="row.entry.short"
+                  :kind="row.entry.kind"
+                  :target="row.entry.target"
+                  :is-current="false"
                 >
-                  <RefToggleTag :colour="colourOf(b)" :visible="isShown(b)" :name="b.short" @toggle="toggleShown(b)" />
-                  <span class="truncate text-muted-foreground">{{ remoteShort(b) }}</span>
-                </div>
-              </RefContextMenu>
+                  <div
+                    role="button"
+                    tabindex="0"
+                    :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left', selectedOid === row.entry.target ? 'row-selected' : 'hover:bg-row-hover')"
+                    :style="indent(32, row.depth)"
+                    :title="`${row.entry.fullName}\n${row.entry.target}\n${row.entry.subject}`"
+                    @click="reveal(row.entry)"
+                    @dblclick="checkoutOnDoubleClick(row.entry)"
+                    @keydown.enter="reveal(row.entry)"
+                  >
+                    <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
+                    <span class="truncate text-muted-foreground">{{ remoteShort(row.entry) }}</span>
+                  </div>
+                </RefContextMenu>
+              </template>
             </template>
           </template>
         </template>
 
         <!-- Tags -->
-        <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('tags')">
-          <component :is="isOpen('tags') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
-          <TagIcon class="size-3.5" />
-          Tags
-          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ tags.length }}</span>
-        </button>
+        <AddBranchMenu :session-key="activeKey">
+          <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'tags')">
+            <component :is="isOpen('tags') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
+            <TagIcon class="size-3.5" />
+            Tags
+            <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ tags.length }}</span>
+          </button>
+        </AddBranchMenu>
         <template v-if="isOpen('tags')">
           <p v-if="tags.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No tags</p>
           <RefContextMenu
@@ -292,12 +360,14 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Stashes -->
-        <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="toggle('stashes')">
-          <component :is="isOpen('stashes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
-          <ArchiveIcon class="size-3.5" />
-          Stashes
-          <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ stashCount }}</span>
-        </button>
+        <AddBranchMenu :session-key="activeKey">
+          <button type="button" class="mt-1 flex h-(--row-h) w-full items-center gap-1.5 px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'stashes')">
+            <component :is="isOpen('stashes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
+            <ArchiveIcon class="size-3.5" />
+            Stashes
+            <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ stashCount }}</span>
+          </button>
+        </AddBranchMenu>
         <template v-if="isOpen('stashes')">
           <p v-if="stashCount === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No stashes</p>
           <!-- Stash commits are not in the graph, so a click has nothing to reveal; the actions are

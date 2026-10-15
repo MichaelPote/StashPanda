@@ -995,9 +995,9 @@ export async function renameBranch(key: string, name: string): Promise<void> {
 }
 
 /** Opens the Create Branch dialog starting at `startPoint`. The dialog runs the command itself. */
-export async function createBranchHere(key: string, startPoint: string, startLabel: string): Promise<void> {
+export async function createBranchHere(key: string, startPoint: string, startLabel: string, initialName?: string): Promise<void> {
   const dialogs = useDialogsStore();
-  await dialogs.open("createBranch", { key, startPoint, startLabel });
+  await dialogs.open("createBranch", { key, startPoint, startLabel, initialName });
 }
 
 /**

@@ -24,7 +24,7 @@ const submitting = ref(false);
 
 watch(request, (r) => {
   if (!r) return;
-  name.value = "";
+  name.value = r?.initialName ?? "";
   checkout.value = true;
   error.value = null;
   submitting.value = false;
