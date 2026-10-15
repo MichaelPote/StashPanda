@@ -62,9 +62,17 @@ provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemo
 const meta = computed(() => props.session.graph.meta);
 const total = computed(() => meta.value?.total ?? 0);
 // Null (or absent) means "auto": follow the lane count of the current snapshot. A drag on the
-// header handle pins a width; double-clicking the handle returns to auto.
+// header handle sets a width, which lasts until the lane count changes (commits load, or refs
+// are hidden or shown in the Branches panel); double-clicking the handle returns to auto at once.
 const graphWidth = computed(
   () => uiState.state?.graphColumns?.graph ?? autoGraphColumnWidth(meta.value?.maxLanes ?? 0),
+);
+watch(
+  () => meta.value?.maxLanes,
+  (lanes, before) => {
+    if (lanes === undefined || before === undefined || lanes === before) return;
+    if (uiState.state?.graphColumns?.graph != null) onResize("graph", null);
+  },
 );
 // Author, Date and ID size themselves to their widest possible value (re-measured once the web
 // fonts load) until a divider is dragged; double-clicking a divider returns to automatic.
