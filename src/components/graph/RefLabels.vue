@@ -6,6 +6,7 @@ import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import RefPill, { type PillShape } from "@/components/graph/RefPill.vue";
 import { laneVars } from "@/lib/graph/paths";
+import { requestCheckout } from "@/lib/repoActions";
 
 const props = defineProps<{
   refs: RefLabel[];
@@ -28,6 +29,21 @@ const hidden = computed(() => props.refs.slice(MAX_VISIBLE));
 
 function remoteFor(label: RefLabel): string | null {
   return ctx?.upstreamRemotes.value.get(label.fullName) ?? null;
+}
+
+/**
+ * Double-clicking a branch's pill checks the branch out, as in the Branches panel: a local branch
+ * directly, a remote branch through a local branch of the same name. The checked-out branch and
+ * tags do nothing.
+ */
+function checkoutOnDoubleClick(label: RefLabel): void {
+  if (!sessionKey || label.isCurrent) return;
+  if (label.kind.type === "localBranch") void requestCheckout(sessionKey, { kind: "local", name: label.short });
+  else if (label.kind.type === "remoteBranch") {
+    const prefix = `${label.kind.remote}/`;
+    const local = label.short.startsWith(prefix) ? label.short.slice(prefix.length) : label.short;
+    void requestCheckout(sessionKey, { kind: "remote", remote: label.short, local });
+  }
 }
 
 /** A local branch and its upstream on different commits get the two halves of a chevron. */
@@ -60,7 +76,13 @@ function shapeFor(label: RefLabel): PillShape {
       :target="oid"
       :is-current="label.isCurrent"
     >
-      <RefPill :label="label" :colour="label.colour" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
+      <RefPill
+        :label="label"
+        :colour="label.colour"
+        :upstream-remote="remoteFor(label)"
+        :shape="shapeFor(label)"
+        @dblclick.stop="checkoutOnDoubleClick(label)"
+      />
     </RefContextMenu>
     <RefPill v-else :label="label" :colour="label.colour" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
   </template>
@@ -86,7 +108,13 @@ function shapeFor(label: RefLabel): PillShape {
             :target="oid"
             :is-current="label.isCurrent"
           >
-            <RefPill :label="label" :colour="label.colour" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
+            <RefPill
+              :label="label"
+              :colour="label.colour"
+              :upstream-remote="remoteFor(label)"
+              :shape="shapeFor(label)"
+              @dblclick.stop="checkoutOnDoubleClick(label)"
+            />
           </RefContextMenu>
           <RefPill v-else :label="label" :colour="label.colour" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
         </template>
