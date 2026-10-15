@@ -26,6 +26,11 @@ pub struct Settings {
     pub diff: DiffSettings,
     pub keys: KeySettings,
     pub library: RepoLibrary,
+    /// The toolbar's items from left to right, by id (`fetch`, `commit`, `divider`, `spacer`;
+    /// the list is in `src/lib/toolbarItems.ts`). None draws the default toolbar, which is also
+    /// what a settings file from before the toolbar could be customised gets.
+    #[serde(default)]
+    pub toolbar: Option<Vec<String>>,
 }
 
 impl Default for Settings {
@@ -41,6 +46,7 @@ impl Default for Settings {
             diff: DiffSettings::default(),
             keys: KeySettings::default(),
             library: RepoLibrary::default(),
+            toolbar: None,
         }
     }
 }
@@ -540,5 +546,19 @@ mod tests {
         migrate_settings(&mut json);
         assert_eq!(json["diff"]["lineHeight"], 1.3);
         assert!(json["appearance"].get("diffLineHeight").is_none());
+    }
+
+    #[test]
+    fn toolbar_layout_is_saved_and_reset() {
+        // A settings file from before the toolbar could be customised has no `toolbar` key.
+        let old: Settings = serde_json::from_value(serde_json::json!({ "appearance": { "theme": "light" } })).unwrap();
+        assert_eq!(old.toolbar, None);
+
+        let saved = apply_patch(&old, &serde_json::json!({ "toolbar": ["fetch", "divider", "spacer", "commit"] })).unwrap();
+        assert_eq!(saved.toolbar.as_deref(), Some(&["fetch".to_string(), "divider".into(), "spacer".into(), "commit".into()][..]));
+
+        // Reset to Default sends null, which removes the key.
+        let reset = apply_patch(&saved, &serde_json::json!({ "toolbar": null })).unwrap();
+        assert_eq!(reset.toolbar, None);
     }
 }

@@ -1515,6 +1515,12 @@ export type Settings = {
 	diff?: DiffSettings,
 	keys?: KeySettings,
 	library?: RepoLibrary,
+	/**
+	 *  The toolbar's items from left to right, by id (`fetch`, `commit`, `divider`, `spacer`;
+	 *  the list is in `src/lib/toolbarItems.ts`). None draws the default toolbar, which is also
+	 *  what a settings file from before the toolbar could be customised gets.
+	 */
+	toolbar?: string[] | null,
 };
 
 export type SettingsChanged = {

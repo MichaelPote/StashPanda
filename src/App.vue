@@ -34,25 +34,10 @@ import RepositoriesPanel from "@/components/shell/RepositoriesPanel.vue";
 import RepoTabStrip from "@/components/shell/RepoTabStrip.vue";
 import RepoWorkspace from "@/components/shell/RepoWorkspace.vue";
 import StatusBar from "@/components/shell/StatusBar.vue";
-import { commitFileCount, isEditableTarget, isSelectAllKey } from "@/lib/files";
+import { isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
-import {
-  autoFetchDue,
-  discardSelected,
-  fetchAll,
-  fileActionReason,
-  mergeRebaseReason,
-  openCommitDialog,
-  openMergeDialog,
-  openPullDialog,
-  openRebaseDialog,
-  openStashDialog,
-  pushCurrentBranch,
-  stageSelected,
-  syncCurrentBranch,
-  unstageSelected,
-} from "@/lib/repoActions";
+import { autoFetchDue } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { useLibraryStore } from "@/stores/library";
@@ -137,14 +122,6 @@ function onMainLayout(sizes: number[]): void {
   if (sizes.length === 2) uiState.setPanelSize("consoleHeight", sizes[1] as number);
 }
 
-async function refresh(): Promise<void> {
-  const key = sessions.activeKey;
-  if (key === null) return;
-  await sessions.refreshSession(key);
-}
-
-/** Files the Commit dialog would list for the active repository, shown on the toolbar's Commit button. */
-const commitCount = computed(() => commitFileCount(sessions.active?.status ?? null));
 /** Repository warnings dismissed in this run of the app, by repository key. */
 const dismissedRepoWarnings = reactive(new Map<string, Set<string>>());
 const repoWarnings = computed(() => {
@@ -158,27 +135,12 @@ function dismissRepoWarning(warning: string): void {
   if (key === null) return;
   dismissedRepoWarnings.set(key, new Set([...(dismissedRepoWarnings.get(key) ?? []), warning]));
 }
-
-/** Stage, Unstage and Discard act on the files selected in the Files panel. */
-const toolbarReasons = computed(() => ({
-  stage: fileActionReason(sessions.active, "stage"),
-  unstage: fileActionReason(sessions.active, "unstage"),
-  discard: fileActionReason(sessions.active, "discard"),
-  merge: mergeRebaseReason(sessions.active, "merge"),
-  rebase: mergeRebaseReason(sessions.active, "rebase"),
-}));
 </script>
 
 <template>
   <TooltipProvider :delay-duration="300">
     <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
-      <AppToolbar :has-repo="sessions.active !== null" :commit-count="commitCount" @add-repo="dialogs.showAddRepo()" @refresh="refresh" @commit="openCommitDialog(sessions.active)"
-        @stash-save="openStashDialog(sessions.active)" @pull="openPullDialog(sessions.active)"
-        @fetch="fetchAll(sessions.active)" @push="pushCurrentBranch(sessions.active)"
-        @sync="syncCurrentBranch(sessions.active)" @stage="stageSelected(sessions.active)"
-        @unstage="unstageSelected(sessions.active)" @discard="discardSelected(sessions.active)"
-        @merge="openMergeDialog(sessions.active)" @rebase="openRebaseDialog(sessions.active)" :reasons="toolbarReasons"
-      />
+      <AppToolbar />
 
       <!-- An error notice: red, with a warning icon. Success messages show in the status bar instead. -->
       <div

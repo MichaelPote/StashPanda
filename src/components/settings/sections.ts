@@ -10,10 +10,11 @@
  * viewer's header controls (layout, context lines, whitespace) are left out for the same reason.
  */
 import type { Component } from "vue";
-import { CpuIcon, DatabaseIcon, FileDiffIcon, GitCommitHorizontalIcon, KeyRoundIcon, SlidersHorizontalIcon, TerminalIcon, TimerIcon } from "@lucide/vue";
+import { CpuIcon, DatabaseIcon, FileDiffIcon, GitCommitHorizontalIcon, KeyRoundIcon, PanelTopIcon, SlidersHorizontalIcon, TerminalIcon, TimerIcon } from "@lucide/vue";
 import type { Settings } from "@/lib/bindings";
 import DiffPreview from "./DiffPreview.vue";
 import KeyManagerPage from "./KeyManagerPage.vue";
+import ToolbarPage from "./ToolbarPage.vue";
 
 /** The sections of `settings.json` the dialog edits. `version` and `library` are left out. */
 export type SettingsGroup = "git" | "appearance" | "console" | "polling" | "cache" | "commit" | "diff";
@@ -160,6 +161,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         ],
       },
     ],
+  },
+  {
+    id: "toolbar",
+    label: "Toolbar",
+    icon: PanelTopIcon,
+    description: "The buttons along the top of the window. Changes take effect straight away, without Save Changes.",
+    fields: [],
+    page: ToolbarPage,
   },
   {
     id: "commit",
