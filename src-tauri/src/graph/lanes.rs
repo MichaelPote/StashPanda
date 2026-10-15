@@ -25,9 +25,11 @@ use super::oid::Oid;
 use crate::settings::CommitLaneColours;
 
 pub const PALETTE_SIZE: u8 = 12;
-/// Distinct hues in the palette: the dark theme repeats lanes 0 to 5 as 6 to 11, so two indices
-/// with the same remainder look the same. A colour the user chooses is one of 0 to 5.
-pub const HUE_COUNT: u8 = 6;
+/// Distinct hues in the palette: every palette index is its own hue, in both themes. A colour the
+/// user chooses for a ref or a repository is one of them.
+pub const HUE_COUNT: u8 = 12;
+/// The first automatic lane colour in a repository that has no colour of its own: cyan.
+pub const FIRST_COLOUR: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -133,6 +135,14 @@ impl LaneSweep {
 
     pub fn with_lane_colours(mut self, lane_colours: CommitLaneColours) -> LaneSweep {
         self.lane_colours = lane_colours;
+        self
+    }
+
+    /// Starts the automatic colours at `colour` (the repository's own colour, or `FIRST_COLOUR`),
+    /// so the first lane, usually HEAD's, takes it and later lanes go round the palette from it.
+    pub fn with_first_colour(mut self, colour: u8) -> LaneSweep {
+        self.next_colour = colour % PALETTE_SIZE;
+        self.next_tip_colour = colour % PALETTE_SIZE;
         self
     }
 
@@ -266,7 +276,7 @@ impl LaneSweep {
     }
 
     /// `tip` is the ref index of a branch that points at `oid`, when one does, and `chosen` the
-    /// colour the user chose for that branch (a hue, 0 to 5), if any.
+    /// colour the user chose for that branch (a hue, 0 to 11), if any.
     pub fn push_row(&mut self, oid: Oid, parents: &[Oid], tip: Option<u32>, chosen: Option<u8>) -> RowLayout {
         let mut arriving: SmallVec<[u16; 2]> = self.expecting.remove(&oid).unwrap_or_default();
         arriving.sort_unstable();
@@ -531,12 +541,25 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_outside_the_six_hues_is_ignored() {
+    fn a_colour_outside_the_twelve_hues_is_ignored() {
         let mut s = LaneSweep::new(Some(o(2)), 2);
-        s.push_row(o(2), &[o(1)], Some(0), Some(9));
+        s.push_row(o(2), &[o(1)], Some(0), Some(HUE_COUNT));
         s.push(o(1), &[]);
         s.finish();
         assert_eq!(s.rows[0].colour, 0, "the lane keeps its picked colour");
+    }
+
+    #[test]
+    fn automatic_colours_start_from_the_first_colour_and_go_round() {
+        // HEAD's line, then two branches forking off below it, each in a lane of its own.
+        let mut s = LaneSweep::new(Some(o(4)), 4).with_first_colour(10);
+        s.push(o(4), &[o(1)]);
+        s.push(o(3), &[o(1)]);
+        s.push(o(2), &[o(1)]);
+        s.push(o(1), &[]);
+        s.finish();
+        let colours: Vec<u8> = s.rows.iter().take(3).map(|r| r.colour).collect();
+        assert_eq!(colours, vec![10, 11, 0], "{:?}", s.rows);
     }
 
     fn stacked_tips(lane_colours: CommitLaneColours) -> LaneSweep {

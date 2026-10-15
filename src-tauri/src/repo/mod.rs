@@ -80,6 +80,9 @@ pub struct RepoHandle {
     pub hidden: std::sync::RwLock<Arc<HiddenRefs>>,
     /// Colours the user chose for refs; read by every snapshot build.
     pub colours: std::sync::RwLock<Arc<crate::graph::snapshot::RefColours>>,
+    /// The repository's own colour (a palette index), or `FIRST_COLOUR` without one: the first
+    /// automatic lane colour in every snapshot build.
+    pub first_colour: std::sync::atomic::AtomicU8,
 }
 
 impl RepoHandle {
@@ -89,6 +92,17 @@ impl RepoHandle {
 
     pub fn ref_colours(&self) -> Arc<crate::graph::snapshot::RefColours> {
         self.colours.read().expect("ref colours lock").clone()
+    }
+
+    /// `options` with this repository's first lane colour.
+    pub fn graph_options(&self, options: crate::settings::GraphOptions) -> crate::settings::GraphOptions {
+        crate::settings::GraphOptions { first_colour: self.first_colour.load(Ordering::Relaxed), ..options }
+    }
+
+    /// Sets the repository's own colour, or None for cyan; the next snapshot build uses it.
+    pub fn set_first_colour(&self, colour: Option<u8>) {
+        let c = colour.filter(|c| *c < crate::graph::lanes::HUE_COUNT).unwrap_or(crate::graph::lanes::FIRST_COLOUR);
+        self.first_colour.store(c, Ordering::Relaxed);
     }
 
     /// Register a cancellable operation under `op_id` until the returned guard drops.

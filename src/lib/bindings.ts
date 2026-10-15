@@ -113,15 +113,17 @@ export const commands = {
 	 */
 	graphSetHiddenRefs: (key: string, hidden: string[]) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_set_hidden_refs", { key, hidden })),
 	/**
-	 *  Sets the colours chosen for refs (full name to hue, palette index 0 to 5) and rebuilds the
+	 *  Sets the colours chosen for refs (full name to hue, palette index 0 to 11) and rebuilds the
 	 *  graph with them; see `GraphSnapshot::build_coloured`. The frontend keeps the same map in the
 	 *  UI state (`perRepo[key].refColours`, stored in the database), which `repo_open` reads.
 	 */
 	graphSetRefColours: (key: string, colours: { [key in string]: number }) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_set_ref_colours", { key, colours })),
 	/**
-	 *  Gives a repository a colour (a hue, palette index 0 to 5), or takes it away with None. It
-	 *  colours the repository's icon in the Repositories list and, while its tab is active, the
-	 *  interface's accent. Saved in the library in the settings, not in the repository.
+	 *  Gives a repository a colour (a hue, palette index 0 to 11), or takes it away with None. It
+	 *  colours the repository's icon in the Repositories list, the interface's accent while its tab is
+	 *  active, and the first automatic lane colour in its graph (cyan without one), so an open
+	 *  repository's graph is rebuilt with it. Saved in the library in the settings, not in the
+	 *  repository.
 	 */
 	repoSetColour: (key: string, colour: number | null) => typedError<RepoEntry, GitError>(__TAURI_INVOKE("repo_set_colour", { key, colour })),
 	getBlobContent: (key: string, spec: string) => typedError<BlobContent, GitError>(__TAURI_INVOKE("get_blob_content", { key, spec })),
@@ -1399,8 +1401,9 @@ export type RepoEntry = {
 	groupId?: string | null,
 	lastOpenedAt?: number | null,
 	/**
-	 *  A hue chosen for the repository (palette index 0 to 5): the colour of its icon in the
-	 *  Repositories list and, while its tab is the active one, the interface's accent colour.
+	 *  A hue chosen for the repository (palette index 0 to 11): the colour of its icon in the
+	 *  Repositories list, the interface's accent colour while its tab is the active one, and the
+	 *  first automatic lane colour in its graph. Without one, the lanes start from cyan.
 	 */
 	colour?: number | null,
 };
@@ -1448,7 +1451,7 @@ export type RepoUiState = {
 	lastSelectedOid?: string | null,
 	/**  Full names of the refs switched off in the commit graph. */
 	hiddenRefs?: string[],
-	/**  Colours chosen for refs in the commit graph, by full name: a hue, palette index 0 to 5. */
+	/**  Colours chosen for refs in the commit graph, by full name: a hue, palette index 0 to 11. */
 	refColours?: { [key in string]: number },
 	/**
 	 *  The mode last chosen in the Pull dialog. Until there is one, the dialog starts from the

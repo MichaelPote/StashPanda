@@ -100,7 +100,7 @@ export const useLibraryStore = defineStore("library", () => {
   }
 
   /**
-   * Gives a repository a colour (a hue, palette index 0 to 5), or takes it away with null: its
+   * Gives a repository a colour (a hue, palette index 0 to 11), or takes it away with null: its
    * icon in the Repositories list, and the interface's accent while its tab is active. Saved in
    * the library, not in the repository.
    */

@@ -173,6 +173,9 @@ pub async fn open_repo(
         watcher_state: std::sync::Mutex::new(None),
         hidden: std::sync::RwLock::new(Default::default()),
         colours: std::sync::RwLock::new(Default::default()),
+        first_colour: std::sync::atomic::AtomicU8::new(
+            entry.colour.filter(|c| *c < crate::graph::lanes::HUE_COUNT).unwrap_or(crate::graph::lanes::FIRST_COLOUR),
+        ),
     }))
 }
 

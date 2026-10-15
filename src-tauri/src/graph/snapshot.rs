@@ -95,7 +95,7 @@ pub struct GraphMeta {
 /// Full names of the refs (branches, remote branches, tags) switched off in the graph.
 pub type HiddenRefs = FxHashSet<String>;
 
-/// Colours the user chose for refs, by full name: a hue, palette index 0 to 5. Kept in the app's
+/// Colours the user chose for refs, by full name: a hue, palette index 0 to 11. Kept in the app's
 /// UI state (`perRepo[key].refColours`), never in the repository.
 pub type RefColours = FxHashMap<String, u8>;
 
@@ -212,7 +212,9 @@ impl GraphSnapshot {
         };
 
         let extra = usize::from(worktree.is_some());
-        let mut sweep = LaneSweep::new(head, commit_order.len() + extra).with_lane_colours(options.lane_colours);
+        let mut sweep = LaneSweep::new(head, commit_order.len() + extra)
+            .with_lane_colours(options.lane_colours)
+            .with_first_colour(options.first_colour);
         let mut order_rows: Vec<u32> = Vec::with_capacity(commit_order.len() + extra);
         let mut row_by_oid: FxHashMap<Oid, u32> = FxHashMap::default();
         row_by_oid.reserve(commit_order.len() + extra);
@@ -665,14 +667,14 @@ mod tests {
         assert!(rows.iter().all(|r| r.colour == rows[0].colour), "the lane keeps one colour by default");
         assert_eq!(colours["refs/heads/feature"], rows[0].colour);
         assert_eq!(colours["refs/tags/v1"], rows[0].colour, "a tag alone does not start a new colour");
-        let hues: Vec<u8> = ["feature", "dev", "base"].iter().map(|b| colours[&format!("refs/heads/{b}")] % 6).collect();
+        let hues: Vec<u8> = ["feature", "dev", "base"].iter().map(|b| colours[&format!("refs/heads/{b}")]).collect();
         assert!(hues[0] != hues[1] && hues[1] != hues[2] && hues[0] != hues[2], "hues {hues:?}");
 
         let options = GraphOptions { lane_colours: crate::settings::CommitLaneColours::ChangeAtEachTip, ..GraphOptions::default() };
         let change = GraphSnapshot::build(store, refs, None, options, 2, true, false, &HiddenRefs::default());
         let rows = change.rows(0, 4);
         assert_eq!(rows[1].colour, rows[0].colour, "the tag row stays on feature's stretch");
-        assert_ne!(rows[2].colour % 6, rows[0].colour % 6, "the lane changes colour at dev");
+        assert_ne!(rows[2].colour, rows[0].colour, "the lane changes colour at dev");
         assert!(rows.iter().all(|r| r.ref_colour == r.colour));
     }
 
@@ -734,7 +736,7 @@ mod tests {
         assert_eq!(colours["refs/heads/feature"], rows[0].colour);
         assert_eq!(colours["refs/remotes/origin/feature"], colours["refs/heads/feature"]);
         assert_eq!(rows[1].refs[0].colour, colours["refs/heads/feature"], "the pill carries the colour too");
-        assert_ne!(colours["refs/heads/base"] % 6, rows[0].colour % 6, "base is still a lower tip");
+        assert_ne!(colours["refs/heads/base"], rows[0].colour, "base is still a lower tip");
 
         // Remote ahead of its local: the local is now the top-most tip and keeps the lane's colour.
         let snap = tracked_line("c", "d", KeepLane);
@@ -747,6 +749,6 @@ mod tests {
         let rows = snap.rows(0, 4);
         assert_eq!(rows[1].colour, rows[0].colour);
         assert_eq!(rows[1].refs[0].colour, rows[0].colour);
-        assert_ne!(rows[3].colour % 6, rows[0].colour % 6, "the lane still changes at base");
+        assert_ne!(rows[3].colour, rows[0].colour, "the lane still changes at base");
     }
 }

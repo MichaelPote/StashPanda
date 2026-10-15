@@ -4,11 +4,11 @@ import { ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubCo
 import { HUES, useHueNames } from "@/lib/hues";
 
 /**
- * A context menu's "Colour" submenu: Automatic, then the palette's six hues as the graph draws
+ * A context menu's "Colour" submenu: Automatic, then the palette's twelve hues as the graph draws
  * them (`lib/hues.ts`), with a tick on the one chosen. Used for branches, tags and repositories.
  */
 defineProps<{
-  /** The hue chosen now (palette index 0 to 5), or null for the automatic colour. */
+  /** The hue chosen now (palette index 0 to 11), or null for the automatic colour. */
   chosen: number | null;
 }>();
 

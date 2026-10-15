@@ -265,9 +265,11 @@ pub async fn repo_update(
     Ok(entry)
 }
 
-/// Gives a repository a colour (a hue, palette index 0 to 5), or takes it away with None. It
-/// colours the repository's icon in the Repositories list and, while its tab is active, the
-/// interface's accent. Saved in the library in the settings, not in the repository.
+/// Gives a repository a colour (a hue, palette index 0 to 11), or takes it away with None. It
+/// colours the repository's icon in the Repositories list, the interface's accent while its tab is
+/// active, and the first automatic lane colour in its graph (cyan without one), so an open
+/// repository's graph is rebuilt with it. Saved in the library in the settings, not in the
+/// repository.
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_set_colour(app: AppHandle, state: State<'_, AppState>, key: String, colour: Option<u8>) -> Result<RepoEntry> {
@@ -278,7 +280,12 @@ pub async fn repo_set_colour(app: AppHandle, state: State<'_, AppState>, key: St
     entry.colour = colour.filter(|c| *c < crate::graph::lanes::HUE_COUNT);
     let entry = entry.clone();
     let revision = state.set_settings(settings.clone())?;
+    let options = settings.appearance.graph_options();
     SettingsChanged { revision, settings }.emit(&app)?;
+    if let Some(h) = state.repos.read().await.get(&key).cloned() {
+        h.set_first_colour(entry.colour);
+        crate::graph::loader::rebuild_filtered(Some(&app), &h, options);
+    }
     Ok(entry)
 }
 

@@ -142,7 +142,7 @@ export interface RepoSession {
   commitDraft: string;
   /** Full names of the refs switched off in the commit graph. Replaced, never mutated. */
   hiddenRefs: Set<string>;
-  /** Colours chosen for refs, by full name: a hue, palette index 0 to 5 (see `setRefColour`). */
+  /** Colours chosen for refs, by full name: a hue, palette index 0 to 11 (see `setRefColour`). */
   refColours: Record<string, number>;
   /** Saved scroll offset of the commit list, so it survives tab switches and snapshot swaps. */
   scrollTop: number;
@@ -698,7 +698,7 @@ export const useSessionsStore = defineStore("sessions", () => {
   }
 
   /**
-   * Gives a branch or tag a colour of the user's choosing (a hue, palette index 0 to 5), or with
+   * Gives a branch or tag a colour of the user's choosing (a hue, palette index 0 to 11), or with
    * `null` hands it back to the automatic colours. The backend rebuilds the graph with it: a
    * branch colours its lane, any ref its pill. Saved per repository in the app's UI state, never
    * in the repository.

@@ -110,11 +110,25 @@ pub enum CommitLaneColours {
     ChangeAtEachTip,
 }
 
-/// The appearance settings that change how the graph snapshot is built.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The appearance settings that change how the graph snapshot is built, and the repository's
+/// first lane colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GraphOptions {
     pub order: GraphOrder,
     pub lane_colours: CommitLaneColours,
+    /// The palette index the automatic lane colours start from: the repository's own colour, or
+    /// cyan; see `RepoHandle::graph_options`.
+    pub first_colour: u8,
+}
+
+impl Default for GraphOptions {
+    fn default() -> GraphOptions {
+        GraphOptions {
+            order: GraphOrder::default(),
+            lane_colours: CommitLaneColours::default(),
+            first_colour: crate::graph::lanes::FIRST_COLOUR,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -173,7 +187,7 @@ impl Default for Appearance {
 
 impl Appearance {
     pub fn graph_options(&self) -> GraphOptions {
-        GraphOptions { order: self.graph_order, lane_colours: self.commit_lane_colours }
+        GraphOptions { order: self.graph_order, lane_colours: self.commit_lane_colours, ..GraphOptions::default() }
     }
 }
 
@@ -357,8 +371,9 @@ pub struct RepoEntry {
     pub git_executable: Option<String>,
     pub group_id: Option<String>,
     pub last_opened_at: Option<i64>,
-    /// A hue chosen for the repository (palette index 0 to 5): the colour of its icon in the
-    /// Repositories list and, while its tab is the active one, the interface's accent colour.
+    /// A hue chosen for the repository (palette index 0 to 11): the colour of its icon in the
+    /// Repositories list, the interface's accent colour while its tab is the active one, and the
+    /// first automatic lane colour in its graph. Without one, the lanes start from cyan.
     pub colour: Option<u8>,
 }
 

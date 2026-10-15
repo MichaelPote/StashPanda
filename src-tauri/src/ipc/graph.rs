@@ -38,7 +38,7 @@ pub async fn graph_set_hidden_refs(app: AppHandle, state: State<'_, AppState>, k
     Ok(rebuild_filtered(Some(&app), &h, options).map(|s| s.meta()).unwrap_or_else(empty_meta))
 }
 
-/// Sets the colours chosen for refs (full name to hue, palette index 0 to 5) and rebuilds the
+/// Sets the colours chosen for refs (full name to hue, palette index 0 to 11) and rebuilds the
 /// graph with them; see `GraphSnapshot::build_coloured`. The frontend keeps the same map in the
 /// UI state (`perRepo[key].refColours`, stored in the database), which `repo_open` reads.
 #[tauri::command]
