@@ -1414,8 +1414,12 @@ Still open:
       in the Windows mirror. Windows builds only the NSIS installer: `src-tauri/tauri.windows.conf.json`
       sets `"targets": ["nsis"]` over the `"all"` in `tauri.conf.json`, so there is no MSI. Still to
       do: an icon set beyond the Tauri defaults.
-- [ ] **GitHub Actions** matrix with `tauri-apps/tauri-action` for `windows-latest` and
-      `ubuntu-24.04`, running `cargo test`, `npx vue-tsc --noEmit` and `npm run build` first.
+- [x] **GitHub Actions** (2026-10-16): `.github/workflows/build.yml`. A test job on Ubuntu
+      22.04 runs the TypeScript check, the front-end tests and `cargo test --lib`; then a build
+      job makes the installers and uploads them as artifacts: `.deb`, `.rpm` and AppImage from
+      Ubuntu 22.04 (the oldest supported release, for glibc), and the NSIS installer from
+      `windows-latest`. A macOS universal build is in the matrix but commented out until there
+      are signing and notarization credentials. It has not run yet: it runs on the first push.
 - [ ] **Release profile check**: `[profile.release]` in `Cargo.toml` uses `lto = true`,
       `codegen-units = 1`, `panic = "abort"`, `strip = true`; confirm the release binary still
       starts on both platforms and measure start-up time.

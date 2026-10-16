@@ -1,0 +1,108 @@
+# Builds the StashPanda installers for each platform, after the tests pass.
+#
+# Linux builds on Ubuntu 22.04 on purpose: a binary only runs where the C library (glibc) is at
+# least as new as the one it was built against, so building on the oldest supported release lets
+# the .deb, .rpm and AppImage start on newer ones too. Windows builds only the NSIS installer
+# (src-tauri/tauri.windows.conf.json).
+#
+# macOS is left out for now. To add it, uncomment its entry in the matrix below; a signed build
+# also needs an Apple Developer ID certificate and notarization credentials as repository
+# secrets (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_ID,
+# APPLE_PASSWORD, APPLE_TEAM_ID), passed to the build step as environment variables.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install the Linux build dependencies, and what the tests use
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev openssh-server inotify-tools
+      - name: Give Git an identity for the commits the tests make
+        run: |
+          git config --global user.name "StashPanda CI"
+          git config --global user.email "ci@stashpanda.invalid"
+      - run: npm ci
+      - name: Front-end type check
+        run: npx vue-tsc --noEmit
+      - name: Front-end tests
+        run: npx vitest run
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            platform: ubuntu-22.04
+            args: ""
+            artifacts: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/rpm/*.rpm
+              src-tauri/target/release/bundle/appimage/*.AppImage
+          - name: Windows
+            platform: windows-latest
+            args: ""
+            artifacts: |
+              src-tauri/target/release/bundle/nsis/*-setup.exe
+          # - name: macOS
+          #   platform: macos-latest
+          #   # One app for both Apple Silicon and Intel Macs.
+          #   args: "--target universal-apple-darwin"
+          #   artifacts: |
+          #     src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Both Mac architectures for the universal build; ignored elsewhere.
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Install the Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
+            libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - run: npm ci
+      - name: Build the installers
+        run: npm run tauri build -- ${{ matrix.args }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stashpanda-${{ matrix.name }}
+          path: ${{ matrix.artifacts }}
+          if-no-files-found: error

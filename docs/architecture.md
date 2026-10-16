@@ -487,7 +487,7 @@ Add `pinia` (4.x). Stores in `src/stores/`: `settings.ts` and `uiState.ts` (mirr
   - `RunEvent::ExitRequested` goes through `shutdown::defer_exit`, so quitting from the Dock or when logging out also waits for Git.
   - Passphrases go to the macOS Keychain through `keyring`'s default features; nothing else is needed.
   - It compiles for `aarch64-apple-darwin` (checked from Linux with a stand-in C compiler for `objc2-exception-helper`), but it has not run on a Mac. `tauri-driver` has no macOS support, so a Mac build is tested by hand.
-- CI later: GitHub Actions matrix with `tauri-apps/tauri-action` for `windows-latest` and `ubuntu-24.04`.
+- CI: `.github/workflows/build.yml` tests on Ubuntu 22.04, then builds Linux (`.deb`, `.rpm`, AppImage) and Windows (NSIS only, through `src-tauri/tauri.windows.conf.json`). macOS is in its matrix, commented out.
 
 ## Milestones and implementation order
 
