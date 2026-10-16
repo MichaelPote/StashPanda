@@ -38,3 +38,55 @@ impl Host {
         matches!(self, Host::Windows)
     }
 }
+
+/// macOS: give this process the PATH the user's login shell has. Started from Finder or the Dock,
+/// an app gets only `/usr/bin:/bin:/usr/sbin:/sbin`, so Git's hooks and credential helpers could
+/// not find what the user installed with Homebrew, nvm and the like (a husky hook that runs
+/// `npx`, for one). Asks `$SHELL -l -c` for its PATH, giving up after 3 seconds, and falls back
+/// to adding Homebrew's folders. Does nothing when PATH already has them, as when started from a
+/// terminal. Call it first thing in `main`, before any other thread starts.
+#[cfg(target_os = "macos")]
+pub fn adopt_login_shell_path() {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const HOMEBREW: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
+    let current = std::env::var("PATH").unwrap_or_default();
+    if current.split(':').any(|d| HOMEBREW.contains(&d)) {
+        return;
+    }
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string());
+    let from_shell = Command::new(&shell)
+        .args(["-l", "-c", "printf '%s' \"$PATH\""])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
+        .and_then(|mut child| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) if status.success() => break child.wait_with_output().ok(),
+                    Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+                    _ => {
+                        let _ = child.kill();
+                        break None;
+                    }
+                }
+            }
+        })
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|p| p.contains('/'));
+    let mut dirs: Vec<String> = match from_shell {
+        Some(p) => p.split(':').map(str::to_string).collect(),
+        None => HOMEBREW.iter().map(|d| d.to_string()).collect(),
+    };
+    // Keep what the app was started with too, after the shell's.
+    for d in current.split(':').filter(|d| !d.is_empty()) {
+        if !dirs.iter().any(|x| x == d) {
+            dirs.push(d.to_string());
+        }
+    }
+    std::env::set_var("PATH", dirs.join(":"));
+}

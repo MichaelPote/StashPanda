@@ -56,6 +56,30 @@ pub fn defer_close(app: &AppHandle, window: &Window) -> bool {
     true
 }
 
+/// `defer_close` for a request to quit the whole app rather than to close a window, which macOS
+/// sends from the Dock's Quit and when the user logs out: true when the exit should be prevented
+/// now. The app then exits once the writes are done. A second request, like a second close, exits
+/// at once.
+pub fn defer_exit(app: &AppHandle) -> bool {
+    let busy = busy_repos(app);
+    if busy.is_empty() || WAITING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    let _ = AppWarning {
+        message: "StashPanda will quit as soon as Git has finished changing the repository, so that it is not left half done. Quit again to quit at once.".into(),
+    }
+    .emit(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        for h in busy {
+            drop(h.lock.read().await);
+        }
+        WAITING.store(false, Ordering::SeqCst);
+        app.exit(0);
+    });
+    true
+}
+
 /// The repositories, open or just closed (`retire`), whose exclusive lock is held, or wanted, by
 /// a write.
 fn busy_repos(app: &AppHandle) -> Vec<Arc<RepoHandle>> {

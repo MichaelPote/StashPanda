@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use specta::Type;
-use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
 use tauri::{AppHandle, Manager, Wry};
 use tauri_specta::Event;
 
@@ -46,18 +46,33 @@ fn theme_for_id(id: &str) -> Option<Theme> {
     }
 }
 
+/// A menu item with a keyboard shortcut written the Windows way (`Ctrl+O`). On Windows and Linux
+/// the shortcut is only shown, after a tab: the frontend handles the keys, with Ctrl or Cmd. On
+/// macOS it becomes the item's real key equivalent with Cmd, which is how a Mac menu shows it;
+/// a key the page has already handled never reaches the menu, so nothing runs twice.
+fn item(app: &AppHandle<Wry>, id: &str, label: &str, shortcut: &str) -> tauri::Result<MenuItem<Wry>> {
+    if cfg!(target_os = "macos") {
+        MenuItemBuilder::with_id(id, label).accelerator(shortcut.replace("Ctrl+", "Cmd+")).build(app)
+    } else {
+        MenuItemBuilder::with_id(id, format!("{label}\t{shortcut}")).build(app)
+    }
+}
+
 pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
-    let file = SubmenuBuilder::new(app, "&File")
-        .text("file.open", "&Open Repository…\tCtrl+O")
+    let mac = cfg!(target_os = "macos");
+    let settings = item(app, "file.settings", "&Settings…", "Ctrl+,")?;
+    // Not the predefined quit item, which exits without asking the window: closing the window
+    // goes through the close guard in `shutdown`, which waits for Git to finish.
+    let exit = if mac { item(app, "file.exit", "Quit StashPanda", "Ctrl+Q")? } else { MenuItemBuilder::with_id("file.exit", "E&xit").build(app)? };
+    let mut file = SubmenuBuilder::new(app, "&File")
+        .item(&item(app, "file.open", "&Open Repository…", "Ctrl+O")?)
         .text("file.clone", "C&lone Repository…")
-        .text("file.close_tab", "&Close Tab\tCtrl+W")
-        .separator()
-        .text("file.settings", "&Settings…\tCtrl+,")
-        .separator()
-        // Not the predefined quit item, which exits without asking the window: closing the window
-        // goes through the close guard in `shutdown`, which waits for Git to finish.
-        .text("file.exit", "E&xit")
-        .build()?;
+        .item(&item(app, "file.close_tab", "&Close Tab", "Ctrl+W")?);
+    // On a Mac, Settings and Quit live in the application menu instead.
+    if !mac {
+        file = file.separator().item(&settings).separator().item(&exit);
+    }
+    let file = file.build()?;
 
     let edit = SubmenuBuilder::new(app, "&Edit")
         .item(&PredefinedMenuItem::undo(app, None)?)
@@ -68,7 +83,7 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .item(&PredefinedMenuItem::paste(app, None)?)
         .item(&PredefinedMenuItem::select_all(app, None)?)
         .separator()
-        .text("edit.find", "&Find Commit…\tCtrl+F")
+        .item(&item(app, "edit.find", "&Find Commit…", "Ctrl+F")?)
         .build()?;
 
     let saved = app.try_state::<AppState>().map(|s| s.settings().appearance.theme).unwrap_or(Theme::Dark);
@@ -77,10 +92,10 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
     let theme_system = CheckMenuItemBuilder::with_id("view.theme.system", "&System").checked(saved == Theme::System).build(app)?;
     let theme = SubmenuBuilder::new(app, "&Theme").items(&[&theme_dark, &theme_light, &theme_system]).build()?;
     let view = SubmenuBuilder::new(app, "&View")
-        .text("view.refresh", "&Refresh\tF5")
+        .item(&item(app, "view.refresh", "&Refresh", "F5")?)
         .separator()
-        .text("view.toggle_console", "Toggle &Console\tCtrl+`")
-        .text("view.toggle_sidebar", "Toggle &Sidebar\tCtrl+B")
+        .item(&item(app, "view.toggle_console", "Toggle &Console", "Ctrl+`")?)
+        .item(&item(app, "view.toggle_sidebar", "Toggle &Sidebar", "Ctrl+B")?)
         .separator()
         .item(&theme)
         .separator()
@@ -88,7 +103,8 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .build()?;
 
     let repository = SubmenuBuilder::new(app, "&Repository")
-        .text("repo.refresh", "Re&fresh Repository\tF5")
+        // F5 belongs to View > Refresh; showing it twice would give a Mac two items on one key.
+        .text("repo.refresh", if mac { "Re&fresh Repository" } else { "Re&fresh Repository\tF5" })
         .separator()
         .text("repo.create_branch", "Create &Branch…")
         .text("repo.create_tag", "Create &Tag…")
@@ -107,14 +123,35 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .text("repo.remove", "&Remove from Library")
         .build()?;
 
-    let help = SubmenuBuilder::new(app, "&Help")
-        .text("help.docs", "&Documentation")
-        .text("help.console_log", "Show &Console Log")
-        .separator()
-        .text("help.about", "&About StashPanda")
-        .build()?;
+    let mut help = SubmenuBuilder::new(app, "&Help").text("help.docs", "&Documentation").text("help.console_log", "Show &Console Log");
+    if !mac {
+        help = help.separator().text("help.about", "&About StashPanda");
+    }
+    let help = help.build()?;
 
-    let menu = MenuBuilder::new(app).items(&[&file, &edit, &view, &repository, &help]).build()?;
+    let menu = if mac {
+        // A Mac's first menu is the application menu, named after the app whatever it is given.
+        let app_menu = SubmenuBuilder::new(app, "StashPanda")
+            .text("help.about", "About StashPanda")
+            .separator()
+            .item(&settings)
+            .separator()
+            .item(&PredefinedMenuItem::services(app, None)?)
+            .separator()
+            .item(&PredefinedMenuItem::hide(app, None)?)
+            .item(&PredefinedMenuItem::hide_others(app, None)?)
+            .item(&PredefinedMenuItem::show_all(app, None)?)
+            .separator()
+            .item(&exit)
+            .build()?;
+        let window = SubmenuBuilder::new(app, "Window")
+            .item(&PredefinedMenuItem::minimize(app, None)?)
+            .item(&PredefinedMenuItem::maximize(app, None)?)
+            .build()?;
+        MenuBuilder::new(app).items(&[&app_menu, &file, &edit, &view, &repository, &window, &help]).build()?
+    } else {
+        MenuBuilder::new(app).items(&[&file, &edit, &view, &repository, &help]).build()?
+    };
     // Debug builds get a Developer menu: WebView2's own shortcut for the inspector is off (see
     // `webview::disable_browser_shortcuts`), and the other platforms never had one.
     #[cfg(debug_assertions)]

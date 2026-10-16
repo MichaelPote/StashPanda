@@ -19,6 +19,25 @@ pub fn find_local_git(override_path: Option<&str>, host: &Host) -> Result<PathBu
         }
         searched.push(o.to_string());
     }
+    // macOS: Homebrew's Git before anything on PATH. Started from Finder, the app's PATH starts
+    // with /usr/bin, whose git is Apple's stand-in: without the Command Line Tools it opens a
+    // dialog offering to install them instead of running Git, so it is only taken when
+    // `xcode-select -p` says they are installed.
+    if *host == Host::MacOs {
+        for p in ["/opt/homebrew/bin/git", "/usr/local/bin/git"] {
+            if exists(Path::new(p)) {
+                return Ok(PathBuf::from(p));
+            }
+            searched.push(p.to_string());
+        }
+        if let Ok(p) = which::which("git") {
+            if p != Path::new("/usr/bin/git") || apple_command_line_tools_installed() {
+                return Ok(p);
+            }
+        }
+        searched.push("/usr/bin/git (needs the Command Line Tools: xcode-select --install)".into());
+        return Err(GitError::GitNotFound { searched });
+    }
     if let Ok(p) = which::which("git") {
         return Ok(p);
     }
@@ -43,6 +62,17 @@ pub fn find_local_git(override_path: Option<&str>, host: &Host) -> Result<PathBu
         searched.push(c.to_string_lossy().into_owned());
     }
     Err(GitError::GitNotFound { searched })
+}
+
+/// True when Apple's Command Line Tools are installed, so `/usr/bin/git` runs Git rather than
+/// offering to install them: `xcode-select -p` prints their folder and exits 0.
+fn apple_command_line_tools_installed() -> bool {
+    std::process::Command::new("/usr/bin/xcode-select")
+        .arg("-p")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// Windows `git.exe` reachable from inside WSL, for `/mnt/<d>/` repositories.

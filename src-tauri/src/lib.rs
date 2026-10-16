@@ -177,6 +177,9 @@ fn init_tracing() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Before any other thread starts: setting an environment variable is not thread safe.
+    #[cfg(target_os = "macos")]
+    platform::adopt_login_shell_path();
     init_tracing();
 
     let builder = specta_builder();
@@ -212,7 +215,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                // Quitting without closing the window first (macOS: the Dock, logging out) waits
+                // for Git the same way closing the window does.
+                if shutdown::defer_exit(app) {
+                    api.prevent_exit();
+                    return;
+                }
                 app.state::<state::AppState>().flush();
             }
         });
