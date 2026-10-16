@@ -32,7 +32,7 @@ vi.mock("@/stores/sessions", () => ({
   }),
 }));
 
-import { pushBranch, pushBranchTo, pushCurrentBranch, syncCurrentBranch, syncOutcome } from "./repoActions";
+import { gitReason, opFailureText, pushBranch, pushBranchTo, pushCurrentBranch, syncCurrentBranch, syncOutcome } from "./repoActions";
 
 const ok = <T>(data: T) => Promise.resolve({ status: "ok", data });
 const pushed = { ok: true, exitCode: 0, stdout: "", stderr: "", conflicts: false };
@@ -384,3 +384,34 @@ describe("a sync whose push goes somewhere other than the branch it pulls from",
     expect(outcome.action?.label).toBe("Pull…");
   });
 });
+
+describe("failure messages lead with Git's reason", () => {
+  const stderr = [
+    "Enumerating objects: 7, done.",
+    "Counting objects: 100% (7/7), done.",
+    "Writing objects: 100% (4/4), 380 bytes | 380.00 KiB/s, done.",
+    "Total 4 (delta 1), reused 0 (delta 0), pack-reused 0",
+    "remote: main is a protected branch on this server. Push to another branch instead.",
+    "To stashpanda-git:git-testbeds/protected-main.git",
+    " ! [remote rejected] main -> main (pre-receive hook declined)",
+    "error: failed to push some refs to 'stashpanda-git:git-testbeds/protected-main.git'",
+  ].join("\n");
+
+  it("drops the progress lines", () => {
+    expect(gitReason(stderr)).toBe(
+      [
+        "remote: main is a protected branch on this server. Push to another branch instead.",
+        "! [remote rejected] main -> main (pre-receive hook declined)",
+        "error: failed to push some refs to 'stashpanda-git:git-testbeds/protected-main.git'",
+      ].join("\n"),
+    );
+    expect(opFailureText({ ok: false, exitCode: 1, stdout: "", stderr, conflicts: false }, "Pushing main to origin/main")).toMatch(
+      /^Pushing main to origin\/main failed \(exit 1\): remote: main is a protected branch/,
+    );
+  });
+
+  it("keeps everything when there is nothing but progress", () => {
+    expect(gitReason("Counting objects: 3, done.\r\nTotal 3 (delta 0)")).toBe("Counting objects: 3, done.\nTotal 3 (delta 0)");
+  });
+});
+

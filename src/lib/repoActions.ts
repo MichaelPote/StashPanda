@@ -97,8 +97,30 @@ async function trackAfter(key: string, branch: string, upstream: string, done: s
 /** One line for a Git command that ran but exited non-zero: `<what> failed (exit 1): <stderr>`. */
 export function opFailureText(result: OpResult, what: string): string {
   const code = result.exitCode === null ? "" : ` (exit ${result.exitCode})`;
-  const detail = result.stderr.trim() || result.stdout.trim();
+  const detail = gitReason(result.stderr) || result.stdout.trim();
   return detail.length > 0 ? `${what} failed${code}: ${detail}` : `${what} failed${code}.`;
+}
+
+/**
+ * Git's progress lines, which a network command writes on stderr before any reason it fails:
+ * `Enumerating objects: 7, done.`, `remote: Counting objects: …`, `Writing objects: …`, `Total …`,
+ * and the `From …` or `To …` line that names the remote.
+ */
+const PROGRESS_LINE =
+  /^(remote:\s*)?(Enumerating objects|Counting objects|Compressing objects|Writing objects|Receiving objects|Resolving deltas|Unpacking objects|Delta compression|Total \d+|POST git-|From |To )/;
+
+/**
+ * What Git says went wrong, without its progress lines, so a message leads with the reason
+ * (`remote: main is a protected branch`, `! [remote rejected] …`, `fatal: …`) rather than with
+ * how many objects it counted. All of `stderr` when it is nothing but progress.
+ */
+export function gitReason(stderr: string): string {
+  const lines = stderr
+    .split(/\r?\n|\r/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+  const reasons = lines.filter((l) => !PROGRESS_LINE.test(l));
+  return (reasons.length > 0 ? reasons : lines).join("\n");
 }
 
 /**

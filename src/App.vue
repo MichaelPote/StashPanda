@@ -151,7 +151,8 @@ function dismissRepoWarning(warning: string): void {
         role="alert"
       >
         <TriangleAlertIcon class="size-3.5 shrink-0" />
-        <span class="truncate">{{ sessions.notice }}</span>
+        <!-- Up to three lines, so a reason after Git's first line still shows; the tooltip has all of it. -->
+        <span class="line-clamp-3 min-w-0 break-words whitespace-pre-line select-text" :title="sessions.notice">{{ sessions.notice }}</span>
         <button
           v-if="sessions.noticeAction"
           type="button"
