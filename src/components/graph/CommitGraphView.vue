@@ -15,7 +15,7 @@ import WorkingTreeContextMenu from "@/components/graph/WorkingTreeContextMenu.vu
 import WorkingTreeRow from "@/components/graph/WorkingTreeRow.vue";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { useGraphPages } from "@/composables/useGraphPages";
-import { autoAuthorWidth, autoDateWidth, autoIdWidth, fontsVersion } from "@/lib/graph/columnWidths";
+import { autoAuthorWidth, autoDateWidth, autoIdWidth, fitColumns, fontsVersion } from "@/lib/graph/columnWidths";
 import { autoGraphColumnWidth, messageIndent, ROW_HEIGHT } from "@/lib/graph/paths";
 import { isEditableTarget } from "@/lib/files";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
@@ -81,7 +81,10 @@ const graphWidth = computed(
  */
 const graphInMessages = computed(() => settings.settings?.appearance?.graphInMessageColumn ?? false);
 /** How wide the lanes are drawn: the graph column, or every lane when they share the message column. */
-const lanesWidth = computed(() => (graphInMessages.value ? autoGraphColumnWidth(meta.value?.maxLanes ?? 0) : graphWidth.value));
+/** Every lane, side by side. */
+const allLanesWidth = computed(() => autoGraphColumnWidth(meta.value?.maxLanes ?? 0));
+/** How wide the lanes are drawn: the graph column, or every lane when they share the message column. */
+const lanesWidth = computed(() => (graphInMessages.value ? allLanesWidth.value : fitted.value.graph));
 watch(
   () => meta.value?.maxLanes,
   (lanes, before) => {
@@ -104,11 +107,26 @@ const idWidth = computed(() => {
   return uiState.state?.graphColumns?.id ?? autoIdWidth();
 });
 
+/** Room the commit message column always keeps, plus up to 240px for the lanes when they share it. */
+const MESSAGE_MIN = 160;
+/**
+ * The widths the columns are drawn at: the saved or automatic ones, fitted into the room the
+ * table has, so columns dragged wide in a wider window cannot squeeze the commit messages out of
+ * sight. The resize handles sit on these edges and a drag starts from them.
+ */
+const fitted = computed(() =>
+  fitColumns(
+    { graph: graphInMessages.value ? 0 : graphWidth.value, author: authorWidth.value, date: dateWidth.value, id: idWidth.value },
+    rowsWidth.value,
+    MESSAGE_MIN + (graphInMessages.value ? Math.min(allLanesWidth.value, 240) : 0),
+  ),
+);
+
 const columnStyle = computed(() => ({
-  "--col-graph": graphInMessages.value ? "0px" : `${graphWidth.value}px`,
-  "--col-author": `${authorWidth.value}px`,
-  "--col-date": `${dateWidth.value}px`,
-  "--col-id": `${idWidth.value}px`,
+  "--col-graph": `${fitted.value.graph}px`,
+  "--col-author": `${fitted.value.author}px`,
+  "--col-date": `${fitted.value.date}px`,
+  "--col-id": `${fitted.value.id}px`,
 }));
 
 function onResize(column: ResizableColumn, width: number | null): void {
@@ -129,7 +147,7 @@ const { width: rowsWidth } = useElementSize(computed(() => list.value?.element ?
  */
 const lanesClip = computed(() => {
   if (!graphInMessages.value || rowsWidth.value <= 0) return lanesWidth.value;
-  return Math.max(0, Math.min(lanesWidth.value, rowsWidth.value - authorWidth.value - dateWidth.value - idWidth.value));
+  return Math.max(0, Math.min(lanesWidth.value, rowsWidth.value - fitted.value.author - fitted.value.date - fitted.value.id));
 });
 const start = computed(() => list.value?.start ?? 0);
 const end = computed(() => list.value?.end ?? 0);
@@ -382,10 +400,10 @@ function onFindClosed(): void {
       </template>
     </PanelHeader>
     <GraphHeader
-      :graph-width="graphWidth"
-      :author-width="authorWidth"
-      :date-width="dateWidth"
-      :id-width="idWidth"
+      :graph-width="fitted.graph"
+      :author-width="fitted.author"
+      :date-width="fitted.date"
+      :id-width="fitted.id"
       :graph-column="!graphInMessages"
       @resize="onResize"
     />

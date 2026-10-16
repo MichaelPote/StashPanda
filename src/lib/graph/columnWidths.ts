@@ -83,3 +83,38 @@ export function autoIdWidth(): number {
   const widest = textWidth("0000000", `400 ${0.75 * rootFontSizePx()}px ${fontVar("--font-mono")}`);
   return Math.ceil(Math.max(headingWidth("ID"), widest + cellPadding()));
 }
+
+/** The commit table's columns that have a width of their own; the commit message column takes the rest. */
+export type SizedColumn = "graph" | "author" | "date" | "id";
+
+/** The narrowest and widest a drag can make each column. */
+export const COLUMN_LIMITS: Record<SizedColumn, { min: number; max: number }> = {
+  graph: { min: 28, max: 4000 },
+  // At its narrowest the Author column shows only the avatars: 14px plus 5.25px of padding each side.
+  author: { min: 25, max: 400 },
+  date: { min: 56, max: 260 },
+  id: { min: 40, max: 400 },
+};
+
+/**
+ * The widths to draw the columns at, so that the commit message column keeps at least
+ * `messageMin` of the `room` the table has. The widths saved from a drag can add up to more than
+ * that: dragged wide in a wider window, or the window made narrower since. When they do, every
+ * column gives up the same share of what it has above its own minimum, so none goes below it.
+ * The saved widths are left as they are, so the columns grow back when there is room again.
+ * `room` of 0 (not measured yet) leaves the widths as given.
+ */
+export function fitColumns(widths: Record<SizedColumn, number>, room: number, messageMin: number): Record<SizedColumn, number> {
+  const columns = Object.keys(widths) as SizedColumn[];
+  const total = columns.reduce((sum, c) => sum + widths[c], 0);
+  const excess = total - Math.max(0, room - messageMin);
+  if (room <= 0 || excess <= 0) return widths;
+  const spare = columns.reduce((sum, c) => sum + Math.max(0, widths[c] - COLUMN_LIMITS[c].min), 0);
+  const share = spare > 0 ? Math.min(1, excess / spare) : 0;
+  const fitted = { ...widths };
+  for (const c of columns) {
+    const above = Math.max(0, widths[c] - COLUMN_LIMITS[c].min);
+    fitted[c] = Math.floor(widths[c] - above * share);
+  }
+  return fitted;
+}

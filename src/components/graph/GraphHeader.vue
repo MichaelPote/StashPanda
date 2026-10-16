@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref } from "vue";
+import { COLUMN_LIMITS, type SizedColumn } from "@/lib/graph/columnWidths";
 
-export type ResizableColumn = "graph" | "author" | "date" | "id";
+export type ResizableColumn = SizedColumn;
 
 const props = defineProps<{
   graphWidth: number;
@@ -17,13 +18,6 @@ const emit = defineEmits<{
   resize: [column: ResizableColumn, width: number | null];
 }>();
 
-const LIMITS: Record<ResizableColumn, { min: number; max: number }> = {
-  graph: { min: 28, max: 4000 },
-  // At its narrowest the Author column shows only the avatars: 14px plus 5.25px of padding each side.
-  author: { min: 25, max: 400 },
-  date: { min: 56, max: 260 },
-  id: { min: 40, max: 400 },
-};
 
 /**
  * One divider per column boundary. The commit message column takes whatever is left, so the
@@ -61,7 +55,7 @@ function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEve
   const startWidth = widthOf(column);
   const target = event.currentTarget as HTMLElement;
   target.setPointerCapture(event.pointerId);
-  const { min, max } = LIMITS[column];
+  const { min, max } = COLUMN_LIMITS[column];
   dragging.value = column;
 
   const onMove = (e: PointerEvent): void => {
