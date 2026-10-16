@@ -212,6 +212,9 @@ pub async fn pull_integrate(client: &GitClient, remote: &str, branch: &str, mode
         let fork_point = if fork.success() { String::from_utf8_lossy(&fork.stdout).trim().to_string() } else { String::new() };
         let upstream = if fork_point.is_empty() { "FETCH_HEAD" } else { fork_point.as_str() };
         let mut args = vec!["rebase"];
+        if rebase_merges_configured(client).await? {
+            args.push("--rebase-merges");
+        }
         args.extend(autostash_flag);
         args.extend(["--onto", "FETCH_HEAD", upstream]);
         let out = client.exec_allow_failure(GitReq::new("rebase", args).user().timeout(timeout)).await?;
@@ -227,6 +230,27 @@ pub async fn pull_integrate(client: &GitClient, remote: &str, branch: &str, mode
     args.push("FETCH_HEAD");
     let out = client.exec_allow_failure(GitReq::new("merge", args).user().timeout(timeout)).await?;
     Ok(result(out))
+}
+
+/// True when the current branch's `branch.<name>.rebase`, or failing that `pull.rebase`, is
+/// `merges` (or `m`): `git pull` then rebases with `--rebase-merges`, which keeps the branch's own
+/// merge commits instead of flattening them.
+async fn rebase_merges_configured(client: &GitClient) -> Result<bool> {
+    let head = client.exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "--quiet", "--short", "HEAD"])).await?;
+    let branch = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let mut keys = Vec::new();
+    if head.success() && !branch.is_empty() {
+        keys.push(format!("branch.{branch}.rebase"));
+    }
+    keys.push("pull.rebase".to_string());
+    for key in keys {
+        let out = client.exec_allow_failure(GitReq::new("config", ["config".to_string(), "--get".into(), key])).await?;
+        if out.success() {
+            let value = String::from_utf8_lossy(&out.stdout).trim().to_ascii_lowercase();
+            return Ok(matches!(value.as_str(), "merges" | "m"));
+        }
+    }
+    Ok(false)
 }
 
 /// True when `pull.ff` is false (`false`, `no`, `off` or `0`), which makes `git pull` merge with
@@ -468,7 +492,8 @@ fn pull_mode_from_config(bytes: &[u8], branch: Option<&str>) -> Option<PullMode>
             _ => {}
         }
     }
-    // `merges`, `interactive` and their one-letter forms all rebase; StashPanda runs a plain one.
+    // `merges`, `interactive` and their one-letter forms all rebase. `pull_integrate` keeps merge
+    // commits for `merges` (see `rebase_merges_configured`); `interactive` runs a plain rebase.
     let rebases = |v: &str| matches!(v, "true" | "yes" | "on" | "1" | "merges" | "m" | "interactive" | "i");
     // `pull.ff=only` wins over a rebase setting that also comes from config: `git pull` then
     // refuses anything but a fast-forward.
@@ -2948,6 +2973,22 @@ mod e2e {
         assert!(tagged.ok, "{tagged:?}");
         assert_eq!(head(&local, "HEAD~1"), head(&origin, "refs/heads/main"));
         assert_eq!(head(&local, "refs/remotes/origin/main"), head(&origin, "refs/heads/main"));
+
+        // `pull.rebase=merges` keeps the branch's own merge commit, as `git pull` does; a plain
+        // rebase would flatten it.
+        git(&local, &["config", "pull.rebase", "merges"]);
+        git(&local, &["switch", "-q", "-c", "topic"]);
+        std::fs::write(local.join("j.txt"), "j\n").unwrap();
+        git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "topic work"]);
+        git(&local, &["switch", "-q", "main"]);
+        git(&local, &["merge", "-q", "--no-ff", "--no-edit", "topic"]);
+        std::fs::write(origin.join("k.txt"), "k\n").unwrap();
+        git(&origin, &["add", "-A"]); git(&origin, &["commit", "-qm", "remote four"]);
+        let kept = pull("origin", "main", PullMode::Rebase, false).await.unwrap();
+        assert!(kept.ok, "{kept:?}");
+        let merges = String::from_utf8(Command::new("git").arg("-C").arg(&local).args(["log", "--merges", "--format=%s", "origin/main..HEAD"]).output().unwrap().stdout).unwrap();
+        assert_eq!(merges, "Merge branch 'topic'\n");
+        git(&local, &["config", "--unset", "pull.rebase"]);
 
         // A cancelled pull stops with `Cancelled`.
         cancel.cancel();
