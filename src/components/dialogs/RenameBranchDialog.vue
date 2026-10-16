@@ -46,6 +46,16 @@ async function submit(): Promise<void> {
   error.value = null;
   try {
     const result = await runOp(r.key, () => commands.opBranchRename(r.key, r.name, to));
+    if (!result.ok && /branch is renamed, but update of config-file failed/.test(result.stderr)) {
+      // Git renamed the branch, then could not move its settings (its upstream) in .git/config,
+      // usually because another Git process holds config.lock.
+      sessions.notify(
+        `Renamed branch ${r.name} to ${to}, but Git could not move its settings to the new name, so ${to} may not track a remote branch. ` +
+          "Another Git process may be saving to the repository's settings file; use Track Remote Branch… to set it again.",
+      );
+      dialogs.resolve("renameBranch", result);
+      return;
+    }
     if (!result.ok) {
       error.value = opFailureText(result, `Renaming ${r.name} to ${to}`);
       return;

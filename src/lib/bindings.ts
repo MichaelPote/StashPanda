@@ -301,12 +301,12 @@ export const commands = {
 	 */
 	opCommit: (key: string, message: string, paths: string[] | null, amend: boolean, signOff: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_commit", { key, message, paths, amend, signOff })),
 	/**
-	 *  Delete `<git dir>/index.lock` after a Git process crashed or was killed
-	 *  and left it behind. The frontend confirms with the user first, since
-	 *  deleting the lock of a Git process that is still running corrupts the
-	 *  index. A lock that has already gone counts as success.
+	 *  Delete a lock file a Git process left behind when it crashed or was killed:
+	 *  `index.lock`, or `config.lock`. The frontend confirms with the user first,
+	 *  since deleting the lock of a Git process that is still running loses what
+	 *  it was writing. A lock that has already gone counts as success.
 	 */
-	opRemoveStaleLock: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("op_remove_stale_lock", { key })),
+	opRemoveStaleLock: (key: string, lock: StaleLock) => typedError<null, GitError>(__TAURI_INVOKE("op_remove_stale_lock", { key, lock })),
 	opRebaseAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase_abort", { key })),
 	/**
 	 *  Rebase the current branch onto `onto` (a branch name or commit), not interactively.
@@ -373,15 +373,16 @@ export const commands = {
 	/**
 	 *  Push local `branch`. With no `target`, where plain `git push` would push it (failing with
 	 *  `invalidPath` when it has no upstream, or when `push.default` refuses an upstream with another
-	 *  name: call `getPushTarget` first); with a `target` the user chose, there, and `setUpstream`
-	 *  makes the branch track it. Never forces: a rejected push comes back with `ok: false` and
+	 *  name: call `getPushTarget` first); with a `target` the user chose, there. It never sets the
+	 *  upstream; to make the branch track the target, call `opBranchSetUpstream` after it succeeds,
+	 *  as its own step that can be retried if `.git/config` is locked. Never forces: a rejected push comes back with `ok: false` and
 	 *  `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
 	 */
 	opPush: (key: string, opId: string, branch: string, target: {
 	remote: string,
 	/**  The branch name on the remote, without `refs/heads/`. */
 	branch: string,
-} | null, setUpstream: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push", { key, opId, branch, target, setUpstream })),
+} | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push", { key, opId, branch, target })),
 	/**
 	 *  Delete `branch` (the name on the remote, `feature/x`) on `remote`, for everyone who uses that
 	 *  remote: `git push <remote> --delete refs/heads/<branch>`, which also removes the
@@ -1068,7 +1069,13 @@ export type GitError = { kind: "gitNotFound"; searched: string[] } | { kind: "gi
  */
 { kind: "sshAuthFailed"; host: string; port: number | null; user: string | null; methodsTried: string[]; passwordAllowed: boolean; passwordRejected: boolean } | 
 /**  `ssh_trust_host(host, port)` records the key that was offered. */
-{ kind: "sshHostKeyUnknown"; host: string; port: number; fingerprint: string } | { kind: "sshHostKeyChanged"; host: string; port: number; fingerprint: string } | { kind: "sshKeyUnsupported"; path: string; detectedHeader: string } | { kind: "sshNeedsPassphrase"; path: string } | { kind: "sshWrongPassphrase"; path: string } | { kind: "keyParseError"; path: string; format: string; detail: string } | { kind: "sshUnsupportedFeature"; feature: string } | { kind: "transportDisconnected"; detail: string } | { kind: "notARepository"; path: string } | { kind: "repoPathNotFound"; path: string } | { kind: "unsafeRepository"; path: string } | { kind: "indexLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | 
+{ kind: "sshHostKeyUnknown"; host: string; port: number; fingerprint: string } | { kind: "sshHostKeyChanged"; host: string; port: number; fingerprint: string } | { kind: "sshKeyUnsupported"; path: string; detectedHeader: string } | { kind: "sshNeedsPassphrase"; path: string } | { kind: "sshWrongPassphrase"; path: string } | { kind: "keyParseError"; path: string; format: string; detail: string } | { kind: "sshUnsupportedFeature"; feature: string } | { kind: "transportDisconnected"; detail: string } | { kind: "notARepository"; path: string } | { kind: "repoPathNotFound"; path: string } | { kind: "unsafeRepository"; path: string } | { kind: "indexLocked"; lockPath: string } | 
+/**
+ *  Git could not change `.git/config` because `config.lock` is there: another Git process is
+ *  writing the config, or one died and left the file behind. `lock_path` is the lock file as
+ *  Git names it, relative to the repository when Git gives a relative path.
+ */
+{ kind: "configLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | 
 /**
  *  A file was about to be saved over, but its contents on disk are no longer the ones it was
  *  opened with: another program, or Git, has changed it since. Nothing was written.
@@ -1587,6 +1594,16 @@ export type SettingsChanged = {
 export type SnapshotReason = "cache" | "live" | "refresh" | "status" | 
 /**  Refs were switched on or off in the graph. */
 "filter";
+
+/**  Which lock file `op_remove_stale_lock` deletes. */
+export type StaleLock = 
+/**  `<git dir>/index.lock`, after an `indexLocked` error. */
+"index" | 
+/**
+ *  `config.lock` next to the repository's `config` (in the main repository's Git folder,
+ *  for a linked worktree), after a `configLocked` error.
+ */
+"config";
 
 export type StashEntry = {
 	oid: string,

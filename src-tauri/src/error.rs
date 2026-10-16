@@ -59,6 +59,11 @@ pub enum GitError {
     UnsafeRepository { path: String },
     #[error("the index is locked ({lock_path})")]
     IndexLocked { lock_path: String },
+    /// Git could not change `.git/config` because `config.lock` is there: another Git process is
+    /// writing the config, or one died and left the file behind. `lock_path` is the lock file as
+    /// Git names it, relative to the repository when Git gives a relative path.
+    #[error("the Git config is locked ({lock_path})")]
+    ConfigLocked { lock_path: String },
     #[error("invalid path {path}: {reason}")]
     InvalidPath { path: String, reason: String },
     #[error("object not found: {spec}")]
@@ -166,6 +171,15 @@ pub fn classify_git_failure(
     if let Some(lock_path) = index_lock {
         return GitError::IndexLocked { lock_path: lock_path.to_string() };
     }
+    // `could not lock config file <path>: File exists`, Git's wording when `<path>.lock` is
+    // there. Other reasons (`Permission denied`) are not a lock to remove.
+    let config_lock = text.lines().find_map(|l| {
+        let (_, rest) = l.split_once("could not lock config file ")?;
+        rest.strip_suffix(": File exists")
+    });
+    if let Some(config_path) = config_lock {
+        return GitError::ConfigLocked { lock_path: format!("{config_path}.lock") };
+    }
     if lower.contains("no such file or directory") && lower.contains("cannot change to") {
         let path = text
             .split('\'')
@@ -223,6 +237,14 @@ mod tests {
     fn dubious_ownership_keeps_a_quote_in_the_path() {
         let stderr = "fatal: detected dubious ownership in repository at 'C:/Users/O'Brien/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory 'C:/Users/O'\\''Brien/repo'\n";
         assert!(matches!(classify(stderr), GitError::UnsafeRepository { path } if path == "C:/Users/O'Brien/repo"));
+    }
+
+    #[test]
+    fn config_lock_from_gits_own_wording() {
+        let locked = "error: could not lock config file .git/config: File exists\nerror: unable to write upstream branch configuration\nhint: ";
+        assert!(matches!(classify(locked), GitError::ConfigLocked { lock_path } if lock_path == ".git/config.lock"));
+        let denied = "error: could not lock config file .git/config: Permission denied";
+        assert!(matches!(classify(denied), GitError::CommandFailed { .. }));
     }
 
     #[test]

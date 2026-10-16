@@ -801,6 +801,22 @@ symlink; discarding an intent-to-add file emptied it; Reset silently ended a con
       name (`push.default = current`). The setting is saved in the repository's own config by
       `op_set_push_default`. Sync asks before it pulls, so cancelling changes nothing.
 
+- [x] **A locked `.git/config` cannot leave a push or a new branch half done** (2026-10-16).
+      With `config.lock` there (another Git process saving to the config, or one that died),
+      `git push --set-upstream` pushes, fails to record the upstream, and still exits 0, and
+      `git checkout -b x --track origin/x` creates `x` but neither checks it out nor tracks.
+      Pushing and creating a branch from a remote branch (`--no-track`) now never touch the
+      config, and the upstream is set afterwards as its own step (`trackAfter` in
+      `repoActions.ts`), as some other Git clients do. That step, like every write, waits and
+      retries once on a lock, then offers to remove a lock left behind (`ConfigLocked`,
+      `op_remove_stale_lock` with `lock: "config"`); if it still fails, the notice says the push
+      or branch worked and offers Track Remote Branch…. A rename that Git completes without
+      moving the branch's settings says so. Local branches' right-click menus have "Push to
+      origin/x", or "Push to a New Remote Branch…" for one that tracks nothing, and Track Remote
+      Branch… starts on the remote branch of the same name. Test:
+      `a_locked_config_leaves_push_and_checkout_whole_and_fails_only_the_upstream`. Tried in the
+      running Linux build with a `config.lock` in place.
+
 Decisions to revisit:
 
 - File names that are not valid UTF-8 are refused by every action, with a reason. Supporting

@@ -174,6 +174,11 @@ export interface TrackRemoteBranchPayload {
    * branch.
    */
   upstream: string | null;
+  /**
+   * When `upstream` is null, the remote branch to offer first (`refs/remotes/origin/dev` for a
+   * local `dev`), or null for "Don't track a remote branch".
+   */
+  suggested?: string | null;
 }
 
 export interface SettingsPayload {

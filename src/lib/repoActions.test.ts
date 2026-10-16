@@ -4,11 +4,12 @@ import type { RepoSession } from "@/stores/sessions";
 
 const mocks = vi.hoisted(() => ({
   opBranchCreate: vi.fn(),
+  opBranchSetUpstream: vi.fn(),
   open: vi.fn(),
   sessions: new Map<string, unknown>(),
 }));
 
-vi.mock("@/lib/bindings", () => ({ commands: { opBranchCreate: mocks.opBranchCreate } }));
+vi.mock("@/lib/bindings", () => ({ commands: { opBranchCreate: mocks.opBranchCreate, opBranchSetUpstream: mocks.opBranchSetUpstream } }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), revealItemInDir: vi.fn() }));
 vi.mock("@/stores/dialogs", () => ({ useDialogsStore: () => ({ open: mocks.open }) }));
 vi.mock("@/stores/library", () => ({ repoDisplayName: vi.fn(), useLibraryStore: vi.fn() }));
@@ -18,7 +19,7 @@ vi.mock("@/stores/sessions", () => ({
   useSessionsStore: () => ({ sessions: mocks.sessions, notify: vi.fn(), notifySuccess: vi.fn(), refetchRefsAndStatus: vi.fn() }),
 }));
 
-const { checkoutTargetOf, continueOutcome, openMergeDialog, rebaseOutcome, requestCheckout, resetReason, revisionOf } =
+const { checkoutTargetOf, continueOutcome, openMergeDialog, rebaseOutcome, requestCheckout, resetReason, revisionOf, trackRemoteBranch } =
   await import("./repoActions");
 
 const ref = (fullName: string, kind: RefKind): RefEntry =>
@@ -33,8 +34,27 @@ const session = (refs: RefEntry[], inProgress: InProgress | null = null) =>
 
 beforeEach(() => {
   mocks.opBranchCreate.mockReset().mockResolvedValue({ status: "ok", data: { ok: true, stdout: "", stderr: "" } });
+  mocks.opBranchSetUpstream.mockReset().mockResolvedValue({ status: "ok", data: { ok: true, stdout: "", stderr: "" } });
   mocks.open.mockReset().mockResolvedValue(true);
   mocks.sessions.clear();
+});
+
+describe("Track Remote Branch", () => {
+  it("offers the remote branch of the same name, on origin first, when the branch tracks nothing", async () => {
+    const local = { ...ref("refs/heads/feature/x", { type: "localBranch" }), upstream: null };
+    const other = ref("refs/remotes/fork/feature/x", { type: "remoteBranch", remote: "fork" });
+    const origin = ref("refs/remotes/origin/feature/x", { type: "remoteBranch", remote: "origin" });
+    mocks.sessions.set("k", session([local, other, origin, ref("refs/remotes/origin/main", { type: "remoteBranch", remote: "origin" })]));
+    await trackRemoteBranch("k", "feature/x");
+    expect(mocks.open).toHaveBeenCalledWith("trackRemoteBranch", expect.objectContaining({ upstream: null, suggested: "refs/remotes/origin/feature/x" }));
+  });
+
+  it("suggests nothing when the branch already tracks one", async () => {
+    const local = { ...ref("refs/heads/feature/x", { type: "localBranch" }), upstream: "refs/remotes/origin/main" };
+    mocks.sessions.set("k", session([local, ref("refs/remotes/origin/feature/x", { type: "remoteBranch", remote: "origin" })]));
+    await trackRemoteBranch("k", "feature/x");
+    expect(mocks.open).toHaveBeenCalledWith("trackRemoteBranch", expect.objectContaining({ upstream: "refs/remotes/origin/main", suggested: null }));
+  });
 });
 
 describe("refs given to Git", () => {
@@ -48,10 +68,11 @@ describe("refs given to Git", () => {
     });
   });
 
-  it("starts a branch for a remote branch at its full name", async () => {
+  it("starts a branch for a remote branch at its full name, then makes it track that as its own step", async () => {
     mocks.sessions.set("k", session([ref("refs/remotes/origin/dev", { type: "remoteBranch", remote: "origin" })]));
     await requestCheckout("k", { kind: "remote", remote: "origin/dev", local: "dev" });
     expect(mocks.opBranchCreate).toHaveBeenCalledWith("k", "dev", "refs/remotes/origin/dev", true);
+    expect(mocks.opBranchSetUpstream).toHaveBeenCalledWith("k", "dev", "refs/remotes/origin/dev");
   });
 
   it("merges by the short name unless another ref has it too", async () => {

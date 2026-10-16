@@ -16,6 +16,8 @@ import {
   dirtyTreeReason,
   isDetached,
   mergeInto,
+  pushBranch,
+  pushBranchReason,
   removeTag,
   renameBranch,
   requestCheckout,
@@ -79,6 +81,15 @@ const mergeReason = computed(() => {
 });
 
 const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch cannot be deleted." : null));
+
+/** A local branch pushes to the remote branch it tracks; with none, the Push dialog creates one. */
+const pushUpstream = computed(() => {
+  if (props.kind.type !== "localBranch") return null;
+  const up = (session.value?.refs?.refs ?? []).find((r) => r.fullName === props.fullName)?.upstream ?? null;
+  return up?.startsWith("refs/remotes/") ? up.slice("refs/remotes/".length) : null;
+});
+const pushText = computed(() => (pushUpstream.value ? `Push to ${pushUpstream.value}` : "Push to a New Remote Branch…"));
+const pushReason = computed(() => pushBranchReason(session.value, props.short));
 /** A fetch, pull or push already running would have to finish first. */
 const deleteRemoteReason = computed(() => deleteRemoteBranchReason(session.value));
 
@@ -109,6 +120,7 @@ function chooseColour(colour: number | null): void {
 
       <template v-if="kind.type === 'localBranch'">
         <ContextMenuSeparator />
+        <ActionMenuItem :reason="pushReason" @select="pushBranch(session, short)">{{ pushText }}</ActionMenuItem>
         <ActionMenuItem @select="trackRemoteBranch(sessionKey, short)">Track Remote Branch…</ActionMenuItem>
         <ActionMenuItem @select="renameBranch(sessionKey, short)">Rename Branch…</ActionMenuItem>
         <ActionMenuItem destructive :reason="deleteReason" @select="deleteBranch(sessionKey, short)">Delete Branch…</ActionMenuItem>

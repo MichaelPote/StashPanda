@@ -8,6 +8,8 @@ const commands = vi.hoisted(() => ({
   opPush: vi.fn(),
   opSync: vi.fn(),
   opSetPushDefault: vi.fn(),
+  opBranchSetUpstream: vi.fn(),
+  opRemoveStaleLock: vi.fn(),
 }));
 const notices = vi.hoisted(() => [] as { message: string; action: { label: string } | null }[]);
 const dialogs = vi.hoisted(() => ({ open: vi.fn() }));
@@ -28,7 +30,7 @@ vi.mock("@/stores/sessions", () => ({
   }),
 }));
 
-import { pushCurrentBranch, syncCurrentBranch, syncOutcome } from "./repoActions";
+import { pushBranch, pushCurrentBranch, syncCurrentBranch, syncOutcome } from "./repoActions";
 
 const ok = <T>(data: T) => Promise.resolve({ status: "ok", data });
 const pushed = { ok: true, exitCode: 0, stdout: "", stderr: "", conflicts: false };
@@ -62,6 +64,61 @@ beforeEach(() => {
   commands.getPullMode.mockReturnValue(ok(null));
   commands.opPush.mockReturnValue(ok(pushed));
   commands.opSetPushDefault.mockReturnValue(ok(pushed));
+  commands.opBranchSetUpstream.mockReturnValue(ok(pushed));
+  commands.opRemoveStaleLock.mockReturnValue(ok(null));
+});
+
+describe("pushing a branch to a new remote branch", () => {
+  const configLocked = { status: "error", error: { kind: "configLocked", lockPath: ".git/config.lock" } };
+  /** `feature` tracking nothing, and pushed through the Push dialog to origin/feature with tracking on. */
+  function untracked() {
+    const s = session() as unknown as { refs: { refs: { upstream: string | null }[] } };
+    s.refs.refs[0]!.upstream = null;
+    commands.getPushTarget.mockReturnValue(ok(null));
+    dialogs.open.mockResolvedValueOnce({ target: { remote: "origin", branch: "feature" }, setUpstream: true });
+    return s as never;
+  }
+
+  it("pushes, then sets the upstream as a step of its own", async () => {
+    await pushCurrentBranch(untracked());
+    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", { remote: "origin", branch: "feature" });
+    expect(commands.opBranchSetUpstream).toHaveBeenCalledWith("repo", "feature", "refs/remotes/origin/feature");
+    expect(commands.opPush.mock.invocationCallOrder[0]).toBeLessThan(commands.opBranchSetUpstream.mock.invocationCallOrder[0]!);
+    expect(notices.map((n) => n.message)).toEqual(["Pushed feature to origin/feature. feature now tracks origin/feature."]);
+  });
+
+  it("offers to remove a config.lock left behind, then sets the upstream", async () => {
+    const s = untracked();
+    commands.opBranchSetUpstream.mockReturnValueOnce(Promise.resolve(configLocked));
+    dialogs.open.mockResolvedValueOnce(true);
+    await pushCurrentBranch(s);
+    expect(dialogs.open).toHaveBeenLastCalledWith("confirm", expect.objectContaining({ title: "Remove Git's lock file?" }));
+    expect(commands.opRemoveStaleLock).toHaveBeenCalledWith("repo", "config");
+    expect(commands.opBranchSetUpstream).toHaveBeenCalledTimes(2);
+    expect(notices.map((n) => n.message)).toEqual(["Pushed feature to origin/feature. feature now tracks origin/feature."]);
+  });
+
+  it("says the push worked but the branch does not track it yet when the lock is kept", async () => {
+    const s = untracked();
+    commands.opBranchSetUpstream.mockReturnValueOnce(Promise.resolve(configLocked));
+    dialogs.open.mockResolvedValueOnce(false);
+    await pushCurrentBranch(s);
+    expect(commands.opRemoveStaleLock).not.toHaveBeenCalled();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.message).toMatch(/^Pushed feature to origin\/feature\. But feature does not track origin\/feature yet\. .*\.git\/config\.lock/);
+    expect(notices[0]!.action?.label).toBe("Track Remote Branch…");
+  });
+
+  it("pushes a branch that is not checked out", async () => {
+    const s = session() as unknown as { refs: { refs: { kind: { type: string }; short: string; upstream: string | null }[] } };
+    s.refs.refs.push({ kind: { type: "localBranch" }, short: "hotfix/x", upstream: null });
+    commands.getPushTarget.mockReturnValue(ok(null));
+    dialogs.open.mockResolvedValueOnce({ target: { remote: "origin", branch: "hotfix/x" }, setUpstream: true });
+    await pushBranch(s as never, "hotfix/x");
+    expect(dialogs.open).toHaveBeenCalledWith("push", expect.objectContaining({ branch: "hotfix/x", tracks: null }));
+    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "hotfix/x", { remote: "origin", branch: "hotfix/x" });
+    expect(commands.opBranchSetUpstream).toHaveBeenCalledWith("repo", "hotfix/x", "refs/remotes/origin/hotfix/x");
+  });
 });
 
 describe("pushing without choosing a target", () => {
@@ -69,7 +126,7 @@ describe("pushing without choosing a target", () => {
     commands.getPushTarget.mockReturnValue(ok({ remote: "origin", branch: "feature" }));
     await pushCurrentBranch(session());
     expect(dialogs.open).not.toHaveBeenCalled();
-    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", null, false);
+    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", null);
     expect(notices.map((n) => n.message)).toEqual(["Pushed feature to origin/feature."]);
   });
 
@@ -79,7 +136,7 @@ describe("pushing without choosing a target", () => {
     await pushCurrentBranch(session());
     expect(dialogs.open).toHaveBeenCalledWith("pushDefault", { key: "repo", branch: "feature", upstream: { remote: "origin", branch: "main" }, action: "push" });
     expect(commands.opSetPushDefault).not.toHaveBeenCalled();
-    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", { remote: "origin", branch: "main" }, false);
+    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", { remote: "origin", branch: "main" });
     expect(notices.map((n) => n.message)).toEqual(["Pushed feature to origin/main."]);
   });
 
@@ -88,7 +145,7 @@ describe("pushing without choosing a target", () => {
     dialogs.open.mockResolvedValue({ kind: "always", mode: "current" });
     await pushCurrentBranch(session());
     expect(commands.opSetPushDefault).toHaveBeenCalledWith("repo", "current");
-    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", null, false);
+    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", null);
     expect(notices.map((n) => n.message)).toEqual(["Pushed feature to origin/feature."]);
   });
 
@@ -107,7 +164,7 @@ describe("pushing without choosing a target", () => {
     dialogs.open.mockResolvedValueOnce({ kind: "otherTarget" }).mockResolvedValueOnce({ target: chosen, setUpstream: false });
     await pushCurrentBranch(session());
     expect(dialogs.open).toHaveBeenLastCalledWith("push", { key: "repo", branch: "feature", remotes: ["origin"], tracks: "origin/main" });
-    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", chosen, false);
+    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "feature", chosen);
   });
 
   it("pushes nothing when that dialog is cancelled", async () => {

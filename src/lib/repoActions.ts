@@ -31,9 +31,10 @@ import { useUiStateStore } from "@/stores/uiState";
 
 /**
  * Runs one write operation and refetches refs and status once it has finished, whatever the
- * outcome. `op` starts the command. When Git finds `index.lock` still there (the backend has
- * already waited and tried once more), asks whether to remove it; if the user agrees, removes it
- * and runs the command once more. Otherwise the `indexLocked` error is thrown as it came.
+ * outcome. `op` starts the command. When Git finds `index.lock` or `config.lock` still there (the
+ * backend has already waited and tried once more), asks whether to remove it; if the user agrees,
+ * removes it and runs the command once more. Otherwise the `indexLocked` or `configLocked` error
+ * is thrown as it came.
  */
 export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResult<T>>): Promise<T> {
   const sessions = useSessionsStore();
@@ -41,9 +42,10 @@ export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResu
     try {
       return await unwrap(op());
     } catch (e) {
-      if (!(e instanceof IpcError && e.error.kind === "indexLocked")) throw e;
-      if (!(await confirmRemoveLock(e.error.lockPath))) throw e;
-      await unwrap(commands.opRemoveStaleLock(key));
+      if (!(e instanceof IpcError && (e.error.kind === "indexLocked" || e.error.kind === "configLocked"))) throw e;
+      const lock = e.error.kind === "indexLocked" ? "index" : "config";
+      if (!(await confirmRemoveLock(e.error.lockPath, lock))) throw e;
+      await unwrap(commands.opRemoveStaleLock(key, lock));
       return await unwrap(op());
     }
   } finally {
@@ -51,16 +53,44 @@ export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResu
   }
 }
 
-/** Asks whether to delete a lock file Git left behind. */
-function confirmRemoveLock(lockPath: string): Promise<boolean> {
+/** Asks whether to delete a lock file Git left behind: the index's, or the repository config's. */
+function confirmRemoveLock(lockPath: string, lock: "index" | "config"): Promise<boolean> {
+  const harm = lock === "index" ? "removing its lock can damage the index" : "removing its lock can lose the settings it is saving";
   return useDialogsStore().open("confirm", {
     title: "Remove Git's lock file?",
     message:
-      `Git did not run because its lock file is there: ${lockPath}\n\n` +
+      `Git could not ${lock === "index" ? "run" : "save to the repository's settings file"} because its lock file is there: ${lockPath}\n\n` +
       "Git leaves it behind when one of its commands crashes or is killed. If no other program is running Git in this repository right now, " +
-      "removing it is safe, and the command runs again. If another Git command is still running, wait for it instead: removing its lock can damage the index.",
+      `removing it is safe, and the command runs again. If another Git command is still running, wait for it instead: ${harm}.`,
     confirmLabel: "Remove lock and try again",
     destructive: true,
+  });
+}
+
+/**
+ * Makes `branch` track `upstream` (`refs/remotes/origin/dev`) as a step of its own, after a push
+ * or a new branch that has already worked, and posts the outcome after `done` ("Pushed dev to
+ * origin/dev."). Git writes the upstream into `.git/config`; when another Git process holds that
+ * file (`config.lock`), `runOp` waits, then offers to remove a lock left behind. If it still
+ * fails, the push or branch stands, and the notice says so and offers Track Remote Branch….
+ */
+async function trackAfter(key: string, branch: string, upstream: string, done: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const short = upstream.replace(/^refs\/remotes\//, "");
+  let failure: string;
+  try {
+    const result = await runOp(key, () => commands.opBranchSetUpstream(key, branch, upstream));
+    if (result.ok) {
+      sessions.notifySuccess(`${done} ${branch} now tracks ${short}.`);
+      return;
+    }
+    failure = opFailureText(result, `Making ${branch} track ${short}`);
+  } catch (e) {
+    failure = errorMessage(e);
+  }
+  sessions.notify(`${done} But ${branch} does not track ${short} yet. ${failure}`, {
+    label: "Track Remote Branch…",
+    run: () => trackRemoteBranch(key, branch),
   });
 }
 
@@ -180,8 +210,10 @@ export async function requestCheckout(key: string, target: CheckoutTarget): Prom
   try {
     if (plan.kind === "remote") {
       // The full name, so that a tag or local branch also called `origin/dev` is not the start.
+      // Created and checked out first, then made to track the remote branch as a step of its own
+      // (`trackAfter`), so that a locked `.git/config` cannot leave it half made.
       const result = await runOp(key, () => commands.opBranchCreate(key, plan.local, `refs/remotes/${plan.remote}`, true));
-      if (result.ok) sessions.notifySuccess(`Created branch ${plan.local} tracking ${plan.remote}, and checked it out.`);
+      if (result.ok) await trackAfter(key, plan.local, `refs/remotes/${plan.remote}`, `Created branch ${plan.local} from ${plan.remote}, and checked it out.`);
       else sessions.notify(opFailureText(result, `Creating branch ${plan.local} from ${plan.remote}`));
       return;
     }
@@ -495,19 +527,40 @@ async function askWhereToPush(key: string, branch: string, upstream: PushTarget,
   return null;
 }
 
-/**
- * Pushes the checked-out branch where plain `git push` would: the remote branch it tracks, with
- * progress and Stop in the status bar. A branch that tracks nothing opens the Push dialog to
- * choose where, which then sets that as its upstream. One whose upstream has another name, when
- * Git's `push.default` does not push there, asks first (`askWhereToPush`), so that a branch started
- * from `origin/main` is never pushed onto `main` unasked. Never forces: when the remote has commits
- * the branch lacks, the notice offers to pull them.
- */
+/** Why local branch `branch` cannot be pushed right now, or null when it can. */
+export function pushBranchReason(session: RepoSession | null | undefined, branch: string): string | null {
+  if (!session) return "Open a repository first.";
+  if (branch === currentBranch(session)) return pushReason(session);
+  if (!session.status || !session.refs) return "The repository is still loading.";
+  if (session.refs.remotes.length === 0) return "This repository has no remotes to push to.";
+  return busyReason(session);
+}
+
+/** Pushes the checked-out branch; see `pushBranch`. */
 export async function pushCurrentBranch(session: RepoSession | null): Promise<void> {
-  const sessions = useSessionsStore();
   const reason = pushReason(session);
   const branch = currentBranch(session);
-  if (reason || !session?.refs || branch === null) {
+  if (reason || !session || branch === null) {
+    useSessionsStore().notify(reason ?? "The repository is still loading.");
+    return;
+  }
+  await pushBranch(session, branch);
+}
+
+/**
+ * Pushes local `branch`, checked out or not, where plain `git push` would: the remote branch it
+ * tracks, with progress and Stop in the status bar. A branch that tracks nothing opens the Push
+ * dialog to choose where, and to create that remote branch; it then tracks it, set as a step of
+ * its own after the push (`trackAfter`), as `git push --set-upstream` would leave it untracking
+ * without failing when `.git/config` is locked. One whose upstream has another name, when Git's
+ * `push.default` does not push there, asks first (`askWhereToPush`), so that a branch started
+ * from `origin/main` is never pushed onto `main` unasked. Never forces: when the remote has
+ * commits the branch lacks, the notice offers to pull them.
+ */
+export async function pushBranch(session: RepoSession | null, branch: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = pushBranchReason(session, branch);
+  if (reason || !session?.refs) {
     sessions.notify(reason ?? "The repository is still loading.");
     return;
   }
@@ -557,11 +610,12 @@ export async function pushCurrentBranch(session: RepoSession | null): Promise<vo
   }
   const to = `${target.remote}/${target.branch}`;
   try {
-    const result = await runOperation(key, `Pushing ${branch} to ${to}`, (opId) => commands.opPush(key, opId, branch, chosen ? target : null, setUpstream));
+    const result = await runOperation(key, `Pushing ${branch} to ${to}`, (opId) => commands.opPush(key, opId, branch, chosen ? target : null));
     const output = `${result.stdout}\n${result.stderr}`;
     if (result.ok) {
-      const tracking = setUpstream ? ` ${branch} now tracks it.` : "";
-      sessions.notifySuccess(/Everything up-to-date/i.test(output) ? `${to} already has every commit on ${branch}.` : `Pushed ${branch} to ${to}.${tracking}`);
+      const done = /Everything up-to-date/i.test(output) ? `${to} already has every commit on ${branch}.` : `Pushed ${branch} to ${to}.`;
+      if (setUpstream) await trackAfter(key, branch, `refs/remotes/${target.remote}/${target.branch}`, done);
+      else sessions.notifySuccess(done);
     } else if (result.stderr.includes("[rejected]")) {
       sessions.notify(`${to} has commits that ${branch} does not have. Pull them first, then push again.`, {
         label: "Pull…",
@@ -1226,7 +1280,8 @@ export async function deleteBranch(key: string, name: string): Promise<void> {
 
 /**
  * Opens the Track Remote Branch dialog for local branch `name`, listing every remote branch with
- * the one it tracks now picked first. The dialog runs the command itself.
+ * the one it tracks now picked first, or, when it tracks nothing, the remote branch of the same
+ * name. The dialog runs the command itself.
  */
 export async function trackRemoteBranch(key: string, name: string): Promise<void> {
   const sessions = useSessionsStore();
@@ -1241,7 +1296,11 @@ export async function trackRemoteBranch(key: string, name: string): Promise<void
     sessions.notify(`This repository has no remote branches for ${name} to track. Fetch from a remote, or push ${name} to one, first.`);
     return;
   }
-  await useDialogsStore().open("trackRemoteBranch", { key, branch: name, choices, upstream });
+  // With no upstream, the remote branch of the same name is offered first, on origin if several
+  // remotes have one: the usual case of a branch pushed without tracking, or fetched alongside.
+  const sameName = choices.filter((c) => c.short === `${c.remote}/${name}`);
+  const suggested = upstream === null ? (sameName.find((c) => c.remote === "origin") ?? sameName[0])?.fullName ?? null : null;
+  await useDialogsStore().open("trackRemoteBranch", { key, branch: name, choices, upstream, suggested });
 }
 
 /**

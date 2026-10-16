@@ -27,7 +27,7 @@ const submitting = ref(false);
 
 watch(request, (r) => {
   if (!r) return;
-  chosen.value = r.upstream ?? "";
+  chosen.value = r.upstream ?? r.suggested ?? "";
   error.value = null;
   submitting.value = false;
 });

@@ -33,9 +33,9 @@ async fn after_write(app: &AppHandle, state: &AppState, key: &str) {
 }
 
 /// Run one operation under the exclusive lock. When Git reports that
-/// `index.lock` exists, wait briefly and retry once (another Git process is
-/// usually just finishing); if it is still there, return `IndexLocked` so the
-/// UI can offer `op_remove_stale_lock`.
+/// `index.lock` or `config.lock` exists, wait briefly and retry once (another
+/// Git process is usually just finishing); if it is still there, return
+/// `IndexLocked` or `ConfigLocked` so the UI can offer `op_remove_stale_lock`.
 macro_rules! write_op {
     ($app:expr, $state:expr, $key:expr, |$client:ident| $body:expr) => {{
         let h = repo(&$state, &$key).await?;
@@ -44,15 +44,15 @@ macro_rules! write_op {
             let _exclusive = h.lock.write().await;
             let $client = &h.client;
             let mut out = $body;
-            if out.as_ref().is_ok_and(|r| ops::index_lock_in(r).is_some()) {
+            if out.as_ref().is_ok_and(|r| ops::lock_in(r).is_some()) {
                 tokio::time::sleep(INDEX_LOCK_RETRY).await;
                 out = $body;
             }
             out
         };
         after_write(&$app, &$state, &$key).await;
-        out.and_then(|r| match ops::index_lock_in(&r) {
-            Some(lock_path) => Err(GitError::IndexLocked { lock_path }),
+        out.and_then(|r| match ops::lock_in(&r) {
+            Some(locked) => Err(locked),
             None => Ok(r),
         })
     }};
@@ -104,16 +104,33 @@ pub async fn op_commit(app: AppHandle, state: State<'_, AppState>, key: String, 
     write_op!(app, state, key, |c| ops::commit(c, &message, paths.as_deref(), amend, sign_off).await)
 }
 
-/// Delete `<git dir>/index.lock` after a Git process crashed or was killed
-/// and left it behind. The frontend confirms with the user first, since
-/// deleting the lock of a Git process that is still running corrupts the
-/// index. A lock that has already gone counts as success.
+/// Which lock file `op_remove_stale_lock` deletes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum StaleLock {
+    /// `<git dir>/index.lock`, after an `indexLocked` error.
+    Index,
+    /// `config.lock` next to the repository's `config` (in the main repository's Git folder,
+    /// for a linked worktree), after a `configLocked` error.
+    Config,
+}
+
+/// Delete a lock file a Git process left behind when it crashed or was killed:
+/// `index.lock`, or `config.lock`. The frontend confirms with the user first,
+/// since deleting the lock of a Git process that is still running loses what
+/// it was writing. A lock that has already gone counts as success.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_remove_stale_lock(state: State<'_, AppState>, key: String) -> Result<()> {
+pub async fn op_remove_stale_lock(state: State<'_, AppState>, key: String, lock: StaleLock) -> Result<()> {
     let h = repo(&state, &key).await?;
     let _exclusive = h.lock.write().await;
-    let lock = NativePath(format!("{}/index.lock", h.info.git_dir.trim_end_matches(['/', '\\'])));
+    let dir = match lock {
+        StaleLock::Index => &h.info.git_dir,
+        StaleLock::Config if !h.info.common_dir.is_empty() => &h.info.common_dir,
+        StaleLock::Config => &h.info.git_dir,
+    };
+    let file = if lock == StaleLock::Index { "index.lock" } else { "config.lock" };
+    let lock = NativePath(format!("{}/{file}", dir.trim_end_matches(['/', '\\'])));
     tracing::info!("removing stale lock {} for {key}", lock.0);
     h.transport.remove_file(&lock).await
 }
@@ -364,7 +381,7 @@ async fn sync_steps(
         return Ok(result);
     }
     let progress = |line: String| emit(line, true);
-    match ops::push(&h.client, branch, &push_target, false, &progress, &op.token).await {
+    match ops::push(&h.client, branch, &push_target, &progress, &op.token).await {
         Ok(r) => result.push = Some(r),
         Err(GitError::Cancelled) => result.push_stopped = true,
         Err(e) => return Err(e),
@@ -418,8 +435,9 @@ pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, o
 
 /// Push local `branch`. With no `target`, where plain `git push` would push it (failing with
 /// `invalidPath` when it has no upstream, or when `push.default` refuses an upstream with another
-/// name: call `getPushTarget` first); with a `target` the user chose, there, and `setUpstream`
-/// makes the branch track it. Never forces: a rejected push comes back with `ok: false` and
+/// name: call `getPushTarget` first); with a `target` the user chose, there. It never sets the
+/// upstream; to make the branch track the target, call `opBranchSetUpstream` after it succeeds,
+/// as its own step that can be retried if `.git/config` is locked. Never forces: a rejected push comes back with `ok: false` and
 /// `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
 #[tauri::command]
 #[specta::specta]
@@ -431,19 +449,18 @@ pub async fn op_push(
     op_id: String,
     branch: String,
     target: Option<PushTarget>,
-    set_upstream: bool,
 ) -> Result<OpResult> {
     network_op!(app, state, key, op_id, |h, progress, cancel| {
         let resolved = match target {
-            Some(t) => Ok((t, set_upstream)),
+            Some(t) => Ok(t),
             None => match ops::implicit_push_target(&h.client, &branch).await {
-                Ok(Some(t)) => Ok((t, false)),
+                Ok(Some(t)) => Ok(t),
                 Ok(None) => Err(GitError::InvalidPath { path: branch.clone(), reason: "the branch does not track a remote branch; choose where to push it".into() }),
                 Err(e) => Err(e),
             },
         };
         match resolved {
-            Ok((target, set_upstream)) => ops::push(&h.client, &branch, &target, set_upstream, &progress, cancel).await,
+            Ok(target) => ops::push(&h.client, &branch, &target, &progress, cancel).await,
             Err(e) => Err(e),
         }
     })

@@ -83,6 +83,8 @@ export function GitErrorMessage(error: GitError): string {
       return `Git refuses to use ${error.path} because it is owned by another user (see git config safe.directory).`;
     case "indexLocked":
       return `The Git index is locked by ${error.lockPath}. Another Git process may be running.`;
+    case "configLocked":
+      return `Git could not save to the repository's settings file, because ${error.lockPath} is there. Another Git process may be saving to it.`;
     case "invalidPath":
       return `The path ${error.path} is not valid: ${error.reason}`;
     case "objectNotFound":

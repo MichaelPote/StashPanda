@@ -31,6 +31,18 @@ fn result(out: crate::transport::Output) -> OpResult {
     OpResult { ok: out.success(), exit_code: out.exit_code, stdout, stderr, conflicts }
 }
 
+/// `IndexLocked` or `ConfigLocked` when Git failed because `index.lock` or `config.lock` is
+/// there (another Git process is running, or one died and left the file behind).
+pub fn lock_in(res: &OpResult) -> Option<GitError> {
+    if res.ok {
+        return None;
+    }
+    match classify_git_failure("op", vec![], res.exit_code, res.stderr.as_bytes(), &TransportKind::Local) {
+        e @ (GitError::IndexLocked { .. } | GitError::ConfigLocked { .. }) => Some(e),
+        _ => None,
+    }
+}
+
 /// The lock path when Git refused to run because `index.lock` already exists
 /// (another Git process is running, or one died and left the file behind).
 pub fn index_lock_in(res: &OpResult) -> Option<String> {
@@ -86,15 +98,20 @@ pub async fn checkout(client: &GitClient, target: &str) -> Result<OpResult> {
 
 /// Create branch `name` at `start_point`, and check it out when `checkout`. A start point of
 /// `HEAD` is left out, as `git checkout -b <name>` does it, so that on a branch with no commits
-/// yet checking out a new branch renames the unborn branch instead of failing.
+/// yet checking out a new branch renames the unborn branch instead of failing. From a
+/// remote-tracking branch (`refs/remotes/origin/dev`) it is created with `--no-track`: Git would
+/// otherwise write the upstream into `.git/config` in the same command, and when that file is
+/// locked it creates the branch, fails, and leaves it neither checked out nor tracking. Set the
+/// upstream afterwards with `branch_set_upstream`, which can be retried on its own.
 pub async fn branch_create(client: &GitClient, name: &str, start_point: &str, checkout: bool) -> Result<OpResult> {
     valid_ref_name(name)?;
     valid_revision(start_point)?;
     let start = (start_point != "HEAD").then_some(start_point);
+    let no_track = start_point.starts_with("refs/remotes/").then_some("--no-track");
     let args: Vec<&str> = if checkout {
-        ["checkout", "-b", name].into_iter().chain(start).collect()
+        ["checkout", "-b", name].into_iter().chain(no_track).chain(start).collect()
     } else {
-        ["branch", name].into_iter().chain(start).collect()
+        ["branch"].into_iter().chain(no_track).chain([name]).chain(start).collect()
     };
     let out = client.exec_allow_failure(GitReq::new("branch", args).user()).await?;
     Ok(result(out))
@@ -344,9 +361,11 @@ fn upstream_from_config(bytes: &[u8], branch: &str) -> Option<PushTarget> {
     Some(PushTarget { remote, branch })
 }
 
-/// `git push --progress <remote> refs/heads/<branch>:refs/heads/<target branch>`, with
-/// `--set-upstream` when `set_upstream`. Full ref names on both sides, so a tag with the same
-/// name as the branch cannot be pushed by mistake. Never forces: a push the remote rejects
+/// `git push --progress <remote> refs/heads/<branch>:refs/heads/<target branch>`. Full ref names
+/// on both sides, so a tag with the same name as the branch cannot be pushed by mistake. It never
+/// sets the upstream: `git push --set-upstream` writes it into `.git/config` after the push, and
+/// when that file is locked it says so and still exits 0, so the branch would silently track
+/// nothing. Set it afterwards with `branch_set_upstream`, as its own step. Never forces: a push the remote rejects
 /// because it has commits the branch lacks fails with `[rejected]` in stderr (see
 /// `push_rejected`). Stopping it is safe for the local repository; if the remote had already
 /// taken the update, the next fetch shows it.
@@ -354,7 +373,6 @@ pub async fn push(
     client: &GitClient,
     branch: &str,
     target: &PushTarget,
-    set_upstream: bool,
     progress: &(dyn Fn(String) + Send + Sync),
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<OpResult> {
@@ -362,11 +380,7 @@ pub async fn push(
     valid_remote(&target.remote)?;
     valid_ref_name(&target.branch)?;
     let refspec = format!("refs/heads/{branch}:refs/heads/{}", target.branch);
-    let mut args = vec!["push", "--progress"];
-    if set_upstream {
-        args.push("--set-upstream");
-    }
-    args.extend([target.remote.as_str(), refspec.as_str()]);
+    let args = ["push", "--progress", target.remote.as_str(), refspec.as_str()];
     let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
     Ok(result(out))
 }
@@ -1545,11 +1559,12 @@ mod e2e {
         assert_eq!(out(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
         assert!(checkout(&client, "main").await.unwrap().ok);
 
-        // A tag named like the remote branch: the full name still starts the branch there and
-        // tracks it.
+        // A tag named like the remote branch: the full name still starts the branch there, and
+        // the upstream, set as its own step, is the remote branch.
         git(&dir, &["tag", "origin/dev"]);
         let tracked = branch_create(&client, "dev", "refs/remotes/origin/dev", true).await.unwrap();
         assert!(tracked.ok, "{tracked:?}");
+        assert!(branch_set_upstream(&client, "dev", Some("refs/remotes/origin/dev")).await.unwrap().ok);
         assert_eq!(out(&dir, &["rev-parse", "--symbolic-full-name", "dev@{upstream}"]), "refs/remotes/origin/dev");
         assert_eq!(out(&dir, &["rev-parse", "HEAD"]), one);
 
@@ -2954,15 +2969,17 @@ mod e2e {
         let cancel = tokio_util::sync::CancellationToken::new();
         let rev = |dir: &Path, r: &str| String::from_utf8(Command::new("git").arg("-C").arg(dir).args(["rev-parse", r]).output().unwrap().stdout).unwrap();
 
-        // A first push to a new remote branch sets the upstream. (Cloning an empty repository
-        // already makes main track origin/main, so that is undone first.)
+        // A first push to a new remote branch, then the upstream set as its own step. (Cloning an
+        // empty repository already makes main track origin/main, so that is undone first.)
         git(&local, &["config", "--remove-section", "branch.main"]);
         std::fs::write(local.join("a.txt"), "1\n").unwrap();
         git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "one"]);
         assert_eq!(upstream_of(&client, "main").await.unwrap(), None);
         let main = PushTarget { remote: "origin".into(), branch: "main".into() };
-        let first = push(&client, "main", &main, true, &progress, &cancel).await.unwrap();
+        let first = push(&client, "main", &main, &progress, &cancel).await.unwrap();
         assert!(first.ok, "{first:?}");
+        assert_eq!(upstream_of(&client, "main").await.unwrap(), None, "the push itself leaves the config alone");
+        assert!(branch_set_upstream(&client, "main", Some("refs/remotes/origin/main")).await.unwrap().ok);
         assert_eq!(upstream_of(&client, "main").await.unwrap(), Some(main.clone()));
         assert_eq!(rev(&origin, "main"), rev(&local, "HEAD"));
 
@@ -2975,14 +2992,15 @@ mod e2e {
         assert_eq!(rev(&local, "origin/main"), rev(&other, "HEAD"));
         std::fs::write(local.join("c.txt"), "3\n").unwrap();
         git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "three"]);
-        let rejected = push(&client, "main", &main, false, &progress, &cancel).await.unwrap();
+        let rejected = push(&client, "main", &main, &progress, &cancel).await.unwrap();
         assert!(push_rejected(&rejected), "{rejected:?}");
 
         // A branch pushed under another name; a tag of the same name is not pushed instead.
         git(&local, &["tag", "topic"]);
         git(&local, &["branch", "topic", "HEAD~1"]);
         let topic = PushTarget { remote: "origin".into(), branch: "remote-topic".into() };
-        assert!(push(&client, "topic", &topic, true, &progress, &cancel).await.unwrap().ok);
+        assert!(push(&client, "topic", &topic, &progress, &cancel).await.unwrap().ok);
+        assert!(branch_set_upstream(&client, "topic", Some("refs/remotes/origin/remote-topic")).await.unwrap().ok);
         assert_eq!(rev(&origin, "refs/heads/remote-topic"), rev(&local, "refs/heads/topic"));
         assert_eq!(upstream_of(&client, "topic").await.unwrap(), Some(topic.clone()));
         assert!(Command::new("git").arg("-C").arg(&origin).args(["rev-parse", "--verify", "-q", "refs/tags/topic"]).status().unwrap().code() == Some(1));
@@ -3014,14 +3032,59 @@ mod e2e {
         git(&local, &["push", "-q", "-u", &url, "untracked"]);
         let by_url = implicit_push_target(&client, "untracked").await.unwrap().unwrap();
         assert_eq!(by_url, PushTarget { remote: url.clone(), branch: "untracked".into() });
-        let pushed = push(&client, "untracked", &by_url, false, &progress, &cancel).await.unwrap();
+        let pushed = push(&client, "untracked", &by_url, &progress, &cancel).await.unwrap();
         assert!(pushed.ok, "{pushed:?}");
         let fetched = pull_fetch(&client, &url, "untracked", &progress, &cancel).await.unwrap();
         assert!(fetched.ok, "{fetched:?}");
 
         cancel.cancel();
         assert!(matches!(fetch_all(&client, &progress, &cancel).await, Err(GitError::Cancelled)));
-        assert!(matches!(push(&client, "main", &PushTarget { remote: "-o".into(), branch: "main".into() }, false, &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        assert!(matches!(push(&client, "main", &PushTarget { remote: "-o".into(), branch: "main".into() }, &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_locked_config_leaves_push_and_checkout_whole_and_fails_only_the_upstream() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-config-lock-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local) = (root.join("origin.git"), root.join("local"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), local.as_os_str()]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&local, &["push", "-q", "origin", "main", "main:refs/heads/feature/x"]);
+        git(&local, &["fetch", "-q"]);
+        git(&local, &["checkout", "-q", "-b", "hotfix/before-email-confirmation"]);
+        let client = client_for(&local);
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // Another Git process is writing the config, or one died and left its lock behind.
+        let lock = local.join(".git/config.lock");
+        std::fs::write(&lock, "").unwrap();
+
+        // The push itself does not need the config, so it goes through whole.
+        let target = PushTarget { remote: "origin".into(), branch: "hotfix/before-email-confirmation".into() };
+        let pushed = push(&client, "hotfix/before-email-confirmation", &target, &progress, &cancel).await.unwrap();
+        assert!(pushed.ok && !pushed.stderr.contains("could not lock config"), "{pushed:?}");
+        assert!(out(&local, &["ls-remote", "--heads", "origin"]).contains("refs/heads/hotfix/before-email-confirmation"));
+        // Setting the upstream fails, recognisably, and can be run again once the lock is gone.
+        let upstream = "refs/remotes/origin/hotfix/before-email-confirmation";
+        let blocked = branch_set_upstream(&client, "hotfix/before-email-confirmation", Some(upstream)).await.unwrap();
+        assert!(matches!(lock_in(&blocked), Some(GitError::ConfigLocked { lock_path }) if lock_path == ".git/config.lock"), "{blocked:?}");
+        assert!(index_lock_in(&blocked).is_none());
+
+        // A local branch for a remote branch is created and checked out without the config.
+        let created = branch_create(&client, "x", "refs/remotes/origin/feature/x", true).await.unwrap();
+        assert!(created.ok, "{created:?}");
+        assert_eq!(out(&local, &["branch", "--show-current"]), "x");
+
+        std::fs::remove_file(&lock).unwrap();
+        assert!(branch_set_upstream(&client, "hotfix/before-email-confirmation", Some(upstream)).await.unwrap().ok);
+        assert_eq!(out(&local, &["rev-parse", "--abbrev-ref", "hotfix/before-email-confirmation@{upstream}"]), "origin/hotfix/before-email-confirmation");
+        assert_eq!(upstream_of(&client, "x").await.unwrap(), None, "created with --no-track");
+        assert!(branch_set_upstream(&client, "x", Some("refs/remotes/origin/feature/x")).await.unwrap().ok);
+        assert_eq!(out(&local, &["rev-parse", "--abbrev-ref", "x@{upstream}"]), "origin/feature/x");
         let _ = std::fs::remove_dir_all(&root);
     }
 
