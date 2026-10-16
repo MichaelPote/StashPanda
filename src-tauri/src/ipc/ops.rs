@@ -470,8 +470,10 @@ pub async fn op_push(
 /// remote: `git push <remote> --delete refs/heads/<branch>`, which also removes the
 /// remote-tracking branch here. Cannot be undone from here; confirm with the user first. A remote
 /// that no longer has the branch still returns `ok`, with "deleting a non-existent ref" in
-/// stderr; one that refuses returns `ok: false` with `[remote rejected]` in stderr. `opId` works
-/// as for `opPull`; `opCancel` stops it at any point.
+/// stderr; one that refuses returns `ok: false` with `[remote rejected]` in stderr. When the
+/// remote's branch has commits the remote-tracking branch here does not (someone pushed since the
+/// last fetch), nothing is deleted and it returns `ok: false` with `(stale info)` in stderr.
+/// `opId` works as for `opPull`; `opCancel` stops it at any point.
 #[tauri::command]
 #[specta::specta]
 pub async fn op_delete_remote_branch(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, remote: String, branch: String) -> Result<OpResult> {

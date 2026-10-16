@@ -1323,7 +1323,8 @@ export function deleteRemoteBranchReason(session: RepoSession | null | undefined
  * Asks for confirmation, then deletes remote branch `short` (`origin/feature/x`) on `remote`
  * with `git push origin --delete refs/heads/feature/x`, with progress and Stop in the status bar.
  * Git also removes `origin/feature/x` from this repository. Local branches, including one that
- * tracks it, are left alone.
+ * tracks it, are left alone. When the remote's branch has moved on since the last fetch, nothing is
+ * deleted (the backend pushes with a lease) and the notice says to fetch first.
  */
 export async function deleteRemoteBranch(key: string, short: string, remote: string): Promise<void> {
   const sessions = useSessionsStore();
@@ -1352,6 +1353,11 @@ export async function deleteRemoteBranch(key: string, short: string, remote: str
       sessions.notifySuccess(`Deleted ${branch} on ${remote}.`);
     } else if (missing) {
       sessions.notify(`${remote} has no branch ${branch}, so there is nothing to delete. Fetch to bring the remote branches here up to date.`);
+    } else if (result.stderr.includes("(stale info)")) {
+      sessions.notify(
+        `${branch} on ${remote} has commits that this repository has not fetched, so it was not deleted. ` +
+          `Fetch, look at what is new on ${short}, then delete it again if it is still not needed.`,
+      );
     } else {
       sessions.notify(networkFailureText(result, what));
     }

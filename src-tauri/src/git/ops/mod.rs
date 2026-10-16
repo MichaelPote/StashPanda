@@ -600,6 +600,13 @@ pub async fn branch_set_upstream(client: &GitClient, branch: &str, upstream: Opt
 /// branch, the branch its HEAD points at, no permission), which comes back as `[remote rejected]`
 /// in stderr. Stopping it is safe for the local repository; if the remote had already deleted the
 /// branch, the next fetch shows it.
+///
+/// The deletion carries `--force-with-lease=<ref>:<oid>`, with the commit `<remote>/<branch>` has
+/// here, so a branch someone has pushed to since the last fetch is not deleted: Git refuses with
+/// `[rejected] … (stale info)` (see `push_stale`), and commits this repository has never seen stay
+/// on the remote. That lease also refuses when the remote has no such branch any more, so a
+/// refusal is tried once more with an empty lease, which only lets the deletion through when the
+/// branch does not exist there; that keeps the "deleting a non-existent ref" answer above.
 pub async fn delete_remote_branch(
     client: &GitClient,
     remote: &str,
@@ -617,9 +624,30 @@ pub async fn delete_remote_branch(
     let Some(refname) = remote_ref_for(refspecs.lines(), &tracking) else {
         return Err(GitError::InvalidPath { path: tracking, reason: format!("no fetch refspec of {remote} maps a remote branch to it") });
     };
-    let req = GitReq::new("push", ["push", "--progress", remote, "--delete", refname.as_str()]).user().timeout(None).own_session();
-    let out = client.exec_streaming(req, progress, cancel).await?;
-    Ok(result(out))
+    let seen = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", &format!("{tracking}^{{commit}}")])).await?;
+    let seen = String::from_utf8_lossy(&seen.stdout).trim().to_string();
+    if seen.is_empty() {
+        return Err(GitError::InvalidPath { path: tracking, reason: "this repository has no such remote branch; fetch first".into() });
+    }
+    let delete = |expected: &str| {
+        let lease = format!("--force-with-lease={refname}:{expected}");
+        GitReq::new("push", ["push".to_string(), "--progress".into(), lease, remote.into(), "--delete".into(), refname.clone()])
+            .user()
+            .timeout(None)
+            .own_session()
+    };
+    let first = result(client.exec_streaming(delete(&seen), progress, cancel).await?);
+    if !push_stale(&first) {
+        return Ok(first);
+    }
+    let gone = result(client.exec_streaming(delete(""), progress, cancel).await?);
+    Ok(if gone.ok { gone } else { first })
+}
+
+/// True when a push with `--force-with-lease` was refused because the remote's branch is not
+/// where the lease expected: `! [rejected] dev (stale info)`.
+pub fn push_stale(res: &OpResult) -> bool {
+    !res.ok && res.stderr.contains("(stale info)")
 }
 
 /// The ref on the remote that a fetch with `refspecs` (`+refs/heads/*:refs/remotes/origin/*`)
@@ -3190,6 +3218,23 @@ mod e2e {
         let stale = delete_remote_branch(&client, "origin", "stale", &progress, &cancel).await.unwrap();
         assert!(stale.ok && stale.stderr.contains("non-existent ref"), "{stale:?}");
         assert!(Command::new("git").arg("-C").arg(&local).args(["rev-parse", "--verify", "-q", "refs/remotes/origin/stale"]).status().unwrap().code() == Some(1));
+
+        // Someone pushed to feature/y after this repository last fetched it: the commit this
+        // repository has never seen keeps the branch from being deleted.
+        git(&local, &["push", "-q", "origin", "main:refs/heads/feature/y"]);
+        let seen = out(&local, &["rev-parse", "refs/remotes/origin/feature/y"]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "unseen"]);
+        git(&local, &["push", "-q", "origin", "HEAD:refs/heads/feature/y"]);
+        git(&local, &["update-ref", "refs/remotes/origin/feature/y", &seen]);
+        let moved = delete_remote_branch(&client, "origin", "feature/y", &progress, &cancel).await.unwrap();
+        assert!(push_stale(&moved), "{moved:?}");
+        assert!(ls_remote().contains("refs/heads/feature/y"));
+        // Once fetched, it can be deleted.
+        git(&local, &["fetch", "-q"]);
+        assert!(delete_remote_branch(&client, "origin", "feature/y", &progress, &cancel).await.unwrap().ok);
+        assert!(!ls_remote().contains("refs/heads/feature/y"));
+        // A remote branch this repository has no remote-tracking branch for is refused.
+        assert!(matches!(delete_remote_branch(&client, "origin", "never-fetched", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
 
         // The remote refuses to delete the branch its HEAD points at.
         let refused = delete_remote_branch(&client, "origin", "main", &progress, &cancel).await.unwrap();
