@@ -368,6 +368,15 @@ export interface PullOutcome {
 /** Turns a finished pull into the notice to show. `from` is `origin/dev`, `into` the local branch. */
 export function pullOutcome(result: OpResult, from: string, into: string, mode: PullMode): PullOutcome {
   const output = `${result.stdout}\n${result.stderr}`;
+  const leftBehind = result.ok ? null : updateRefsLeftBehind(output);
+  if (leftBehind) {
+    return {
+      message: `Pulled ${from} into ${into}, with ${into}'s own commits rebased on top. ${updateRefsNote(leftBehind)}`,
+      kind: "error",
+      action: null,
+      failed: false,
+    };
+  }
   if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
     return {
       message: `Pulled ${from} into ${into}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
@@ -1025,8 +1034,34 @@ export async function continueOperation(session: RepoSession | null): Promise<vo
 }
 
 /** What to report after `git <command> --continue` ran for the operation `op`. */
+/**
+ * The branches a rebase with `rebase.updateRefs` should also have moved at the end but could not,
+ * because something else moved them while it ran, by their short names; null when `output` does
+ * not say so. Git finishes the rebase ("Successfully rebased and updated refs/heads/main") and
+ * then exits 1, listing them after "Failed to update the following refs with --update-refs:", so
+ * the rebase is done although the command failed.
+ */
+export function updateRefsLeftBehind(output: string): string[] | null {
+  if (!/Successfully rebased/i.test(output)) return null;
+  const listed = /Failed to update the following refs with --update-refs:([\s\S]*)$/i.exec(output);
+  if (!listed) return null;
+  const refs = [...listed[1]!.matchAll(/refs\/heads\/(\S+)/g)].map((m) => m[1]!);
+  return refs.length > 0 ? refs : null;
+}
+
+/** What to say about the branches `updateRefsLeftBehind` found. */
+function updateRefsNote(refs: string[]): string {
+  const one = refs.length === 1;
+  return (
+    `But ${refs.join(", ")} ${one ? "was" : "were"} not moved along with it, as rebase.updateRefs asks, because ${one ? "it" : "they"} changed ` +
+    `while the rebase ran; ${one ? "it is" : "they are"} where that change left ${one ? "it" : "them"}.`
+  );
+}
+
 export function continueOutcome(result: OpResult, op: InProgress, names: OperationNames): { message: string; kind: "success" | "error" } {
   const output = `${result.stdout}\n${result.stderr}`;
+  const leftBehind = op.kind === "rebase" && !result.ok ? updateRefsLeftBehind(output) : null;
+  if (leftBehind) return { message: `Finished rebasing onto ${names.ours}. ${updateRefsNote(leftBehind)}`, kind: "error" };
   const verb = OPERATION_VERBS[op.kind];
   const done =
     op.kind === "merge"
@@ -1242,6 +1277,8 @@ export async function openRebaseDialog(session: RepoSession | null): Promise<voi
  */
 export function rebaseOutcome(result: OpResult, branch: string, onto: string, open = false): { message: string; kind: "success" | "error"; failed: boolean } {
   const output = `${result.stdout}\n${result.stderr}`;
+  const leftBehind = result.ok ? null : updateRefsLeftBehind(output);
+  if (leftBehind) return { message: `Rebased ${branch} onto ${onto}. ${updateRefsNote(leftBehind)}`, kind: "error", failed: false };
   if (result.ok) {
     const message = /is up to date/i.test(output) ? `${branch} already has every commit on ${onto}.` : `Rebased ${branch} onto ${onto}.`;
     return { message, kind: "success", failed: false };

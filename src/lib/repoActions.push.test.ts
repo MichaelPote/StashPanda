@@ -32,7 +32,7 @@ vi.mock("@/stores/sessions", () => ({
   }),
 }));
 
-import { gitReason, opFailureText, pushBranch, pushBranchTo, pushCurrentBranch, syncCurrentBranch, syncOutcome } from "./repoActions";
+import { gitReason, opFailureText, pullOutcome, pushBranch, pushBranchTo, pushCurrentBranch, syncCurrentBranch, syncOutcome, updateRefsLeftBehind } from "./repoActions";
 
 const ok = <T>(data: T) => Promise.resolve({ status: "ok", data });
 const pushed = { ok: true, exitCode: 0, stdout: "", stderr: "", conflicts: false };
@@ -412,6 +412,22 @@ describe("failure messages lead with Git's reason", () => {
 
   it("keeps everything when there is nothing but progress", () => {
     expect(gitReason("Counting objects: 3, done.\r\nTotal 3 (delta 0)")).toBe("Counting objects: 3, done.\nTotal 3 (delta 0)");
+  });
+});
+
+describe("a rebase that finished but could not move a branch rebase.updateRefs listed", () => {
+  const stderr =
+    "Successfully rebased and updated refs/heads/main.\nerror: update_ref failed for ref 'refs/heads/topic': cannot lock ref 'refs/heads/topic': is at c3fab5f but expected a729c2a\nFailed to update the following refs with --update-refs:\n\trefs/heads/topic\n";
+
+  it("names the branches left behind", () => {
+    expect(updateRefsLeftBehind(stderr)).toEqual(["topic"]);
+    expect(updateRefsLeftBehind("error: could not apply abc123")).toBeNull();
+  });
+
+  it("reports the pull as done, with a note, not as a failure", () => {
+    const outcome = pullOutcome({ ok: false, exitCode: 1, stdout: "", stderr, conflicts: false }, "origin/main", "main", "rebase");
+    expect(outcome.failed).toBe(false);
+    expect(outcome.message).toMatch(/^Pulled origin\/main into main, with main's own commits rebased on top\. But topic was not moved along with it/);
   });
 });
 
