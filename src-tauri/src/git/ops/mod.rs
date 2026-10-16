@@ -232,6 +232,38 @@ pub async fn pull_integrate(client: &GitClient, remote: &str, branch: &str, mode
     Ok(result(out))
 }
 
+/// Fail with `HeadMoved` unless local branch `branch` is checked out. A pull merges or rebases
+/// into whatever is checked out, so a pull or sync asked for on `branch` checks this, under the
+/// write gate, before it fetches and again before it merges: a checkout in a terminal, or one in
+/// StashPanda that ran first, would otherwise send the commits into another branch.
+pub async fn require_checked_out(client: &GitClient, branch: &str) -> Result<()> {
+    valid_ref_name(branch)?;
+    let head = client.exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "--quiet", "HEAD"])).await?;
+    let current = head.success().then(|| String::from_utf8_lossy(&head.stdout).trim().to_string());
+    let current = current.map(|r| r.strip_prefix("refs/heads/").map(str::to_string).unwrap_or(r));
+    if current.as_deref() == Some(branch) {
+        return Ok(());
+    }
+    Err(GitError::HeadMoved { expected: branch.to_string(), current })
+}
+
+/// `require_checked_out` for an operation that also runs on a detached HEAD (merge, rebase,
+/// reset): with `Some(branch)`, that branch must be checked out; with `None`, HEAD must still be
+/// detached, or the operation would move a branch the user was not looking at.
+pub async fn require_head(client: &GitClient, expected: Option<&str>) -> Result<()> {
+    match expected {
+        Some(branch) => require_checked_out(client, branch).await,
+        None => {
+            let head = client.exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "--quiet", "--short", "HEAD"])).await?;
+            if !head.success() {
+                return Ok(());
+            }
+            let current = String::from_utf8_lossy(&head.stdout).trim().to_string();
+            Err(GitError::HeadMoved { expected: "the detached HEAD".into(), current: Some(current) })
+        }
+    }
+}
+
 /// True when the current branch's `branch.<name>.rebase`, or failing that `pull.rebase`, is
 /// `merges` (or `m`): `git pull` then rebases with `--rebase-merges`, which keeps the branch's own
 /// merge commits instead of flattening them.

@@ -236,26 +236,31 @@ export const commands = {
 	/**
 	 *  Move the current branch to `target`. `hard` also throws away every uncommitted change, so the
 	 *  frontend confirms first.
+	 *  The current branch must still be `branch` (null: a detached HEAD), the one the confirmation
+	 *  named; otherwise it fails with `headMoved` and moves nothing.
 	 */
-	opReset: (key: string, mode: ResetMode, target: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_reset", { key, mode, target })),
+	opReset: (key: string, mode: ResetMode, target: string, branch: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_reset", { key, mode, target, branch })),
 	/**
 	 *  Apply `commit`'s change as a new commit on the current branch. Pass `mainline` (1 for the
 	 *  branch merged into) for a merge commit, and null otherwise. When the result is not `ok`
 	 *  and stderr mentions `--abort`, the cherry-pick is still open: `opCherryPickAbort` ends it.
+	 *  The checked-out branch must still be `branch` (null: a detached HEAD); otherwise it fails with
+	 *  `headMoved` and changes nothing.
 	 */
-	opCherryPick: (key: string, commit: string, mainline: number | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_cherry_pick", { key, commit, mainline })),
+	opCherryPick: (key: string, commit: string, mainline: number | null, branch: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_cherry_pick", { key, commit, mainline, branch })),
 	opCherryPickAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_cherry_pick_abort", { key })),
 	/**
 	 *  Make a new commit that undoes `commit`. `mainline` and an unfinished revert work as for
-	 *  `opCherryPick`; `opRevertAbort` ends one.
+	 *  `opCherryPick`; `opRevertAbort` ends one. `branch` is checked as for `opCherryPick`.
 	 */
-	opRevert: (key: string, commit: string, mainline: number | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_revert", { key, commit, mainline })),
+	opRevert: (key: string, commit: string, mainline: number | null, branch: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_revert", { key, commit, mainline, branch })),
 	opRevertAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_revert_abort", { key })),
 	/**
-	 *  Merge `target` into the current branch. `conflicts` in the result means
+	 *  Merge `target` into the current branch, which must still be `into` (null: a detached HEAD);
+	 *  otherwise it fails with `headMoved` and merges nothing. `conflicts` in the result means
 	 *  the merge stopped and the working tree has unmerged paths.
 	 */
-	opMerge: (key: string, target: string, noFf: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge", { key, target, noFf })),
+	opMerge: (key: string, target: string, noFf: boolean, into: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge", { key, target, noFf, into })),
 	opMergeAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge_abort", { key })),
 	opTagCreate: (key: string, name: string, target: string, message: string | null, force: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_create", { key, name, target, message, force })),
 	opTagDelete: (key: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_delete", { key, name })),
@@ -297,9 +302,11 @@ export const commands = {
 	 *  already staged, they are committed as staged, unstaged changes left out.
 	 *  Pass both paths of a rename. An empty `paths` with `amend` changes only
 	 *  the message. With `amend` and an empty `message` the previous message is
-	 *  kept; fetch it with `getCommitMessage(key, "HEAD")` to edit it instead.
+	 *  kept; fetch it with `getCommitMessage(key, "HEAD")` to edit it instead. The checked-out
+	 *  branch must still be `branch`, the one the dialog named (null: a detached HEAD); otherwise it
+	 *  fails with `headMoved` and commits nothing.
 	 */
-	opCommit: (key: string, message: string, paths: string[] | null, amend: boolean, signOff: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_commit", { key, message, paths, amend, signOff })),
+	opCommit: (key: string, message: string, paths: string[] | null, amend: boolean, signOff: boolean, branch: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_commit", { key, message, paths, amend, signOff, branch })),
 	/**
 	 *  Delete a lock file a Git process left behind when it crashed or was killed:
 	 *  `index.lock`, or `config.lock`. The frontend confirms with the user first,
@@ -309,11 +316,13 @@ export const commands = {
 	opRemoveStaleLock: (key: string, lock: StaleLock) => typedError<null, GitError>(__TAURI_INVOKE("op_remove_stale_lock", { key, lock })),
 	opRebaseAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase_abort", { key })),
 	/**
-	 *  Rebase the current branch onto `onto` (a branch name or commit), not interactively.
+	 *  Rebase the current branch onto `onto` (a branch name or commit), not interactively. The
+	 *  current branch must still be `branch` (null: a detached HEAD); otherwise it fails with
+	 *  `headMoved` and rebases nothing.
 	 *  `conflicts` in the result means the rebase stopped on a commit and is still open: the status's
 	 *  `inProgress` then describes it, and `opContinue`, `opSkip` or `opRebaseAbort` go on.
 	 */
-	opRebase: (key: string, onto: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase", { key, onto })),
+	opRebase: (key: string, onto: string, branch: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase", { key, onto, branch })),
 	/**
 	 *  Finish the merge, cherry-pick or revert in progress, or go on with the rebase, once no file is
 	 *  conflicted: `git <command> --continue`, keeping the message Git prepared. A rebase that stops
@@ -347,8 +356,10 @@ export const commands = {
 	 */
 	writeWorktreeFile: (key: string, path: string, content: string, expectedHash: string) => typedError<string, GitError>(__TAURI_INVOKE("write_worktree_file", { key, path, content, expectedHash })),
 	/**
-	 *  Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
-	 *  `git rebase` (see `ops::pull_fetch` and `ops::pull_integrate`). `opId` is chosen by the
+	 *  Pull `branch` from `remote` into local branch `into`, which must be the checked-out branch, as
+	 *  `git fetch` and then `git merge` or `git rebase` (see `ops::pull_fetch` and
+	 *  `ops::pull_integrate`). Fails with `headMoved`, merging nothing, when `into` is no longer
+	 *  checked out by the time the pull runs or by the time the fetch is done. `opId` is chosen by the
 	 *  caller: each progress update arrives as an `operationProgress` event carrying it, and
 	 *  `opCancel` with it stops the pull while it is fetching, which then fails with `cancelled` and
 	 *  changes no branch. Once the fetch is done, an event with `cancellable: false` says the local
@@ -358,7 +369,7 @@ export const commands = {
 	 *  Holds the write gate throughout, so no other write overlaps, but takes the exclusive lock only
 	 *  for the local step: reads (status, graph pages, diffs) carry on during the network transfer.
 	 */
-	opPull: (key: string, opId: string, remote: string, branch: string, mode: PullMode, autostash: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_pull", { key, opId, remote, branch, mode, autostash })),
+	opPull: (key: string, opId: string, remote: string, branch: string, into: string, mode: PullMode, autostash: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_pull", { key, opId, remote, branch, into, mode, autostash })),
 	/**
 	 *  Stop a running operation started with `opId` (a pull while it fetches). Resolves false when
 	 *  it has finished or reached a step that cannot be stopped. The pull's own command returns once
@@ -1093,7 +1104,13 @@ export type GitError = { kind: "gitNotFound"; searched: string[] } | { kind: "gi
  *  A file was about to be saved over, but its contents on disk are no longer the ones it was
  *  opened with: another program, or Git, has changed it since. Nothing was written.
  */
-{ kind: "changedOnDisk"; path: string } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
+{ kind: "changedOnDisk"; path: string } | 
+/**
+ *  A pull or sync was asked for while `expected` was checked out, but by the time it could
+ *  run another branch was (`current`, or None for a detached HEAD): a checkout ran first, in
+ *  StashPanda or outside it. Nothing was merged, rebased or pushed.
+ */
+{ kind: "headMoved"; expected: string; current: string | null } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
 
 /**  Which git executable to run when a repository has no override. */
 export type GitSettings = {

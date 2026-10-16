@@ -46,7 +46,7 @@ async function submit(): Promise<void> {
   error.value = null;
   try {
     const revision = r.branches.find((b) => b.short === onto)?.revision ?? onto;
-    const result = await runOp(r.key, () => commands.opRebase(r.key, revision));
+    const result = await runOp(r.key, () => commands.opRebase(r.key, revision, r.branch));
     let outcome = rebaseOutcome(result, r.branch, onto);
     if (outcome.failed) {
       // Git can stop part way without a conflict (an untracked file in the way): only the

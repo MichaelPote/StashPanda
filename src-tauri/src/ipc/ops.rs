@@ -97,11 +97,26 @@ pub async fn op_apply_lines(app: AppHandle, state: State<'_, AppState>, key: Str
 /// already staged, they are committed as staged, unstaged changes left out.
 /// Pass both paths of a rename. An empty `paths` with `amend` changes only
 /// the message. With `amend` and an empty `message` the previous message is
-/// kept; fetch it with `getCommitMessage(key, "HEAD")` to edit it instead.
+/// kept; fetch it with `getCommitMessage(key, "HEAD")` to edit it instead. The checked-out
+/// branch must still be `branch`, the one the dialog named (null: a detached HEAD); otherwise it
+/// fails with `headMoved` and commits nothing.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_commit(app: AppHandle, state: State<'_, AppState>, key: String, message: String, paths: Option<Vec<String>>, amend: bool, sign_off: bool) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::commit(c, &message, paths.as_deref(), amend, sign_off).await)
+#[allow(clippy::too_many_arguments)]
+pub async fn op_commit(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    message: String,
+    paths: Option<Vec<String>>,
+    amend: bool,
+    sign_off: bool,
+    branch: Option<String>,
+) -> Result<OpResult> {
+    write_op!(app, state, key, |c| match ops::require_head(c, branch.as_deref()).await {
+        Ok(()) => ops::commit(c, &message, paths.as_deref(), amend, sign_off).await,
+        Err(e) => Err(e),
+    })
 }
 
 /// Which lock file `op_remove_stale_lock` deletes.
@@ -153,12 +168,16 @@ pub async fn op_branch_delete(app: AppHandle, state: State<'_, AppState>, key: S
     write_op!(app, state, key, |c| ops::branch_delete(c, &name, force).await)
 }
 
-/// Merge `target` into the current branch. `conflicts` in the result means
+/// Merge `target` into the current branch, which must still be `into` (null: a detached HEAD);
+/// otherwise it fails with `headMoved` and merges nothing. `conflicts` in the result means
 /// the merge stopped and the working tree has unmerged paths.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_merge(app: AppHandle, state: State<'_, AppState>, key: String, target: String, no_ff: bool) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::merge(c, &target, no_ff).await)
+pub async fn op_merge(app: AppHandle, state: State<'_, AppState>, key: String, target: String, no_ff: bool, into: Option<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| match ops::require_head(c, into.as_deref()).await {
+        Ok(()) => ops::merge(c, &target, no_ff).await,
+        Err(e) => Err(e),
+    })
 }
 
 #[tauri::command]
@@ -173,13 +192,18 @@ pub async fn op_rebase_abort(app: AppHandle, state: State<'_, AppState>, key: St
     write_op!(app, state, key, |c| ops::rebase_abort(c).await)
 }
 
-/// Rebase the current branch onto `onto` (a branch name or commit), not interactively.
+/// Rebase the current branch onto `onto` (a branch name or commit), not interactively. The
+/// current branch must still be `branch` (null: a detached HEAD); otherwise it fails with
+/// `headMoved` and rebases nothing.
 /// `conflicts` in the result means the rebase stopped on a commit and is still open: the status's
 /// `inProgress` then describes it, and `opContinue`, `opSkip` or `opRebaseAbort` go on.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_rebase(app: AppHandle, state: State<'_, AppState>, key: String, onto: String) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::rebase(c, &onto).await)
+pub async fn op_rebase(app: AppHandle, state: State<'_, AppState>, key: String, onto: String, branch: Option<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| match ops::require_head(c, branch.as_deref()).await {
+        Ok(()) => ops::rebase(c, &onto).await,
+        Err(e) => Err(e),
+    })
 }
 
 /// Finish the merge, cherry-pick or revert in progress, or go on with the rebase, once no file is
@@ -236,8 +260,10 @@ pub async fn write_worktree_file(app: AppHandle, state: State<'_, AppState>, key
     out
 }
 
-/// Pull `branch` from `remote` into the current branch, as `git fetch` and then `git merge` or
-/// `git rebase` (see `ops::pull_fetch` and `ops::pull_integrate`). `opId` is chosen by the
+/// Pull `branch` from `remote` into local branch `into`, which must be the checked-out branch, as
+/// `git fetch` and then `git merge` or `git rebase` (see `ops::pull_fetch` and
+/// `ops::pull_integrate`). Fails with `headMoved`, merging nothing, when `into` is no longer
+/// checked out by the time the pull runs or by the time the fetch is done. `opId` is chosen by the
 /// caller: each progress update arrives as an `operationProgress` event carrying it, and
 /// `opCancel` with it stops the pull while it is fetching, which then fails with `cancelled` and
 /// changes no branch. Once the fetch is done, an event with `cancellable: false` says the local
@@ -256,6 +282,7 @@ pub async fn op_pull(
     op_id: String,
     remote: String,
     branch: String,
+    into: String,
     mode: PullMode,
     autostash: bool,
 ) -> Result<OpResult> {
@@ -264,7 +291,7 @@ pub async fn op_pull(
     let out = {
         let op = h.start_operation(&op_id)?;
         let _gate = gate_or_cancel(&h, &op.token).await?;
-        pull_steps(&h, &op, &emit, &remote, &branch, mode, autostash).await
+        pull_steps(&h, &op, &emit, &remote, &branch, &into, mode, autostash).await
     };
     after_write(&app, &state, &key).await;
     out.and_then(|r| match ops::index_lock_in(&r) {
@@ -274,8 +301,8 @@ pub async fn op_pull(
 }
 
 /// A pull's two steps, for a caller holding the write gate: the fetch, which `op` can stop, then
-/// the merge or rebase under the exclusive lock, during which it cannot. Leaves `op`
-/// uncancellable.
+/// the merge or rebase into `into` under the exclusive lock, during which it cannot. `into` must be
+/// checked out before the fetch and still be before the merge. Leaves `op` uncancellable.
 #[allow(clippy::too_many_arguments)]
 async fn pull_steps(
     h: &RepoHandle,
@@ -283,9 +310,11 @@ async fn pull_steps(
     emit: &(dyn Fn(String, bool) + Send + Sync),
     remote: &str,
     branch: &str,
+    into: &str,
     mode: PullMode,
     autostash: bool,
 ) -> Result<OpResult> {
+    ops::require_checked_out(&h.client, into).await?;
     let progress = |line: String| emit(line, true);
     let fetched = ops::pull_fetch(&h.client, remote, branch, &progress, &op.token).await;
     // From here on Stop no longer applies: `opCancel` resolves false.
@@ -303,6 +332,7 @@ async fn pull_steps(
                 false,
             );
             let _exclusive = h.lock.write().await;
+            ops::require_checked_out(&h.client, into).await?;
             ops::pull_integrate(&h.client, remote, branch, mode, autostash).await.map(|r| ops::combine(f, r))
         }
         other => other,
@@ -359,7 +389,7 @@ async fn sync_steps(
         Some(chosen) => chosen,
         None => ops::push_target_for(&h.client, branch, target.clone()).await?,
     };
-    let pull = pull_steps(h, &op, emit, &target.remote, &target.branch, mode, autostash).await?;
+    let pull = pull_steps(h, &op, emit, &target.remote, &target.branch, branch, mode, autostash).await?;
     if let Some(lock_path) = ops::index_lock_in(&pull) {
         return Err(GitError::IndexLocked { lock_path });
     }
@@ -584,19 +614,29 @@ pub async fn op_branch_rename(app: AppHandle, state: State<'_, AppState>, key: S
 
 /// Move the current branch to `target`. `hard` also throws away every uncommitted change, so the
 /// frontend confirms first.
+/// The current branch must still be `branch` (null: a detached HEAD), the one the confirmation
+/// named; otherwise it fails with `headMoved` and moves nothing.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_reset(app: AppHandle, state: State<'_, AppState>, key: String, mode: ResetMode, target: String) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::reset(c, mode, &target).await)
+pub async fn op_reset(app: AppHandle, state: State<'_, AppState>, key: String, mode: ResetMode, target: String, branch: Option<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| match ops::require_head(c, branch.as_deref()).await {
+        Ok(()) => ops::reset(c, mode, &target).await,
+        Err(e) => Err(e),
+    })
 }
 
 /// Apply `commit`'s change as a new commit on the current branch. Pass `mainline` (1 for the
 /// branch merged into) for a merge commit, and null otherwise. When the result is not `ok`
 /// and stderr mentions `--abort`, the cherry-pick is still open: `opCherryPickAbort` ends it.
+/// The checked-out branch must still be `branch` (null: a detached HEAD); otherwise it fails with
+/// `headMoved` and changes nothing.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_cherry_pick(app: AppHandle, state: State<'_, AppState>, key: String, commit: String, mainline: Option<u32>) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::cherry_pick(c, &commit, mainline).await)
+pub async fn op_cherry_pick(app: AppHandle, state: State<'_, AppState>, key: String, commit: String, mainline: Option<u32>, branch: Option<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| match ops::require_head(c, branch.as_deref()).await {
+        Ok(()) => ops::cherry_pick(c, &commit, mainline).await,
+        Err(e) => Err(e),
+    })
 }
 
 #[tauri::command]
@@ -606,11 +646,14 @@ pub async fn op_cherry_pick_abort(app: AppHandle, state: State<'_, AppState>, ke
 }
 
 /// Make a new commit that undoes `commit`. `mainline` and an unfinished revert work as for
-/// `opCherryPick`; `opRevertAbort` ends one.
+/// `opCherryPick`; `opRevertAbort` ends one. `branch` is checked as for `opCherryPick`.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_revert(app: AppHandle, state: State<'_, AppState>, key: String, commit: String, mainline: Option<u32>) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::revert(c, &commit, mainline).await)
+pub async fn op_revert(app: AppHandle, state: State<'_, AppState>, key: String, commit: String, mainline: Option<u32>, branch: Option<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| match ops::require_head(c, branch.as_deref()).await {
+        Ok(()) => ops::revert(c, &commit, mainline).await,
+        Err(e) => Err(e),
+    })
 }
 
 #[tauri::command]

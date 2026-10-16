@@ -225,7 +225,7 @@ async function submit(push = false): Promise<void> {
   submitting.value = true;
   error.value = null;
   try {
-    const result = await runOp(r.key, () => commands.opCommit(r.key, message.value, commitWith, amend.value, false));
+    const result = await runOp(r.key, () => commands.opCommit(r.key, message.value, commitWith, amend.value, false, r.branch));
     if (!result.ok) {
       error.value = opFailureText(result, amend.value ? "Amending the commit" : "Committing");
       return;

@@ -751,9 +751,11 @@ export function revisionOf(ref: { fullName: string; short: string }, refs: reado
 
 export async function mergeInto(key: string, target: string, label: string = target, noFf = false): Promise<void> {
   const sessions = useSessionsStore();
-  const into = currentBranch(sessions.sessions.get(key)) ?? "the current branch";
+  const branch = currentBranch(sessions.sessions.get(key));
+  const into = branch ?? "the current branch";
   try {
-    const result = await runOp(key, () => commands.opMerge(key, target, noFf));
+    // The branch named here; the backend refuses when another has been checked out since.
+    const result = await runOp(key, () => commands.opMerge(key, target, noFf, branch));
     const outcome = mergeOutcome(result, label, into);
     if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
     else sessions.notify(outcome.message);
@@ -819,7 +821,8 @@ export async function resetTo(key: string, oid: string, label: string, mode: Res
   });
   if (!confirmed) return;
   try {
-    const result = await runOp(key, () => commands.opReset(key, mode, oid));
+    // The branch the confirmation named; the backend refuses when another has been checked out since.
+    const result = await runOp(key, () => commands.opReset(key, mode, oid, currentBranch(session)));
     if (result.ok) sessions.notifySuccess(`Reset ${name} to ${label} (${mode}).`);
     else sessions.notify(opFailureText(result, `Resetting ${name} to ${label}`));
   } catch (e) {
@@ -861,7 +864,9 @@ export async function pickCommit(key: string, row: GraphRow, verb: "cherry-pick"
   const abort = pick ? () => commands.opCherryPickAbort(key) : () => commands.opRevertAbort(key);
   const what = pick ? `Cherry-picking ${label} onto ${name}` : `Reverting ${label} on ${name}`;
   try {
-    const result = await runOp(key, () => (pick ? commands.opCherryPick(key, row.oid, mainline) : commands.opRevert(key, row.oid, mainline)));
+    // The branch named here; the backend refuses when another has been checked out since.
+    const onto = currentBranch(session);
+    const result = await runOp(key, () => (pick ? commands.opCherryPick(key, row.oid, mainline, onto) : commands.opRevert(key, row.oid, mainline, onto)));
     const output = `${result.stdout}\n${result.stderr}`;
     if (result.ok) {
       sessions.notifySuccess(pick ? `Cherry-picked ${label} onto ${name}.` : `Reverted ${label} with a new commit on ${name}.`);

@@ -74,6 +74,11 @@ pub enum GitError {
     /// opened with: another program, or Git, has changed it since. Nothing was written.
     #[error("{path} has changed on disk since it was opened")]
     ChangedOnDisk { path: String },
+    /// A pull or sync was asked for while `expected` was checked out, but by the time it could
+    /// run another branch was (`current`, or None for a detached HEAD): a checkout ran first, in
+    /// StashPanda or outside it. Nothing was merged, rebased or pushed.
+    #[error("{expected} is no longer checked out")]
+    HeadMoved { expected: String, current: Option<String> },
     #[error("git {label} failed with exit code {exit_code:?}: {stderr}")]
     CommandFailed {
         label: String,
