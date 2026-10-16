@@ -19,6 +19,7 @@ pub mod platform;
 pub mod repo;
 pub mod persist;
 pub mod settings;
+pub mod shutdown;
 pub mod state;
 pub mod storage;
 pub mod transport;
@@ -187,6 +188,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .invoke_handler(builder.invoke_handler())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if shutdown::defer_close(window.app_handle(), window) {
+                    api.prevent_close();
+                }
+            }
+        })
         .setup(move |app| {
             builder.mount_events(app);
             let state = state::AppState::init(app.handle())?;

@@ -54,7 +54,9 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .separator()
         .text("file.settings", "&Settings…\tCtrl+,")
         .separator()
-        .item(&PredefinedMenuItem::quit(app, Some("E&xit"))?)
+        // Not the predefined quit item, which exits without asking the window: closing the window
+        // goes through the close guard in `shutdown`, which waits for Git to finish.
+        .text("file.exit", "E&xit")
         .build()?;
 
     let edit = SubmenuBuilder::new(app, "&Edit")
@@ -130,6 +132,12 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         // settings_update syncs them again.
         if let Some(theme) = theme_for_id(&id) {
             sync_theme(app, theme);
+        }
+        if id == "file.exit" {
+            for window in app.webview_windows().into_values() {
+                let _ = window.close();
+            }
+            return;
         }
         let _ = MenuActionEvent { id }.emit(app);
     });

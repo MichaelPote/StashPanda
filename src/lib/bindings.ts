@@ -1234,6 +1234,14 @@ export type InProgress = {
 	step: number | null,
 	/**  Rebase only: how many commits the rebase replays. */
 	total: number | null,
+	/**
+	 *  Rebase only: Git was stopped part way through applying a commit (it was killed, or the
+	 *  program running it closed), rather than stopping by itself on a conflict or an `edit`. Its
+	 *  list of done steps already names the commit, but nothing marks it as stopped: no
+	 *  `REBASE_HEAD` and no `stopped-sha`. `git rebase --continue` would then go on without that
+	 *  commit, so only Abort is safe.
+	 */
+	interrupted: boolean,
 };
 
 export type InProgressKind = "merge" | "rebase" | "cherryPick" | "revert";

@@ -39,11 +39,17 @@ pub struct InProgress {
     pub step: Option<u32>,
     /// Rebase only: how many commits the rebase replays.
     pub total: Option<u32>,
+    /// Rebase only: Git was stopped part way through applying a commit (it was killed, or the
+    /// program running it closed), rather than stopping by itself on a conflict or an `edit`. Its
+    /// list of done steps already names the commit, but nothing marks it as stopped: no
+    /// `REBASE_HEAD` and no `stopped-sha`. `git rebase --continue` would then go on without that
+    /// commit, so only Abort is safe.
+    pub interrupted: bool,
 }
 
 impl InProgress {
     fn new(kind: InProgressKind) -> InProgress {
-        InProgress { kind, commit: None, subject: None, branch: None, onto: None, step: None, total: None }
+        InProgress { kind, commit: None, subject: None, branch: None, onto: None, step: None, total: None, interrupted: false }
     }
 }
 
@@ -64,7 +70,7 @@ pub async fn get_in_progress(client: &GitClient, git_dir: &str) -> Option<InProg
     let read = |name: &'static str| read_text(client, &dir, name);
 
     if has("rebase-merge") {
-        let (head_name, onto, step, total, message, rebase_head, stopped) = tokio::join!(
+        let (head_name, onto, step, total, message, rebase_head, stopped, done) = tokio::join!(
             read("rebase-merge/head-name"),
             read("rebase-merge/onto"),
             read("rebase-merge/msgnum"),
@@ -72,8 +78,12 @@ pub async fn get_in_progress(client: &GitClient, git_dir: &str) -> Option<InProg
             read("rebase-merge/message"),
             read("REBASE_HEAD"),
             read("rebase-merge/stopped-sha"),
+            read("rebase-merge/done"),
         );
-        return Some(rebase(head_name, onto, step, total, message, rebase_head.or(stopped)));
+        let interrupted = rebase_head.is_none() && stopped.is_none() && done.as_deref().is_some_and(last_step_applies_a_commit);
+        let mut op = rebase(head_name, onto, step, total, message, rebase_head.or(stopped));
+        op.interrupted = interrupted;
+        return Some(op);
     }
     if has("rebase-apply") {
         let inner = client.transport.list_dir(&join_repo_path(&dir, "rebase-apply")).await.ok().flatten().unwrap_or_default();
@@ -127,6 +137,15 @@ fn rebase(
     op
 }
 
+/// True when the last line of a rebase's `done` list is a step that applies a commit (`pick`,
+/// `reword`, `squash`, `fixup`, `merge`, or their one-letter forms), rather than `exec`, `break`
+/// or a label, which stop or finish without one.
+fn last_step_applies_a_commit(done: &str) -> bool {
+    let last = done.lines().map(str::trim).rfind(|l| !l.is_empty() && !l.starts_with('#'));
+    let command = last.and_then(|l| l.split_whitespace().next()).unwrap_or("");
+    matches!(command, "pick" | "p" | "reword" | "r" | "squash" | "s" | "fixup" | "f" | "merge" | "m")
+}
+
 /// A small file in the git directory as text, or None when it is missing or cannot be read.
 async fn read_text(client: &GitClient, dir: &NativePath, name: &str) -> Option<String> {
     let bytes = client.transport.read_file(&join_repo_path(dir, name), 64 * 1024).await.ok()?;
@@ -136,4 +155,21 @@ async fn read_text(client: &GitClient, dir: &NativePath, name: &str) -> Option<S
 /// The first line that is not empty, trimmed.
 fn first_line(text: &str) -> Option<String> {
     text.lines().map(str::trim).find(|l| !l.is_empty()).map(String::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_interrupted_rebase_was_applying_a_commit() {
+        assert!(last_step_applies_a_commit("pick 02cf715 Add an extra file\n"));
+        assert!(last_step_applies_a_commit("pick aaa one\nfixup bbb two\n\n"));
+        assert!(last_step_applies_a_commit("p aaa one\n"));
+        // A failed `exec`, a `break` or a label stops without applying a commit.
+        assert!(!last_step_applies_a_commit("pick aaa one\nexec make test\n"));
+        assert!(!last_step_applies_a_commit("pick aaa one\nbreak\n"));
+        assert!(!last_step_applies_a_commit("label onto\n"));
+        assert!(!last_step_applies_a_commit(""));
+    }
 }

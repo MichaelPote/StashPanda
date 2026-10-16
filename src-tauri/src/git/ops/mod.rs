@@ -2003,7 +2003,14 @@ mod e2e {
         assert_eq!((op.step, op.total), (Some(2), Some(3)));
         assert_eq!(op.commit.as_deref(), Some(topic_two.as_str()));
         assert_eq!(op.subject.as_deref(), Some("topic two"));
+        assert!(!op.interrupted, "stopped by Git itself, on a conflict");
         assert!(matches!(skip_operation(&client, InProgressKind::Merge).await, Err(GitError::InvalidPath { .. })));
+        // What a Git killed part way through applying the commit leaves: the step is listed as
+        // done, but nothing marks it as stopped.
+        for marker in ["REBASE_HEAD", "rebase-merge/stopped-sha"] {
+            std::fs::remove_file(Path::new(&git_dir).join(marker)).unwrap();
+        }
+        assert!(get_in_progress(&client, &git_dir).await.expect("still rebasing").interrupted);
         assert!(rebase_abort(&client).await.unwrap().ok);
         assert_eq!(out(&dir, &["rev-parse", "HEAD"]), before);
         assert_eq!(get_in_progress(&client, &git_dir).await, None);

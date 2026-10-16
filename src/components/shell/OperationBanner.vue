@@ -20,11 +20,13 @@ const op = computed(() => props.session.status?.inProgress ?? null);
 const names = computed(() => operationNames(props.session.status, props.session.refs, props.session.stashConflict));
 const conflicted = computed(() => props.session.status?.conflictedCount ?? 0);
 const verb = computed(() => (op.value ? OPERATION_VERBS[op.value.kind] : ""));
-const canSkip = computed(() => op.value?.kind === "rebase" || op.value?.kind === "cherryPick");
+/** Not for an interrupted rebase: skipping would drop the commit Git was part way through, which only Abort keeps. */
+const canSkip = computed(() => (op.value?.kind === "rebase" && !op.value.interrupted) || op.value?.kind === "cherryPick");
 
 const ICONS = { merge: GitMergeIcon, rebase: RotateCcwIcon, cherryPick: CherryIcon, revert: Undo2Icon } as const;
 
 const stateText = computed(() => {
+  if (op.value?.interrupted) return "Git was stopped part way through a commit, so it cannot go on safely: Abort puts the branch back as it was.";
   const n = conflicted.value;
   if (n > 0) return `${n === 1 ? "1 file is" : `${n} files are`} still conflicted.`;
   return op.value?.kind === "rebase" ? "No conflicts left: Continue goes on with the rebase." : `No conflicts left: Continue finishes the ${verb.value}.`;

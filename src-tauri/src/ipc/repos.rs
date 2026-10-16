@@ -293,6 +293,7 @@ pub async fn repo_set_colour(app: AppHandle, state: State<'_, AppState>, key: St
 #[specta::specta]
 pub async fn repo_remove(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<()> {
     if let Some(handle) = state.repos.write().await.remove(&key) {
+        crate::shutdown::retire(handle.clone());
         handle.close().await;
     }
     let mut settings = state.settings();
@@ -364,6 +365,7 @@ pub async fn repo_open(app: AppHandle, state: State<'_, AppState>, key: String) 
 #[specta::specta]
 pub async fn repo_close(state: State<'_, AppState>, key: String) -> Result<()> {
     if let Some(handle) = state.repos.write().await.remove(&key) {
+        crate::shutdown::retire(handle.clone());
         handle.close().await;
     }
     Ok(())

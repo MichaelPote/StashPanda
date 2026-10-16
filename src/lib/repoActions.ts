@@ -896,6 +896,9 @@ export async function abortPick(key: string, verb: "cherry-pick" | "revert"): Pr
 export function continueReason(session: RepoSession | null | undefined): string | null {
   const status = session?.status;
   if (!status?.inProgress) return "No merge, rebase, cherry-pick or revert is in progress.";
+  if (status.inProgress.interrupted) {
+    return "Git was stopped part way through applying a commit, so continuing would leave that commit out. Abort puts the branch back as it was before the rebase.";
+  }
   const n = status.conflictedCount;
   if (n === 0) return null;
   return `${n === 1 ? "1 file is" : `${n} files are`} still conflicted. Resolve ${n === 1 ? "it" : "each one"} first: take one side's version, or edit the file and mark it as resolved.`;

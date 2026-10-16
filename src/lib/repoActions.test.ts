@@ -100,7 +100,7 @@ describe("reset", () => {
 });
 
 const names = { title: "Rebasing main onto up", ours: "up", theirs: "79fe64e from main" };
-const rebasing: InProgress = { kind: "rebase", commit: null, subject: "M", branch: "refs/heads/main", onto: null, step: 1, total: 1 };
+const rebasing: InProgress = { kind: "rebase", commit: null, subject: "M", branch: "refs/heads/main", onto: null, step: 1, total: 1, interrupted: false };
 const result = (ok: boolean, stdout: string, stderr = "", conflicts = false): OpResult => ({ ok, exitCode: ok ? 0 : 1, stdout, stderr, conflicts });
 
 describe("continuing an operation", () => {
