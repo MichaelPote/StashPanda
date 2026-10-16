@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { OpResult, PassphraseMemory, PullMode, PushTarget, StashEntry } from "@/lib/bindings";
+import type { OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, StashEntry } from "@/lib/bindings";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -92,6 +92,8 @@ export interface PullPayload {
 export interface BranchChoice {
   /** `dev`, or `origin/dev` for a remote branch. */
   short: string;
+  /** What Git is given: `short`, or the full name when another ref has the same short name. */
+  revision: string;
   remote: boolean;
   /** The commit it points at. */
   target: string;
@@ -117,11 +119,33 @@ export interface RebasePayload {
 
 export interface PushPayload {
   key: string;
-  /** The checked-out branch, which tracks no remote branch yet. */
+  /** The checked-out branch, which tracks no remote branch yet, or one `git push` will not push to. */
   branch: string;
   /** Remote names, in config order. */
   remotes: string[];
+  /**
+   * The remote branch `branch` tracks (`origin/main`) when its name differs and Git's
+   * `push.default` does not push there, so the target has to be chosen; null when it tracks none.
+   */
+  tracks: string | null;
 }
+
+export interface PushDefaultPayload {
+  key: string;
+  /** The checked-out branch. */
+  branch: string;
+  /** The remote branch it tracks, whose name differs from `branch`. */
+  upstream: PushTarget;
+  /** What the user asked for: a push, or a sync, which pulls first and then pushes. */
+  action: "push" | "sync";
+}
+
+/**
+ * What the dialog for a branch whose upstream has another name chose: push to the upstream this
+ * time only, save `push.default` for the repository and push as it then says, or (for a push)
+ * choose the target in the Push dialog.
+ */
+export type PushDefaultChoice = { kind: "once" } | { kind: "always"; mode: PushDefault } | { kind: "otherTarget" };
 
 /** Where the Push dialog chose to push, and whether the branch should track it from now on. */
 export interface PushChoice {
@@ -247,6 +271,7 @@ export interface DialogSpecs {
   merge: { payload: MergePayload; result: OpResult | null };
   rebase: { payload: RebasePayload; result: OpResult | null };
   push: { payload: PushPayload; result: PushChoice | null };
+  pushDefault: { payload: PushDefaultPayload; result: PushDefaultChoice | null };
   /** Resolves with the command's result, or null when nothing ran (cancelled, or nothing changed). */
   trackRemoteBranch: { payload: TrackRemoteBranchPayload; result: OpResult | null };
   confirm: { payload: ConfirmPayload; result: boolean };
@@ -277,6 +302,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   merge: null,
   rebase: null,
   push: null,
+  pushDefault: null,
   trackRemoteBranch: null,
   confirm: false,
   fileHistory: null,

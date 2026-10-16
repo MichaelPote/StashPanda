@@ -4,8 +4,9 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::error::{GitError, Result};
-use crate::git::parse::looks_binary;
+use crate::git::parse::{looks_binary, quote_path, utf8_name};
 use crate::git::queries::blob::{detect_eol, Eol};
+use crate::git::queries::status::split_fields;
 use crate::git::{GitClient, GitReq};
 use crate::transport::paths::NativePath;
 
@@ -79,12 +80,28 @@ pub struct DiffText {
     /// this describes those lines, which is where a change of line endings shows.
     pub old_eol: Eol,
     pub new_eol: Eol,
+    /// Why there is nothing to show for a file that is listed as changed.
+    pub note: Option<DiffNote>,
+}
+
+/// A listed file that has no diff to show, and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum DiffNote {
+    /// An untracked folder that is a Git repository of its own. Git lists the folder, not its
+    /// files; `git add` would record it as a submodule.
+    NestedRepository,
+    /// A submodule whose only change is files it does not track: `git status` reports it as
+    /// modified, and `git diff` has nothing for it.
+    SubmoduleUntracked,
 }
 
 /// The line endings of the old and new sides of the hunk lines in a unified diff.
 pub fn diff_eols(diff: &[u8]) -> (Eol, Eol) {
     let (mut old, mut new) = (Vec::new(), Vec::new());
     let mut in_hunk = false;
+    // The sides the line before was on.
+    let mut last = (false, false);
     for line in diff.split_inclusive(|b| *b == b'\n') {
         if line.starts_with(b"@@ ") {
             in_hunk = true;
@@ -97,10 +114,32 @@ pub fn diff_eols(diff: &[u8]) -> (Eol, Eol) {
             Some(b' ') => {
                 old.extend_from_slice(line);
                 new.extend_from_slice(line);
+                last = (true, true);
             }
-            Some(b'-') => old.extend_from_slice(line),
-            Some(b'+') => new.extend_from_slice(line),
-            Some(b'\\') => {}
+            Some(b'-') => {
+                old.extend_from_slice(line);
+                last = (true, false);
+            }
+            Some(b'+') => {
+                new.extend_from_slice(line);
+                last = (false, true);
+            }
+            // `\ No newline at end of file`: the line before ends the file with no line break.
+            Some(b'\\') => {
+                if last.0 {
+                    old.pop();
+                }
+                if last.1 {
+                    new.pop();
+                }
+                last = (false, false);
+            }
+            // An empty context line, as Git prints it with `diff.suppressBlankEmpty`.
+            Some(b'\n') => {
+                old.push(b'\n');
+                new.push(b'\n');
+                last = (true, true);
+            }
             _ => in_hunk = false,
         }
     }
@@ -115,8 +154,9 @@ pub fn finish(mut stdout: Vec<u8>) -> DiffText {
     if truncated {
         stdout.truncate(DIFF_CAP);
     }
-    let is_binary = looks_binary(&stdout)
-        || String::from_utf8_lossy(&stdout[..stdout.len().min(4096)]).contains("Binary files ");
+    // Git's own line for a binary file. Every line of a hunk starts with ` `, `+`, `-` or `\`, so
+    // a file's text never starts a line with it.
+    let is_binary = looks_binary(&stdout) || stdout.split(|b| *b == b'\n').any(|l| l.starts_with(b"Binary files "));
     let (old_eol, new_eol) = if is_binary { (Eol::None, Eol::None) } else { diff_eols(&stdout) };
     DiffText {
         text: String::from_utf8_lossy(&stdout).into_owned(),
@@ -125,13 +165,36 @@ pub fn finish(mut stdout: Vec<u8>) -> DiffText {
         bytes,
         old_eol,
         new_eol,
+        note: None,
     }
 }
 
+/// The part of a diff of several files that is about `path`: the sections whose `diff --git`
+/// line ends with its new name. Comparing a copy with its source lists the source's own changes
+/// too, which are not the copy's.
+fn only_file(diff: Vec<u8>, path: &str) -> Vec<u8> {
+    let name = format!(" {}", quote_path(&format!("b/{path}")));
+    let mut out = Vec::with_capacity(diff.len());
+    let mut keep = true;
+    for line in diff.split_inclusive(|b| *b == b'\n') {
+        if let Some(header) = line.strip_prefix(b"diff --git ") {
+            keep = header.strip_suffix(b"\n").unwrap_or(header).ends_with(name.as_bytes());
+        }
+        if keep {
+            out.extend_from_slice(line);
+        }
+    }
+    out
+}
+
 fn common_flags(opts: &DiffOptions) -> Vec<String> {
+    // `--no-textconv` and `--submodule=short` keep the user's `diff.<driver>.textconv` and
+    // `diff.submodule` from replacing the file's lines, which line staging works from.
     let mut v = vec![
         "--no-ext-diff".to_string(),
         "--no-color".into(),
+        "--no-textconv".into(),
+        "--submodule=short".into(),
         format!("-U{}", opts.context),
         "-M".into(),
         "--src-prefix=a/".into(),
@@ -144,11 +207,6 @@ fn common_flags(opts: &DiffOptions) -> Vec<String> {
         v.push("--ignore-cr-at-eol".into());
     }
     v
-}
-
-/// A unified diff for a brand-new file, built from its bytes.
-pub fn synthesize_untracked(path: &str, content: &[u8]) -> DiffText {
-    synthesize_whole(path, content, true)
 }
 
 /// A unified diff that adds every line of `content` (`added`), or removes every line of it.
@@ -166,6 +224,7 @@ pub fn synthesize_whole(path: &str, content: &[u8], added: bool) -> DiffText {
             bytes: content.len() as u64,
             old_eol: Eol::None,
             new_eol: Eol::None,
+            note: None,
         };
     }
     let text = String::from_utf8_lossy(content);
@@ -187,7 +246,7 @@ pub fn synthesize_whole(path: &str, content: &[u8], added: bool) -> DiffText {
     }
     let eol = detect_eol(content);
     let (old_eol, new_eol) = if added { (Eol::None, eol) } else { (eol, Eol::None) };
-    DiffText { text: out, is_binary: false, truncated: false, bytes: content.len() as u64, old_eol, new_eol }
+    DiffText { text: out, is_binary: false, truncated: false, bytes: content.len() as u64, old_eol, new_eol, note: None }
 }
 
 /// Bytes of one version of a conflicted file, or None when that version does not exist: a stage
@@ -262,7 +321,14 @@ pub async fn get_diff(
     old_path: Option<&str>,
     opts: &DiffOptions,
 ) -> Result<DiffText> {
-    let mut args: Vec<String> = Vec::new();
+    utf8_name(path)?;
+    if let Some(op) = old_path {
+        utf8_name(op)?;
+    }
+    // A copy is told from its source only with `-C`; see `only_file`.
+    let other = old_path.filter(|op| *op != path);
+    // The path names exactly that file: `:x`, `*` and `a[1]` are not pathspec magic or patterns.
+    let mut args: Vec<String> = vec!["--literal-pathspecs".into()];
     match target {
         DiffTarget::Commit { commit, parent } => {
             match parent {
@@ -297,32 +363,58 @@ pub async fn get_diff(
             args.extend(common_flags(opts));
         }
         DiffTarget::Untracked => {
-            let full = join_repo_path(&client.repo, path);
-            let bytes = client.transport.read_file(&full, DIFF_CAP).await?;
-            return Ok(synthesize_untracked(path, &bytes));
+            // Git lists a nested repository as its folder, with a slash at the end.
+            if path.ends_with('/') {
+                return Ok(DiffText { note: Some(DiffNote::NestedRepository), ..finish(Vec::new()) });
+            }
+            // The file as Git would add it: a symbolic link is its target with mode 120000, an
+            // executable has mode 100755. `--no-index` exits 1 when the files differ, and also
+            // when it cannot read the file, with nothing printed.
+            args.push("diff".into());
+            args.push("--no-index".into());
+            args.extend(common_flags(opts));
+            args.extend(["--".into(), "/dev/null".into(), path.to_string()]);
+            let out = client.exec_allow_failure(GitReq::new("diff", args)).await?;
+            if out.exit_code != Some(1) || out.stdout.is_empty() {
+                return Err(diff_failed(out));
+            }
+            return Ok(finish(out.stdout));
         }
         DiffTarget::Conflict { from, to } => return conflict_diff(client, path, *from, *to, opts).await,
     }
+    if other.is_some() {
+        args.push("-C".into());
+    }
     args.push("--".into());
     args.push(path.to_string());
-    if let Some(op) = old_path {
-        if op != path {
-            args.push(op.to_string());
-        }
+    if let Some(op) = other {
+        args.push(op.to_string());
     }
     // Internal, like the other queries: it runs whenever a file is clicked, which is viewing,
     // not an action on the repository, so it stays out of the console's Log mode.
     let out = client.exec_allow_failure(GitReq::new("diff", args)).await?;
     // `diff` exits 1 when differences exist only with --exit-code; without it, non-zero is an error.
     if !out.success() {
-        return Err(GitError::CommandFailed {
-            label: "diff".into(),
-            argv: vec![],
-            exit_code: out.exit_code,
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        });
+        return Err(diff_failed(out));
     }
-    Ok(finish(out.stdout))
+    let stdout = if other.is_some() { only_file(out.stdout, path) } else { out.stdout };
+    if stdout.is_empty() && *target == DiffTarget::Unstaged && submodule_untracked_only(client, path).await? {
+        return Ok(DiffText { note: Some(DiffNote::SubmoduleUntracked), ..finish(stdout) });
+    }
+    Ok(finish(stdout))
+}
+
+fn diff_failed(out: crate::transport::Output) -> GitError {
+    GitError::CommandFailed { label: "diff".into(), argv: vec![], exit_code: out.exit_code, stderr: String::from_utf8_lossy(&out.stderr).into_owned() }
+}
+
+/// Whether `path` is a submodule whose only change is files it does not track: `S..U` in
+/// `git status --porcelain=v2`.
+async fn submodule_untracked_only(client: &GitClient, path: &str) -> Result<bool> {
+    let out = client.exec(GitReq::new("status", ["--literal-pathspecs", "status", "--porcelain=v2", "-z", "--", path])).await?;
+    Ok(out.stdout.split(|b| *b == 0).any(|rec| {
+        rec.starts_with(b"1 ") && split_fields(rec, 8).is_some_and(|(f, p)| f[2] == "S..U" && p == path)
+    }))
 }
 
 /// Join a repo-relative path onto the native repository path.
@@ -338,10 +430,28 @@ mod tests {
 
     #[test]
     fn synthesizes_untracked_diff() {
-        let d = synthesize_untracked("new.txt", b"a\nb");
+        let d = synthesize_whole("new.txt", b"a\nb", true);
         assert!(d.text.contains("@@ -0,0 +1,2 @@\n+a\n+b\n\\ No newline at end of file\n"));
         assert!(!d.is_binary);
-        assert!(synthesize_untracked("x.bin", b"\0\x01").is_binary);
+        assert!(synthesize_whole("x.bin", b"\0\x01", true).is_binary);
+    }
+
+    #[test]
+    fn binary_only_from_gits_own_line() {
+        // A text file whose added line says "Binary files", and Git's line for a binary file.
+        let text = b"diff --git a/notes.md b/notes.md\nindex 937dd2a..cc135f3 100644\n--- a/notes.md\n+++ b/notes.md\n@@ -1 +1,2 @@\n Some docs\n+Binary files are stored with LFS.\n";
+        assert!(!finish(text.to_vec()).is_binary);
+        let binary = b"diff --git a/bin.dat b/bin.dat\nindex 0000000..bdc955b\nBinary files a/bin.dat and b/bin.dat differ\n";
+        assert!(finish(binary.to_vec()).is_binary);
+    }
+
+    #[test]
+    fn keeps_only_the_copy_from_a_diff_with_its_source() {
+        // `diff -C -- copy.txt src.txt` after copying src.txt and changing it, and a name Git quotes.
+        let diff = b"diff --git a/src.txt b/copy.txt\nsimilarity index 100%\ncopy from src.txt\ncopy to copy.txt\ndiff --git a/src.txt b/src.txt\nindex ac9837c..4355ac1 100644\n--- a/src.txt\n+++ b/src.txt\n@@ -30 +30,2 @@\n line 30\n+extra\n";
+        assert_eq!(only_file(diff.to_vec(), "copy.txt"), b"diff --git a/src.txt b/copy.txt\nsimilarity index 100%\ncopy from src.txt\ncopy to copy.txt\n");
+        let quoted = b"diff --git a/a.txt \"b/t\\tb.txt\"\nsimilarity index 100%\ncopy from a.txt\ncopy to \"t\\tb.txt\"\ndiff --git a/a.txt b/a.txt\n";
+        assert_eq!(only_file(quoted.to_vec(), "t\tb.txt").len(), quoted.len() - b"diff --git a/a.txt b/a.txt\n".len());
     }
 
     #[test]
@@ -349,8 +459,13 @@ mod tests {
         let d = b"diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n same\n-old\n+new\r\n";
         assert_eq!(diff_eols(d), (Eol::Lf, Eol::Mixed));
         assert_eq!(diff_eols(b"@@ -1 +1 @@\n-a\r\n+a\n"), (Eol::CrLf, Eol::Lf));
-        assert_eq!(diff_eols(b"@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+a\n"), (Eol::Lf, Eol::Lf));
-        assert_eq!(synthesize_untracked("n.txt", b"x\r\ny\r\n").new_eol, Eol::CrLf);
+        // A line with no line break after it, as in the file, has no line ending.
+        assert_eq!(diff_eols(b"@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+a\n"), (Eol::None, Eol::Lf));
+        assert_eq!(diff_eols(b"@@ -0,0 +1,2 @@\n+a\r\n+b\n\\ No newline at end of file\n"), (Eol::None, Eol::CrLf));
+        assert_eq!(synthesize_whole("n.txt", b"x\r\ny\r\n", true).new_eol, Eol::CrLf);
+        // With `diff.suppressBlankEmpty`, a blank context line is a bare newline, and the lines
+        // after it are still part of the hunk.
+        assert_eq!(diff_eols(b"@@ -1,3 +1,3 @@\n-a\n+A\n\n b\r\n"), (Eol::Mixed, Eol::Mixed));
     }
 
     #[test]

@@ -293,10 +293,11 @@ export const commands = {
 	opApplyLines: (key: string, action: LineAction, path: string, untracked: boolean, lines: SelectedLine[]) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_apply_lines", { key, action, path, untracked, lines })),
 	/**
 	 *  Commit the index, or with `paths` stage exactly those paths and commit only
-	 *  them (other staged paths stay staged). Pass both paths of a rename. An
-	 *  empty `paths` with `amend` changes only the message. With
-	 *  `amend` and an empty `message` the previous message is kept; fetch it with
-	 *  `getCommitMessage(key, "HEAD")` to edit it instead.
+	 *  them (other staged paths stay staged). When every one of `paths` is
+	 *  already staged, they are committed as staged, unstaged changes left out.
+	 *  Pass both paths of a rename. An empty `paths` with `amend` changes only
+	 *  the message. With `amend` and an empty `message` the previous message is
+	 *  kept; fetch it with `getCommitMessage(key, "HEAD")` to edit it instead.
 	 */
 	opCommit: (key: string, message: string, paths: string[] | null, amend: boolean, signOff: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_commit", { key, message, paths, amend, signOff })),
 	/**
@@ -370,9 +371,10 @@ export const commands = {
 	 */
 	opFetch: (key: string, opId: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_fetch", { key, opId })),
 	/**
-	 *  Push local `branch`. With no `target`, to the upstream it tracks (failing with `invalidPath`
-	 *  when it has none: call `getUpstream` first); with a `target`, there, and `setUpstream` makes
-	 *  the branch track it. Never forces: a rejected push comes back with `ok: false` and
+	 *  Push local `branch`. With no `target`, where plain `git push` would push it (failing with
+	 *  `invalidPath` when it has no upstream, or when `push.default` refuses an upstream with another
+	 *  name: call `getPushTarget` first); with a `target` the user chose, there, and `setUpstream`
+	 *  makes the branch track it. Never forces: a rejected push comes back with `ok: false` and
 	 *  `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
 	 */
 	opPush: (key: string, opId: string, branch: string, target: {
@@ -396,15 +398,37 @@ export const commands = {
 	 *  commits are complete) and the branch has commits the upstream lacks. `opCancel` stops it while
 	 *  it fetches or pushes, not while it merges or rebases; a stop after the merge comes back as
 	 *  `pushStopped` rather than `cancelled`, since the pull did happen. Fails with `invalidPath`
-	 *  when the branch has no upstream.
+	 *  when the branch has no upstream, and, before anything runs, when `git push` would not push to
+	 *  its upstream because the names differ (see `ops::push_target_for`). A `pushTo` the user chose
+	 *  for this sync replaces where `git push` would push.
 	 */
-	opSync: (key: string, opId: string, branch: string, mode: PullMode, autostash: boolean) => typedError<SyncResult, GitError>(__TAURI_INVOKE("op_sync", { key, opId, branch, mode, autostash })),
+	opSync: (key: string, opId: string, branch: string, mode: PullMode, autostash: boolean, pushTo: {
+	remote: string,
+	/**  The branch name on the remote, without `refs/heads/`. */
+	branch: string,
+} | null) => typedError<SyncResult, GitError>(__TAURI_INVOKE("op_sync", { key, opId, branch, mode, autostash, pushTo })),
 	/**  The remote branch local `branch` tracks (`branch.<branch>.remote` and `.merge`), or null. */
 	getUpstream: (key: string, branch: string) => typedError<{
 	remote: string,
 	/**  The branch name on the remote, without `refs/heads/`. */
 	branch: string,
 } | null, GitError>(__TAURI_INVOKE("get_upstream", { key, branch })),
+	/**
+	 *  Where local `branch` goes when it is pushed without choosing a target: its upstream, or null
+	 *  when it has none. Fails with `invalidPath` when the upstream has another name and `push.default`
+	 *  does not push there (see `ops::push_target_for`); the Push dialog can still choose it.
+	 */
+	getPushTarget: (key: string, branch: string) => typedError<{
+	remote: string,
+	/**  The branch name on the remote, without `refs/heads/`. */
+	branch: string,
+} | null, GitError>(__TAURI_INVOKE("get_push_target", { key, branch })),
+	/**
+	 *  Set `push.default` to `mode` in this repository's own config, so a branch whose upstream has
+	 *  another name is pushed to it (`upstream`) or to its own name (`current`) from now on, here and
+	 *  by `git push` in a terminal.
+	 */
+	opSetPushDefault: (key: string, mode: PushDefault) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_set_push_default", { key, mode })),
 	/**
 	 *  The pull mode the repository's Git config asks for when pulling into `branch`
 	 *  (`branch.<branch>.rebase`, `pull.rebase`, `pull.ff`), or null when none is set.
@@ -724,7 +748,18 @@ export type ConflictRefusal =
 /**  A version is not valid UTF-8 text. */
 "notUtf8" | 
 /**  A version is larger than 5 MB (`CONFLICT_FILE_CAP`). */
-"tooLarge";
+"tooLarge" | 
+/**
+ *  A version is a symbolic link (mode 120000): its content is where it points, and the
+ *  working tree file is the link, which the editor must not read or write through. The
+ *  take-a-side actions handle these.
+ */
+"symlink" | 
+/**
+ *  The path is a submodule (mode 160000): its versions are commits in the submodule's own
+ *  repository, not text. The take-a-side actions handle these.
+ */
+"submodule";
 
 /**  One version of a conflicted file. */
 export type ConflictVersion = 
@@ -832,6 +867,19 @@ export type DiffLayout = "unified" |
 /**  Side by side. */
 "side";
 
+/**  A listed file that has no diff to show, and why. */
+export type DiffNote = 
+/**
+ *  An untracked folder that is a Git repository of its own. Git lists the folder, not its
+ *  files; `git add` would record it as a submodule.
+ */
+"nestedRepository" | 
+/**
+ *  A submodule whose only change is files it does not track: `git status` reports it as
+ *  modified, and `git diff` has nothing for it.
+ */
+"submoduleUntracked";
+
 export type DiffOptions = {
 	context: number,
 	ignoreWhitespace: boolean,
@@ -902,6 +950,8 @@ export type DiffText = {
 	 */
 	oldEol: Eol,
 	newEol: Eol,
+	/**  Why there is nothing to show for a file that is listed as changed. */
+	note: DiffNote | null,
 };
 
 /**  The diff header's choices and the side-by-side divider. */
@@ -1319,6 +1369,12 @@ export type PullMode =
 /**  Only move the branch forward; refuse when both sides have new commits (`--ff-only`). */
 "fastForwardOnly";
 
+/**
+ *  The `push.default` values that push a branch to a branch with another name: `upstream` to the
+ *  branch it tracks, `current` to its own name on that branch's remote.
+ */
+export type PushDefault = "upstream" | "current";
+
 /**  Where a branch is pushed: a remote and the branch's name there. */
 export type PushTarget = {
 	remote: string,
@@ -1585,6 +1641,11 @@ export type StatusSnapshot = {
 export type SyncResult = {
 	/**  The upstream the branch was synced with. */
 	target: PushTarget,
+	/**
+	 *  Where the push goes: `target`, or the branch's own name on that remote when the names
+	 *  differ and `push.default` is `current` (see `push_target_for`).
+	 */
+	pushTarget: PushTarget,
 	/**  The fetch and the merge or rebase, combined as for a pull. */
 	pull: OpResult,
 	/**

@@ -65,20 +65,36 @@ pub(crate) fn valid_revision(rev: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check out a branch name or a commit (detached when `target` is not a branch).
+/// A remote to fetch from or push to: a remote's name, or a URL or path, which `git push -u <url>`
+/// writes into `branch.<name>.remote` and Git then pushes to and pulls from. Only guards against
+/// option injection and control characters.
+fn valid_remote(remote: &str) -> Result<()> {
+    if remote.is_empty() || remote.starts_with('-') || remote.chars().any(|c| c.is_control()) {
+        return Err(GitError::InvalidPath { path: remote.to_string(), reason: "not a valid Git remote".into() });
+    }
+    Ok(())
+}
+
+/// Check out a branch name or a commit (detached when `target` is not a branch). The `--` after
+/// it makes Git read `target` only as a revision: without it, a name that is no longer a branch
+/// but is a file restores that file from the index and loses its changes.
 pub async fn checkout(client: &GitClient, target: &str) -> Result<OpResult> {
     valid_revision(target)?;
-    let out = client.exec_allow_failure(GitReq::new("checkout", ["checkout", target]).user()).await?;
+    let out = client.exec_allow_failure(GitReq::new("checkout", ["checkout", target, "--"]).user()).await?;
     Ok(result(out))
 }
 
+/// Create branch `name` at `start_point`, and check it out when `checkout`. A start point of
+/// `HEAD` is left out, as `git checkout -b <name>` does it, so that on a branch with no commits
+/// yet checking out a new branch renames the unborn branch instead of failing.
 pub async fn branch_create(client: &GitClient, name: &str, start_point: &str, checkout: bool) -> Result<OpResult> {
     valid_ref_name(name)?;
     valid_revision(start_point)?;
+    let start = (start_point != "HEAD").then_some(start_point);
     let args: Vec<&str> = if checkout {
-        vec!["checkout", "-b", name, start_point]
+        ["checkout", "-b", name].into_iter().chain(start).collect()
     } else {
-        vec!["branch", name, start_point]
+        ["branch", name].into_iter().chain(start).collect()
     };
     let out = client.exec_allow_failure(GitReq::new("branch", args).user()).await?;
     Ok(result(out))
@@ -92,12 +108,15 @@ pub async fn merge(client: &GitClient, target: &str, no_ff: bool) -> Result<OpRe
         args.push("--no-ff");
     }
     args.push(target);
-    let out = client.exec_allow_failure(GitReq::new("merge", args).user()).await?;
+    // A merge commit runs the `pre-merge-commit` and `commit-msg` hooks, as a commit does.
+    let out = client.exec_allow_failure(GitReq::new("merge", args).user().timeout(Some(COMMIT_TIMEOUT))).await?;
     Ok(result(out))
 }
 
+/// Put the branch back where it was before the merge. Rewrites every file the merge changed,
+/// through any filter such as Git LFS, so it gets the commit timeout too.
 pub async fn merge_abort(client: &GitClient) -> Result<OpResult> {
-    let out = client.exec_allow_failure(GitReq::new("merge", ["merge", "--abort"]).user()).await?;
+    let out = client.exec_allow_failure(GitReq::new("merge", ["merge", "--abort"]).user().timeout(Some(COMMIT_TIMEOUT))).await?;
     Ok(result(out))
 }
 
@@ -120,8 +139,10 @@ pub enum PullMode {
     FastForwardOnly,
 }
 
-/// The first half of a pull: `git fetch --progress <remote> <branch>`, which writes `FETCH_HEAD`
-/// and updates `refs/remotes/<remote>/<branch>`. `--progress` makes Git report progress even
+/// The first half of a pull: `git fetch --progress <remote> refs/heads/<branch>`, which writes
+/// `FETCH_HEAD` and updates `refs/remotes/<remote>/<branch>`. The full name, as `git pull` takes
+/// it from `branch.<name>.merge`: a bare `dev` would fetch the remote's tag `dev` instead when it
+/// has one, since Git looks for tags before branches. `--progress` makes Git report progress even
 /// though stderr is a pipe; each update goes to `progress`. No timeout: a slow remote is stopped
 /// through `cancel`. Fetch touches no `index.lock` and changes no branch, so stopping it is safe:
 /// Git removes its ref lock files on SIGTERM, and a stopped fetch only leaves the remote-tracking
@@ -137,9 +158,10 @@ pub async fn pull_fetch(
     progress: &(dyn Fn(String) + Send + Sync),
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<OpResult> {
-    valid_ref_name(remote)?;
+    valid_remote(remote)?;
     valid_ref_name(branch)?;
-    let req = GitReq::new("fetch", ["fetch", "--progress", remote, branch]).user().timeout(None).own_session();
+    let refname = format!("refs/heads/{branch}");
+    let req = GitReq::new("fetch", ["fetch", "--progress", remote, refname.as_str()]).user().timeout(None).own_session();
     let out = client.exec_streaming(req, progress, cancel).await?;
     Ok(result(out))
 }
@@ -148,7 +170,8 @@ pub async fn pull_fetch(
 /// would, checked against it with Git 2.43.
 ///
 /// - Merge: `git merge --no-edit FETCH_HEAD`, which writes the same "Merge branch 'dev' of
-///   <url>" message. `pull.ff` is not read, so `pull.ff=only` does not override the choice.
+///   <url>" message, with `--no-ff` when `pull.ff` is false, as `git pull --no-rebase` does.
+///   `pull.ff=only` does not override the choice, as it does not override `--no-rebase`.
 /// - Fast-forward only: `git merge --ff-only FETCH_HEAD`.
 /// - Rebase: when the branch has no commits of its own this fast-forwards, as `git pull
 ///   --rebase` does. Otherwise `git rebase --onto FETCH_HEAD <fork point>`, where the fork point
@@ -160,7 +183,7 @@ pub async fn pull_fetch(
 /// conflicts, Git still exits 0, prints "Applying autostash resulted in conflicts" and keeps the
 /// changes as `stash@{0}`. Not cancellable. Timeout 10 minutes, for slow hooks.
 pub async fn pull_integrate(client: &GitClient, remote: &str, branch: &str, mode: PullMode, autostash: bool) -> Result<OpResult> {
-    valid_ref_name(remote)?;
+    valid_remote(remote)?;
     valid_ref_name(branch)?;
     let timeout = Some(std::time::Duration::from_secs(600));
     let autostash_flag = autostash.then_some("--autostash");
@@ -180,11 +203,21 @@ pub async fn pull_integrate(client: &GitClient, remote: &str, branch: &str, mode
     let mut args = vec!["merge", "--no-edit"];
     if mode != PullMode::Merge {
         args.push("--ff-only");
+    } else if pull_ff_is_false(client).await? {
+        args.push("--no-ff");
     }
     args.extend(autostash_flag);
     args.push("FETCH_HEAD");
     let out = client.exec_allow_failure(GitReq::new("merge", args).user().timeout(timeout)).await?;
     Ok(result(out))
+}
+
+/// True when `pull.ff` is false (`false`, `no`, `off` or `0`), which makes `git pull` merge with
+/// `--no-ff`: a merge commit even where a fast-forward would do.
+async fn pull_ff_is_false(client: &GitClient) -> Result<bool> {
+    let out = client.exec_allow_failure(GitReq::new("config", ["config", "--get", "pull.ff"])).await?;
+    let value = String::from_utf8_lossy(&out.stdout).trim().to_ascii_lowercase();
+    Ok(out.success() && matches!(value.as_str(), "false" | "no" | "off" | "0"))
 }
 
 /// True when HEAD is `FETCH_HEAD` or behind it, so the branch has no commits of its own and
@@ -227,6 +260,74 @@ pub async fn upstream_of(client: &GitClient, branch: &str) -> Result<Option<Push
     Ok(upstream_from_config(&out.stdout, branch))
 }
 
+/// Where `branch` goes when it is pushed without choosing a target, as plain `git push` decides
+/// it: its upstream, or None when it has none. See `push_target_for`.
+pub async fn implicit_push_target(client: &GitClient, branch: &str) -> Result<Option<PushTarget>> {
+    match upstream_of(client, branch).await? {
+        Some(upstream) => push_target_for(client, branch, upstream).await.map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Where `branch`, which tracks `upstream`, goes when it is pushed without choosing a target. The
+/// upstream itself when it has the same name. Otherwise `push.default` decides, as for `git
+/// push`: `upstream` (or its old name `tracking`) pushes to the upstream, `current` to the
+/// branch's own name on the upstream's remote. `simple`, the default, refuses, and so do
+/// `matching` and `nothing`: fails with `InvalidPath`, so that a branch started from
+/// `origin/main` is never pushed onto `main` without the user choosing that.
+pub async fn push_target_for(client: &GitClient, branch: &str, upstream: PushTarget) -> Result<PushTarget> {
+    if upstream.branch == branch {
+        return Ok(upstream);
+    }
+    let mode = push_default(client).await?.unwrap_or_default();
+    match mode.as_str() {
+        "upstream" | "tracking" => Ok(upstream),
+        "current" => Ok(PushTarget { remote: upstream.remote, branch: branch.to_string() }),
+        _ => Err(GitError::InvalidPath {
+            path: branch.to_string(),
+            reason: format!(
+                "it tracks {}/{}, a branch with another name, and Git's push.default ({}) does not push to a branch with another name; choose where to push it in the Push dialog",
+                upstream.remote,
+                upstream.branch,
+                if mode.is_empty() { "simple" } else { mode.as_str() }
+            ),
+        }),
+    }
+}
+
+/// `push.default` as Git reads it for this repository, from whichever config file sets it; None
+/// when none does, which Git treats as `simple`.
+pub async fn push_default(client: &GitClient) -> Result<Option<String>> {
+    // Exit 1, with nothing printed, when it is not set.
+    let out = client.exec_allow_failure(GitReq::new("config", ["config", "--get", "push.default"])).await?;
+    if !out.success() && out.exit_code != Some(1) {
+        return Err(classify_git_failure("config", vec![], out.exit_code, &out.stderr, &client.transport.kind()));
+    }
+    let mode = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!mode.is_empty()).then_some(mode))
+}
+
+/// The `push.default` values that push a branch to a branch with another name: `upstream` to the
+/// branch it tracks, `current` to its own name on that branch's remote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PushDefault {
+    Upstream,
+    Current,
+}
+
+/// Set `push.default` to `mode` in this repository's own config (`git config --local`): it then
+/// applies to every push from this repository, `git push` in a terminal included, and to no other
+/// repository.
+pub async fn set_push_default(client: &GitClient, mode: PushDefault) -> Result<OpResult> {
+    let value = match mode {
+        PushDefault::Upstream => "upstream",
+        PushDefault::Current => "current",
+    };
+    let out = client.exec_allow_failure(GitReq::new("config", ["config", "--local", "push.default", value]).user()).await?;
+    Ok(result(out))
+}
+
 fn upstream_from_config(bytes: &[u8], branch: &str) -> Option<PushTarget> {
     let (mut remote, mut merge) = (None, None);
     for entry in bytes.split(|b| *b == 0).filter(|e| !e.is_empty()) {
@@ -258,7 +359,7 @@ pub async fn push(
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<OpResult> {
     valid_ref_name(branch)?;
-    valid_ref_name(&target.remote)?;
+    valid_remote(&target.remote)?;
     valid_ref_name(&target.branch)?;
     let refspec = format!("refs/heads/{branch}:refs/heads/{}", target.branch);
     let mut args = vec!["push", "--progress"];
@@ -270,8 +371,8 @@ pub async fn push(
     Ok(result(out))
 }
 
-/// How many commits HEAD has that `tracking` (`refs/remotes/origin/dev`) does not: what a push
-/// would send.
+/// How many commits HEAD has that `tracking` (`FETCH_HEAD` after a pull, or
+/// `refs/remotes/origin/dev`) does not: what a push would send.
 pub async fn commits_ahead(client: &GitClient, tracking: &str) -> Result<u32> {
     let range = format!("{tracking}..HEAD");
     let out = client.exec(GitReq::new("rev-list", ["rev-list", "--count", &range])).await?;
@@ -285,6 +386,9 @@ pub async fn commits_ahead(client: &GitClient, tracking: &str) -> Result<u32> {
 pub struct SyncResult {
     /// The upstream the branch was synced with.
     pub target: PushTarget,
+    /// Where the push goes: `target`, or the branch's own name on that remote when the names
+    /// differ and `push.default` is `current` (see `push_target_for`).
+    pub push_target: PushTarget,
     /// The fetch and the merge or rebase, combined as for a pull.
     pub pull: OpResult,
     /// The push, or null when it did not run: the pull failed or stopped on conflicts, there was
@@ -303,8 +407,9 @@ pub fn push_rejected(res: &OpResult) -> bool {
     !res.ok && res.stderr.contains("[rejected]")
 }
 
-/// The pull mode the repository's Git config asks for, in the order `git pull` reads it:
-/// `branch.<branch>.rebase`, then `pull.rebase`, then `pull.ff`. None when none of them is set.
+/// The pull mode the repository's Git config asks for, as `git pull` reads it: `pull.ff=only`
+/// first, then `branch.<branch>.rebase`, then `pull.rebase`, then any other `pull.ff`. None when
+/// none of them is set.
 pub async fn configured_pull_mode(client: &GitClient, branch: Option<&str>) -> Result<Option<PullMode>> {
     let mut pattern = String::from(r"^pull\.(rebase|ff)$");
     if let Some(b) = branch {
@@ -351,18 +456,21 @@ fn pull_mode_from_config(bytes: &[u8], branch: Option<&str>) -> Option<PullMode>
     }
     // `merges`, `interactive` and their one-letter forms all rebase; StashPanda runs a plain one.
     let rebases = |v: &str| matches!(v, "true" | "yes" | "on" | "1" | "merges" | "m" | "interactive" | "i");
-    let ff_only = pull_ff.as_deref() == Some("only");
+    // `pull.ff=only` wins over a rebase setting that also comes from config: `git pull` then
+    // refuses anything but a fast-forward.
+    if pull_ff.as_deref() == Some("only") {
+        return Some(PullMode::FastForwardOnly);
+    }
     match branch_rebase.or(pull_rebase) {
         Some(v) if rebases(&v) => Some(PullMode::Rebase),
-        Some(_) if ff_only => Some(PullMode::FastForwardOnly),
         Some(_) => Some(PullMode::Merge),
-        None if ff_only => Some(PullMode::FastForwardOnly),
         None if pull_ff.is_some() => Some(PullMode::Merge),
         None => None,
     }
 }
 
-/// Lightweight tag, or annotated when `message` is given.
+/// Lightweight tag, or annotated when `message` is given. `--cleanup=whitespace` keeps lines
+/// that start with `#` (`#123 fixed`): `git tag` otherwise strips them as comments even from `-m`.
 pub async fn tag_create(client: &GitClient, name: &str, target: &str, message: Option<&str>, force: bool) -> Result<OpResult> {
     valid_ref_name(name)?;
     valid_revision(target)?;
@@ -372,6 +480,7 @@ pub async fn tag_create(client: &GitClient, name: &str, target: &str, message: O
     }
     if let Some(m) = message.filter(|m| !m.trim().is_empty()) {
         args.push("-a".into());
+        args.push("--cleanup=whitespace".into());
         args.push("-m".into());
         args.push(m.to_string());
     }
@@ -399,8 +508,24 @@ pub async fn branch_delete(client: &GitClient, name: &str, force: bool) -> Resul
 pub async fn branch_rename(client: &GitClient, old: &str, new: &str) -> Result<OpResult> {
     valid_ref_name(old)?;
     valid_ref_name(new)?;
-    let out = client.exec_allow_failure(GitReq::new("branch", ["branch", "-m", old, new]).user()).await?;
+    let listed = client
+        .exec(GitReq::new("for-each-ref", ["for-each-ref".to_string(), "--format=%(refname)".into(), format!("refs/heads/{new}")]))
+        .await?;
+    let new_exists = String::from_utf8_lossy(&listed.stdout).lines().any(|l| l == format!("refs/heads/{new}"));
+    let out = client.exec_allow_failure(GitReq::new("branch", ["branch", rename_flag(old, new, new_exists), old, new]).user()).await?;
     Ok(result(out))
+}
+
+/// `-M` for a rename that only changes letter case, unless a branch named exactly `new` exists:
+/// where branch names are case-insensitive (Windows, macOS) Git finds `old` under `new` and
+/// refuses `-m` with "a branch named 'New' already exists". Otherwise `-m`, so that an existing
+/// branch is never overwritten.
+fn rename_flag(old: &str, new: &str, new_exists: bool) -> &'static str {
+    if old != new && old.to_lowercase() == new.to_lowercase() && !new_exists {
+        "-M"
+    } else {
+        "-m"
+    }
 }
 
 /// Make local branch `branch` track the remote branch `upstream`, given by the full name of its
@@ -425,7 +550,10 @@ pub async fn branch_set_upstream(client: &GitClient, branch: &str, upstream: Opt
     Ok(result(out))
 }
 
-/// Delete `branch` on `remote`: `git push --progress <remote> --delete refs/heads/<branch>`. The
+/// Delete on `remote` the branch whose remote-tracking branch here is `<remote>/<branch>`: `git
+/// push --progress <remote> --delete refs/heads/<branch>`. With a fetch refspec other than the
+/// usual `refs/heads/*:refs/remotes/<remote>/*`, the branch's name there is found by reading the
+/// remote's `remote.<remote>.fetch` refspecs backwards; one that no refspec maps is refused. The
 /// full ref name means a tag of the same name on the remote cannot be deleted instead, and it also
 /// makes Git remove the remote-tracking branch `<remote>/<branch>` here. When the remote no longer
 /// has the branch, Git 2.43 still exits 0 and the remote prints "warning: deleting a non-existent
@@ -442,10 +570,33 @@ pub async fn delete_remote_branch(
 ) -> Result<OpResult> {
     valid_ref_name(remote)?;
     valid_ref_name(branch)?;
-    let refname = format!("refs/heads/{branch}");
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let config = client
+        .exec_allow_failure(GitReq::new("config", ["config".to_string(), "--get-all".into(), format!("remote.{remote}.fetch")]))
+        .await?;
+    let refspecs = String::from_utf8_lossy(&config.stdout).into_owned();
+    let Some(refname) = remote_ref_for(refspecs.lines(), &tracking) else {
+        return Err(GitError::InvalidPath { path: tracking, reason: format!("no fetch refspec of {remote} maps a remote branch to it") });
+    };
     let req = GitReq::new("push", ["push", "--progress", remote, "--delete", refname.as_str()]).user().timeout(None).own_session();
     let out = client.exec_streaming(req, progress, cancel).await?;
     Ok(result(out))
+}
+
+/// The ref on the remote that a fetch with `refspecs` (`+refs/heads/*:refs/remotes/origin/*`)
+/// stores as `tracking` here, or None when none of them does. Negative refspecs (`^…`) are skipped.
+fn remote_ref_for<'a>(refspecs: impl IntoIterator<Item = &'a str>, tracking: &str) -> Option<String> {
+    refspecs.into_iter().find_map(|spec| {
+        let spec = spec.trim().trim_start_matches('+');
+        let (src, dst) = spec.split_once(':').filter(|_| !spec.starts_with('^'))?;
+        match dst.split_once('*') {
+            Some((pre, post)) => {
+                let middle = tracking.strip_prefix(pre)?.strip_suffix(post)?;
+                src.contains('*').then(|| src.replacen('*', middle, 1))
+            }
+            None => (dst == tracking).then(|| src.to_string()),
+        }
+    })
 }
 
 /// How much `reset` puts back besides moving the branch.
@@ -585,23 +736,37 @@ pub(crate) fn parse_unmerged(bytes: &[u8]) -> std::collections::HashMap<String, 
 /// Every unmerged path and its stages. Lists the whole index, since `ls-files` takes no pathspec
 /// on stdin; the unmerged entries are few.
 pub async fn unmerged_stages(client: &GitClient) -> Result<std::collections::HashMap<String, Vec<u8>>> {
-    let out = client.exec(GitReq::new("ls-files", ["ls-files", "-u", "-z"])).await?;
-    Ok(parse_unmerged(&out.stdout))
+    Ok(parse_unmerged(&unmerged_listing(client).await?))
+}
+
+/// `git ls-files -u -z`: every unmerged entry in the index, with its mode and object ID.
+async fn unmerged_listing(client: &GitClient) -> Result<Vec<u8>> {
+    Ok(client.exec(GitReq::new("ls-files", ["ls-files", "-u", "-z"])).await?.stdout)
 }
 
 /// Resolve conflicted `paths` by keeping one side's version whole, and mark them resolved.
 /// Where that side has the file, `git checkout --ours|--theirs` writes it and `git add` stages
-/// it; where that side deleted it (deleted by us or by them), `git rm` deletes it. Refuses, and
-/// changes nothing, when a path is not conflicted any more.
+/// it; where that side deleted it (deleted by us or by them), `git rm` deletes it. A submodule
+/// gets that side's commit in the index (`git update-index --index-info`), as `git add` would
+/// after checking the commit out in it; its own checkout is left alone. Refuses, and changes
+/// nothing, when a path is not conflicted any more.
 pub async fn resolve_conflicts(client: &GitClient, paths: &[String], side: ResolveSide) -> Result<OpResult> {
+    use crate::git::queries::conflict_file::stage_records;
     valid_paths(paths)?;
-    let stages = unmerged_stages(client).await?;
+    let listing = unmerged_listing(client).await?;
+    let stages = parse_unmerged(&listing);
     let wanted = match side {
         ResolveSide::Ours => 2,
         ResolveSide::Theirs => 3,
     };
-    let (mut keep, mut delete) = (Vec::new(), Vec::new());
+    let (mut keep, mut delete, mut gitlinks) = (Vec::new(), Vec::new(), Vec::new());
     for p in paths {
+        // `git checkout --ours` leaves a submodule as it is, so `git add` would stage whatever
+        // commit it happens to have checked out.
+        if let Some((_, mode, oid)) = stage_records(&listing, p).find(|(stage, mode, _)| *stage == wanted && mode == "160000") {
+            gitlinks.extend_from_slice(format!("{mode} {oid}\t{p}\0").as_bytes());
+            continue;
+        }
         match stages.get(p) {
             Some(s) if s.contains(&wanted) => keep.push(p.clone()),
             Some(_) => delete.push(p.clone()),
@@ -622,7 +787,7 @@ pub async fn resolve_conflicts(client: &GitClient, paths: &[String], side: Resol
         if list.is_empty() {
             continue;
         }
-        let r = exec_with_paths(client, label, args, list).await?;
+        let r = exec_with_paths_slow(client, label, args, list).await?;
         let ok = r.ok;
         res = Some(match res.take() {
             Some(prev) => combine(prev, r),
@@ -632,32 +797,66 @@ pub async fn resolve_conflicts(client: &GitClient, paths: &[String], side: Resol
             break;
         }
     }
+    if !gitlinks.is_empty() && res.as_ref().is_none_or(|r| r.ok) {
+        // A stage-0 entry replaces the path's conflict stages; `-z` takes any path as it is.
+        let req = GitReq::new("update-index", ["update-index", "-z", "--index-info"]).stdin(gitlinks).user();
+        let r = result(client.exec_allow_failure(req).await?);
+        res = Some(match res.take() {
+            Some(prev) => combine(prev, r),
+            None => r,
+        });
+    }
     Ok(res.expect("at least one path is given"))
+}
+
+/// `exec_with_paths` with the commit timeout, for the steps that resolve a conflict: `git
+/// checkout` runs the `post-checkout` hook, and a filter such as Git LFS runs for each file.
+async fn exec_with_paths_slow(client: &GitClient, label: &'static str, args: &[&str], paths: &[String]) -> Result<OpResult> {
+    let mut argv: Vec<String> = vec!["--literal-pathspecs".into()];
+    argv.extend(args.iter().map(|a| a.to_string()));
+    argv.push("--pathspec-from-file=-".into());
+    argv.push("--pathspec-file-nul".into());
+    let stdin: Vec<u8> = paths.iter().flat_map(|p| p.bytes().chain([0])).collect();
+    let req = GitReq::new(label, argv).stdin(stdin).user().timeout(Some(COMMIT_TIMEOUT));
+    Ok(result(client.exec_allow_failure(req).await?))
 }
 
 /// Write Git's merge of conflicted `path` to the working tree again, with conflict markers in the
 /// `diff3` style, which carry each block's base text (`git checkout --conflict=diff3`). Whatever
 /// has been done to the file since is lost, so the frontend asks first. Refuses, and changes
 /// nothing, when the path is not conflicted any more: Git would then write the index's version
-/// over the file instead.
+/// over the file instead. Refuses a symbolic link or a submodule too, which the merge editor does
+/// not open: Git would make the link point at the conflict markers.
 pub async fn restore_conflict(client: &GitClient, path: &str) -> Result<OpResult> {
     let paths = [path.to_string()];
     valid_paths(&paths)?;
-    if !unmerged_stages(client).await?.contains_key(path) {
+    let listing = unmerged_listing(client).await?;
+    if !parse_unmerged(&listing).contains_key(path) {
         return Err(GitError::InvalidPath { path: path.to_string(), reason: "the file is not conflicted any more".into() });
     }
-    exec_with_paths(client, "checkout", &["checkout", "--conflict=diff3"], &paths).await
+    if crate::git::queries::conflict_file::special_refusal(&listing, path).is_some() {
+        return Err(GitError::InvalidPath { path: path.to_string(), reason: "a symbolic link or a submodule has no text to merge".into() });
+    }
+    exec_with_paths_slow(client, "checkout", &["checkout", "--conflict=diff3"], &paths).await
 }
 
 /// Save `content` as working tree file `path` (relative to the repository), byte for byte, and
 /// return the hash of what was written. `expected_hash` is the `hash` the file had when the merge
 /// editor opened it (see `conflict_file::content_hash`); when the file on disk no longer has it,
 /// nothing is written and this fails with `changedOnDisk`, so a change made meanwhile by another
-/// program is never overwritten unasked. The file is written in place, keeping its mode.
+/// program is never overwritten unasked. The file is written in place, keeping its mode. Refuses
+/// when the file, or a folder on the way to it, is a symbolic link: writing would change the file
+/// the link points to, which can be anywhere.
 pub async fn write_worktree_file(client: &GitClient, path: &str, content: &str, expected_hash: &str) -> Result<String> {
     use crate::git::queries::conflict_file::content_hash;
+    use crate::git::queries::diff::join_repo_path;
     valid_worktree_path(path)?;
-    let full = crate::git::queries::diff::join_repo_path(&client.repo, path);
+    let parts: Vec<&str> = path.split(['/', '\\']).collect();
+    let steps: Vec<_> = (1..=parts.len()).map(|n| join_repo_path(&client.repo, &parts[..n].join("/"))).collect();
+    if client.transport.symlinks(&steps).await?.contains(&true) {
+        return Err(GitError::InvalidPath { path: path.to_string(), reason: "it is a symbolic link, or inside one, so saving would write somewhere else".into() });
+    }
+    let full = join_repo_path(&client.repo, path);
     // A file that has grown past the cap since it was opened has certainly changed.
     let on_disk = match client.transport.read_file(&full, crate::git::queries::blob::BLOB_CAP).await {
         Ok(bytes) => Some(bytes),
@@ -762,7 +961,7 @@ fn valid_paths(paths: &[String]) -> Result<()> {
     if let Some(p) = paths.iter().find(|p| p.is_empty() || p.contains('\0')) {
         return Err(GitError::InvalidPath { path: p.clone(), reason: "not a valid path".into() });
     }
-    Ok(())
+    paths.iter().try_for_each(|p| crate::git::parse::utf8_name(p))
 }
 
 /// `git --literal-pathspecs <args> --pathspec-from-file=- --pathspec-file-nul`
@@ -799,23 +998,166 @@ pub(crate) fn combine(a: OpResult, b: OpResult) -> OpResult {
 }
 
 /// Stage additions, modifications and deletions of `paths`. For a rename,
-/// pass both the new and the original path.
+/// pass both the new and the original path. A path whose deletion is already
+/// staged and that has no file in the working tree has nothing left to stage
+/// and is skipped, since `git add` stops on it with "did not match any files";
+/// that is the original path of a rename that is already staged.
+///
+/// A deleted file with a folder now in its place has only its deletion staged
+/// (see `now_folders`). A submodule whose own files changed while the commit it
+/// points at did not has nothing `git add` can stage; when nothing else was
+/// staged either, this fails with `invalidPath` rather than report success.
 pub async fn stage(client: &GitClient, paths: &[String]) -> Result<OpResult> {
     valid_paths(paths)?;
-    exec_with_paths(client, "add", &["add", "-A"], paths).await
+    let removed = already_removed(client, paths).await?;
+    let rest: Vec<String> = paths.iter().filter(|p| !removed.contains(p.as_str())).cloned().collect();
+    if rest.is_empty() {
+        return Ok(OpResult { ok: true, exit_code: Some(0), stdout: String::new(), stderr: String::new(), conflicts: false });
+    }
+    let folders = now_folders(client, &rest, false).await?;
+    let mut steps: Vec<OpResult> = Vec::new();
+    if !folders.is_empty() {
+        // Exact paths, not pathspecs, so nothing inside the folder is touched.
+        let stdin: Vec<u8> = folders.iter().flat_map(|p| p.bytes().chain([0])).collect();
+        let req = GitReq::new("update-index", ["update-index", "--force-remove", "-z", "--stdin"]).stdin(stdin).user();
+        let removed = result(client.exec_allow_failure(req).await?);
+        if !removed.ok {
+            return Ok(removed);
+        }
+        steps.push(removed);
+    }
+    let rest: Vec<String> = rest.into_iter().filter(|p| !folders.contains(p)).collect();
+    if !rest.is_empty() {
+        // `-v` names each path staged, so an empty output means nothing was.
+        let added = exec_with_paths(client, "add", &["add", "-A", "-v"], &rest).await?;
+        if added.ok && added.stdout.is_empty() && steps.is_empty() {
+            if let Some(p) = content_only_submodules(client, &rest).await?.into_iter().next() {
+                return Err(GitError::InvalidPath {
+                    path: p,
+                    reason: "only files inside this submodule have changed, and those are committed in the submodule itself; the submodule can be staged once it points at a new commit".into(),
+                });
+            }
+        }
+        steps.push(added);
+    }
+    Ok(combine_all(steps))
+}
+
+/// Those of `paths` that are tracked files deleted from the working tree with a
+/// folder now in their place that holds files Git does not track, ignored ones
+/// included. A pathspec naming the file also names everything in that folder,
+/// so `git add` would stage those files and `git restore` would delete them to
+/// make room for the file. With `from_head`, files deleted since HEAD count too,
+/// not only those deleted since the index.
+async fn now_folders(client: &GitClient, paths: &[String], from_head: bool) -> Result<std::collections::HashSet<String>> {
+    let chosen: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+    let mut deleted = list_paths(client, "diff", &["diff", "--name-only", "-z", "--no-renames", "--diff-filter=D"]).await?;
+    if from_head {
+        deleted.extend(list_paths(client, "diff", &["diff", "HEAD", "--name-only", "-z", "--no-renames", "--diff-filter=D", "--"]).await?);
+    }
+    let deleted: std::collections::HashSet<String> = deleted.into_iter().filter(|p| chosen.contains(p.as_str())).collect();
+    let mut folders = std::collections::HashSet::new();
+    // Each as `<path>/`: `--directory`, and `git status` without `-uall`, leave out a folder
+    // named like a file in the index. `git ls-files` has no stdin form, so in chunks.
+    let specs: Vec<String> = deleted.iter().map(|p| format!("{p}/")).collect();
+    let mut chunk: Vec<&str> = Vec::new();
+    let mut bytes = 0;
+    for (i, spec) in specs.iter().enumerate() {
+        chunk.push(spec);
+        bytes += spec.len() + 1;
+        if bytes < CLEAN_CHUNK_BYTES && i + 1 < specs.len() {
+            continue;
+        }
+        let mut argv = vec!["--literal-pathspecs", "ls-files", "-z", "--others", "--"];
+        argv.append(&mut chunk);
+        bytes = 0;
+        for p in list_paths(client, "ls-files", &argv).await? {
+            for (i, _) in p.match_indices('/') {
+                if let Some(dir) = deleted.get(&p[..i]) {
+                    folders.insert(dir.clone());
+                }
+            }
+        }
+    }
+    Ok(folders)
+}
+
+/// The changed submodules `git status` reports, as (path, `XY`, `S<c><m><u>`):
+/// `c` is `C` when the submodule's checkout is at a commit other than the one
+/// the index records, `m` and `u` mark changed and untracked files inside it.
+async fn changed_submodules(client: &GitClient) -> Result<Vec<(String, String, String)>> {
+    Ok(list_paths(client, "status", &["status", "--porcelain=v2", "-z"])
+        .await?
+        .into_iter()
+        .filter_map(|record| {
+            let f: Vec<&str> = record.splitn(9, ' ').collect();
+            (f.len() == 9 && f[0] == "1" && f[2].starts_with('S')).then(|| (f[8].to_string(), f[1].to_string(), f[2].to_string()))
+        })
+        .collect())
+}
+
+/// Those of `paths` that are submodules whose own files changed while the
+/// commit they point at did not.
+async fn content_only_submodules(client: &GitClient, paths: &[String]) -> Result<Vec<String>> {
+    let chosen: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+    Ok(changed_submodules(client)
+        .await?
+        .into_iter()
+        .filter(|(p, _, sub)| chosen.contains(p.as_str()) && sub.as_bytes()[1] == b'.')
+        .map(|(p, ..)| p)
+        .collect())
+}
+
+/// Those of `paths` whose deletion is already staged and that have no file
+/// in the working tree either.
+async fn already_removed(client: &GitClient, paths: &[String]) -> Result<std::collections::HashSet<String>> {
+    let chosen: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+    let mut gone: std::collections::HashSet<String> =
+        list_paths(client, "diff", &["diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=D"])
+            .await?
+            .into_iter()
+            .filter(|p| chosen.contains(p.as_str()))
+            .collect();
+    if !gone.is_empty() {
+        // A file created again at a deleted path is untracked, and still needs staging.
+        for p in list_paths(client, "ls-files", &["ls-files", "-z", "--others", "--exclude-standard"]).await? {
+            gone.remove(&p);
+        }
+    }
+    Ok(gone)
+}
+
+/// The NUL-separated paths a read-only Git command prints.
+async fn list_paths(client: &GitClient, label: &'static str, args: &[&str]) -> Result<Vec<String>> {
+    let out = client.exec_allow_failure(GitReq::new(label, args.to_vec())).await?;
+    if !out.success() {
+        return Err(classify_git_failure(label, vec![], out.exit_code, &out.stderr, &TransportKind::Local));
+    }
+    Ok(out
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect())
 }
 
 /// Move `paths` out of the index, back to their HEAD state; the working tree
 /// is untouched. On an unborn branch there is no HEAD, so the paths are
-/// removed from the index instead. For a staged rename, pass both paths.
+/// removed from the index instead (`-f`, since Git otherwise refuses a file
+/// whose staged content differs from the file on disk). For a staged rename,
+/// pass both paths.
 pub async fn unstage(client: &GitClient, paths: &[String]) -> Result<OpResult> {
     valid_paths(paths)?;
-    let head = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", "HEAD"])).await?;
-    if head.success() {
+    if has_head(client).await? {
         exec_with_paths(client, "restore", &["restore", "--staged"], paths).await
     } else {
-        exec_with_paths(client, "rm", &["rm", "--cached", "-q"], paths).await
+        exec_with_paths(client, "rm", &["rm", "--cached", "-f", "-q"], paths).await
     }
+}
+
+/// False on an unborn branch, which has no commit yet.
+async fn has_head(client: &GitClient) -> Result<bool> {
+    Ok(client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", "HEAD"])).await?.success())
 }
 
 /// Commit hooks (lint, tests) can run for a while; still bounded, in case a
@@ -830,18 +1172,7 @@ const ONLY_ARGV_BYTES: usize = 24 * 1024;
 /// Every path in the index that differs from HEAD, with renames split into
 /// their two paths so they match what the frontend passes for a rename.
 async fn staged_paths(client: &GitClient) -> Result<Vec<String>> {
-    let out = client
-        .exec_allow_failure(GitReq::new("diff", ["diff", "--cached", "--name-only", "-z", "--no-renames"]))
-        .await?;
-    if !out.success() {
-        return Err(classify_git_failure("diff", vec![], out.exit_code, &out.stderr, &TransportKind::Local));
-    }
-    Ok(out
-        .stdout
-        .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
-        .map(|p| String::from_utf8_lossy(p).into_owned())
-        .collect())
+    list_paths(client, "diff", &["diff", "--cached", "--name-only", "-z", "--no-renames"]).await
 }
 
 /// Commit the index, or with `paths` exactly those paths. The message goes
@@ -854,9 +1185,23 @@ async fn staged_paths(client: &GitClient) -> Result<Vec<String>> {
 /// the commit adds `--only` so they stay staged and out of the commit. If the
 /// commit itself fails (a hook refuses, the message is empty), `paths` stay
 /// staged. An empty `paths` with `amend` changes only the message.
+///
+/// `--only` cannot commit a rename that changes only the letter case where
+/// the file system ignores case (Windows, macOS): it starts from HEAD, which
+/// still has the old name, and Git refuses the new name as an alias of it. So
+/// when `paths` holds two names that differ only in case, the other staged
+/// paths are unstaged instead, the index is committed, and they are staged
+/// again exactly as they were, partly staged files included.
+///
+/// When every one of `paths` is already staged (and none is conflicted), they
+/// are committed as staged, the same way: a partly staged file keeps its
+/// unstaged part out of the commit, which `--only` would take from the disk.
+/// That fails with `invalidPath` while a merge, cherry-pick or revert waits to
+/// be committed, as `--only` does in Git.
 pub async fn commit(client: &GitClient, message: &str, paths: Option<&[String]>, amend: bool, sign_off: bool) -> Result<OpResult> {
-    let mut staged_first: Option<OpResult> = None;
+    let mut steps: Vec<OpResult> = Vec::new();
     let mut only: Option<&[String]> = None;
+    let mut set_aside: Option<(String, Vec<String>)> = None;
     // An amend naming no paths rewords the last commit and leaves whatever is staged alone.
     if let Some([]) = paths {
         if !amend {
@@ -865,12 +1210,40 @@ pub async fn commit(client: &GitClient, message: &str, paths: Option<&[String]>,
         only = Some(&[]);
     } else if let Some(paths) = paths {
         valid_paths(paths)?;
-        let added = stage(client, paths).await?;
-        if !added.ok {
-            return Ok(added);
+        let settled: std::collections::HashSet<String> =
+            list_paths(client, "diff", &["diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=u"]).await?.into_iter().collect();
+        let as_staged = paths.iter().all(|p| settled.contains(p));
+        if !as_staged {
+            let added = stage(client, paths).await?;
+            if !added.ok {
+                return Ok(added);
+            }
+            steps.push(added);
         }
         let chosen: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
-        if staged_paths(client).await?.iter().any(|p| !chosen.contains(p.as_str())) {
+        let others: Vec<String> = staged_paths(client).await?.into_iter().filter(|p| !chosen.contains(p.as_str())).collect();
+        if !others.is_empty() && (as_staged || differ_only_in_case(paths)) {
+            if let Some(op) = operation_to_commit(client).await? {
+                return Err(GitError::InvalidPath {
+                    path: String::new(),
+                    reason: format!("a {op} is waiting to be committed, so the commit takes everything that is staged"),
+                });
+            }
+            let tree = client.exec_allow_failure(GitReq::new("write-tree", ["write-tree"])).await?;
+            if !tree.success() {
+                steps.push(result(tree));
+                return Ok(combine_all(steps));
+            }
+            let tree = String::from_utf8_lossy(&tree.stdout).trim().to_string();
+            let aside = unstage(client, &others).await?;
+            let ok = aside.ok;
+            steps.push(aside);
+            if !ok {
+                steps.push(stage_from_tree(client, &tree, &others).await?);
+                return Ok(combine_all(steps));
+            }
+            set_aside = Some((tree, others));
+        } else if !others.is_empty() {
             let bytes: usize = paths.iter().map(|p| p.len() + 1).sum();
             if bytes > ONLY_ARGV_BYTES {
                 return Err(GitError::InvalidPath {
@@ -883,7 +1256,6 @@ pub async fn commit(client: &GitClient, message: &str, paths: Option<&[String]>,
             }
             only = Some(paths);
         }
-        staged_first = Some(added);
     }
 
     let mut args: Vec<&str> = Vec::new();
@@ -912,11 +1284,41 @@ pub async fn commit(client: &GitClient, message: &str, paths: Option<&[String]>,
         req = req.stdin(message.as_bytes().to_vec());
     }
     req = req.user().timeout(Some(COMMIT_TIMEOUT));
-    let committed = result(client.exec_allow_failure(req).await?);
-    Ok(match staged_first {
-        Some(added) => combine(added, committed),
-        None => committed,
-    })
+    steps.push(result(client.exec_allow_failure(req).await?));
+    if let Some((tree, others)) = set_aside {
+        steps.push(stage_from_tree(client, &tree, &others).await?);
+    }
+    Ok(combine_all(steps))
+}
+
+/// The merge, cherry-pick or revert whose commit the next `git commit` makes,
+/// if one is in progress.
+async fn operation_to_commit(client: &GitClient) -> Result<Option<&'static str>> {
+    for (head, op) in [("MERGE_HEAD", "merge"), ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert")] {
+        if client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", head])).await?.success() {
+            return Ok(Some(op));
+        }
+    }
+    Ok(None)
+}
+
+/// True when two of `paths` are the same name in different letter case, as
+/// both sides of a rename that changes only the case are.
+fn differ_only_in_case(paths: &[String]) -> bool {
+    let distinct: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+    let folded: std::collections::HashSet<String> = distinct.iter().map(|p| p.to_lowercase()).collect();
+    folded.len() < distinct.len()
+}
+
+/// Stage `paths` exactly as they are in `tree`, removing those it lacks.
+async fn stage_from_tree(client: &GitClient, tree: &str, paths: &[String]) -> Result<OpResult> {
+    let source = format!("--source={tree}");
+    exec_with_paths(client, "restore", &["restore", &source, "--staged"], paths).await
+}
+
+/// Every step's output, succeeding only when all of them did.
+fn combine_all(steps: Vec<OpResult>) -> OpResult {
+    steps.into_iter().reduce(combine).expect("at least one step")
 }
 
 /// Most untracked paths per `git clean` call, which has no stdin form.
@@ -926,23 +1328,84 @@ const CLEAN_CHUNK_BYTES: usize = 16 * 1024;
 /// HEAD in both the index and the working tree (`to_head` true, which also
 /// removes files that are staged but not in HEAD). `untracked` are deleted.
 /// Nothing here can be undone; the frontend confirms first.
+///
+/// - On an unborn branch every staged file is new, so going back to HEAD
+///   removes it, as it would with a HEAD.
+/// - An intent-to-add file (`git add -N`) is removed too: its index entry is an
+///   empty placeholder, which `git restore` would write over the file.
+/// - A changed submodule is moved back to the commit it should point at
+///   (`git submodule update --checkout`, which stops rather than overwrite
+///   changes inside it). One whose own files changed while that commit did not
+///   is skipped, since those changes belong to the submodule.
+/// - Refused with `invalidPath`, before anything changes: a deleted file with a
+///   folder of untracked files now in its place (restoring the file would
+///   delete them), and an untracked folder, which the status lists only for a
+///   repository of its own (`git clean -f` skips one without a word).
 pub async fn discard(client: &GitClient, tracked: &[String], untracked: &[String], to_head: bool) -> Result<OpResult> {
     if tracked.is_empty() && untracked.is_empty() {
         return Err(GitError::InvalidPath { path: String::new(), reason: "no paths given".into() });
     }
+    if let Some(p) = untracked.iter().find(|p| p.ends_with('/')) {
+        return Err(GitError::InvalidPath {
+            path: p.clone(),
+            reason: "it is a Git repository of its own, which StashPanda does not delete; delete the folder yourself if you mean to".into(),
+        });
+    }
     let mut res: Option<OpResult> = None;
     if !tracked.is_empty() {
         valid_paths(tracked)?;
-        let args: &[&str] = if to_head {
-            &["restore", "--source=HEAD", "--staged", "--worktree"]
-        } else {
-            &["restore", "--worktree"]
-        };
-        let r = exec_with_paths(client, "restore", args, tracked).await?;
-        if !r.ok {
-            return Ok(r);
+        let head = has_head(client).await?;
+        if let Some(p) = now_folders(client, tracked, to_head && head).await?.into_iter().next() {
+            return Err(GitError::InvalidPath {
+                path: p,
+                reason: "a folder holding untracked files now has the deleted file's name, and restoring the file would delete them; move the folder away first".into(),
+            });
         }
-        res = Some(r);
+        let chosen: std::collections::HashSet<&str> = tracked.iter().map(String::as_str).collect();
+        let submodules: Vec<(String, String, String)> =
+            changed_submodules(client).await?.into_iter().filter(|(p, ..)| chosen.contains(p.as_str())).collect();
+        let inside: Vec<&String> =
+            submodules.iter().filter(|(_, _, sub)| !to_head && sub.as_bytes()[1] == b'.').map(|(p, ..)| p).collect();
+        let tracked: Vec<String> = tracked.iter().filter(|p| !inside.contains(p)).cloned().collect();
+        if tracked.is_empty() && untracked.is_empty() {
+            return Err(GitError::InvalidPath {
+                path: inside[0].clone(),
+                reason: "only files inside this submodule have changed; discard them in the submodule itself".into(),
+            });
+        }
+        let mut steps: Vec<OpResult> = Vec::new();
+        if to_head && !head {
+            steps.push(exec_with_paths(client, "rm", &["rm", "-f", "-q"], &tracked).await?);
+        } else if to_head {
+            steps.push(exec_with_paths(client, "restore", &["restore", "--source=HEAD", "--staged", "--worktree"], &tracked).await?);
+        } else if !tracked.is_empty() {
+            let placeholders = intent_to_add(client, &tracked).await?;
+            let rest: Vec<String> = tracked.iter().filter(|p| !placeholders.contains(*p)).cloned().collect();
+            if !placeholders.is_empty() {
+                steps.push(exec_with_paths(client, "rm", &["rm", "-f", "-q"], &placeholders).await?);
+            }
+            if !rest.is_empty() && steps.iter().all(|s| s.ok) {
+                steps.push(exec_with_paths(client, "restore", &["restore", "--worktree"], &rest).await?);
+            }
+        }
+        // A submodule added since HEAD is gone from the index now.
+        let moved: Vec<&str> = submodules
+            .iter()
+            .filter(|(p, xy, _)| !inside.contains(&p) && !(to_head && xy.starts_with('A')))
+            .map(|(p, ..)| p.as_str())
+            .collect();
+        if !moved.is_empty() && steps.iter().all(|s| s.ok) {
+            let mut argv = vec!["--literal-pathspecs", "submodule", "update", "--checkout", "--no-fetch", "--"];
+            argv.extend(moved);
+            steps.push(result(client.exec_allow_failure(GitReq::new("submodule", argv).user()).await?));
+        }
+        if !steps.is_empty() {
+            let r = combine_all(steps);
+            if !r.ok {
+                return Ok(r);
+            }
+            res = Some(r);
+        }
     }
     if !untracked.is_empty() {
         valid_paths(untracked)?;
@@ -970,6 +1433,17 @@ pub async fn discard(client: &GitClient, tracked: &[String], untracked: &[String
         }
     }
     Ok(res.expect("at least one path list is non-empty"))
+}
+
+/// Those of `paths` that are intent-to-add (`git add -N`): new in the working
+/// tree against an index that has only a placeholder for them.
+async fn intent_to_add(client: &GitClient, paths: &[String]) -> Result<Vec<String>> {
+    let chosen: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+    Ok(list_paths(client, "diff", &["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A"])
+        .await?
+        .into_iter()
+        .filter(|p| chosen.contains(p.as_str()))
+        .collect())
 }
 
 #[cfg(test)]
@@ -1037,6 +1511,138 @@ mod e2e {
         assert!(merge_abort(&client).await.unwrap().ok);
         assert!(branch_delete(&client, "clash", true).await.unwrap().ok);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn names_that_are_also_files_tags_or_branches_reach_git_as_the_ref_meant() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-names-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, dir) = (root.join("origin.git"), root.join("local"));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&root, &["init", "-q", "--bare", "-b", "main", "origin.git"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("notes"), "original\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "one"]);
+        git(&dir, &["remote", "add", "origin", &origin.to_string_lossy()]);
+        git(&dir, &["push", "-q", "origin", "main", "main:dev"]);
+        git(&dir, &["fetch", "-q", "origin"]);
+        let client = client_for(&dir);
+
+        // A name that is no longer a branch but is a file: refused, and the file keeps its edit.
+        std::fs::write(dir.join("notes"), "edited\n").unwrap();
+        let gone = checkout(&client, "notes").await.unwrap();
+        assert!(!gone.ok, "{gone:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("notes")).unwrap(), "edited\n");
+        git(&dir, &["checkout", "-q", "--", "notes"]);
+
+        // A tag and a branch both named v1: the tag's full name detaches HEAD at the tag.
+        let one = out(&dir, &["rev-parse", "HEAD"]);
+        git(&dir, &["tag", "v1"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        git(&dir, &["branch", "v1"]);
+        assert!(checkout(&client, "refs/tags/v1").await.unwrap().ok);
+        assert_eq!(out(&dir, &["rev-parse", "HEAD"]), one);
+        assert_eq!(out(&dir, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert!(checkout(&client, "main").await.unwrap().ok);
+
+        // A tag named like the remote branch: the full name still starts the branch there and
+        // tracks it.
+        git(&dir, &["tag", "origin/dev"]);
+        let tracked = branch_create(&client, "dev", "refs/remotes/origin/dev", true).await.unwrap();
+        assert!(tracked.ok, "{tracked:?}");
+        assert_eq!(out(&dir, &["rev-parse", "--symbolic-full-name", "dev@{upstream}"]), "refs/remotes/origin/dev");
+        assert_eq!(out(&dir, &["rev-parse", "HEAD"]), one);
+
+        // A tag and a branch both named topic: merging the branch's full name merges the branch,
+        // and Git names it so in the message.
+        git(&dir, &["tag", "topic"]);
+        git(&dir, &["checkout", "-q", "-b", "topic"]);
+        std::fs::write(dir.join("t.txt"), "t\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "topic work"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        let merged = merge(&client, "refs/heads/topic", true).await.unwrap();
+        assert!(merged.ok, "{merged:?}");
+        assert_eq!(out(&dir, &["log", "-1", "--format=%s"]), "Merge branch 'refs/heads/topic'");
+        assert!(dir.join("t.txt").exists());
+
+        // An annotated tag keeps message lines that start with `#`.
+        assert!(tag_create(&client, "v2", "HEAD", Some("#123 release\n#124 fixed"), false).await.unwrap().ok);
+        assert_eq!(out(&dir, &["tag", "-l", "--format=%(contents)", "v2"]), "#123 release\n#124 fixed");
+
+        // A rename that only changes letter case; where both names are branches, nothing is
+        // overwritten.
+        git(&dir, &["branch", "case"]);
+        assert!(branch_rename(&client, "case", "Case").await.unwrap().ok);
+        assert_eq!(out(&dir, &["branch", "--list", "Case"]), "Case");
+        git(&dir, &["branch", "case", "HEAD~1"]);
+        let taken = branch_rename(&client, "case", "Case").await.unwrap();
+        assert!(!taken.ok && taken.stderr.contains("already exists"), "{taken:?}");
+        assert_eq!(out(&dir, &["rev-parse", "Case"]), out(&dir, &["rev-parse", "HEAD"]));
+
+        // A branch with no commits yet: checking out a new branch from HEAD renames it, as
+        // `git checkout -b` does; creating one without checking it out fails in Git.
+        let empty = root.join("empty");
+        git(&root, &["init", "-q", "-b", "main", "empty"]);
+        let unborn = client_for(&empty);
+        let renamed = branch_create(&unborn, "feature", "HEAD", true).await.unwrap();
+        assert!(renamed.ok, "{renamed:?}");
+        assert_eq!(out(&empty, &["symbolic-ref", "HEAD"]), "refs/heads/feature");
+        assert!(!branch_create(&unborn, "other", "HEAD", false).await.unwrap().ok);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_case_only_rename_uses_capital_m_unless_the_new_name_is_a_branch() {
+        assert_eq!(rename_flag("feature", "Feature", false), "-M");
+        assert_eq!(rename_flag("feature", "Feature", true), "-m");
+        assert_eq!(rename_flag("feature", "topic", false), "-m");
+        assert_eq!(rename_flag("Ünï", "ünï", false), "-M");
+    }
+
+    #[test]
+    fn remote_branch_names_come_from_the_fetch_refspec() {
+        let standard = ["+refs/heads/*:refs/remotes/origin/*"];
+        assert_eq!(remote_ref_for(standard, "refs/remotes/origin/feature/x").as_deref(), Some("refs/heads/feature/x"));
+        let custom = ["^refs/heads/secret", "+refs/heads/*:refs/remotes/origin/team-*", "refs/heads/main:refs/remotes/origin/trunk"];
+        assert_eq!(remote_ref_for(custom, "refs/remotes/origin/team-dev").as_deref(), Some("refs/heads/dev"));
+        assert_eq!(remote_ref_for(custom, "refs/remotes/origin/trunk").as_deref(), Some("refs/heads/main"));
+        assert_eq!(remote_ref_for(custom, "refs/remotes/origin/dev"), None);
+    }
+
+    #[tokio::test]
+    async fn remote_branches_on_a_custom_fetch_refspec_and_a_remote_named_with_a_slash() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-refspec-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, dir) = (root.join("origin.git"), root.join("local"));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&root, &["init", "-q", "--bare", "-b", "main", "origin.git"]);
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let url = origin.to_string_lossy().into_owned();
+        git(&dir, &["push", "-q", &url, "main", "main:dev", "main:feature"]);
+        git(&dir, &["remote", "add", "origin", &url]);
+        git(&dir, &["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/team-*"]);
+        git(&dir, &["remote", "add", "team/up", &url]);
+        git(&dir, &["fetch", "-q", "--all"]);
+        let client = client_for(&dir);
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let ls_remote = || out(&dir, &["ls-remote", "--heads", &url]);
+
+        // The remote-tracking branch origin/team-dev is the remote's dev.
+        let deleted = delete_remote_branch(&client, "origin", "team-dev", &progress, &cancel).await.unwrap();
+        assert!(deleted.ok, "{deleted:?}");
+        assert!(!ls_remote().contains("refs/heads/dev"), "{}", ls_remote());
+        assert!(matches!(delete_remote_branch(&client, "origin", "dev", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+
+        // The remote team/up: its branches are listed under it, and deleting goes to it.
+        let refs = get_refs(&client).await.unwrap();
+        let feature = refs.refs.iter().find(|r| r.short == "team/up/feature").expect("team/up/feature listed");
+        assert_eq!(feature.kind, crate::git::queries::refs::RefKind::RemoteBranch { remote: "team/up".into() });
+        let deleted = delete_remote_branch(&client, "team/up", "feature", &progress, &cancel).await.unwrap();
+        assert!(deleted.ok, "{deleted:?}");
+        assert!(!ls_remote().contains("refs/heads/feature"), "{}", ls_remote());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]
@@ -1532,10 +2138,99 @@ mod e2e {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A submodule and a symbolic link that both sides changed. The merge editor refuses both,
+    /// never reads or writes through the link, and taking a side stages that side's commit for
+    /// the submodule, not the one the submodule happens to have checked out.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submodule_and_symlink_conflicts_are_taken_whole_and_never_written_through() {
+        use crate::git::queries::conflict_file::{content_hash, get_conflict_file, ConflictRefusal};
+        use std::os::unix::fs::symlink;
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-special-{}", uuid::Uuid::new_v4().simple()));
+        let (sub, dir, elsewhere) = (root.join("sub-origin"), root.join("repo"), root.join("elsewhere"));
+        for d in [&sub, &dir, &elsewhere] {
+            std::fs::create_dir_all(d).unwrap();
+            git(d, &["init", "-q", "-b", "main"]);
+        }
+        // The submodule: a root commit, and one commit on top of it for each of three branches.
+        std::fs::write(sub.join("f"), "root\n").unwrap();
+        git(&sub, &["add", "-A"]);
+        git(&sub, &["commit", "-qm", "root"]);
+        let sub_root = out(&sub, &["rev-parse", "HEAD"]);
+        let mut tips = Vec::new();
+        for name in ["a", "b", "c"] {
+            git(&sub, &["checkout", "-qB", name, "main"]);
+            std::fs::write(sub.join(name), "x\n").unwrap();
+            git(&sub, &["add", "-A"]);
+            git(&sub, &["commit", "-qm", name]);
+            tips.push(out(&sub, &["rev-parse", "HEAD"]));
+        }
+        let (sub_main, sub_feature, sub_elsewhere) = (&tips[0], &tips[1], &tips[2]);
+        let outside = root.join("outside.txt");
+        std::fs::write(&outside, "outside the repository\n").unwrap();
+        std::fs::write(elsewhere.join("f.txt"), "elsewhere\n").unwrap();
+
+        // base: the submodule at its root commit, `link` to README. feature: the submodule at b,
+        // `link` to other.txt. main: the submodule at a, `link` out of the repository.
+        let st = Command::new("git").arg("-C").arg(&dir).args(["-c", "protocol.file.allow=always", "submodule", "add", "-q"]).arg(&sub).arg("sub").status().unwrap();
+        assert!(st.success());
+        let point = |commit: &str, target: &str| {
+            git(&dir.join("sub"), &["checkout", "-q", commit]);
+            let _ = std::fs::remove_file(dir.join("link"));
+            symlink(target, dir.join("link")).unwrap();
+            git(&dir, &["add", "-A"]);
+        };
+        std::fs::write(dir.join("README"), "readme\n").unwrap();
+        point(&sub_root, "README");
+        git(&dir, &["commit", "-qm", "base"]);
+        git(&dir, &["checkout", "-qb", "feature"]);
+        point(sub_feature, "other.txt");
+        git(&dir, &["commit", "-qm", "feature"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        git(&dir, &["-c", "protocol.file.allow=always", "submodule", "update", "-q"]);
+        point(sub_main, "../outside.txt");
+        git(&dir, &["commit", "-qm", "main"]);
+        // The submodule's own checkout moves on to a third commit, not staged.
+        git(&dir.join("sub"), &["checkout", "-q", sub_elsewhere]);
+        let client = client_for(&dir);
+        let m = merge(&client, "feature", false).await.unwrap();
+        assert!(!m.ok && m.conflicts, "{m:?}");
+        assert_eq!(out(&dir, &["status", "--porcelain", "--", "link", "sub"]), "UU link\nUU sub");
+
+        // The merge editor refuses both, with a reason, rather than reading through the link or
+        // failing on the submodule's commits.
+        assert_eq!(get_conflict_file(&client, None, "link").await.unwrap().refused, Some(ConflictRefusal::Symlink));
+        assert_eq!(get_conflict_file(&client, None, "sub").await.unwrap().refused, Some(ConflictRefusal::Submodule));
+        // Saving never writes through a link, whether it is the file or a folder on the way.
+        let hash = content_hash(b"outside the repository\n");
+        assert!(matches!(write_worktree_file(&client, "link", "x\n", &hash).await, Err(GitError::InvalidPath { .. })));
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside the repository\n");
+        symlink(&elsewhere, dir.join("linked")).unwrap();
+        let hash = content_hash(b"elsewhere\n");
+        assert!(matches!(write_worktree_file(&client, "linked/f.txt", "x\n", &hash).await, Err(GitError::InvalidPath { .. })));
+        assert_eq!(std::fs::read_to_string(elsewhere.join("f.txt")).unwrap(), "elsewhere\n");
+        std::fs::remove_file(dir.join("linked")).unwrap();
+        // Starting again from Git's merge would point the link at the conflict markers.
+        assert!(matches!(restore_conflict(&client, "link").await, Err(GitError::InvalidPath { .. })));
+        assert_eq!(std::fs::read_link(dir.join("link")).unwrap(), Path::new("../outside.txt"));
+
+        // Taking feature's side stages feature's link and feature's submodule commit.
+        let taken = resolve_conflicts(&client, &strs(&["sub", "link"]), ResolveSide::Theirs).await.unwrap();
+        assert!(taken.ok, "{taken:?}");
+        assert_eq!(out(&dir, &["ls-files", "-s", "sub"]), format!("160000 {sub_feature} 0\tsub"));
+        assert_eq!(std::fs::read_link(dir.join("link")).unwrap(), Path::new("other.txt"));
+        assert_eq!(out(&dir, &["ls-files", "-u"]), "");
+        assert!(continue_operation(&client, InProgressKind::Merge).await.unwrap().ok);
+        assert_eq!(out(&dir, &["rev-parse", "HEAD:sub"]), *sub_feature);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[tokio::test]
     async fn safe_directory_lets_git_open_a_repository_it_refused() {
         if which::which("git").is_err() { return; }
-        let dir = std::env::temp_dir().join(format!("stashpanda-safe-{}", uuid::Uuid::new_v4().simple()));
+        // The quote in the name, as in `C:/Users/O'Brien`, is part of the path Git reports.
+        let dir = std::env::temp_dir().join(format!("stashpanda-safe-O'Brien-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&dir).unwrap();
         git(&dir, &["init", "-q", "-b", "main"]);
         let global = dir.join("global.gitconfig");
@@ -1546,7 +2241,7 @@ mod e2e {
         let as_other = |req: GitReq| req.env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1").env("GIT_CONFIG_GLOBAL", &global.to_string_lossy());
         let refused = client.exec(as_other(GitReq::new("rev-parse", ["rev-parse", "--git-dir"]))).await;
         let Err(GitError::UnsafeRepository { path }) = refused else { panic!("{refused:?}") };
-        assert!(!path.is_empty());
+        assert!(path.ends_with(&*dir.file_name().unwrap().to_string_lossy()), "{path}");
         let added = client.exec_allow_failure(as_other(safe_directory_req(&path))).await.unwrap();
         assert!(added.success(), "{added:?}");
         assert!(client.exec(as_other(GitReq::new("rev-parse", ["rev-parse", "--git-dir"]))).await.is_ok());
@@ -1701,6 +2396,63 @@ mod e2e {
         let r = commit(&client, "", Some(&strs(&["a.txt"])), false, false).await.unwrap();
         assert!(!r.ok, "{r:?}");
         assert_eq!(status_of(&client).await, vec![("a.txt".into(), true, false, false)]);
+        git(&dir, &["commit", "-qm", "third"]);
+
+        // A rename that is already staged: the original path is in neither the
+        // index nor the working tree, so only the commit can name it.
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        git(&dir, &["mv", "renamed.txt", "sub/moved.txt"]);
+        std::fs::write(dir.join("sub/token.txt"), "untracked\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "staged, not selected\n").unwrap();
+        git(&dir, &["add", "b.txt"]);
+        let chosen = strs(&["sub/moved.txt", "renamed.txt", "sub/token.txt"]);
+        let r = commit(&client, "moved", Some(&chosen), false, false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(files_in("HEAD"), strs(&["renamed.txt", "sub/moved.txt", "sub/token.txt"]));
+        assert_eq!(status_of(&client).await, vec![("b.txt".into(), true, false, false)]);
+
+        // The same with nothing else staged, so the commit names no paths.
+        git(&dir, &["commit", "-qm", "b"]);
+        git(&dir, &["mv", "sub/moved.txt", "moved-back.txt"]);
+        let r = commit(&client, "moved back", Some(&strs(&["moved-back.txt", "sub/moved.txt"])), false, false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(files_in("HEAD"), strs(&["moved-back.txt", "sub/moved.txt"]));
+        assert_eq!(status_of(&client).await, vec![]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn commit_a_case_only_rename_while_other_files_stay_staged() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-case-rename-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        for (name, text) in [("Readme.md", "readme\n"), ("b.txt", "b\n"), ("gone.txt", "gone\n")] {
+            std::fs::write(dir.join(name), text).unwrap();
+        }
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+
+        // b.txt is partly staged and gone.txt is a staged deletion; neither is selected.
+        git(&dir, &["mv", "Readme.md", "README.md"]);
+        std::fs::write(dir.join("b.txt"), "staged b\n").unwrap();
+        git(&dir, &["add", "b.txt"]);
+        std::fs::write(dir.join("b.txt"), "unstaged b\n").unwrap();
+        git(&dir, &["rm", "-q", "gone.txt"]);
+        assert!(differ_only_in_case(&strs(&["README.md", "Readme.md"])));
+        assert!(!differ_only_in_case(&strs(&["README.md", "README.md", "b.txt"])));
+
+        let r = commit(&client, "case only", Some(&strs(&["README.md", "Readme.md"])), false, false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(out(&dir, &["diff-tree", "-r", "--name-status", "--no-commit-id", "HEAD"]), "A\tREADME.md\nD\tReadme.md");
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "MM b.txt\nD  gone.txt");
+        assert_eq!(out(&dir, &["show", ":b.txt"]), "staged b");
+
+        // When the commit fails, the other files are put back all the same.
+        git(&dir, &["mv", "README.md", "ReadMe.md"]);
+        let r = commit(&client, "", Some(&strs(&["ReadMe.md", "README.md"])), false, false).await.unwrap();
+        assert!(!r.ok, "{r:?}");
+        assert_eq!(out(&dir, &["status", "--porcelain"]), "R  README.md -> ReadMe.md\nMM b.txt\nD  gone.txt");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1718,6 +2470,309 @@ mod e2e {
         assert!(r.ok, "{r:?}");
         assert_eq!(status_of(&client).await, vec![("a.txt".into(), false, false, true)]);
         assert!(dir.join("a.txt").exists());
+
+        // A partly staged file: Git refuses `rm --cached` without `-f`.
+        assert!(stage(&client, &strs(&["a.txt"])).await.unwrap().ok);
+        std::fs::write(dir.join("a.txt"), "a\nmore\n").unwrap();
+        let r = unstage(&client, &strs(&["a.txt"])).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(status_of(&client).await, vec![("a.txt".into(), false, false, true)]);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "a\nmore\n");
+
+        // Discarding a staged file with no commit to go back to removes it, as it removes a
+        // staged new file when there is one; the untracked file stays.
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        assert!(stage(&client, &strs(&["b.txt"])).await.unwrap().ok);
+        std::fs::write(dir.join("b.txt"), "b\nunstaged\n").unwrap();
+        let r = discard(&client, &strs(&["b.txt"]), &[], true).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert!(!dir.join("b.txt").exists());
+        assert_eq!(status_of(&client).await, vec![("a.txt".into(), false, false, true)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn discard_an_intent_to_add_file() {
+        use super::lines::{apply_lines, ChangeKind, LineAction, SelectedLine};
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-intent-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+
+        // `git add -N` leaves an empty placeholder in the index; `git restore` would write it over
+        // the file. The file goes, as an untracked one does, and so does the placeholder.
+        std::fs::write(dir.join("new.txt"), "precious\n").unwrap();
+        std::fs::write(dir.join("changed.txt"), "x\n").unwrap();
+        git(&dir, &["add", "changed.txt"]); git(&dir, &["commit", "-qm", "changed"]);
+        std::fs::write(dir.join("changed.txt"), "y\n").unwrap();
+        git(&dir, &["add", "-N", "new.txt"]);
+        let r = discard(&client, &strs(&["new.txt", "changed.txt"]), &[], false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert!(!dir.join("new.txt").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("changed.txt")).unwrap(), "x\n");
+        assert_eq!(status_of(&client).await, vec![]);
+
+        // The same when the diff viewer discards every line.
+        std::fs::write(dir.join("new.txt"), "precious\n").unwrap();
+        git(&dir, &["add", "-N", "new.txt"]);
+        let all = [SelectedLine { kind: ChangeKind::Add, line: 1, text: "precious".into() }];
+        let r = apply_lines(&client, LineAction::Discard, "new.txt", false, &all).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert!(!dir.join("new.txt").exists());
+        assert_eq!(status_of(&client).await, vec![]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_file_with_a_folder_in_its_place() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-file-to-folder-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "file\n").unwrap();
+        std::fs::write(dir.join("keep.txt"), "keep\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+        std::fs::remove_file(dir.join("a")).unwrap();
+        std::fs::create_dir(dir.join("a")).unwrap();
+        std::fs::write(dir.join("a/x.txt"), "precious\n").unwrap();
+        std::fs::write(dir.join("keep.txt"), "changed\n").unwrap();
+
+        // Discarding the deletion would delete a/x.txt to make room for the file: refused, and
+        // nothing changes, keep.txt included.
+        let r = discard(&client, &strs(&["keep.txt", "a"]), &[], false).await;
+        assert!(matches!(&r, Err(GitError::InvalidPath { path, .. }) if path == "a"), "{r:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("a/x.txt")).unwrap(), "precious\n");
+        assert_eq!(std::fs::read_to_string(dir.join("keep.txt")).unwrap(), "changed\n");
+
+        // Staging the deletion stages only that, not the files in the folder.
+        assert!(stage(&client, &strs(&["a"])).await.unwrap().ok);
+        assert_eq!(out(&dir, &["status", "--porcelain", "--untracked-files=all"]), "D  a\n M keep.txt\n?? a/x.txt");
+
+        // Back to HEAD, from the staged deletion: refused the same way.
+        let r = discard(&client, &strs(&["a"]), &[], true).await;
+        assert!(matches!(&r, Err(GitError::InvalidPath { path, .. }) if path == "a"), "{r:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("a/x.txt")).unwrap(), "precious\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn submodules_and_nested_repositories() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-submodules-{}", uuid::Uuid::new_v4().simple()));
+        let lib = dir.join("lib");
+        let repo = dir.join("repo");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&lib, &["init", "-q", "-b", "main"]);
+        std::fs::write(lib.join("f.txt"), "1\n").unwrap();
+        git(&lib, &["add", "-A"]); git(&lib, &["commit", "-qm", "one"]);
+        std::fs::write(lib.join("f.txt"), "2\n").unwrap();
+        git(&lib, &["commit", "-qam", "two"]);
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", lib.to_str().unwrap(), "sub"]);
+        git(&repo, &["commit", "-qm", "sub"]);
+        let client = client_for(&repo);
+        let sub_head = || out(&repo.join("sub"), &["rev-parse", "HEAD"]);
+        let recorded = out(&repo, &["rev-parse", "HEAD:sub"]);
+
+        // Only a file inside the submodule changed: there is nothing to stage or discard here.
+        std::fs::write(repo.join("sub/f.txt"), "edited inside\n").unwrap();
+        let r = stage(&client, &strs(&["sub"])).await;
+        assert!(matches!(&r, Err(GitError::InvalidPath { path, .. }) if path == "sub"), "{r:?}");
+        let r = discard(&client, &strs(&["sub"]), &[], false).await;
+        assert!(matches!(&r, Err(GitError::InvalidPath { path, .. }) if path == "sub"), "{r:?}");
+        assert_eq!(std::fs::read_to_string(repo.join("sub/f.txt")).unwrap(), "edited inside\n");
+        git(&repo.join("sub"), &["checkout", "-q", "--", "f.txt"]);
+
+        // The submodule checked out at another commit: discarding moves it back.
+        git(&repo.join("sub"), &["checkout", "-q", "HEAD~1"]);
+        assert_ne!(sub_head(), recorded);
+        let r = discard(&client, &strs(&["sub"]), &[], false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(sub_head(), recorded);
+        assert_eq!(status_of(&client).await, vec![]);
+
+        // Staged, then back to HEAD: the index and the checkout both go back.
+        git(&repo.join("sub"), &["checkout", "-q", "HEAD~1"]);
+        assert!(stage(&client, &strs(&["sub"])).await.unwrap().ok);
+        let r = discard(&client, &strs(&["sub"]), &[], true).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(sub_head(), recorded);
+        assert_eq!(status_of(&client).await, vec![]);
+
+        // An untracked repository of its own: `git clean -f` would skip it without a word.
+        git(&repo, &["init", "-q", "nested"]);
+        std::fs::write(repo.join("nested/n.txt"), "n\n").unwrap();
+        std::fs::write(repo.join("loose.txt"), "loose\n").unwrap();
+        let r = discard(&client, &[], &strs(&["loose.txt", "nested/"]), false).await;
+        assert!(matches!(&r, Err(GitError::InvalidPath { path, .. }) if path == "nested/"), "{r:?}");
+        assert!(repo.join("nested/n.txt").exists() && repo.join("loose.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn commit_staged_files_as_they_are_staged() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-commit-staged-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "user.email", "t@t"]);
+        git(&dir, &["config", "user.name", "T"]);
+        git(&dir, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+
+        // a.txt is partly staged and b.txt staged; committing a.txt alone takes its staged part.
+        std::fs::write(dir.join("a.txt"), "a staged\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        std::fs::write(dir.join("a.txt"), "a staged\nnot staged\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "b staged\n").unwrap();
+        git(&dir, &["add", "b.txt"]);
+        let r = commit(&client, "a only", Some(&strs(&["a.txt"])), false, false).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(out(&dir, &["show", "HEAD:a.txt"]), "a staged");
+        assert_eq!(out(&dir, &["diff-tree", "-r", "--name-only", "--no-commit-id", "HEAD"]), "a.txt");
+        assert_eq!(status_of(&client).await, vec![("a.txt".into(), false, true, false), ("b.txt".into(), true, false, false)]);
+
+        // While a merge waits for its commit, a commit of some staged files only is refused.
+        git(&dir, &["commit", "-qm", "b"]);
+        git(&dir, &["checkout", "-q", "-b", "topic"]);
+        std::fs::write(dir.join("t.txt"), "t\n").unwrap();
+        git(&dir, &["add", "t.txt"]); git(&dir, &["commit", "-qm", "topic"]);
+        git(&dir, &["checkout", "-q", "main"]);
+        std::fs::write(dir.join("b.txt"), "b on main\n").unwrap();
+        git(&dir, &["add", "b.txt"]); git(&dir, &["commit", "-qm", "main"]);
+        git(&dir, &["merge", "-q", "--no-commit", "--no-ff", "topic"]);
+        std::fs::write(dir.join("b.txt"), "b staged during the merge\n").unwrap();
+        git(&dir, &["add", "b.txt"]);
+        let r = commit(&client, "part of a merge", Some(&strs(&["b.txt"])), false, false).await;
+        assert!(matches!(&r, Err(GitError::InvalidPath { reason, .. }) if reason.contains("merge")), "{r:?}");
+        let staged = |p: &str| (p.to_string(), true, false, false);
+        assert_eq!(status_of(&client).await, vec![("a.txt".into(), false, true, false), staged("b.txt"), staged("t.txt")]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn stage_lines_of_new_files_as_git_add_would() {
+        use super::lines::{apply_lines, ChangeKind, LineAction, SelectedLine};
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-new-lines-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "core.autocrlf", "true"]);
+        std::fs::write(dir.join("base.txt"), "base\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+        let add = |line: u32, text: &str| SelectedLine { kind: ChangeKind::Add, line, text: text.into() };
+
+        // CRLF lines reach the index as LF, as `git add` would store them with core.autocrlf.
+        std::fs::write(dir.join("crlf.txt"), "one\r\ntwo\r\nthree\r\n").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "crlf.txt", true, &[add(1, "one"), add(2, "two")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(out(&dir, &["cat-file", "-p", ":crlf.txt"]), "one\ntwo");
+
+        // A selection that no longer matches leaves the file untracked, as it was.
+        let r = apply_lines(&client, LineAction::Stage, "gone.txt", true, &[add(1, "x")]).await;
+        assert!(r.is_err() || !r.unwrap().ok);
+        std::fs::write(dir.join("stale.txt"), "a\nb\n").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "stale.txt", true, &[add(1, "not a")]).await;
+        assert!(matches!(r, Err(GitError::InvalidPath { .. })), "{r:?}");
+        assert_eq!(out(&dir, &["status", "--porcelain", "--", "stale.txt"]), "?? stale.txt");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // An executable keeps its mode.
+            std::fs::write(dir.join("run.sh"), "#!/bin/sh\necho 1\necho 2\n").unwrap();
+            std::fs::set_permissions(dir.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let r = apply_lines(&client, LineAction::Stage, "run.sh", true, &[add(1, "#!/bin/sh"), add(2, "echo 1")]).await.unwrap();
+            assert!(r.ok, "{r:?}");
+            assert!(out(&dir, &["ls-files", "-s", "run.sh"]).starts_with("100755 "));
+
+            // A symbolic link has no lines to pick, whether staging or discarding them; reading it
+            // would follow it to the file it points at.
+            std::fs::write(dir.join("target.txt"), "t1\nt2\n").unwrap();
+            std::os::unix::fs::symlink("target.txt", dir.join("link")).unwrap();
+            let r = apply_lines(&client, LineAction::Stage, "link", true, &[add(1, "t1")]).await;
+            assert!(matches!(&r, Err(GitError::InvalidPath { reason, .. }) if reason.contains("symbolic link")), "{r:?}");
+            assert_eq!(out(&dir, &["status", "--porcelain", "--", "link"]), "?? link");
+            let r = apply_lines(&client, LineAction::Discard, "link", true, &[add(1, "t1")]).await;
+            assert!(matches!(&r, Err(GitError::InvalidPath { reason, .. }) if reason.contains("symbolic link")), "{r:?}");
+            assert!(dir.join("link").symlink_metadata().unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read_to_string(dir.join("target.txt")).unwrap(), "t1\nt2\n");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn single_lines_of_deletions_renames_blank_lines_and_textconv() {
+        use super::lines::{apply_lines, ChangeKind, LineAction, SelectedLine};
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-more-lines-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["config", "core.autocrlf", "false"]);
+        let numbered: String = (1..=8).map(|i| format!("line {i}\n")).collect();
+        for name in ["staged-gone.txt", "gone.txt", "old.txt"] {
+            std::fs::write(dir.join(name), &numbered).unwrap();
+        }
+        std::fs::write(dir.join("blank.txt"), "a\nb\n\nc\nd\n").unwrap();
+        std::fs::write(dir.join(".gitattributes"), "*.dat diff=upper\n").unwrap();
+        std::fs::write(dir.join("x.dat"), "a\nb\nc\nd\ne\nf\ng\nh\n").unwrap();
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let client = client_for(&dir);
+        let add = |line: u32, text: &str| SelectedLine { kind: ChangeKind::Add, line, text: text.into() };
+        let del = |line: u32, text: &str| SelectedLine { kind: ChangeKind::Del, line, text: text.into() };
+        let index = |p: &str| out(&dir, &["show", &format!(":{p}")]);
+
+        // Unstage one line of a staged deletion: the index gets back a file with only that line.
+        git(&dir, &["rm", "-q", "staged-gone.txt"]);
+        let r = apply_lines(&client, LineAction::Unstage, "staged-gone.txt", false, &[del(3, "line 3")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("staged-gone.txt"), "line 3");
+
+        // Discard one line of a file deleted from disk: the file comes back with only that line.
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        let r = apply_lines(&client, LineAction::Discard, "gone.txt", false, &[del(5, "line 5")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(std::fs::read_to_string(dir.join("gone.txt")).unwrap(), "line 5\n");
+
+        // A staged rename with two edits: unstage one, removed line included; the rename stays.
+        git(&dir, &["mv", "old.txt", "new.txt"]);
+        std::fs::write(dir.join("new.txt"), numbered.replace("line 2\n", "line two\n").replace("line 7\n", "line seven\n")).unwrap();
+        git(&dir, &["add", "new.txt"]);
+        let r = apply_lines(&client, LineAction::Unstage, "new.txt", false, &[del(2, "line 2"), add(2, "line two")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("new.txt"), numbered.replace("line 7\n", "line seven\n").trim_end());
+        assert!(out(&dir, &["diff", "--cached", "-M", "--name-status", "--", "new.txt", "old.txt"]).starts_with('R'));
+        // The rest of it: both paths are unstaged.
+        let r = apply_lines(&client, LineAction::Unstage, "new.txt", false, &[del(7, "line 7"), add(7, "line seven")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(out(&dir, &["diff", "--cached", "--name-status", "--", "new.txt", "old.txt"]), "");
+
+        // With diff.suppressBlankEmpty Git prints a blank context line as an empty line, which
+        // must not end the hunk: staging the first change leaves the second unstaged.
+        git(&dir, &["config", "diff.suppressBlankEmpty", "true"]);
+        std::fs::write(dir.join("blank.txt"), "a\nB\n\nc\nD\n").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "blank.txt", false, &[del(2, "b"), add(2, "B")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("blank.txt"), "a\nB\n\nc\nd");
+        let r = apply_lines(&client, LineAction::Stage, "blank.txt", false, &[del(5, "d")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("blank.txt"), "a\nB\n\nc");
+
+        // A textconv driver changes what `git diff` shows, not the file: the lines are the file's.
+        git(&dir, &["config", "diff.upper.textconv", "tr a-z A-Z <"]);
+        std::fs::write(dir.join("x.dat"), "a\nbb\nc\nd\ne\nf\ng\nhh\n").unwrap();
+        let r = apply_lines(&client, LineAction::Stage, "x.dat", false, &[del(2, "b"), add(2, "bb")]).await.unwrap();
+        assert!(r.ok, "{r:?}");
+        assert_eq!(index("x.dat"), "a\nbb\nc\nd\ne\nf\ng\nh");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1749,6 +2804,11 @@ mod e2e {
 
         let ok = checkout(&client, "other").await.unwrap();
         assert!(ok.ok && index_lock_in(&ok).is_none(), "{ok:?}");
+
+        // A failure that only names a branch with `index.lock` in it is not the lock.
+        git(&dir, &["branch", "fix-index.lock-race"]);
+        let taken = branch_rename(&client, "other", "fix-index.lock-race").await.unwrap();
+        assert!(!taken.ok && index_lock_in(&taken).is_none(), "{taken:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1846,6 +2906,27 @@ mod e2e {
         assert!(format!("{}{}", stashed.stdout, stashed.stderr).contains("Applying autostash resulted in conflicts"), "{stashed:?}");
         assert_eq!(crate::git::queries::log::get_stashes(&client).await.unwrap().len(), 1);
 
+        // `pull.ff=false` makes a merge commit even where a fast-forward would do, as `git pull`.
+        git(&local, &["reset", "-q", "--hard", "origin/main~1"]);
+        git(&local, &["config", "pull.ff", "false"]);
+        let no_ff = pull("origin", "main", PullMode::Merge, false).await.unwrap();
+        assert!(no_ff.ok, "{no_ff:?}");
+        assert_eq!(head(&local, "HEAD^2"), head(&origin, "HEAD"));
+        git(&local, &["config", "--unset", "pull.ff"]);
+
+        // The remote has a tag named like the branch, on an older commit: the branch is pulled,
+        // and the tag is not rebased onto.
+        git(&local, &["reset", "-q", "--hard", "origin/main"]);
+        git(&origin, &["tag", "main", "HEAD~2"]);
+        std::fs::write(origin.join("h.txt"), "h\n").unwrap();
+        git(&origin, &["add", "-A"]); git(&origin, &["commit", "-qm", "after the tag"]);
+        std::fs::write(local.join("i.txt"), "i\n").unwrap();
+        git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "mine again"]);
+        let tagged = pull("origin", "main", PullMode::Rebase, false).await.unwrap();
+        assert!(tagged.ok, "{tagged:?}");
+        assert_eq!(head(&local, "HEAD~1"), head(&origin, "refs/heads/main"));
+        assert_eq!(head(&local, "refs/remotes/origin/main"), head(&origin, "refs/heads/main"));
+
         // A cancelled pull stops with `Cancelled`.
         cancel.cancel();
         let cancelled = pull("origin", "main", PullMode::Merge, false).await;
@@ -1903,8 +2984,40 @@ mod e2e {
         let topic = PushTarget { remote: "origin".into(), branch: "remote-topic".into() };
         assert!(push(&client, "topic", &topic, true, &progress, &cancel).await.unwrap().ok);
         assert_eq!(rev(&origin, "refs/heads/remote-topic"), rev(&local, "refs/heads/topic"));
-        assert_eq!(upstream_of(&client, "topic").await.unwrap(), Some(topic));
+        assert_eq!(upstream_of(&client, "topic").await.unwrap(), Some(topic.clone()));
         assert!(Command::new("git").arg("-C").arg(&origin).args(["rev-parse", "--verify", "-q", "refs/tags/topic"]).status().unwrap().code() == Some(1));
+
+        // Pushed without choosing a target, as `git push` decides it: the upstream when it has
+        // the same name, whatever push.default says. topic's upstream has another name, so
+        // `simple` (the default), `matching` and `nothing` refuse, `upstream` pushes there and
+        // `current` pushes to topic's own name.
+        assert_eq!(implicit_push_target(&client, "main").await.unwrap(), Some(main.clone()));
+        for refusing in ["simple", "matching", "nothing"] {
+            git(&local, &["config", "push.default", refusing]);
+            assert!(matches!(implicit_push_target(&client, "topic").await, Err(GitError::InvalidPath { .. })), "{refusing}");
+        }
+        assert_eq!(push_default(&client).await.unwrap().as_deref(), Some("nothing"));
+        assert!(set_push_default(&client, PushDefault::Upstream).await.unwrap().ok);
+        assert_eq!(out(&local, &["config", "--local", "--get", "push.default"]), "upstream");
+        assert_eq!(implicit_push_target(&client, "topic").await.unwrap(), Some(topic));
+        assert!(set_push_default(&client, PushDefault::Current).await.unwrap().ok);
+        assert_eq!(out(&local, &["config", "--local", "--get", "push.default"]), "current");
+        assert_eq!(implicit_push_target(&client, "topic").await.unwrap(), Some(PushTarget { remote: "origin".into(), branch: "topic".into() }));
+        git(&local, &["config", "--unset", "push.default"]);
+        assert_eq!(push_default(&client).await.unwrap(), None);
+        git(&local, &["branch", "untracked"]);
+        assert_eq!(implicit_push_target(&client, "untracked").await.unwrap(), None);
+
+        // An upstream whose remote is a URL, as `git push -u <url>` writes it: pushed to and
+        // pulled from, as `git push` and `git pull` do.
+        let url = format!("file://{}", origin.display());
+        git(&local, &["push", "-q", "-u", &url, "untracked"]);
+        let by_url = implicit_push_target(&client, "untracked").await.unwrap().unwrap();
+        assert_eq!(by_url, PushTarget { remote: url.clone(), branch: "untracked".into() });
+        let pushed = push(&client, "untracked", &by_url, false, &progress, &cancel).await.unwrap();
+        assert!(pushed.ok, "{pushed:?}");
+        let fetched = pull_fetch(&client, &url, "untracked", &progress, &cancel).await.unwrap();
+        assert!(fetched.ok, "{fetched:?}");
 
         cancel.cancel();
         assert!(matches!(fetch_all(&client, &progress, &cancel).await, Err(GitError::Cancelled)));
@@ -1994,12 +3107,23 @@ mod tests {
         assert_eq!(mode(b"pull.ff\nonly\0", None), Some(PullMode::FastForwardOnly));
         assert_eq!(mode(b"pull.ff\nfalse\0", None), Some(PullMode::Merge));
         assert_eq!(mode(b"pull.rebase\nfalse\0pull.ff\nonly\0", None), Some(PullMode::FastForwardOnly));
+        // `pull.ff=only` wins over rebasing set in config, as `git pull` refuses to rebase then.
+        assert_eq!(mode(b"pull.rebase\ntrue\0pull.ff\nonly\0", None), Some(PullMode::FastForwardOnly));
+        assert_eq!(mode(b"pull.ff\nonly\0branch.dev.rebase\ntrue\0", Some("dev")), Some(PullMode::FastForwardOnly));
         // The branch's own setting comes first; a key with no value means true.
         assert_eq!(mode(b"pull.rebase\ntrue\0branch.Dev.x.rebase\nfalse\0", Some("Dev.x")), Some(PullMode::Merge));
         assert_eq!(mode(b"branch.dev.rebase\0", Some("dev")), Some(PullMode::Rebase));
         // The last value for a key wins, as in Git (system, then global, then local config).
         assert_eq!(mode(b"pull.rebase\ntrue\0pull.rebase\nfalse\0", None), Some(PullMode::Merge));
         assert_eq!(regex_escape("feat.x+1"), r"feat\.x\+1");
+    }
+
+    #[test]
+    fn refuses_a_path_whose_name_was_not_utf8() {
+        // How status reports `caf\xe9.txt`: the name no longer names the file, so no action takes it.
+        let name = crate::git::parse::lossy(b"caf\xe9.txt");
+        assert!(matches!(valid_paths(&["ok.txt".into(), name]), Err(GitError::InvalidPath { .. })));
+        assert!(valid_paths(&["café.txt".into()]).is_ok());
     }
 
     #[test]

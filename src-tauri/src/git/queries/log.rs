@@ -48,9 +48,14 @@ pub fn parse_log(bytes: &[u8]) -> Vec<CommitRecord> {
 }
 
 /// The refs the graph walks: branches, tags, remotes and HEAD, never
-/// `refs/stash` or notes.
-pub fn graph_rev_args() -> Vec<String> {
-    ["--branches", "--tags", "--remotes", "HEAD"].map(String::from).to_vec()
+/// `refs/stash` or notes. `head` is false on a branch with no commits yet, where naming `HEAD`
+/// makes `git log` fail.
+pub fn graph_rev_args(head: bool) -> Vec<String> {
+    let mut args = ["--branches", "--tags", "--remotes"].map(String::from).to_vec();
+    if head {
+        args.push("HEAD".into());
+    }
+    args
 }
 
 /// Splits a stream of NUL-terminated records that arrives in pieces of any size, so a record cut
@@ -92,16 +97,18 @@ impl NulRecords {
 /// done in the graph module.
 pub async fn get_log(client: &GitClient, max_count: u32) -> Result<Vec<CommitRecord>> {
     let mut records = Vec::new();
-    stream_log(client, max_count, &mut |r| records.push(r)).await?;
+    stream_log(client, max_count, true, &mut |r| records.push(r)).await?;
     Ok(records)
 }
 
 /// `get_log`, handing each record to `on_record` as soon as Git has printed it, so a long history
-/// can be shown while it loads. Returns the number of records.
-pub async fn stream_log(client: &GitClient, max_count: u32, on_record: &mut (dyn FnMut(CommitRecord) + Send)) -> Result<u32> {
+/// can be shown while it loads. Returns the number of records. `head` as for `graph_rev_args`.
+pub async fn stream_log(client: &GitClient, max_count: u32, head: bool, on_record: &mut (dyn FnMut(CommitRecord) + Send)) -> Result<u32> {
     let mut args = vec!["log".to_string()];
-    args.extend(graph_rev_args());
+    args.extend(graph_rev_args(head));
     args.push("-z".into());
+    // `log.showSignature` would print each signed commit's check before its record.
+    args.push("--no-show-signature".into());
     args.push(format!("--max-count={max_count}"));
     args.push(format!("--format={LOG_FORMAT}"));
     let mut splitter = NulRecords::default();
@@ -119,10 +126,7 @@ pub async fn stream_log(client: &GitClient, max_count: u32, on_record: &mut (dyn
     // An empty repository exits 128 ("does not have any commits yet"); treat as no commits.
     if !out.success() {
         let err = String::from_utf8_lossy(&out.stderr).to_ascii_lowercase();
-        if err.contains("does not have any commits")
-            || err.contains("bad default revision")
-            || (err.contains("ambiguous argument 'head'") && err.contains("unknown revision"))
-        {
+        if err.contains("does not have any commits") || err.contains("bad default revision") {
             return Ok(count);
         }
         return Err(crate::error::GitError::CommandFailed {
@@ -185,6 +189,7 @@ pub async fn get_log_between(
         "log".to_string(),
         "--stdin".into(),
         "-z".into(),
+        "--no-show-signature".into(),
         format!("--max-count={max_count}"),
         format!("--format={LOG_FORMAT}"),
     ];
@@ -197,7 +202,7 @@ pub async fn get_log_between(
 /// Full commit message body for the details pane.
 pub async fn get_commit_body(client: &GitClient, oid: &str) -> Result<String> {
     let out = client
-        .exec(GitReq::new("show", ["show", "-s", "--format=%B", oid]))
+        .exec(GitReq::new("show", ["show", "-s", "--no-show-signature", "--format=%B", oid]))
         .await?;
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
@@ -208,7 +213,7 @@ pub async fn get_commit_body(client: &GitClient, oid: &str) -> Result<String> {
 pub async fn get_unchanged_parents(client: &GitClient, oid: &str) -> Result<Vec<(String, bool)>> {
     let parents = format!("{oid}^@");
     let out = client
-        .exec(GitReq::new("show", ["show", "-s", "--format=%H %T %P", oid, parents.as_str()]))
+        .exec(GitReq::new("show", ["show", "-s", "--no-show-signature", "--format=%H %T %P", oid, parents.as_str()]))
         .await?;
     Ok(parse_unchanged_parents(&String::from_utf8_lossy(&out.stdout)))
 }
@@ -289,7 +294,7 @@ pub struct StashEntry {
 
 pub async fn get_stashes(client: &GitClient) -> Result<Vec<StashEntry>> {
     let out = client
-        .exec_allow_failure(GitReq::new("stash", ["stash", "list", "-z", "--format=%H%x1f%gd%x1f%gs%x1f%ct"]))
+        .exec_allow_failure(GitReq::new("stash", ["stash", "list", "-z", "--no-show-signature", "--format=%H%x1f%gd%x1f%gs%x1f%ct"]))
         .await?;
     if !out.success() {
         return Ok(Vec::new());

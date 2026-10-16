@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { STATE_CLASSES, commitPaths, splitPath } from "@/lib/files";
+import { STATE_CLASSES, commitPaths, partlyStagedCommitted, splitPath } from "@/lib/files";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import { opFailureText, pushCurrentBranch, runOp } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
@@ -86,8 +86,8 @@ const tickedFiles = computed(() => files.value.filter((f) => ticked.value.has(f.
 /** Null commits the index as it is; see `commitPaths`. */
 // Finishing a merge, cherry-pick or revert commits the index as it is: Git refuses a partial commit then.
 const paths = computed(() => (request.value?.finishing ? null : commitPaths(files.value, ticked.value)));
-/** Ticked files whose unstaged changes are committed too, because the commit names paths. */
-const partlyStaged = computed(() => (paths.value === null ? [] : tickedFiles.value.filter((f) => f.staged && f.unstaged)));
+/** Ticked files whose unstaged changes are committed too; see `partlyStagedCommitted`. */
+const partlyStaged = computed(() => (request.value?.finishing ? [] : partlyStagedCommitted(files.value, ticked.value)));
 const conflicted = computed(() => tickedFiles.value.filter((f) => f.state === "conflict"));
 
 const allTicked = computed(() => files.value.length > 0 && tickedFiles.value.length === files.value.length);
@@ -345,7 +345,7 @@ async function submit(push = false): Promise<void> {
             <TriangleAlertIcon class="mt-px size-3.5 shrink-0" />
             <span>
               {{ partlyStaged.length === 1 ? partlyStaged[0]?.path + " also has" : partlyStaged.length + " files also have" }}
-              changes that are not staged. Because the ticked files are not exactly the staged ones, each is committed as it is on disk, so those changes are included.
+              changes that are not staged. Because some ticked files are not staged at all, each is committed as it is on disk, so those changes are included.
             </span>
           </p>
           <p v-if="conflicted.length > 0" class="flex items-start gap-1.5 text-xs text-modified-fg">

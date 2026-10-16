@@ -1,3 +1,5 @@
+import type { DiffNote } from "@/lib/bindings";
+
 export type DiffLineKind = "context" | "add" | "del" | "meta";
 
 export interface DiffLine {
@@ -23,6 +25,9 @@ export interface DiffFile {
   newPath: string | null;
   hunks: DiffHunk[];
   isBinary: boolean;
+  /** `old mode` and `new mode`, when the change sets the file's mode. */
+  oldMode: string | null;
+  newMode: string | null;
 }
 
 export interface ParsedDiff {
@@ -58,7 +63,7 @@ export function parseUnified(text: string): ParsedDiff {
   if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 
   const startFile = (): DiffFile => {
-    const f: DiffFile = { oldPath: null, newPath: null, hunks: [], isBinary: false };
+    const f: DiffFile = { oldPath: null, newPath: null, hunks: [], isBinary: false, oldMode: null, newMode: null };
     files.push(f);
     hunk = null;
     return f;
@@ -142,10 +147,42 @@ export function parseUnified(text: string): ParsedDiff {
       file.newPath = line.slice("rename to ".length);
       continue;
     }
-    // `index`, `old mode`, `new mode`, `similarity index`, `deleted file mode` etc. carry nothing we render.
+    if (line.startsWith("old mode ")) {
+      if (!file) file = startFile();
+      file.oldMode = line.slice("old mode ".length);
+      continue;
+    }
+    if (line.startsWith("new mode ")) {
+      if (!file) file = startFile();
+      file.newMode = line.slice("new mode ".length);
+      continue;
+    }
+    // `index`, `similarity index`, `deleted file mode` etc. carry nothing we render.
   }
 
   return { files };
+}
+
+const EXECUTABLE = "100755";
+
+/**
+ * What the diff panel says for a listed file whose diff has no lines: why there are none, where
+ * that is known.
+ */
+export function noDiffMessage(note: DiffNote | null, parsed: ParsedDiff | null): string {
+  if (note === "nestedRepository") {
+    return "This folder is a Git repository of its own, so Git does not list its files here. Adding the folder would record it as a submodule.";
+  }
+  if (note === "submoduleUntracked") {
+    return "The submodule has files it does not track. Git counts them as a change to the submodule, but they have no diff here; open the submodule to see them.";
+  }
+  const mode = parsed?.files.find((f) => f.oldMode !== null && f.newMode !== null);
+  if (mode?.oldMode && mode.newMode) {
+    const executable =
+      mode.newMode === EXECUTABLE ? " The file is now executable." : mode.oldMode === EXECUTABLE ? " The file is no longer executable." : "";
+    return `Only the file mode changed, from ${mode.oldMode} to ${mode.newMode}.${executable}`;
+  }
+  return "No differences to show.";
 }
 
 export interface Segment {

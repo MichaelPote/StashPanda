@@ -146,6 +146,12 @@ fn parse_hunks(diff: &[u8]) -> Result<Vec<Hunk>> {
                     new_no += 1;
                 }
             }
+            // `diff.suppressBlankEmpty` prints a blank context line without its space.
+            Some(b'\n') => {
+                hunk.lines.push(Line { sign: b' ', body: raw.to_vec(), no_newline: false, old_no, new_no });
+                old_no += 1;
+                new_no += 1;
+            }
             _ => in_hunk = false,
         }
     }
@@ -247,16 +253,17 @@ fn header_path(prefix: &str, path: &str) -> String {
 const NEIGHBOURS: &str = "These lines cannot be changed on their own: a line next to them depends on them (often the last line of a file that has no newline at its end). Select the neighbouring lines too.";
 
 /// The patch for `action` with only the `selected` lines, against the version it changes.
-/// `new_file` marks a patch that creates the file in the index (staging part of an untracked
-/// file). Fails when the result would put a line after one that has no newline: `git apply`
-/// accepts such a patch and joins the two lines into one.
-fn build_patch(hunks: &[Hunk], selected: &HashSet<(ChangeKind, u32)>, action: LineAction, path: &str, new_file: bool) -> Result<Vec<u8>> {
+/// `new_file` is the mode of a patch that creates the file, because the version it changes
+/// does not have it (unstaging or discarding part of a deletion). Fails when the result would
+/// put a line after one that has no newline: `git apply` accepts such a patch and joins the two
+/// lines into one.
+fn build_patch(hunks: &[Hunk], selected: &HashSet<(ChangeKind, u32)>, action: LineAction, path: &str, new_file: Option<&str>) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let a = header_path("a/", path);
     let b = header_path("b/", path);
     out.extend_from_slice(format!("diff --git {a} {b}\n").as_bytes());
-    if new_file {
-        out.extend_from_slice(format!("new file mode 100644\n--- /dev/null\n+++ {b}\n").as_bytes());
+    if let Some(mode) = new_file {
+        out.extend_from_slice(format!("new file mode {mode}\n--- /dev/null\n+++ {b}\n").as_bytes());
     } else {
         out.extend_from_slice(format!("--- {a}\n+++ {b}\n").as_bytes());
     }
@@ -310,13 +317,17 @@ fn build_patch(hunks: &[Hunk], selected: &HashSet<(ChangeKind, u32)>, action: Li
     Ok(out)
 }
 
-/// `git diff [--cached]` for `path`, with the options the line numbers are taken from.
-async fn raw_diff(client: &GitClient, cached: bool, path: &str) -> Result<Vec<u8>> {
+/// `git diff [--cached]` for `path`, with the options the line numbers are taken from. A file's
+/// own bytes, not a `textconv` driver's rendering of them, since the patch goes back to Git.
+/// With `renamed_from`, the diff of a staged rename from that path, as the diff viewer shows it.
+async fn raw_diff(client: &GitClient, cached: bool, path: &str, renamed_from: Option<&str>) -> Result<Vec<u8>> {
     let mut args: Vec<&str> = vec!["--literal-pathspecs", "diff"];
     if cached {
         args.push("--cached");
     }
-    args.extend(["--no-ext-diff", "--no-color", "--no-renames", "-U3", "--src-prefix=a/", "--dst-prefix=b/", "--", path]);
+    let renames = if renamed_from.is_some() { "-M" } else { "--no-renames" };
+    args.extend(["--no-ext-diff", "--no-textconv", "--no-color", renames, "-U3", "--src-prefix=a/", "--dst-prefix=b/", "--", path]);
+    args.extend(renamed_from);
     let out = client.exec_allow_failure(GitReq::new("diff", args)).await?;
     if !out.success() {
         return Err(GitError::CommandFailed { label: "diff".into(), argv: vec![], exit_code: out.exit_code, stderr: String::from_utf8_lossy(&out.stderr).into_owned() });
@@ -324,21 +335,86 @@ async fn raw_diff(client: &GitClient, cached: bool, path: &str) -> Result<Vec<u8
     Ok(out.stdout)
 }
 
+/// The original path when `path` is the new path of a staged rename.
+async fn staged_rename_source(client: &GitClient, path: &str) -> Result<Option<String>> {
+    let out = client.exec_allow_failure(GitReq::new("diff", ["diff", "--cached", "-M", "--name-status", "-z"])).await?;
+    if !out.success() {
+        return Err(GitError::CommandFailed { label: "diff".into(), argv: vec![], exit_code: out.exit_code, stderr: String::from_utf8_lossy(&out.stderr).into_owned() });
+    }
+    // `R<score>`, old path, new path; any other status, one path.
+    let fields: Vec<&[u8]> = out.stdout.split(|b| *b == 0).collect();
+    let mut i = 0;
+    while i + 1 < fields.len() {
+        if fields[i].starts_with(b"R") {
+            if fields.get(i + 2) == Some(&path.as_bytes()) {
+                return Ok(Some(String::from_utf8_lossy(fields[i + 1]).into_owned()));
+            }
+            i += 3;
+        } else {
+            i += 2;
+        }
+    }
+    Ok(None)
+}
+
+/// The mode a one-file diff's header gives after `label` (`deleted file mode `), if it has one.
+fn header_mode(diff: &[u8], label: &str) -> Option<String> {
+    diff.split(|b| *b == b'\n')
+        .take_while(|l| !l.starts_with(b"@@ "))
+        .find_map(|l| l.strip_prefix(label.as_bytes()))
+        .map(|mode| String::from_utf8_lossy(mode).into_owned())
+}
+
+/// True when a one-file diff's header says the path is a symbolic link on either side.
+fn is_symlink_diff(diff: &[u8]) -> bool {
+    diff.split(|b| *b == b'\n')
+        .take_while(|l| !l.starts_with(b"@@ "))
+        .any(|l| (l.starts_with(b"index ") && l.ends_with(b" 120000")) || l.ends_with(b" mode 120000"))
+}
+
 /// Stage, unstage or discard the `selected` lines of `path`. `untracked` says the file is not
 /// in the index yet (its diff is the whole file as additions); only stage and discard apply to
-/// one. Fails with `invalidPath` when a selected line is no longer in the file's diff.
+/// one. Fails with `invalidPath` when a selected line is no longer in the file's diff, and for
+/// a symbolic link, whose one "line" is where it points.
+///
+/// Staging part of an untracked file adds it as intent-to-add (`git add -N`) first, so its
+/// lines come from Git's diff like any other file's: line endings converted as `git add` would
+/// convert them, and the file's mode kept. It is taken out of the index again when the lines
+/// are not staged after all. Unstaging part of a staged rename works on the rename's diff.
 pub async fn apply_lines(client: &GitClient, action: LineAction, path: &str, untracked: bool, selected: &[SelectedLine]) -> Result<OpResult> {
     super::valid_paths(&[path.to_string()])?;
     if untracked && action == LineAction::Unstage {
         return Err(GitError::InvalidPath { path: path.into(), reason: "an untracked file has nothing staged".into() });
     }
-    let hunks = if untracked {
-        untracked_hunks(&client.transport.read_file(&join_repo_path(&client.repo, path), FILE_CAP).await?)?
-    } else {
-        parse_hunks(&raw_diff(client, action == LineAction::Unstage, path).await?)?
+    if untracked && action == LineAction::Stage {
+        let intent = GitReq::new("add", ["--literal-pathspecs", "add", "-N", "--", path]).user();
+        let added = result(client.exec_allow_failure(intent).await?);
+        if !added.ok {
+            return Ok(added);
+        }
+        let res = Box::pin(apply_lines(client, action, path, false, selected)).await;
+        if !res.as_ref().is_ok_and(|r| r.ok) {
+            let undo = GitReq::new("rm", ["--literal-pathspecs", "rm", "--cached", "-f", "-q", "--", path]).user();
+            client.exec_allow_failure(undo).await?;
+        }
+        return res;
+    }
+    let renamed_from = if action == LineAction::Unstage { staged_rename_source(client, path).await? } else { None };
+    let diff = if untracked { None } else { Some(raw_diff(client, action == LineAction::Unstage, path, renamed_from.as_deref()).await?) };
+    // An untracked file has no diff to tell, and reading it would follow the link.
+    let link = match diff.as_deref() {
+        Some(diff) => is_symlink_diff(diff),
+        None => client.transport.symlinks(&[join_repo_path(&client.repo, path)]).await?.first().copied().unwrap_or(false),
+    };
+    if link {
+        return Err(GitError::InvalidPath { path: path.into(), reason: "a symbolic link has no lines to pick; stage or discard the whole link".into() });
+    }
+    let hunks = match &diff {
+        None => untracked_hunks(&client.transport.read_file(&join_repo_path(&client.repo, path), FILE_CAP).await?)?,
+        Some(diff) => parse_hunks(diff)?,
     };
     let (keys, everything) = match_selection(&hunks, selected)?;
-    let paths = [path.to_string()];
+    let paths: Vec<String> = [path.to_string()].into_iter().chain(renamed_from).collect();
     if everything {
         return match (action, untracked) {
             (LineAction::Stage, _) => stage(client, &paths).await,
@@ -347,7 +423,12 @@ pub async fn apply_lines(client: &GitClient, action: LineAction, path: &str, unt
             (LineAction::Discard, true) => discard(client, &[], &paths, false).await,
         };
     }
-    let patch = build_patch(&hunks, &keys, action, path, untracked && action == LineAction::Stage)?;
+    // Undoing part of a deletion patches a version that has no file: the patch creates it.
+    let created = match (&diff, action) {
+        (Some(diff), LineAction::Unstage | LineAction::Discard) => header_mode(diff, "deleted file mode "),
+        _ => None,
+    };
+    let patch = build_patch(&hunks, &keys, action, path, created.as_deref())?;
     let mut args = vec!["apply", "--whitespace=nowarn"];
     if action != LineAction::Discard {
         args.push("--cached");
@@ -388,10 +469,10 @@ mod tests {
         let h = parse_hunks(diff).unwrap();
         let (keys, all) = match_selection(&h, &[sel(ChangeKind::Del, 2, "b"), sel(ChangeKind::Add, 2, "B")]).unwrap();
         assert!(!all);
-        let p = String::from_utf8(build_patch(&h, &keys, LineAction::Stage, "f", false).unwrap()).unwrap();
+        let p = String::from_utf8(build_patch(&h, &keys, LineAction::Stage, "f", None).unwrap()).unwrap();
         assert!(p.ends_with("@@ -1,4 +1,4 @@\n a\n-b\n c\n+B\n d\n"), "{p}");
         // Unstaging the same lines turns them round and keeps the other addition as context.
-        let p = String::from_utf8(build_patch(&h, &keys, LineAction::Unstage, "f", false).unwrap()).unwrap();
+        let p = String::from_utf8(build_patch(&h, &keys, LineAction::Unstage, "f", None).unwrap()).unwrap();
         assert!(p.ends_with("@@ -1,4 +1,4 @@\n a\n+b\n-B\n C\n d\n"), "{p}");
     }
 
@@ -400,7 +481,7 @@ mod tests {
         let diff = b"@@ -1,2 +1,4 @@\n a\n+x\n+y\n b\n@@ -20,2 +22,2 @@\n c\n-d\n+D\n";
         let h = parse_hunks(diff).unwrap();
         let keys: HashSet<_> = [(ChangeKind::Add, 2), (ChangeKind::Del, 21), (ChangeKind::Add, 23)].into_iter().collect();
-        let p = String::from_utf8(build_patch(&h, &keys, LineAction::Stage, "f", false).unwrap()).unwrap();
+        let p = String::from_utf8(build_patch(&h, &keys, LineAction::Stage, "f", None).unwrap()).unwrap();
         assert!(p.contains("@@ -1,2 +1,3 @@\n a\n+x\n b\n@@ -20,2 +21,2 @@\n"), "{p}");
     }
 

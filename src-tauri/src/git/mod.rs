@@ -144,7 +144,7 @@ impl GitClient {
             Ok(out) => {
                 let err = classify_git_failure(
                     req.label,
-                    argv,
+                    argv.iter().map(|a| console::hide_passwords(a)).collect(),
                     out.exit_code,
                     &out.stderr,
                     &self.transport.kind(),

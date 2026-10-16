@@ -238,6 +238,11 @@ impl Transport for WslTransport {
         // Through the UNC view, like read_file: no wsl.exe spawn.
         super::host_modified_times(&self.mapper, paths).await
     }
+    async fn symlinks(&self, paths: &[NativePath]) -> Result<Vec<bool>> {
+        // Inside the distro, like write_file: the question is what Linux sees at the path, which
+        // the Windows view of a Linux link need not answer the same way.
+        super::shell_symlinks(self, paths).await
+    }
     async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>> {
         // Through the UNC view, like read_file.
         super::host_list_dir(&self.mapper, path).await

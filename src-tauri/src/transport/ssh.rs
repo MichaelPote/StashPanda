@@ -244,6 +244,9 @@ impl Transport for SshTransport {
         }
         Ok(times)
     }
+    async fn symlinks(&self, paths: &[NativePath]) -> Result<Vec<bool>> {
+        super::shell_symlinks(self, paths).await
+    }
     async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>> {
         // The first line says what is at the path; for a folder, one name per line follows.
         const SCRIPT: &str = r#"if [ -d "$1" ]; then echo dir; cd -- "$1" && ls -A; elif [ -e "$1" ] || [ -L "$1" ]; then echo file; else echo missing; fi"#;
@@ -461,6 +464,7 @@ mod e2e {
         let written = dir.join("written");
         std::fs::create_dir_all(&written).unwrap();
         crate::transport::check_write_file(transport.as_ref(), &written).await;
+        crate::transport::check_symlinks(transport.as_ref(), &written).await;
         let times = transport
             .modified_times(&[
                 NativePath(repo.join("a.txt").to_string_lossy().into_owned()),

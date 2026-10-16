@@ -114,8 +114,11 @@ export function worktreeSections(status: StatusSnapshot | null): FileSection[] {
       untracked.push(worktreeItem(e.path, e.origPath, "untracked", "?", { type: "untracked" }));
       continue;
     }
-    if (e.staged || e.x !== ".") staged.push(worktreeItem(e.path, e.origPath, "staged", e.x, { type: "staged" }));
-    if (e.unstaged || (e.y !== "." && e.y !== "?")) unstaged.push(worktreeItem(e.path, e.origPath, "unstaged", e.y, { type: "unstaged" }));
+    // The original path belongs to the column that reports the rename or copy: in `RM`, the
+    // unstaged change is an edit to the new file, not a rename.
+    const from = (letter: string) => (letter === "R" || letter === "C" ? e.origPath : null);
+    if (e.staged || e.x !== ".") staged.push(worktreeItem(e.path, from(e.x), "staged", e.x, { type: "staged" }));
+    if (e.unstaged || (e.y !== "." && e.y !== "?")) unstaged.push(worktreeItem(e.path, from(e.y), "unstaged", e.y, { type: "unstaged" }));
   }
   return [
     { key: "staged", title: "Staged", items: staged },
@@ -178,19 +181,33 @@ export function commitFileCount(status: StatusSnapshot | null): number {
 /**
  * The `paths` argument for `opCommit`. Null when the ticked files are exactly the staged ones,
  * which commits the index as it is, so a partly staged file keeps its unstaged part out of the
- * commit. Otherwise each ticked path, plus the original path of a rename; those are committed as
- * they are on disk.
+ * commit. Otherwise each ticked path, plus the original path of a rename. When every one of them
+ * is staged, they are committed as staged too; otherwise each is committed as it is on disk.
  */
 export function commitPaths(files: CommitFile[], ticked: ReadonlySet<string>): string[] | null {
   const chosen = files.filter((f) => ticked.has(f.path));
   const staged = files.filter((f) => f.staged);
   if (chosen.length > 0 && chosen.length === staged.length && chosen.every((f) => f.staged)) return null;
-  const paths: string[] = [];
-  for (const f of chosen) {
-    paths.push(f.path);
-    if (f.oldPath && f.oldPath !== f.path) paths.push(f.oldPath);
-  }
-  return paths;
+  return chosen.flatMap(withRenamedFrom);
+}
+
+/**
+ * The ticked files whose unstaged changes the commit takes as well: partly staged files, once a
+ * ticked file is not staged at all, so that every ticked file is committed as it is on disk.
+ */
+export function partlyStagedCommitted(files: CommitFile[], ticked: ReadonlySet<string>): CommitFile[] {
+  const chosen = files.filter((f) => ticked.has(f.path));
+  if (commitPaths(files, ticked) === null || chosen.every((f) => f.staged)) return [];
+  return chosen.filter((f) => f.staged && f.unstaged);
+}
+
+/**
+ * A file's path, and for a rename its original path too, since the change spans both. A copy
+ * leaves its source as it was, so the source is not part of acting on the copy: staging,
+ * discarding or committing the copy must not touch the source's own changes.
+ */
+export function withRenamedFrom(f: { path: string; oldPath: string | null; letter: string }): string[] {
+  return f.letter === "R" && f.oldPath && f.oldPath !== f.path ? [f.path, f.oldPath] : [f.path];
 }
 
 /** True when a keyboard event is aimed at something that edits text, where Ctrl+A must stay native. */
@@ -328,19 +345,18 @@ export function worktreeActionPaths(status: StatusSnapshot | null, selectedIds: 
     unstageFiles: [],
     discardFiles: [],
   };
-  const withOld = (i: FileItem): string[] => (i.oldPath && i.oldPath !== i.path ? [i.path, i.oldPath] : [i.path]);
   const stagedPaths = new Set<string>();
   const unstagedRows: FileItem[] = [];
   for (const section of worktreeSections(status)) {
     for (const i of section.items) {
       if (!selectedIds.has(i.id)) continue;
       if (section.key === "staged") {
-        out.unstage.push(...withOld(i));
+        out.unstage.push(...withRenamedFrom(i));
         out.unstageFiles.push(i.path);
-        out.discardToHead.push(...withOld(i));
+        out.discardToHead.push(...withRenamedFrom(i));
         stagedPaths.add(i.path);
       } else if (section.key === "unstaged") {
-        out.stage.push(...withOld(i));
+        out.stage.push(...withRenamedFrom(i));
         out.stageFiles.push(i.path);
         unstagedRows.push(i);
       } else if (section.key === "untracked") {
@@ -351,7 +367,7 @@ export function worktreeActionPaths(status: StatusSnapshot | null, selectedIds: 
     }
   }
   for (const i of unstagedRows) {
-    if (!stagedPaths.has(i.path)) out.discardToIndex.push(...withOld(i));
+    if (!stagedPaths.has(i.path)) out.discardToIndex.push(...withRenamedFrom(i));
   }
   out.discardFiles = [...new Set([...stagedPaths, ...unstagedRows.map((i) => i.path), ...out.discardUntracked])];
   return out;

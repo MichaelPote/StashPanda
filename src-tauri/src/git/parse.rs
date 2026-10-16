@@ -3,6 +3,8 @@
 
 use bstr::ByteSlice;
 
+use crate::error::{GitError, Result};
+
 /// Split on NUL, dropping a trailing empty record.
 pub fn split_nul(bytes: &[u8]) -> Vec<&[u8]> {
     let mut v: Vec<&[u8]> = bytes.split(|b| *b == 0).collect();
@@ -19,6 +21,19 @@ pub fn split_us(record: &[u8]) -> Vec<&[u8]> {
 
 pub fn lossy(bytes: &[u8]) -> String {
     bytes.to_str_lossy().into_owned()
+}
+
+/// Refuses a path that came from a file name that is not valid UTF-8. Such a name reaches the app
+/// with U+FFFD in place of the bytes it could not read, so it no longer names the file: Git would
+/// act on a file that does not exist, or on another one.
+pub fn utf8_name(path: &str) -> Result<()> {
+    if path.contains('\u{fffd}') {
+        return Err(GitError::InvalidPath {
+            path: path.to_string(),
+            reason: "the file name is not valid UTF-8, so it cannot be passed back to Git; rename the file to work on it here".into(),
+        });
+    }
+    Ok(())
 }
 
 pub fn parse_i64(bytes: &[u8]) -> Option<i64> {
@@ -75,6 +90,32 @@ pub fn unquote_path(bytes: &[u8]) -> String {
     lossy(&out)
 }
 
+/// `name` as Git prints it outside `-z` output with `core.quotepath=false`: the reverse of
+/// `unquote_path`.
+pub fn quote_path(name: &str) -> String {
+    if !name.bytes().any(|b| b < 0x20 || b == 0x7f || b == b'"' || b == b'\\') {
+        return name.to_string();
+    }
+    let mut out = String::from("\"");
+    for c in name.chars() {
+        match c {
+            '\u{07}' => out.push_str("\\a"),
+            '\u{08}' => out.push_str("\\b"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\u{0b}' => out.push_str("\\v"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\r' => out.push_str("\\r"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 || c == '\u{7f}' => out.push_str(&format!("\\{:03o}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +138,18 @@ mod tests {
         assert_eq!(unquote_path(b"\"say \\\"hi\\\" \\\\ back\""), "say \"hi\" \\ back");
         assert_eq!(unquote_path(b"\"f\\303\\274nf\""), "fünf");
         assert_eq!(unquote_path(b"\""), "\"", "a lone quote is a name, not a quoted one");
+        for name in ["plain name.txt", "fünf.txt", "tab\there.txt", "say \"hi\" \\ back", "bell\u{7}del\u{7f}esc\u{1b}"] {
+            assert_eq!(unquote_path(quote_path(name).as_bytes()), name);
+        }
+        assert_eq!(quote_path("tab\there.txt"), "\"tab\\there.txt\"");
+        assert_eq!(quote_path("fünf.txt"), "fünf.txt");
+    }
+
+    #[test]
+    fn refuses_a_name_that_was_not_utf8() {
+        // `caf\xe9.txt` as Git prints it in status, decoded the way every parser here decodes it.
+        let name = lossy(b"caf\xe9.txt");
+        assert!(matches!(utf8_name(&name), Err(GitError::InvalidPath { .. })));
+        assert!(utf8_name("café.txt").is_ok());
     }
 }

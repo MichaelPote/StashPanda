@@ -58,12 +58,20 @@ pub struct RefsSnapshot {
 
 pub const FOR_EACH_REF_FORMAT: &str = "%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(HEAD)%00%(committerdate:unix)%00%(subject)%00%(worktreepath)";
 
-fn short_name(full: &str) -> (String, Option<RefKind>) {
+/// The short name and kind of `full`. A remote branch's remote is the longest of `remotes` its
+/// name starts with, since a remote's name may itself contain `/` (`team/origin`); the first part
+/// of the name when none matches.
+fn short_name(full: &str, remotes: &[Remote]) -> (String, Option<RefKind>) {
     if let Some(s) = full.strip_prefix("refs/heads/") {
         return (s.to_string(), Some(RefKind::LocalBranch));
     }
     if let Some(s) = full.strip_prefix("refs/remotes/") {
-        let remote = s.split('/').next().unwrap_or("").to_string();
+        let configured = remotes
+            .iter()
+            .map(|r| r.name.as_str())
+            .filter(|name| s.strip_prefix(name).is_some_and(|rest| rest.starts_with('/')))
+            .max_by_key(|name| name.len());
+        let remote = configured.unwrap_or_else(|| s.split('/').next().unwrap_or("")).to_string();
         return (s.to_string(), Some(RefKind::RemoteBranch { remote }));
     }
     if let Some(s) = full.strip_prefix("refs/tags/") {
@@ -94,7 +102,7 @@ fn parse_track(s: &str) -> (Option<u32>, Option<u32>, bool) {
     (ahead, behind, false)
 }
 
-pub fn parse_for_each_ref(bytes: &[u8]) -> Vec<RefEntry> {
+pub fn parse_for_each_ref(bytes: &[u8], remotes: &[Remote]) -> Vec<RefEntry> {
     let mut out = Vec::new();
     for line in bytes.split(|b| *b == b'\n') {
         if line.is_empty() {
@@ -115,12 +123,13 @@ pub fn parse_for_each_ref(bytes: &[u8]) -> Vec<RefEntry> {
         let subject = lossy(f[8]);
         let worktree = f.get(9).map(|b| lossy(b)).filter(|s| !s.is_empty());
 
-        // Skip the symbolic `refs/remotes/origin/HEAD` pointer: it duplicates a branch.
-        if full_name.ends_with("/HEAD") && full_name.starts_with("refs/remotes/") {
+        let (short, kind) = short_name(&full_name, remotes);
+        let Some(mut kind) = kind else { continue };
+        // Skip the symbolic `refs/remotes/origin/HEAD` pointer: it duplicates a branch. A branch
+        // named `release/HEAD` on the remote is a branch like any other.
+        if matches!(&kind, RefKind::RemoteBranch { remote } if short == format!("{remote}/HEAD")) {
             continue;
         }
-        let (short, kind) = short_name(&full_name);
-        let Some(mut kind) = kind else { continue };
         let target = if objecttype == "tag" {
             if let RefKind::Tag { annotated } = &mut kind {
                 *annotated = true;
@@ -209,7 +218,8 @@ pub fn refs_from(outs: &[Output]) -> Result<RefsSnapshot> {
             stderr: String::from_utf8_lossy(&refs_out.stderr).into_owned(),
         });
     }
-    let refs = parse_for_each_ref(&refs_out.stdout);
+    let remotes = parse_remotes(&remotes_out.stdout);
+    let refs = parse_for_each_ref(&refs_out.stdout, &remotes);
     let (head, head_ref, detached) = if head_out.success() {
         let text = String::from_utf8_lossy(&head_out.stdout);
         let mut lines = text.lines().map(str::trim);
@@ -235,7 +245,7 @@ pub fn refs_from(outs: &[Output]) -> Result<RefsSnapshot> {
         head,
         head_ref,
         detached,
-        remotes: parse_remotes(&remotes_out.stdout),
+        remotes,
     })
 }
 
@@ -260,7 +270,7 @@ mod tests {
 
     #[test]
     fn parses_refs_with_tracking_head_and_tags() {
-        let refs = parse_for_each_ref(SAMPLE);
+        let refs = parse_for_each_ref(SAMPLE, &[]);
         assert_eq!(refs.len(), 5, "origin/HEAD is skipped");
         let dev = &refs[0];
         assert_eq!(dev.short, "dev");
@@ -278,6 +288,19 @@ mod tests {
         let tag = &refs[4];
         assert_eq!(tag.kind, RefKind::Tag { annotated: true });
         assert_eq!(tag.target, "peeledcommit");
+    }
+
+    #[test]
+    fn remote_names_with_a_slash_and_branches_named_head() {
+        let line = |name: &str| format!("{name}\x00aaaa\x00commit\x00\x00\x00\x00 \x001\x00x\x00\n");
+        let bytes: String = ["refs/remotes/team/origin/HEAD", "refs/remotes/team/origin/dev", "refs/remotes/team/other", "refs/remotes/origin/HEAD", "refs/remotes/origin/release/HEAD"]
+            .map(line)
+            .concat();
+        let remote = |name: &str| Remote { name: name.into(), url: Some("u".into()), push_url: None };
+        let refs = parse_for_each_ref(bytes.as_bytes(), &[remote("origin"), remote("team"), remote("team/origin")]);
+        let found: Vec<(&str, RefKind)> = refs.iter().map(|r| (r.short.as_str(), r.kind.clone())).collect();
+        let on = |remote: &str| RefKind::RemoteBranch { remote: remote.into() };
+        assert_eq!(found, [("team/origin/dev", on("team/origin")), ("team/other", on("team")), ("origin/release/HEAD", on("origin"))]);
     }
 
     #[test]

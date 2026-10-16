@@ -93,10 +93,11 @@ pub async fn op_apply_lines(app: AppHandle, state: State<'_, AppState>, key: Str
 }
 
 /// Commit the index, or with `paths` stage exactly those paths and commit only
-/// them (other staged paths stay staged). Pass both paths of a rename. An
-/// empty `paths` with `amend` changes only the message. With
-/// `amend` and an empty `message` the previous message is kept; fetch it with
-/// `getCommitMessage(key, "HEAD")` to edit it instead.
+/// them (other staged paths stay staged). When every one of `paths` is
+/// already staged, they are committed as staged, unstaged changes left out.
+/// Pass both paths of a rename. An empty `paths` with `amend` changes only
+/// the message. With `amend` and an empty `message` the previous message is
+/// kept; fetch it with `getCommitMessage(key, "HEAD")` to edit it instead.
 #[tauri::command]
 #[specta::specta]
 pub async fn op_commit(app: AppHandle, state: State<'_, AppState>, key: String, message: String, paths: Option<Vec<String>>, amend: bool, sign_off: bool) -> Result<OpResult> {
@@ -297,46 +298,73 @@ async fn pull_steps(
 /// commits are complete) and the branch has commits the upstream lacks. `opCancel` stops it while
 /// it fetches or pushes, not while it merges or rebases; a stop after the merge comes back as
 /// `pushStopped` rather than `cancelled`, since the pull did happen. Fails with `invalidPath`
-/// when the branch has no upstream.
+/// when the branch has no upstream, and, before anything runs, when `git push` would not push to
+/// its upstream because the names differ (see `ops::push_target_for`). A `pushTo` the user chose
+/// for this sync replaces where `git push` would push.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_sync(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, branch: String, mode: PullMode, autostash: bool) -> Result<SyncResult> {
+#[allow(clippy::too_many_arguments)]
+pub async fn op_sync(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    op_id: String,
+    branch: String,
+    mode: PullMode,
+    autostash: bool,
+    push_to: Option<PushTarget>,
+) -> Result<SyncResult> {
     let h = repo(&state, &key).await?;
     let emit = progress_emitter(&app, &key, &op_id);
-    let out = sync_steps(&h, &op_id, &emit, &branch, mode, autostash).await;
+    let out = sync_steps(&h, &op_id, &emit, &branch, mode, autostash, push_to).await;
     after_write(&app, &state, &key).await;
     out
 }
 
 /// The whole of `op_sync` except the refresh afterwards.
-async fn sync_steps(h: &RepoHandle, op_id: &str, emit: &(dyn Fn(String, bool) + Send + Sync), branch: &str, mode: PullMode, autostash: bool) -> Result<SyncResult> {
+#[allow(clippy::too_many_arguments)]
+async fn sync_steps(
+    h: &RepoHandle,
+    op_id: &str,
+    emit: &(dyn Fn(String, bool) + Send + Sync),
+    branch: &str,
+    mode: PullMode,
+    autostash: bool,
+    push_to: Option<PushTarget>,
+) -> Result<SyncResult> {
     let op = h.start_operation(op_id)?;
     let _gate = gate_or_cancel(h, &op.token).await?;
     let target = ops::upstream_of(&h.client, branch).await?.ok_or_else(|| GitError::InvalidPath {
         path: branch.to_string(),
         reason: "the branch does not track a remote branch, so there is nothing to sync with".into(),
     })?;
+    let push_target = match push_to {
+        Some(chosen) => chosen,
+        None => ops::push_target_for(&h.client, branch, target.clone()).await?,
+    };
     let pull = pull_steps(h, &op, emit, &target.remote, &target.branch, mode, autostash).await?;
     if let Some(lock_path) = ops::index_lock_in(&pull) {
         return Err(GitError::IndexLocked { lock_path });
     }
-    let mut result = SyncResult { target: target.clone(), pull, push: None, nothing_to_push: false, push_stopped: false };
+    let mut result = SyncResult { target: target.clone(), push_target: push_target.clone(), pull, push: None, nothing_to_push: false, push_stopped: false };
     if !result.pull.ok {
         return Ok(result);
     }
-    if ops::commits_ahead(&h.client, &format!("refs/remotes/{}/{}", target.remote, target.branch)).await? == 0 {
+    // `FETCH_HEAD` is the upstream as just fetched, whatever remote-tracking branch, if any, the
+    // remote's fetch refspec keeps it in. Pushing under another name always runs.
+    if push_target == target && ops::commits_ahead(&h.client, "FETCH_HEAD").await? == 0 {
         result.nothing_to_push = true;
         return Ok(result);
     }
     op.set_cancellable(true);
-    emit(format!("Pushing to {}/{}…", target.remote, target.branch), true);
+    emit(format!("Pushing to {}/{}…", push_target.remote, push_target.branch), true);
     // A stop pressed during the merge or rebase was refused, so only one pressed since counts.
     if op.token.is_cancelled() {
         result.push_stopped = true;
         return Ok(result);
     }
     let progress = |line: String| emit(line, true);
-    match ops::push(&h.client, branch, &target, false, &progress, &op.token).await {
+    match ops::push(&h.client, branch, &push_target, false, &progress, &op.token).await {
         Ok(r) => result.push = Some(r),
         Err(GitError::Cancelled) => result.push_stopped = true,
         Err(e) => return Err(e),
@@ -388,9 +416,10 @@ pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, o
     network_op!(app, state, key, op_id, |h, progress, cancel| ops::fetch_all(&h.client, &progress, cancel).await)
 }
 
-/// Push local `branch`. With no `target`, to the upstream it tracks (failing with `invalidPath`
-/// when it has none: call `getUpstream` first); with a `target`, there, and `setUpstream` makes
-/// the branch track it. Never forces: a rejected push comes back with `ok: false` and
+/// Push local `branch`. With no `target`, where plain `git push` would push it (failing with
+/// `invalidPath` when it has no upstream, or when `push.default` refuses an upstream with another
+/// name: call `getPushTarget` first); with a `target` the user chose, there, and `setUpstream`
+/// makes the branch track it. Never forces: a rejected push comes back with `ok: false` and
 /// `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
 #[tauri::command]
 #[specta::specta]
@@ -407,7 +436,7 @@ pub async fn op_push(
     network_op!(app, state, key, op_id, |h, progress, cancel| {
         let resolved = match target {
             Some(t) => Ok((t, set_upstream)),
-            None => match ops::upstream_of(&h.client, &branch).await {
+            None => match ops::implicit_push_target(&h.client, &branch).await {
                 Ok(Some(t)) => Ok((t, false)),
                 Ok(None) => Err(GitError::InvalidPath { path: branch.clone(), reason: "the branch does not track a remote branch; choose where to push it".into() }),
                 Err(e) => Err(e),
@@ -449,6 +478,26 @@ pub async fn get_upstream(state: State<'_, AppState>, key: String, branch: Strin
     let h = repo(&state, &key).await?;
     let _shared = h.lock.read().await;
     ops::upstream_of(&h.client, &branch).await
+}
+
+/// Where local `branch` goes when it is pushed without choosing a target: its upstream, or null
+/// when it has none. Fails with `invalidPath` when the upstream has another name and `push.default`
+/// does not push there (see `ops::push_target_for`); the Push dialog can still choose it.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_push_target(state: State<'_, AppState>, key: String, branch: String) -> Result<Option<PushTarget>> {
+    let h = repo(&state, &key).await?;
+    let _shared = h.lock.read().await;
+    ops::implicit_push_target(&h.client, &branch).await
+}
+
+/// Set `push.default` to `mode` in this repository's own config, so a branch whose upstream has
+/// another name is pushed to it (`upstream`) or to its own name (`current`) from now on, here and
+/// by `git push` in a terminal.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_set_push_default(app: AppHandle, state: State<'_, AppState>, key: String, mode: ops::PushDefault) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::set_push_default(c, mode).await)
 }
 
 /// Stop a running operation started with `opId` (a pull while it fetches). Resolves false when
@@ -617,14 +666,14 @@ mod e2e {
         let record = |line: String, cancellable: bool| lines.lock().unwrap().push((line, cancellable));
 
         // In sync already: nothing is pushed.
-        let same = sync_steps(&h, "op-1", &record, "main", PullMode::Merge, false).await.unwrap();
+        let same = sync_steps(&h, "op-1", &record, "main", PullMode::Merge, false, None).await.unwrap();
         assert!(same.pull.ok && same.nothing_to_push && same.push.is_none(), "{same:?}");
 
         // Both sides have new commits: the pull merges, then the merge is pushed.
         commit(&other, "b.txt", "2\n");
         git(&other, &["push", "-q", "origin", "main"]);
         commit(&local, "c.txt", "3\n");
-        let both = sync_steps(&h, "op-2", &record, "main", PullMode::Merge, false).await.unwrap();
+        let both = sync_steps(&h, "op-2", &record, "main", PullMode::Merge, false, None).await.unwrap();
         assert!(both.pull.ok && both.push.as_ref().is_some_and(|p| p.ok), "{both:?}");
         assert_eq!(rev(&origin, "main"), rev(&local, "HEAD"));
         assert_eq!(rev(&local, "HEAD^2"), rev(&other, "HEAD"));
@@ -639,7 +688,7 @@ mod e2e {
         commit(&other, "d.txt", "4\n");
         git(&other, &["push", "-q", "origin", "main"]);
         commit(&local, "e.txt", "5\n");
-        let refused = sync_steps(&h, "op-3", &record, "main", PullMode::FastForwardOnly, false).await.unwrap();
+        let refused = sync_steps(&h, "op-3", &record, "main", PullMode::FastForwardOnly, false, None).await.unwrap();
         assert!(!refused.pull.ok && refused.push.is_none() && !refused.nothing_to_push, "{refused:?}");
         assert_ne!(rev(&origin, "main"), rev(&local, "HEAD"));
 
@@ -655,15 +704,52 @@ mod e2e {
             }
             let _ = cancellable;
         };
-        let stopped = sync_steps(&h, "op-4", &stop_at_push, "main", PullMode::Merge, false).await.unwrap();
+        let stopped = sync_steps(&h, "op-4", &stop_at_push, "main", PullMode::Merge, false, None).await.unwrap();
         assert_eq!(*refused_stop.lock().unwrap(), Some(false));
         assert!(stopped.pull.ok && stopped.push_stopped && stopped.push.is_none(), "{stopped:?}");
         assert_eq!(rev(&local, "HEAD^2"), rev(&other, "HEAD"));
         assert_ne!(rev(&origin, "main"), rev(&local, "HEAD"));
 
+        // The remote's fetch refspec keeps no remote-tracking branch for dev, as in a
+        // single-branch clone: the commits to push are counted from what was fetched.
+        git(&local, &["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+        git(&local, &["checkout", "-q", "-b", "dev"]);
+        git(&local, &["push", "-q", "-u", "origin", "dev"]);
+        assert!(Command::new("git").arg("-C").arg(&local).args(["rev-parse", "--verify", "-q", "refs/remotes/origin/dev"]).status().unwrap().code() == Some(1));
+        commit(&local, "f.txt", "6\n");
+        let single = sync_steps(&h, "op-6", &record, "dev", PullMode::Merge, false, None).await.unwrap();
+        assert!(single.pull.ok && single.push.as_ref().is_some_and(|p| p.ok), "{single:?}");
+        assert_eq!(rev(&origin, "dev"), rev(&local, "HEAD"));
+
+        // A branch that tracks a branch with another name: with push.default=simple, `git push`
+        // refuses, so the sync refuses before it pulls. With push.default=current it pushes to
+        // the branch's own name, never to the upstream.
+        git(&local, &["checkout", "-q", "-b", "feature", "origin/main"]);
+        git(&local, &["branch", "-q", "--set-upstream-to=origin/main", "feature"]);
+        commit(&local, "g.txt", "7\n");
+        let (main_before, head_before) = (rev(&origin, "main"), rev(&local, "HEAD"));
+        git(&local, &["config", "push.default", "simple"]);
+        assert!(matches!(sync_steps(&h, "op-7", &record, "feature", PullMode::Merge, false, None).await, Err(GitError::InvalidPath { .. })));
+        assert_eq!((rev(&origin, "main"), rev(&local, "HEAD")), (main_before.clone(), head_before));
+        git(&local, &["config", "push.default", "current"]);
+        let current = sync_steps(&h, "op-8", &record, "feature", PullMode::Merge, false, None).await.unwrap();
+        assert!(current.push.as_ref().is_some_and(|p| p.ok), "{current:?}");
+        assert_eq!(current.push_target, PushTarget { remote: "origin".into(), branch: "feature".into() });
+        assert_eq!(rev(&origin, "feature"), rev(&local, "HEAD"));
+        assert_eq!(rev(&origin, "main"), main_before);
+
+        // A target the user chose for this one sync is pushed to, though push.default refuses it.
+        git(&local, &["config", "push.default", "simple"]);
+        commit(&local, "h.txt", "8\n");
+        let onto_main = PushTarget { remote: "origin".into(), branch: "main".into() };
+        let chosen = sync_steps(&h, "op-9", &record, "feature", PullMode::Merge, false, Some(onto_main.clone())).await.unwrap();
+        assert!(chosen.push.as_ref().is_some_and(|p| p.ok), "{chosen:?}");
+        assert_eq!(chosen.push_target, onto_main);
+        assert_eq!(rev(&origin, "main"), rev(&local, "HEAD"));
+
         // No upstream: nothing to sync with.
         git(&local, &["checkout", "-q", "-b", "loose"]);
-        assert!(matches!(sync_steps(&h, "op-5", &record, "loose", PullMode::Merge, false).await, Err(GitError::InvalidPath { .. })));
+        assert!(matches!(sync_steps(&h, "op-5", &record, "loose", PullMode::Merge, false, None).await, Err(GitError::InvalidPath { .. })));
         assert!(h.operations.lock().unwrap().is_empty(), "every operation unregistered");
         let _ = std::fs::remove_dir_all(&root);
     }

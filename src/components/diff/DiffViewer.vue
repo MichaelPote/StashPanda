@@ -12,14 +12,14 @@ import EmptyState from "@/components/shell/EmptyState.vue";
 import { useFind, type FindHit } from "@/composables/useFind";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
-import { highlightPair, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
+import { highlightPair, noDiffMessage, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
 import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
 import { pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
 import { BandBuilder, bandEdges, bandPath, sideOffsets, type Band } from "@/lib/diff/sideLayout";
 import { highlightRuns, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { conflictComparisons, conflictStages, conflictSummary, operationNames, type ConflictComparison } from "@/lib/conflicts";
+import { conflictComparisons, conflictStages, conflictSummary, missingVersionNote, operationNames, type ConflictComparison } from "@/lib/conflicts";
 import type { FileItem } from "@/lib/files";
 import { markResolved, openFileReason, openWorktreeFile, opFailureText, runOp, takeVersion } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
@@ -972,12 +972,10 @@ function isComparing(c: ConflictComparison): boolean {
 
 /** Why a comparison has nothing on one side for this file, or null. */
 function comparisonNote(c: ConflictComparison): string | null {
-  const stages = conflictFile.value?.stages;
-  if (!stages) return null;
-  const missing = [c.from, c.to].find((v) => v !== "workingTree" && !stages[v]);
-  if (missing === "base") return "Both sides added this file, so there is no base version: the other side shows as wholly added.";
-  if (missing) return `${missing === "ours" ? sideNames.value.ours : sideNames.value.theirs} deleted this file, so that side is empty.`;
-  return null;
+  const f = conflictFile.value;
+  if (!f) return null;
+  const missing = [c.from, c.to].find((v) => v !== "workingTree" && !f.stages[v]);
+  return missing && missing !== "workingTree" ? missingVersionNote(f.letters, missing, sideNames.value) : null;
 }
 
 function compare(c: ConflictComparison): void {
@@ -990,7 +988,10 @@ function compare(c: ConflictComparison): void {
 function takeTitle(side: ResolveSide): string {
   const f = conflictFile.value;
   const name = side === "ours" ? sideNames.value.ours : sideNames.value.theirs;
-  if (f && !f.stages[side]) return `${name} deleted this file, so taking its version deletes the file and marks the conflict resolved.`;
+  if (f && !f.stages[side]) {
+    const why = f.letters[side === "ours" ? 0 : 1] === "D" ? "deleted this file" : "does not have this file";
+    return `${name} ${why}, so taking its version deletes the file and marks the conflict resolved.`;
+  }
   return `Replace the file with ${name}'s version, throwing away the other side's changes and any edits to the file, and mark the conflict resolved.`;
 }
 
@@ -1155,7 +1156,7 @@ function toggleContext(value: string): void {
     <EmptyState v-if="!selected" message="Select a file to see its changes." />
     <EmptyState v-else-if="error" :message="error" class="text-destructive" />
     <EmptyState v-else-if="diff && diff.isBinary" message="Binary file" />
-    <EmptyState v-else-if="diff && rowCount === 0 && !loading" message="No differences to show." />
+    <EmptyState v-else-if="diff && rowCount === 0 && !loading" :message="noDiffMessage(diff.note, parsed)" />
 
     <template v-else>
       <div

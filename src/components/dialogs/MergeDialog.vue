@@ -46,7 +46,8 @@ async function submit(): Promise<void> {
   submitting.value = true;
   error.value = null;
   try {
-    const result = await runOp(r.key, () => commands.opMerge(r.key, from, noFf.value));
+    const revision = r.branches.find((b) => b.short === from)?.revision ?? from;
+    const result = await runOp(r.key, () => commands.opMerge(r.key, revision, noFf.value));
     const outcome = mergeOutcome(result, from, r.into);
     // A plain failure leaves nothing open, so the dialog stays for another choice.
     if (outcome.failed) {

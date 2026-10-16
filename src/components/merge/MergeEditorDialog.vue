@@ -152,6 +152,8 @@ const REFUSALS: Record<NonNullable<ConflictFile["refused"]>, string> = {
   binary: "This is a binary file, which the merge editor cannot show.",
   notUtf8: "This file is not UTF-8 text, which the merge editor cannot edit.",
   tooLarge: "This file is too large for the merge editor.",
+  symlink: "This is a symbolic link, whose versions are where it points rather than text to merge. Take one side's version instead.",
+  submodule: "This is a submodule, whose versions are commits rather than text to merge. Take one side's version instead.",
 };
 
 const refusal = computed(() => (file.value?.refused ? REFUSALS[file.value.refused] : null));

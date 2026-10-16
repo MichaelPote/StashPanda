@@ -154,6 +154,189 @@ mod e2e {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("stashpanda-{name}-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        dir
+    }
+
+    /// The `diff --git` lines of a diff, which say which files it is about.
+    fn diff_files(text: &str) -> Vec<&str> {
+        text.lines().filter(|l| l.starts_with("diff --git ")).collect()
+    }
+
+    /// Names that look like pathspec magic or patterns name only that file, in a diff and in the
+    /// file history.
+    #[tokio::test]
+    async fn diff_and_history_take_a_name_literally() {
+        use super::diff::{get_diff, DiffOptions, DiffTarget};
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = scratch("literal");
+        let names = [":x.txt", "x.txt", "a[1].txt", "a1.txt", "*"];
+        for n in names {
+            std::fs::write(dir.join(n), "one\n").unwrap();
+        }
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "first"]);
+        for n in names {
+            std::fs::write(dir.join(n), "one\ntwo\n").unwrap();
+        }
+        let client = client_for(&dir).await;
+        let opts = DiffOptions::default();
+        for n in [":x.txt", "a[1].txt", "*"] {
+            let d = get_diff(&client, &DiffTarget::Unstaged, n, None, &opts).await.unwrap();
+            assert_eq!(diff_files(&d.text), [format!("diff --git a/{n} b/{n}")], "{n}");
+        }
+        git(&dir, &["commit", "-qam", "second"]);
+        for n in [":x.txt", "a[1].txt"] {
+            let d = get_diff(&client, &DiffTarget::Commit { commit: "HEAD".into(), parent: None }, n, None, &opts).await.unwrap();
+            assert_eq!(diff_files(&d.text), [format!("diff --git a/{n} b/{n}")], "{n}");
+            let history = super::history::get_file_history(&client, n, None, 10).await.unwrap();
+            assert_eq!(history.entries.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(), [n, n], "{n}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A copy's diff is the copy's alone, not its source's changes too.
+    #[tokio::test]
+    async fn diff_of_a_copy_leaves_out_the_source() {
+        use super::commit_files::{get_commit_files, ChangeStatus};
+        use super::diff::{get_diff, DiffOptions, DiffTarget};
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = scratch("copy");
+        let lines: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("src.txt"), &lines).unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "first"]);
+        std::fs::write(dir.join("copy.txt"), format!("{lines}copied\n")).unwrap();
+        std::fs::write(dir.join("src.txt"), format!("{lines}extra\n")).unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "copy"]);
+        let client = client_for(&dir).await;
+        let files = get_commit_files(&client, "HEAD", None).await.unwrap();
+        let copy = files.iter().find(|f| f.path == "copy.txt").unwrap();
+        assert_eq!((copy.status, copy.old_path.as_deref()), (ChangeStatus::Copied, Some("src.txt")));
+        let target = DiffTarget::Commit { commit: "HEAD".into(), parent: None };
+        let d = get_diff(&client, &target, "copy.txt", Some("src.txt"), &DiffOptions::default()).await.unwrap();
+        assert_eq!(diff_files(&d.text), ["diff --git a/src.txt b/copy.txt"], "{}", d.text);
+        assert!(d.text.contains("copy from src.txt\n") && d.text.contains("+copied\n") && !d.text.contains("+extra"), "{}", d.text);
+        // A rename keeps its diff, from the old name to the new.
+        git(&dir, &["mv", "src.txt", "moved.txt"]);
+        let d = get_diff(&client, &DiffTarget::Staged, "moved.txt", Some("src.txt"), &DiffOptions::default()).await.unwrap();
+        assert_eq!(diff_files(&d.text), ["diff --git a/src.txt b/moved.txt"], "{}", d.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Untracked files show as Git would add them, and a nested repository says what it is.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn untracked_links_executables_and_nested_repositories() {
+        use super::diff::{get_diff, DiffNote, DiffOptions, DiffTarget};
+        use std::os::unix::fs::PermissionsExt;
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = scratch("untracked");
+        std::fs::write(dir.join("keep.txt"), "k\n").unwrap();
+        std::os::unix::fs::symlink("keep.txt", dir.join("link.txt")).unwrap();
+        std::fs::write(dir.join("run.sh"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(dir.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("text.txt"), "a\r\nBinary files are fine\r\nb").unwrap();
+        std::fs::create_dir(dir.join("nested")).unwrap();
+        git(&dir.join("nested"), &["init", "-q", "-b", "main"]);
+        let client = client_for(&dir).await;
+        let status = super::status::get_status(&client).await.unwrap();
+        let mut untracked: Vec<&str> = status.entries.iter().filter(|e| e.untracked).map(|e| e.path.as_str()).collect();
+        untracked.sort_unstable();
+        assert_eq!(untracked, ["keep.txt", "link.txt", "nested/", "run.sh", "text.txt"]);
+        let diff = |path: &'static str| {
+            let client = &client;
+            async move { get_diff(client, &DiffTarget::Untracked, path, None, &DiffOptions::default()).await.unwrap() }
+        };
+        let link = diff("link.txt").await;
+        assert!(link.text.contains("new file mode 120000\n") && link.text.contains("+keep.txt\n\\ No newline at end of file\n"), "{}", link.text);
+        assert!(diff("run.sh").await.text.contains("new file mode 100755\n"));
+        let text = diff("text.txt").await;
+        assert!(!text.is_binary && text.text.contains("@@ -0,0 +1,3 @@\n+a\r\n+Binary files are fine\r\n+b\n\\ No newline at end of file\n"), "{}", text.text);
+        assert_eq!(text.new_eol, super::blob::Eol::CrLf);
+        let nested = diff("nested/").await;
+        assert_eq!((nested.note, nested.text.as_str()), (Some(DiffNote::NestedRepository), ""));
+        // A file that went away meanwhile is an error, not an empty diff.
+        assert!(get_diff(&client, &DiffTarget::Untracked, "gone.txt", None, &DiffOptions::default()).await.is_err());
+        // A name that was not UTF-8 is refused rather than taken for another file.
+        let lossy = crate::git::parse::lossy(b"caf\xe9.txt");
+        assert!(matches!(get_diff(&client, &DiffTarget::Unstaged, &lossy, None, &DiffOptions::default()).await, Err(crate::error::GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Settings in the user's Git config that would change what the queries read: none of them
+    /// reaches the result.
+    #[tokio::test]
+    async fn user_config_does_not_change_what_queries_read() {
+        use super::diff::{get_diff, DiffNote, DiffOptions, DiffTarget};
+        if which::which("git").is_err() {
+            return;
+        }
+        let sub = scratch("config-sub");
+        git(&sub, &["commit", "-q", "--allow-empty", "-m", "s1"]);
+        let dir = scratch("config");
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.join(".gitattributes"), "*.txt diff=upper\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["-c", "protocol.file.allow=always", "submodule", "-q", "add", sub.to_str().unwrap(), "sub"]);
+        git(&dir, &["commit", "-qm", "first"]);
+        git(&dir, &["config", "diff.upper.textconv", "tr a-z A-Z"]);
+        git(&dir, &["config", "diff.submodule", "log"]);
+        git(&dir, &["config", "blame.ignoreRevsFile", ".git-blame-ignore-revs"]);
+        git(&dir, &["config", "log.showSignature", "true"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        let client = client_for(&dir).await;
+        let opts = DiffOptions::default();
+
+        // A textconv driver would show `+TWO`, which line staging could not find in the file.
+        let d = get_diff(&client, &DiffTarget::Unstaged, "a.txt", None, &opts).await.unwrap();
+        assert!(d.text.contains("\n+two\n"), "{}", d.text);
+        // The submodule has untracked files only: listed as changed, with nothing to diff.
+        std::fs::write(dir.join("sub/new.txt"), "n\n").unwrap();
+        let d = get_diff(&client, &DiffTarget::Unstaged, "sub", None, &opts).await.unwrap();
+        assert_eq!((d.note, d.text.as_str()), (Some(DiffNote::SubmoduleUntracked), ""));
+        // `diff.submodule=log` would print a commit list instead of the pointer change.
+        git(&dir.join("sub"), &["commit", "-q", "--allow-empty", "-m", "s2"]);
+        let d = get_diff(&client, &DiffTarget::Unstaged, "sub", None, &opts).await.unwrap();
+        assert!(d.text.contains("-Subproject commit ") && d.text.contains("+Subproject commit "), "{}", d.text);
+        assert_eq!(d.note, None);
+        // Blame refuses, as Git does, and says which setting is the cause.
+        let err = super::blame::get_blame(&client, None, "a.txt", None).await.unwrap_err().to_string();
+        assert!(err.contains("blame.ignoreRevsFile"), "{err}");
+
+        // A signed commit, whose check `log.showSignature` would print before each record.
+        if which::which("ssh-keygen").is_ok() {
+            let key = dir.with_extension("key");
+            let st = Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "t@t", "-f"]).arg(&key).status().unwrap();
+            assert!(st.success());
+            let signing_key = format!("user.signingkey={}", key.display());
+            git(&dir, &["-c", "gpg.format=ssh", "-c", &signing_key, "commit", "-q", "-S", "-am", "signed"]);
+            let head = String::from_utf8(Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap().trim().to_string();
+            assert_eq!(super::log::get_commit_body(&client, &head).await.unwrap(), "signed");
+            let between = super::log::get_log_between(&client, std::slice::from_ref(&head), &[], 10).await.unwrap();
+            assert_eq!(between.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["signed", "first"]);
+            assert_eq!(between[0].oid, head);
+            let parents = super::log::get_unchanged_parents(&client, &head).await.unwrap();
+            assert_eq!(parents, [(between[1].oid.clone(), false)]);
+            let history = super::history::get_file_history(&client, "a.txt", None, 10).await.unwrap();
+            assert_eq!(history.entries.iter().map(|e| e.subject.as_str()).collect::<Vec<_>>(), ["signed", "first"]);
+            let _ = std::fs::remove_file(&key);
+            let _ = std::fs::remove_file(key.with_extension("key.pub"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&sub);
+    }
+
     /// File history follows a rename and lists a merge that changed the file; blame covers the
     /// working tree, a commit, the commit before a change, and the files it cannot blame.
     #[tokio::test]

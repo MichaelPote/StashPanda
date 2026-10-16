@@ -410,7 +410,7 @@ async fn stream_full(
         // Building takes longer as the store grows; keep it to a third of the load at most.
         next_swap = Instant::now() + PARTIAL_EVERY.max(started.elapsed() * 2);
     };
-    let count = log::stream_log(&handle.client, max, &mut on_record).await?;
+    let count = log::stream_log(&handle.client, max, refs.head.is_some(), &mut on_record).await?;
     Ok((store, count >= max))
 }
 
@@ -808,6 +808,36 @@ mod e2e {
         let by_date = full_rows(&handle, GraphOptions::default()).await;
         assert_ne!(ours, by_date, "the fixture interleaves, so date order differs");
         handle.close().await;
+    }
+
+    #[tokio::test]
+    async fn signed_commits_and_a_branch_with_no_commits_load_in_full() {
+        if which::which("git").is_err() || which::which("ssh-keygen").is_err() {
+            return;
+        }
+        let mut repo = Scratch::new("signed");
+        let first = repo.commit("main 1");
+        // A commit signed with an SSH key, and `log.showSignature`, which makes `git log` print
+        // the check of each signed commit before its record.
+        let key = repo.dir.with_extension("key");
+        let st = Command::new("ssh-keygen").args(["-q", "-t", "ed25519", "-N", "", "-C", "t@t", "-f"]).arg(&key).status().unwrap();
+        assert!(st.success());
+        repo.clock += 60;
+        let signing_key = format!("user.signingkey={}", key.display());
+        repo.git(&["-c", "gpg.format=ssh", "-c", &signing_key, "commit", "-q", "-S", "--allow-empty", "-m", "signed"]);
+        let signed = git_out(&repo.dir, &["rev-parse", "HEAD"]);
+        repo.git(&["config", "log.showSignature", "true"]);
+
+        let handle = repo.open().await;
+        let settings = Settings::default();
+        let load = || refresh_full(None, None, &handle, GraphOptions::default(), &settings.cache, SnapshotReason::Live, true);
+        assert_eq!(commit_rows(&load().await.unwrap()), [signed.clone(), first.clone()]);
+        // A branch with no commits yet: HEAD names no commit, and main's commits still show.
+        repo.git(&["checkout", "-q", "--orphan", "fresh"]);
+        assert_eq!(commit_rows(&load().await.unwrap()), [signed, first]);
+        handle.close().await;
+        let _ = std::fs::remove_file(&key);
+        let _ = std::fs::remove_file(key.with_extension("key.pub"));
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@ import HueSubmenu from "@/components/ui/HueSubmenu.vue";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { shortSha } from "@/lib/refNames";
 import {
+  checkoutTargetOf,
   copyText,
   createBranchHere,
   currentBranch,
@@ -18,6 +19,7 @@ import {
   removeTag,
   renameBranch,
   requestCheckout,
+  revisionOf,
   stripRemote,
   trackRemoteBranch,
 } from "@/lib/repoActions";
@@ -64,13 +66,7 @@ const checkoutText = computed(() => {
 });
 
 function runCheckout(): void {
-  if (props.kind.type === "remoteBranch") {
-    void requestCheckout(props.sessionKey, { kind: "remote", remote: props.short, local: checkoutTarget.value });
-  } else if (props.kind.type === "localBranch") {
-    void requestCheckout(props.sessionKey, { kind: "local", name: props.short });
-  } else {
-    void requestCheckout(props.sessionKey, { kind: "revision", revision: props.short, label: props.short });
-  }
+  void requestCheckout(props.sessionKey, checkoutTargetOf(props));
 }
 // A dirty working tree does not block a checkout: requestCheckout asks first.
 const checkoutReason = computed(() => (props.isCurrent ? `${props.short} is already checked out.` : null));
@@ -106,7 +102,7 @@ function chooseColour(colour: number | null): void {
       <ActionMenuItem :reason="checkoutReason" @select="runCheckout">
         {{ checkoutText }}
       </ActionMenuItem>
-      <ActionMenuItem v-if="kind.type !== 'tag'" :reason="mergeReason" @select="mergeInto(sessionKey, short)">
+      <ActionMenuItem v-if="kind.type !== 'tag'" :reason="mergeReason" @select="mergeInto(sessionKey, revisionOf(props, session?.refs?.refs ?? []), short)">
         Merge {{ short }} into {{ branch ?? "current branch" }}
       </ActionMenuItem>
       <ActionMenuItem @select="createBranchHere(sessionKey, target, short)">Create Branch Here…</ActionMenuItem>

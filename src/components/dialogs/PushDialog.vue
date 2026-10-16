@@ -18,7 +18,8 @@ watch(request, (r) => {
   if (!r) return;
   remote.value = r.remotes.includes("origin") ? "origin" : (r.remotes[0] ?? "");
   remoteBranch.value = r.branch;
-  setUpstream.value = true;
+  // A branch that tracks a remote branch already keeps tracking it unless the user asks.
+  setUpstream.value = r.tracks === null;
 });
 
 /** Why the remote branch name cannot be used, or null. The backend checks it again. */
@@ -51,7 +52,11 @@ function submit(): void {
     <DialogContent v-if="request" class="sm:max-w-lg" size-key="push">
       <DialogHeader>
         <DialogTitle>Push {{ request.branch }}</DialogTitle>
-        <DialogDescription>
+        <DialogDescription v-if="request.tracks">
+          <span class="font-mono">{{ request.branch }}</span> pulls from <span class="font-mono">{{ request.tracks }}</span>, a branch with a
+          different name. Choose where to push it.
+        </DialogDescription>
+        <DialogDescription v-else>
           <span class="font-mono">{{ request.branch }}</span> does not track a remote branch yet. Choose where to push it.
         </DialogDescription>
       </DialogHeader>

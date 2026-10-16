@@ -50,6 +50,34 @@ async fn exercise(h: &crate::repo::RepoHandle, file_on_disk: &dyn Fn(&str, &str)
     assert_eq!(body, b"hello\n");
 }
 
+/// Git's output for `args`, through the opened repository's own client.
+async fn git_out(h: &crate::repo::RepoHandle, args: &[&str]) -> String {
+    let out = h.client.exec(GitReq::new("test", args.to_vec())).await.unwrap();
+    String::from_utf8_lossy(&out.stdout).replace('\r', "").trim().to_string()
+}
+
+/// A rename that changes only the letter case, committed while other files stay staged. Where
+/// the file system ignores case, `git commit --only` refuses the new name as an alias of the old
+/// one, so `ops::commit` sets the other files aside instead and stages them again afterwards.
+async fn commit_a_case_only_rename(h: &crate::repo::RepoHandle, file_on_disk: &dyn Fn(&str, &str)) {
+    for (name, text) in [("Readme.md", "readme\n"), ("b.txt", "b\n"), ("gone.txt", "gone\n")] {
+        file_on_disk(name, text);
+    }
+    let all = ["Readme.md", "b.txt", "gone.txt"].map(String::from);
+    assert!(ops::commit(&h.client, "base", Some(&all), false, false).await.unwrap().ok);
+    git_out(h, &["mv", "Readme.md", "README.md"]).await;
+    file_on_disk("b.txt", "staged b\n");
+    assert!(ops::stage(&h.client, &["b.txt".to_string()]).await.unwrap().ok);
+    file_on_disk("b.txt", "unstaged b\n");
+    git_out(h, &["rm", "-q", "gone.txt"]).await;
+
+    let r = ops::commit(&h.client, "case only", Some(&["README.md", "Readme.md"].map(String::from)), false, false).await.unwrap();
+    assert!(r.ok, "{r:?}");
+    assert_eq!(git_out(h, &["diff-tree", "-r", "--name-status", "--no-commit-id", "HEAD"]).await, "A\tREADME.md\nD\tReadme.md");
+    assert_eq!(git_out(h, &["status", "--porcelain"]).await, "MM b.txt\nD  gone.txt");
+    assert_eq!(git_out(h, &["show", ":b.txt"]).await, "staged b");
+}
+
 /// The Windows build opening a repository that lives inside WSL.
 #[cfg(windows)]
 #[tokio::test]
@@ -79,6 +107,37 @@ async fn windows_opens_a_wsl_repository_through_its_unc_path() {
     let write = |file: &str, text: &str| wsl(&format!("printf '{text}' > '{linux}/{file}'"));
     exercise(&h, &write).await;
     wsl(&format!("rm -rf {linux}"));
+}
+
+/// Windows `git.exe` started from the Linux build inside WSL sees the environment every command
+/// carries (`GIT_TERMINAL_PROMPT=0`, `LC_ALL`), which WSL interop passes on only through
+/// `WSLENV`. An alias that runs `env` prints what Git got; nothing is written anywhere.
+#[cfg(unix)]
+#[tokio::test]
+async fn windows_git_from_wsl_gets_the_environment() {
+    use crate::transport::local::LocalTransport;
+    use crate::transport::paths::{IdentityMapper, NativePath};
+    if std::env::var("WSL_DISTRO_NAME").is_err() {
+        return;
+    }
+    let Some(git) = crate::transport::discover::find_windows_git_from_linux(None, "/mnt/") else { return };
+    let client = crate::git::GitClient {
+        transport: std::sync::Arc::new(LocalTransport { git, mapper: Box::new(IdentityMapper), windows_git_from_linux: true }),
+        repo: NativePath("C:/".into()),
+        caps: crate::git::versions::Capabilities::default(),
+        console: std::sync::Arc::new(crate::git::console::ConsoleRecorder::new(None, "cross-env".into(), 1 << 16)),
+    };
+    let env = git_out_of(&client, &["-c", "alias.showenv=!env", "showenv"]).await;
+    let lines: Vec<&str> = env.lines().collect();
+    for expected in ["GIT_TERMINAL_PROMPT=0", "LC_ALL=C.UTF-8", "GIT_OPTIONAL_LOCKS=0"] {
+        assert!(lines.contains(&expected), "{expected} missing from:\n{env}");
+    }
+}
+
+/// Git's output for `args` through `client`.
+async fn git_out_of(client: &crate::git::GitClient, args: &[&str]) -> String {
+    let out = client.exec(GitReq::new("test", args.to_vec())).await.unwrap();
+    String::from_utf8_lossy(&out.stdout).replace('\r', "").trim().to_string()
 }
 
 /// The Linux build inside WSL opening a Windows folder, which it does with Windows `git.exe`.
@@ -126,5 +185,6 @@ async fn wsl_opens_a_windows_folder_with_windows_git() {
     assert!(argv.iter().any(|a| a.starts_with("C:\\") || a.contains(":\\")), "{argv:?}");
     let write = |file: &str, text: &str| std::fs::write(dir.join(file), text).unwrap();
     exercise(&h, &write).await;
+    commit_a_case_only_rename(&h, &write).await;
     let _ = std::fs::remove_dir_all(&dir);
 }

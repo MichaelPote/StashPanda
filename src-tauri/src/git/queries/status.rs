@@ -54,7 +54,7 @@ impl StatusSnapshot {
     }
 }
 
-fn split_fields(rec: &[u8], n: usize) -> Option<(Vec<String>, String)> {
+pub(crate) fn split_fields(rec: &[u8], n: usize) -> Option<(Vec<String>, String)> {
     // Split the first n space-separated fields; the remainder is the path.
     let mut fields = Vec::with_capacity(n);
     let mut rest = rec;

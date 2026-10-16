@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::{GitError, Result};
 use crate::git::catfile::CatFile;
 use crate::git::ops::valid_revision;
-use crate::git::parse::{lossy, parse_i64, unquote_path};
+use crate::git::parse::{lossy, parse_i64, unquote_path, utf8_name};
 use crate::git::queries::blob::{get_blob, get_worktree_file, Eol};
 use crate::git::queries::diff::join_repo_path;
 use crate::git::{GitClient, GitReq};
@@ -270,6 +270,7 @@ pub async fn get_blame(
     if path.is_empty() || path.contains(['\n', '\r', '\0']) {
         return Err(GitError::InvalidPath { path: path.to_string(), reason: "not a valid file path".into() });
     }
+    utf8_name(path)?;
     if let Some(r) = rev {
         valid_revision(r)?;
     }
@@ -313,6 +314,19 @@ pub async fn get_blame(
         let lower = stderr.to_ascii_lowercase();
         if rev.is_none() && (lower.contains("no such path") || lower.contains("no such ref") || lower.contains("bad revision 'head'")) {
             return Ok(FileBlame::empty(BlameContent::NotCommitted));
+        }
+        // `blame.ignoreRevsFile` names a file the repository does not have. Git refuses to blame
+        // then, and no option on the command line takes the setting back.
+        if lower.contains("could not open object name list") {
+            return Err(GitError::CommandFailed {
+                label: "blame".into(),
+                argv: vec![],
+                exit_code: out.exit_code,
+                stderr: format!(
+                    "{}\nThe Git setting blame.ignoreRevsFile names that file, and this repository does not have it. Add the file, or remove the setting from the Git config that sets it.",
+                    stderr.trim_end()
+                ),
+            });
         }
         return Err(crate::error::classify_git_failure("blame", vec![], out.exit_code, &out.stderr, &client.transport.kind()));
     }

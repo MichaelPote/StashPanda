@@ -6,7 +6,7 @@ use specta::Type;
 
 use crate::error::{GitError, Result};
 use crate::git::ops::valid_revision;
-use crate::git::parse::{lossy, parse_i64, split_us};
+use crate::git::parse::{lossy, parse_i64, split_us, utf8_name};
 use crate::git::queries::commit_files::ChangeStatus;
 use crate::git::{GitClient, GitReq};
 
@@ -57,14 +57,14 @@ pub fn parse_file_history(bytes: &[u8], path: &str, limit: usize) -> FileHistory
     let mut out = Vec::new();
     let mut commits = 0;
     let mut more = false;
-    for record in bytes.split(|b| *b == 0x1e) {
-        if record.is_empty() {
-            continue;
-        }
-        let (head, files) = match record.iter().position(|b| *b == 0) {
-            Some(at) => (&record[..at], &record[at + 1..]),
-            None => (record, &record[record.len()..]),
-        };
+    // Token by token: a path is taken by its place and never looked into, so a name can hold any
+    // byte, and a subject can hold 0x1E.
+    let tokens: Vec<&[u8]> = bytes.split(|b| *b == 0).collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = tokens[i];
+        i += 1;
+        let Some(head) = token.strip_prefix(b"\n").unwrap_or(token).strip_prefix(b"\x1e") else { continue };
         let f = split_us(head);
         if f.len() < 6 {
             continue;
@@ -74,22 +74,28 @@ pub fn parse_file_history(bytes: &[u8], path: &str, limit: usize) -> FileHistory
             break;
         }
         commits += 1;
-        let tokens: Vec<&[u8]> = files
-            .split(|b| *b == 0)
-            .map(|t| t.trim_ascii())
-            .filter(|t| !t.is_empty())
-            .collect();
-        let (status, old_path, file_path) = match tokens.first() {
-            Some(letter) => {
-                let status = ChangeStatus::from_letter(letter[0]);
-                if matches!(status, ChangeStatus::Renamed | ChangeStatus::Copied) && tokens.len() >= 3 {
-                    (status, Some(lossy(tokens[1])), lossy(tokens[2]))
-                } else {
-                    (status, None, tokens.get(1).map(|t| lossy(t)).unwrap_or_else(|| current.clone()))
-                }
+        // The status letter, after a newline, or after an empty token for a merge.
+        while tokens.get(i).is_some_and(|t| t.is_empty()) {
+            i += 1;
+        }
+        let letter = match tokens.get(i).map(|t| t.strip_prefix(b"\n").unwrap_or(t)) {
+            Some(t) if t.first().is_some_and(|b| *b != 0x1e) => {
+                i += 1;
+                t
             }
             // A merge that did not change the file.
-            None => continue,
+            _ => continue,
+        };
+        let status = ChangeStatus::from_letter(letter[0]);
+        // A rename or copy has a score and both names; a merge's letters (`RM`) come with one.
+        let (old_path, file_path) = if matches!(status, ChangeStatus::Renamed | ChangeStatus::Copied) && letter[1..].iter().all(u8::is_ascii_digit) {
+            let names = (tokens.get(i).map(|t| lossy(t)), tokens.get(i + 1).map(|t| lossy(t)).unwrap_or_else(|| current.clone()));
+            i += 2;
+            names
+        } else {
+            let name = tokens.get(i).map(|t| lossy(t)).unwrap_or_else(|| current.clone());
+            i += 1;
+            (None, name)
         };
         // Older commits know the file by the name it had before this one renamed it.
         current = old_path.clone().unwrap_or_else(|| file_path.clone());
@@ -120,6 +126,7 @@ pub async fn get_file_history(client: &GitClient, path: &str, rev: Option<&str>,
     if path.is_empty() || path.contains(['\n', '\r', '\0']) {
         return Err(GitError::InvalidPath { path: path.to_string(), reason: "not a valid file path".into() });
     }
+    utf8_name(path)?;
     if let Some(r) = rev {
         valid_revision(r)?;
     }
@@ -141,7 +148,9 @@ pub async fn get_file_history(client: &GitClient, path: &str, rev: Option<&str>,
 /// The entries among the first `commits` commits `git log --follow` prints for `path`.
 async fn read_file_history(client: &GitClient, path: &str, rev: Option<&str>, commits: u32) -> Result<FileHistory> {
     let mut args = vec![
-        "log".to_string(),
+        // The path names exactly that file: `:x`, `*` and `a[1]` are not pathspec magic or patterns.
+        "--literal-pathspecs".to_string(),
+        "log".into(),
         "--follow".into(),
         "-z".into(),
         "--name-status".into(),
@@ -150,6 +159,8 @@ async fn read_file_history(client: &GitClient, path: &str, rev: Option<&str>, co
         // parent's gets one. Merges without one are left out by `parse_file_history`.
         "--cc".into(),
         "--no-ext-diff".into(),
+        // `log.showSignature` would print each signed commit's check before its record.
+        "--no-show-signature".into(),
         // One more than asked for, to learn whether there are more.
         format!("--max-count={}", commits.saturating_add(1)),
         format!("--format={HISTORY_FORMAT}"),
@@ -195,6 +206,27 @@ A\x00old.txt\x00";
         assert_eq!((h[1].status, h[1].path.as_str(), h[1].old_path.as_deref()), (ChangeStatus::Modified, "old.txt", None));
         assert_eq!((h[2].status, h[2].path.as_str()), (ChangeStatus::Added, "old.txt"));
         assert!(h[2].parents.is_empty(), "the root commit has no parents");
+    }
+
+    #[test]
+    fn keeps_spaces_in_names_and_0x1e_in_subjects() {
+        // Captured (oids shortened): ` lead.txt` renamed to `trail.txt `, after a commit whose
+        // subject holds 0x1E and a merge that resolved a conflict in the file.
+        const ODD: &[u8] = b"\x1ec0\x1fc1\x1fT\x1ft@t\x1f1700000000\x1frename\x00\nR100\x00 lead.txt\x00trail.txt \x00\x1ec1\x1fc2\x1fT\x1ft@t\x1f1700000000\x1fedit after \x1e odd\x00\nM\x00 lead.txt\x00\x1ec2\x1fc3 c4\x1fT\x1ft@t\x1f1700000000\x1fconflict merge\x00\x00MM\x00 lead.txt\x00\x1ec3\x1fc5\x1fT\x1ft@t\x1f1700000000\x1fmain\x00\nM\x00 lead.txt\x00";
+        let all = parse_file_history(ODD, "trail.txt ", usize::MAX);
+        let got: Vec<(&str, &str, Option<&str>)> = all.entries.iter().map(|e| (e.subject.as_str(), e.path.as_str(), e.old_path.as_deref())).collect();
+        assert_eq!(
+            got,
+            [
+                ("rename", "trail.txt ", Some(" lead.txt")),
+                ("edit after \u{1e} odd", " lead.txt", None),
+                ("conflict merge", " lead.txt", None),
+                ("main", " lead.txt", None),
+            ]
+        );
+        assert_eq!(all.entries[2].parents, ["c3", "c4"]);
+        let capped = parse_file_history(ODD, "trail.txt ", 2);
+        assert_eq!((capped.entries.len(), capped.more), (2, true));
     }
 
     #[test]

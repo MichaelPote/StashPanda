@@ -7,21 +7,23 @@ import {
   commands,
   type GitError,
   type GraphRow,
+  type InProgress,
   type OpResult,
   type PullMode,
   type PushTarget,
+  type RefKind,
   type ResetMode,
   type ResolveSide,
   type StashEntry,
   type SyncResult,
 } from "@/lib/bindings";
-import { hasConflictMarkers, OPERATION_VERBS, operationNames } from "@/lib/conflicts";
+import { hasConflictMarkers, OPERATION_VERBS, operationNames, type OperationNames } from "@/lib/conflicts";
 import { pathBasename } from "@/lib/format";
 import { commitFiles, selectedConflicts, worktreeActionPaths, type FileItem, type WorktreeActionPaths } from "@/lib/files";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
-import { useDialogsStore, type BranchChoice, type PullSource } from "@/stores/dialogs";
+import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
@@ -124,6 +126,16 @@ export type CheckoutTarget =
   | { kind: "revision"; revision: string; label: string };
 
 /**
+ * What the Checkout of a branch's or tag's own menu goes to. A tag goes by its full name
+ * (`refs/tags/v1`), so that a branch of the same name is not checked out instead.
+ */
+export function checkoutTargetOf(ref: { fullName: string; short: string; kind: RefKind }): CheckoutTarget {
+  if (ref.kind.type === "remoteBranch") return { kind: "remote", remote: ref.short, local: stripRemote(ref.short, ref.kind.remote) };
+  if (ref.kind.type === "localBranch") return { kind: "local", name: ref.short };
+  return { kind: "revision", revision: ref.fullName, label: ref.short };
+}
+
+/**
  * Every checkout goes through here, whether it starts from a menu or a double-click:
  * 1. a dirty working tree asks first, since the changes come along to the other branch;
  * 2. a remote branch with no local branch of its name asks first, then creates one that tracks it
@@ -167,7 +179,8 @@ export async function requestCheckout(key: string, target: CheckoutTarget): Prom
 
   try {
     if (plan.kind === "remote") {
-      const result = await runOp(key, () => commands.opBranchCreate(key, plan.local, plan.remote, true));
+      // The full name, so that a tag or local branch also called `origin/dev` is not the start.
+      const result = await runOp(key, () => commands.opBranchCreate(key, plan.local, `refs/remotes/${plan.remote}`, true));
       if (result.ok) sessions.notifySuccess(`Created branch ${plan.local} tracking ${plan.remote}, and checked it out.`);
       else sessions.notify(opFailureText(result, `Creating branch ${plan.local} from ${plan.remote}`));
       return;
@@ -464,10 +477,31 @@ export function pushReason(session: RepoSession | null | undefined): string | nu
 }
 
 /**
- * Pushes the checked-out branch to the remote branch it tracks, with progress and Stop in the
- * status bar. A branch that tracks nothing opens the Push dialog to choose where, which then
- * sets that as its upstream. Never forces: when the remote has commits the branch lacks, the
- * notice offers to pull them.
+ * Asks where to push `branch`, whose upstream has another name that Git's `push.default` does not
+ * push to: there this time only, or always as a `push.default` saved for the repository, which
+ * this saves before resolving. Null when cancelled, or when saving failed (with a notice).
+ */
+async function askWhereToPush(key: string, branch: string, upstream: PushTarget, action: "push" | "sync"): Promise<PushDefaultChoice | null> {
+  const sessions = useSessionsStore();
+  const choice = await useDialogsStore().open("pushDefault", { key, branch, upstream, action });
+  if (choice?.kind !== "always") return choice;
+  try {
+    const saved = await runOp(key, () => commands.opSetPushDefault(key, choice.mode));
+    if (saved.ok) return choice;
+    sessions.notify(`The setting could not be saved: ${saved.stderr || saved.stdout}`);
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+  return null;
+}
+
+/**
+ * Pushes the checked-out branch where plain `git push` would: the remote branch it tracks, with
+ * progress and Stop in the status bar. A branch that tracks nothing opens the Push dialog to
+ * choose where, which then sets that as its upstream. One whose upstream has another name, when
+ * Git's `push.default` does not push there, asks first (`askWhereToPush`), so that a branch started
+ * from `origin/main` is never pushed onto `main` unasked. Never forces: when the remote has commits
+ * the branch lacks, the notice offers to pull them.
  */
 export async function pushCurrentBranch(session: RepoSession | null): Promise<void> {
   const sessions = useSessionsStore();
@@ -479,21 +513,51 @@ export async function pushCurrentBranch(session: RepoSession | null): Promise<vo
   }
   const key = session.key;
   let target: PushTarget | null;
+  let tracks: string | null = null;
+  // Pushed where Git decides, the backend works the target out again; a chosen one is passed.
+  let chosen = false;
   try {
-    target = await unwrap(commands.getUpstream(key, branch));
+    target = await unwrap(commands.getPushTarget(key, branch));
   } catch (e) {
-    sessions.notify(errorMessage(e));
-    return;
+    if (!(e instanceof IpcError && e.error.kind === "invalidPath")) {
+      sessions.notify(errorMessage(e));
+      return;
+    }
+    // The upstream has another name and `push.default` does not push there.
+    let upstream: PushTarget | null;
+    try {
+      upstream = await unwrap(commands.getUpstream(key, branch));
+    } catch (e) {
+      sessions.notify(errorMessage(e));
+      return;
+    }
+    if (upstream === null) {
+      sessions.notify(`${branch} cannot be pushed: ${e.error.reason}.`);
+      return;
+    }
+    const choice = await askWhereToPush(key, branch, upstream, "push");
+    if (!choice) return;
+    if (choice.kind === "once") {
+      target = upstream;
+      chosen = true;
+    } else if (choice.kind === "always") {
+      // Saved, so the backend now pushes there by itself.
+      target = choice.mode === "upstream" ? upstream : { remote: upstream.remote, branch };
+    } else {
+      target = null;
+      tracks = `${upstream.remote}/${upstream.branch}`;
+    }
   }
   let setUpstream = false;
   if (target === null) {
-    const choice = await useDialogsStore().open("push", { key, branch, remotes: session.refs.remotes.map((r) => r.name) });
+    chosen = true;
+    const choice = await useDialogsStore().open("push", { key, branch, remotes: session.refs.remotes.map((r) => r.name), tracks });
     if (!choice) return;
     ({ target, setUpstream } = choice);
   }
   const to = `${target.remote}/${target.branch}`;
   try {
-    const result = await runOperation(key, `Pushing ${branch} to ${to}`, (opId) => commands.opPush(key, opId, branch, target, setUpstream));
+    const result = await runOperation(key, `Pushing ${branch} to ${to}`, (opId) => commands.opPush(key, opId, branch, chosen ? target : null, setUpstream));
     const output = `${result.stdout}\n${result.stderr}`;
     if (result.ok) {
       const tracking = setUpstream ? ` ${branch} now tracks it.` : "";
@@ -546,12 +610,27 @@ export async function syncCurrentBranch(session: RepoSession | null): Promise<vo
     await pushCurrentBranch(session);
     return;
   }
+  // Where the push goes when the user chose it for this sync only; null leaves it to Git.
+  let pushTo: PushTarget | null = null;
+  try {
+    await unwrap(commands.getPushTarget(key, branch));
+  } catch (e) {
+    if (!(e instanceof IpcError && e.error.kind === "invalidPath")) {
+      sessions.notify(errorMessage(e));
+      return;
+    }
+    // The upstream has another name and Git's `push.default` does not push there. Nothing has
+    // been pulled yet, so asking first changes nothing.
+    const choice = await askWhereToPush(key, branch, upstream, "sync");
+    if (!choice) return;
+    if (choice.kind === "once") pushTo = upstream;
+  }
   const autostash = await confirmAutostash(session, "Sync");
   if (autostash === null) return;
   const mode = await pullModeFor(key, branch);
   const to = `${upstream.remote}/${upstream.branch}`;
   try {
-    const result = await runOperation(key, `Syncing ${branch} with ${to}`, (opId) => commands.opSync(key, opId, branch, mode, autostash));
+    const result = await runOperation(key, `Syncing ${branch} with ${to}`, (opId) => commands.opSync(key, opId, branch, mode, autostash, pushTo));
     const outcome = syncOutcome(key, result, branch, mode);
     if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
     else sessions.notify(outcome.message, outcome.action);
@@ -564,6 +643,8 @@ export async function syncCurrentBranch(session: RepoSession | null): Promise<vo
 export function syncOutcome(key: string, result: SyncResult, branch: string, mode: PullMode): PullOutcome {
   const sessions = useSessionsStore();
   const to = `${result.target.remote}/${result.target.branch}`;
+  // Where the push went, which differs from `to` only with push.default=current.
+  const pushTo = `${result.pushTarget.remote}/${result.pushTarget.branch}`;
   const pulled = pullOutcome(result.pull, to, branch, mode);
   if (!result.pull.ok) {
     // Failed, or stopped on conflicts: the pull's own notice, which offers the abort.
@@ -579,23 +660,23 @@ export function syncOutcome(key: string, result: SyncResult, branch: string, mod
   }
   if (result.pushStopped) {
     return {
-      message: `${pullPart}The push was stopped, so ${to} may not have ${branch}'s new commits yet; sync again to send them.`,
+      message: `${pullPart}The push was stopped, so ${pushTo} may not have ${branch}'s new commits yet; sync again to send them.`,
       kind: "error",
       action: null,
       failed: false,
     };
   }
   const push = result.push;
-  if (push?.ok) return { message: `${pullPart}Pushed ${branch} to ${to}.`, kind: pulled.kind, action: null, failed: false };
+  if (push?.ok) return { message: `${pullPart}Pushed ${branch} to ${pushTo}.`, kind: pulled.kind, action: null, failed: false };
   if (push && push.stderr.includes("[rejected]")) {
     return {
-      message: `${pullPart}${to} received new commits while the sync was running, so the push was refused. Sync again.`,
+      message: `${pullPart}${pushTo} received new commits while the sync was running, so the push was refused. Sync again.`,
       kind: "error",
       action: { label: "Sync again", run: () => syncCurrentBranch(sessions.sessions.get(key) ?? null) },
       failed: false,
     };
   }
-  const detail = push ? networkFailureText(push, `Pushing ${branch} to ${to}`) : `Pushing ${branch} to ${to} did not run.`;
+  const detail = push ? networkFailureText(push, `Pushing ${branch} to ${pushTo}`) : `Pushing ${branch} to ${pushTo} did not run.`;
   return { message: `${pullPart}${detail}`, kind: "error", action: null, failed: false };
 }
 
@@ -604,6 +685,16 @@ export function syncOutcome(key: string, result: SyncResult, branch: string, mod
  * commit even when a fast-forward would do. A conflicted merge stays open, and the bar above the
  * commits offers Continue and Abort.
  */
+/**
+ * How to name `ref` to Git as a revision to merge or rebase onto: its short name (`dev`,
+ * `origin/dev`), which Git writes into a merge commit's message as given, unless another ref has
+ * the same short name (a tag `dev` beside the branch `dev`). Then its full name, because Git
+ * would pick the tag.
+ */
+export function revisionOf(ref: { fullName: string; short: string }, refs: readonly { fullName: string; short: string }[]): string {
+  return refs.some((r) => r.short === ref.short && r.fullName !== ref.fullName) ? ref.fullName : ref.short;
+}
+
 export async function mergeInto(key: string, target: string, label: string = target, noFf = false): Promise<void> {
   const sessions = useSessionsStore();
   const into = currentBranch(sessions.sessions.get(key)) ?? "the current branch";
@@ -642,7 +733,8 @@ export function resetReason(session: RepoSession | null | undefined): string | n
   if (!session) return "Open a repository first.";
   if (session.info.isBare) return "A bare repository has no checked-out branch to reset.";
   if (session.status?.headOid === null) return "This branch has no commits yet.";
-  return null;
+  // A mixed or hard reset would end a merge or rebase silently, leaving its conflict markers.
+  return operationReason(session);
 }
 
 const RESET_EFFECT: Record<ResetMode, string> = {
@@ -769,31 +861,43 @@ export async function continueOperation(session: RepoSession | null): Promise<vo
   }
   const key = session.key;
   const names = operationNames(session.status, session.refs, session.stashConflict);
-  const verb = OPERATION_VERBS[op.kind];
   try {
     const result = await runOp(key, () => commands.opContinue(key, op.kind));
-    const output = `${result.stdout}\n${result.stderr}`;
-    if (result.ok) {
-      sessions.notifySuccess(
-        op.kind === "merge"
-          ? `Merged ${names.theirs} into ${names.ours}.`
-          : op.kind === "rebase"
-            ? `Finished rebasing onto ${names.ours}.`
-            : op.kind === "cherryPick"
-              ? `Cherry-picked ${names.theirs} onto ${names.ours}.`
-              : `Reverted ${op.commit === null ? "the commit" : shortSha(op.commit)} with a new commit on ${names.ours}.`,
-      );
-    } else if (result.conflicts) {
-      sessions.notify(`The rebase went on to the next commit, which conflicts too. ${RESOLVE_HINT}`);
-    } else if (/nothing to commit|No changes|is now empty/i.test(output)) {
-      const way = op.kind === "rebase" || op.kind === "cherryPick" ? "Skip leaves the commit out." : `Abort the ${verb} to stop it.`;
-      sessions.notify(`${opFailureText(result, `Continuing the ${verb}`)} After resolving, nothing is left to commit. ${way}`);
-    } else {
-      sessions.notify(opFailureText(result, `Continuing the ${verb}`));
-    }
+    const outcome = continueOutcome(result, op, names);
+    if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
+    else sessions.notify(outcome.message);
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
+}
+
+/** What to report after `git <command> --continue` ran for the operation `op`. */
+export function continueOutcome(result: OpResult, op: InProgress, names: OperationNames): { message: string; kind: "success" | "error" } {
+  const output = `${result.stdout}\n${result.stderr}`;
+  const verb = OPERATION_VERBS[op.kind];
+  const done =
+    op.kind === "merge"
+      ? `Merged ${names.theirs} into ${names.ours}`
+      : op.kind === "rebase"
+        ? `Finished rebasing onto ${names.ours}`
+        : op.kind === "cherryPick"
+          ? `Cherry-picked ${names.theirs} onto ${names.ours}`
+          : `Reverted ${op.commit === null ? "the commit" : shortSha(op.commit)} with a new commit on ${names.ours}`;
+  // A pull with --autostash: Git finishes, then putting the uncommitted changes back conflicts.
+  // It still exits 0, and keeps the changes as stash@{0}.
+  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+    return {
+      message: `${done}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
+      kind: "error",
+    };
+  }
+  if (result.ok) return { message: `${done}.`, kind: "success" };
+  if (result.conflicts) return { message: `The rebase went on to the next commit, which conflicts too. ${RESOLVE_HINT}`, kind: "error" };
+  if (/nothing to commit|No changes|is now empty/i.test(output)) {
+    const way = op.kind === "rebase" || op.kind === "cherryPick" ? "Skip leaves the commit out." : `Abort the ${verb} to stop it.`;
+    return { message: `${opFailureText(result, `Continuing the ${verb}`)} After resolving, nothing is left to commit. ${way}`, kind: "error" };
+  }
+  return { message: opFailureText(result, `Continuing the ${verb}`), kind: "error" };
 }
 
 /** Asks first, then leaves out the commit the rebase or cherry-pick stopped at (`--skip`). */
@@ -937,7 +1041,7 @@ function otherBranches(session: RepoSession): BranchChoice[] {
   const refs = session.refs?.refs ?? [];
   const local = refs.filter((r) => r.kind.type === "localBranch" && r.short !== current);
   const remote = refs.filter((r) => r.kind.type === "remoteBranch");
-  return [...local, ...remote].map((r) => ({ short: r.short, remote: r.kind.type === "remoteBranch", target: r.target }));
+  return [...local, ...remote].map((r) => ({ short: r.short, revision: revisionOf(r, refs), remote: r.kind.type === "remoteBranch", target: r.target }));
 }
 
 /** Why the Merge or Rebase dialog cannot open now, or null when it can. */
@@ -978,14 +1082,22 @@ export async function openRebaseDialog(session: RepoSession | null): Promise<voi
   await useDialogsStore().open("rebase", { key: session.key, branch, branches: otherBranches(session), upstream: upstream?.replace(/^refs\/remotes\//, "") ?? null });
 }
 
-/** What to report after `git rebase <onto>` ran; `failed` is a plain failure, with nothing left open. */
-export function rebaseOutcome(result: OpResult, branch: string, onto: string): { message: string; kind: "success" | "error"; failed: boolean } {
+/**
+ * What to report after `git rebase <onto>` ran; `failed` is a plain failure, with nothing left open.
+ * `open` says the rebase is still in progress afterwards: Git can stop part way without a
+ * conflict, as when an untracked file is in the way of a commit it replays.
+ */
+export function rebaseOutcome(result: OpResult, branch: string, onto: string, open = false): { message: string; kind: "success" | "error"; failed: boolean } {
   const output = `${result.stdout}\n${result.stderr}`;
   if (result.ok) {
     const message = /is up to date/i.test(output) ? `${branch} already has every commit on ${onto}.` : `Rebased ${branch} onto ${onto}.`;
     return { message, kind: "success", failed: false };
   }
   if (result.conflicts) return { message: `Rebasing ${branch} onto ${onto} stopped on conflicts. ${RESOLVE_HINT}`, kind: "error", failed: false };
+  if (open) {
+    const text = opFailureText(result, `Rebasing ${branch} onto ${onto}`);
+    return { message: `${text} The rebase stopped part way and is still open: fix what Git reports, then press Continue in the bar above the commits, or Abort there.`, kind: "error", failed: false };
+  }
   return { message: opFailureText(result, `Rebasing ${branch} onto ${onto}`), kind: "error", failed: true };
 }
 

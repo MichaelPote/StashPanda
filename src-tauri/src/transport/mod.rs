@@ -183,6 +183,39 @@ pub(crate) async fn host_list_dir(mapper: &dyn PathMapper, path: &NativePath) ->
     Ok(Some(names))
 }
 
+/// `symlinks` through the host filesystem, as for `host_modified_times`.
+pub(crate) async fn host_symlinks(mapper: &dyn PathMapper, paths: &[NativePath]) -> Result<Vec<bool>> {
+    let hosts: Vec<Option<String>> = paths.iter().map(|p| mapper.to_host(p).ok().map(|h| h.0)).collect();
+    tokio::task::spawn_blocking(move || {
+        hosts
+            .into_iter()
+            .map(|host| host.and_then(|h| std::fs::symlink_metadata(h).ok()).is_some_and(|meta| meta.file_type().is_symlink()))
+            .collect()
+    })
+    .await
+    .map_err(|e| GitError::internal(e.to_string()))
+}
+
+/// `symlinks` through a shell on the machine that holds the files (WSL, SSH): `[ -L ]` for each
+/// path, one line each.
+pub(crate) async fn shell_symlinks(transport: &dyn Transport, paths: &[NativePath]) -> Result<Vec<bool>> {
+    const SCRIPT: &str = r#"for f; do if [ -L "$f" ]; then echo 1; else echo 0; fi; done"#;
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args: Vec<String> = vec!["-c".into(), SCRIPT.into(), "sh".into()];
+    args.extend(paths.iter().map(|p| p.0.clone()));
+    let mut cmd = Cmd::git("test", args);
+    cmd.program = Program::Other("sh".into());
+    let out = transport.run(cmd).await?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let found: Vec<bool> = text.lines().map(|l| l.trim() == "1").collect();
+    if !out.success() || found.len() != paths.len() {
+        return Err(GitError::Io { detail: String::from_utf8_lossy(&out.stderr).trim().to_string() });
+    }
+    Ok(found)
+}
+
 /// `write_file` for transports that reach the file through a shell on the machine that holds it
 /// (WSL, SSH): `cat > "$1"` with the bytes on standard input. The redirection truncates the
 /// existing file rather than making a new one, which is what keeps its mode.
@@ -224,6 +257,9 @@ pub trait Transport: Send + Sync {
     /// Last-modified time of each working-tree file, in milliseconds since 1970, one result per
     /// path in order. None for a path that does not exist (a deleted file) or cannot be read.
     async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>>;
+    /// Whether each of `paths` is a symbolic link itself, not followed, one result per path in
+    /// order. False for a path that does not exist.
+    async fn symlinks(&self, paths: &[NativePath]) -> Result<Vec<bool>>;
     /// The names of the entries in folder `path`, or None when nothing exists at `path`. Fails
     /// with `InvalidPath` when `path` is a file.
     async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>>;
@@ -535,6 +571,28 @@ pub(crate) async fn check_write_file(transport: &dyn Transport, dir: &std::path:
     assert!(transport.write_file(&native("no such folder/x.txt"), b"x").await.is_err());
 }
 
+/// Checks `symlinks` on `transport`, in folder `dir` as for `check_write_file`: a link to a file,
+/// a dangling link and a link to a folder are links; a file, a folder, a path that does not exist
+/// and a path with a space are answered in order. Unix only, where making a link needs no rights.
+#[cfg(test)]
+pub(crate) async fn check_symlinks(transport: &dyn Transport, dir: &std::path::Path) {
+    #[cfg(not(unix))]
+    let _ = (transport, dir);
+    #[cfg(unix)]
+    {
+        let native = |name: &str| NativePath(dir.join(name).to_string_lossy().into_owned());
+        std::fs::create_dir_all(dir.join("a folder")).unwrap();
+        std::fs::write(dir.join("a file.txt"), "x\n").unwrap();
+        std::os::unix::fs::symlink("a file.txt", dir.join("to file")).unwrap();
+        std::os::unix::fs::symlink("nowhere", dir.join("dangling")).unwrap();
+        std::os::unix::fs::symlink("a folder", dir.join("to folder")).unwrap();
+        let names = ["a file.txt", "to file", "a folder", "dangling", "missing", "to folder"];
+        let paths: Vec<NativePath> = names.iter().map(|n| native(n)).collect();
+        assert_eq!(transport.symlinks(&paths).await.unwrap(), vec![false, true, false, true, false, true]);
+        assert_eq!(transport.symlinks(&[]).await.unwrap(), Vec::<bool>::new());
+    }
+}
+
 /// Shell-quote for display in the console (POSIX style, good enough on Windows
 /// for reading). Not used to execute anything.
 pub fn display_command(argv: &[String]) -> String {
@@ -675,6 +733,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let local = LocalTransport { git: "git".into(), mapper: Box::new(IdentityMapper), windows_git_from_linux: false };
         check_write_file(&local, &dir).await;
+        check_symlinks(&local, &dir).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -691,6 +750,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let wsl = WslTransport { distro: distro.clone(), git: "git".into(), mapper: WslMapper { distro, automount_root: "/mnt/".into() } };
         check_write_file(&wsl, &dir).await;
+        check_symlinks(&wsl, &dir).await;
         let _ = std::fs::remove_dir_all(&dir);
     }
 

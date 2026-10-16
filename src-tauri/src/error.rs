@@ -146,20 +146,25 @@ pub fn classify_git_failure(
         return GitError::NotARepository { path };
     }
     if lower.contains("dubious ownership") {
+        // Git quotes the path without escaping it, so it runs to the last quote on its line: a
+        // folder such as `C:/Users/O'Brien/repo` has a quote of its own.
         let path = text
-            .split('\'')
-            .nth(1)
-            .map(|s| s.to_string())
+            .lines()
+            .find_map(|l| l.split_once("repository at '"))
+            .and_then(|(_, rest)| rest.rsplit_once('\''))
+            .map(|(p, _)| p.to_string())
             .unwrap_or_default();
         return GitError::UnsafeRepository { path };
     }
-    if lower.contains("index.lock") && lower.contains("exists") {
-        let lock_path = text
-            .split('\'')
-            .nth(1)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| ".git/index.lock".into());
-        return GitError::IndexLocked { lock_path };
+    // Git's own wording, `Unable to create '<git dir>/index.lock': File exists.`, and not any
+    // message that merely names something with `index.lock` in it, or the lock of a ref
+    // (`refs/heads/index.lock` for a branch named `index`).
+    let index_lock = text.lines().find_map(|l| {
+        let (_, rest) = l.split_once("Unable to create '")?;
+        rest.strip_suffix("': File exists.").filter(|p| p.ends_with("/index.lock") && !p.contains("/refs/"))
+    });
+    if let Some(lock_path) = index_lock {
+        return GitError::IndexLocked { lock_path: lock_path.to_string() };
     }
     if lower.contains("no such file or directory") && lower.contains("cannot change to") {
         let path = text
@@ -203,5 +208,30 @@ pub fn classify_git_failure(
         argv,
         exit_code,
         stderr: text.trim().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn classify(stderr: &str) -> GitError {
+        classify_git_failure("op", vec![], Some(128), stderr.as_bytes(), &crate::transport::TransportKind::Local)
+    }
+
+    #[test]
+    fn dubious_ownership_keeps_a_quote_in_the_path() {
+        let stderr = "fatal: detected dubious ownership in repository at 'C:/Users/O'Brien/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory 'C:/Users/O'\\''Brien/repo'\n";
+        assert!(matches!(classify(stderr), GitError::UnsafeRepository { path } if path == "C:/Users/O'Brien/repo"));
+    }
+
+    #[test]
+    fn index_lock_only_from_gits_own_wording() {
+        let locked = "fatal: Unable to create 'C:/Users/O'Brien/repo/.git/index.lock': File exists.\n\nAnother git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'.";
+        assert!(matches!(classify(locked), GitError::IndexLocked { lock_path } if lock_path == "C:/Users/O'Brien/repo/.git/index.lock"));
+        // A branch whose name contains `index.lock`, and the lock of a branch named `index`.
+        assert!(matches!(classify("fatal: a branch named 'fix-index.lock-race' already exists"), GitError::CommandFailed { .. }));
+        let ref_lock = "error: cannot lock ref 'refs/heads/index': Unable to create '/r/.git/refs/heads/index.lock': File exists.";
+        assert!(matches!(classify(ref_lock), GitError::CommandFailed { .. }));
     }
 }

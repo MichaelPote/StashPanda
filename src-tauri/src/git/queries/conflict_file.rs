@@ -51,6 +51,13 @@ pub enum ConflictRefusal {
     NotUtf8,
     /// A version is larger than 5 MB (`CONFLICT_FILE_CAP`).
     TooLarge,
+    /// A version is a symbolic link (mode 120000): its content is where it points, and the
+    /// working tree file is the link, which the editor must not read or write through. The
+    /// take-a-side actions handle these.
+    Symlink,
+    /// The path is a submodule (mode 160000): its versions are commits in the submodule's own
+    /// repository, not text. The take-a-side actions handle these.
+    Submodule,
 }
 
 /// One block of conflict markers in the working tree file.
@@ -151,6 +158,9 @@ pub async fn get_conflict_file(client: &GitClient, helper: Option<(&Arc<CatFile>
     if !stages.contains(&2) || !stages.contains(&3) {
         return Ok(ConflictFile::refused(path, ConflictRefusal::DeletedOnOneSide));
     }
+    if let Some(reason) = special_refusal(&unmerged.stdout, path) {
+        return Ok(ConflictFile::refused(path, reason));
+    }
     let marker_size = marker_size_from_check_attr(&attribute.stdout);
 
     // The stages one after another, since the helper takes one request at a time anyway, and
@@ -208,20 +218,35 @@ pub async fn get_conflict_file(client: &GitClient, helper: Option<(&Arc<CatFile>
 /// conflict's versions, or none. `ls-files` runs afresh for every request, and an object never
 /// changes.
 fn stage_oids(stdout: &[u8], path: &str) -> std::collections::HashMap<u8, String> {
-    let mut out = std::collections::HashMap::new();
-    for record in stdout.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+    stage_records(stdout, path).map(|(stage, _, oid)| (stage, oid)).collect()
+}
+
+/// `(stage, mode, object ID)` of each of `path`'s entries in `git ls-files -u -z` output.
+pub(crate) fn stage_records<'a>(stdout: &'a [u8], path: &'a str) -> impl Iterator<Item = (u8, String, String)> + 'a {
+    stdout.split(|b| *b == 0).filter(|r| !r.is_empty()).filter_map(move |record| {
         let text = String::from_utf8_lossy(record);
-        let Some((meta, file)) = text.split_once('\t') else { continue };
+        let (meta, file) = text.split_once('\t')?;
         if file != path {
-            continue;
+            return None;
         }
         let mut fields = meta.split(' ');
-        let (Some(_mode), Some(oid), Some(stage)) = (fields.next(), fields.next(), fields.next()) else { continue };
-        if let Ok(stage) = stage.parse::<u8>() {
-            out.insert(stage, oid.to_string());
-        }
+        let (Some(mode), Some(oid), Some(stage)) = (fields.next(), fields.next(), fields.next()) else { return None };
+        Some((stage.parse::<u8>().ok()?, mode.to_string(), oid.to_string()))
+    })
+}
+
+/// Why the merge editor cannot open conflicted `path` whatever its content, from the modes of
+/// its entries in `git ls-files -u -z` output: a version that is a submodule or a symbolic link.
+/// None when every version is a file.
+pub(crate) fn special_refusal(stdout: &[u8], path: &str) -> Option<ConflictRefusal> {
+    let modes: Vec<String> = stage_records(stdout, path).map(|(_, mode, _)| mode).collect();
+    if modes.iter().any(|m| m == "160000") {
+        Some(ConflictRefusal::Submodule)
+    } else if modes.iter().any(|m| m == "120000") {
+        Some(ConflictRefusal::Symlink)
+    } else {
+        None
     }
-    out
 }
 
 /// The bytes of stage `stage`, by its object ID in `oids`, or None when the conflict has no such
@@ -602,6 +627,21 @@ mod tests {
         assert_eq!(marker_size_from_check_attr(b"a.txt\0conflict-marker-size\0set\0"), 7);
         assert_eq!(marker_size_from_check_attr(b"a.txt\0conflict-marker-size\x000\0"), 7);
         assert_eq!(marker_size_from_check_attr(b""), 7);
+    }
+
+    #[test]
+    fn symbolic_links_and_submodules_are_refused_by_their_modes() {
+        // `git ls-files -u -z` output: a link and a submodule both sides changed, a file one side
+        // turned into a link, and a plain file, whose name another path starts with.
+        let listing = b"120000 a1 1\tlink\x00120000 a2 2\tlink\x00120000 a3 3\tlink\x00160000 b2 2\tsub\x00160000 b3 3\tsub\x00\
+100644 c2 2\tmixed\x00120000 c3 3\tmixed\x00100644 d2 2\tfile\x00100644 d3 3\tfile\x00100644 e2 2\tfile.txt\x00";
+        assert_eq!(special_refusal(listing, "link"), Some(ConflictRefusal::Symlink));
+        assert_eq!(special_refusal(listing, "sub"), Some(ConflictRefusal::Submodule));
+        assert_eq!(special_refusal(listing, "mixed"), Some(ConflictRefusal::Symlink));
+        assert_eq!(special_refusal(listing, "file"), None);
+        assert_eq!(special_refusal(listing, "nowhere"), None);
+        assert_eq!(stage_oids(listing, "file"), std::collections::HashMap::from([(2, "d2".to_string()), (3, "d3".to_string())]));
+        assert_eq!(stage_records(listing, "sub").collect::<Vec<_>>(), [(2, "160000".to_string(), "b2".to_string()), (3, "160000".to_string(), "b3".to_string())]);
     }
 
     #[test]

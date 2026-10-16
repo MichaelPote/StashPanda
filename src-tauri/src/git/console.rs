@@ -102,6 +102,29 @@ fn kept_output(
     (clean(stdout), stdout_truncated, clean(stderr), stderr_truncated, false)
 }
 
+/// `arg` with the password of every URL in it (`https://alice:secret@host/…`) replaced by `***`,
+/// as Git leaves it out of its own messages. The rest, the user name included, stays as it is.
+pub(crate) fn hide_passwords(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len());
+    let mut rest = arg;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out.push_str(head);
+        let authority = &tail[..tail.find(['/', '?', '#']).unwrap_or(tail.len())];
+        match authority.rfind('@').and_then(|at| authority[..at].find(':').map(|colon| (colon, at))) {
+            Some((colon, at)) => {
+                out.push_str(&authority[..=colon]);
+                out.push_str("***");
+                out.push_str(&authority[at..]);
+            }
+            None => out.push_str(authority),
+        }
+        rest = &tail[authority.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -121,8 +144,11 @@ impl ConsoleRecorder {
 
     pub fn start(&self, cmd: &Cmd, argv: Vec<String>) -> ConsoleTicket {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        // A URL the user typed into the clone dialog can carry a password; the console is on screen.
+        let argv: Vec<String> = argv.iter().map(|a| hide_passwords(a)).collect();
         let display = display_command(&argv);
-        let command = display_command(cmd.summary.as_deref().unwrap_or(&cmd.args));
+        let summary: Vec<String> = cmd.summary.as_deref().unwrap_or(&cmd.args).iter().map(|a| hide_passwords(a)).collect();
+        let command = display_command(&summary);
         let ticket = ConsoleTicket {
             seq,
             started: Instant::now(),
@@ -212,6 +238,23 @@ mod tests {
 
     fn out(code: i32, stdout: &str, stderr: &str) -> Output {
         Output { exit_code: Some(code), stdout: stdout.as_bytes().to_vec(), stderr: stderr.as_bytes().to_vec() }
+    }
+
+    #[test]
+    fn passwords_in_urls_are_hidden() {
+        assert_eq!(hide_passwords("https://alice:s3cret@example.com/r.git"), "https://alice:***@example.com/r.git");
+        assert_eq!(hide_passwords("remote.origin.url=http://a:b@h:8080/x?y=1"), "remote.origin.url=http://a:***@h:8080/x?y=1");
+        // No password, a user name only, a port, or no URL at all: left as it is.
+        for same in ["ssh://git@example.com:2222/r.git", "https://example.com:8443/a@b", "git@example.com:r.git", "/srv/r.git", ""] {
+            assert_eq!(hide_passwords(same), same);
+        }
+        // What the console shows of a clone with a password in its URL.
+        let recorder = ConsoleRecorder::new(None, "t".into(), 100);
+        let cmd = Cmd::git("clone", ["clone", "--progress", "--", "https://alice:s3cret@example.com/r.git", "/tmp/r"].map(String::from).to_vec());
+        let ticket = recorder.start(&cmd, cmd.args.clone());
+        for shown in [&ticket.display, &ticket.command, &ticket.argv.join(" ")] {
+            assert!(!shown.contains("s3cret") && shown.contains("alice:***@example.com"), "{shown}");
+        }
     }
 
     #[test]

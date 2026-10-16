@@ -40,8 +40,15 @@ const MAX_RANGE = 10_000;
 const dateFormat = computed<DateFormat>(() => settings.settings?.appearance?.dateFormat ?? "relative");
 const upstreamRemotes = computed(() => {
   const map = new Map<string, string>();
-  for (const entry of props.session.refs?.refs ?? []) {
+  const refs = props.session.refs?.refs ?? [];
+  for (const entry of refs) {
     if (entry.kind.type !== "localBranch" || !entry.upstream || entry.upstreamGone) continue;
+    // The remote as the refs list gives it, since a remote's name may contain "/" (`team/origin`).
+    const upstream = refs.find((r) => r.fullName === entry.upstream);
+    if (upstream?.kind.type === "remoteBranch") {
+      map.set(entry.fullName, upstream.kind.remote);
+      continue;
+    }
     const rest = entry.upstream.startsWith("refs/remotes/") ? entry.upstream.slice("refs/remotes/".length) : entry.upstream;
     const slash = rest.indexOf("/");
     map.set(entry.fullName, slash > 0 ? rest.slice(0, slash) : rest);

@@ -81,12 +81,38 @@ export interface ConflictStages {
 }
 
 /**
- * `A` added and `U` changed both leave that side's version; `D` deleted it. Only a file both sides
- * added (`AA`, `AU`, `UA`) has no base.
+ * The stages Git keeps for each pair of letters, as `git status` names them. The letters are not
+ * one per side: `AU` ("added by us") has only our version and `UA` ("added by them") only theirs,
+ * which a rename on one side or a file added in a folder the other side renamed leaves.
  */
+const STAGES: Record<string, ConflictStages> = {
+  UU: { base: true, ours: true, theirs: true },
+  AA: { base: false, ours: true, theirs: true },
+  UD: { base: true, ours: true, theirs: false },
+  DU: { base: true, ours: false, theirs: true },
+  AU: { base: false, ours: true, theirs: false },
+  UA: { base: false, ours: false, theirs: true },
+  DD: { base: true, ours: false, theirs: false },
+};
+
+/** Which versions of a conflicted file exist, from its two status letters; all three for letters Git does not use. */
 export function conflictStages(letters: string): ConflictStages {
-  const [x = "U", y = "U"] = [...letters];
-  return { base: x !== "A" && y !== "A", ours: x === "A" || x === "U", theirs: y === "A" || y === "U" };
+  return STAGES[letters] ?? { base: true, ours: true, theirs: true };
+}
+
+/**
+ * Why one version of a conflicted file is missing, for a note beside a comparison or the action
+ * that takes it. Null when the file has that version.
+ */
+export function missingVersionNote(letters: string, version: "base" | "ours" | "theirs", names: OperationNames): string | null {
+  if (conflictStages(letters)[version]) return null;
+  if (version === "base") {
+    const added = letters === "AU" ? `${names.ours} added this file` : letters === "UA" ? `${names.theirs} added this file` : "Both sides added this file";
+    return `${added}, so there is no base version: the other side shows as wholly added.`;
+  }
+  const name = version === "ours" ? names.ours : names.theirs;
+  const letter = version === "ours" ? letters[0] : letters[1];
+  return letter === "D" ? `${name} deleted this file, so that side is empty.` : `${name} does not have this file, so that side is empty.`;
 }
 
 /** What each side did to a conflicted file, in one sentence. */

@@ -45,8 +45,15 @@ async function submit(): Promise<void> {
   submitting.value = true;
   error.value = null;
   try {
-    const result = await runOp(r.key, () => commands.opRebase(r.key, onto));
-    const outcome = rebaseOutcome(result, r.branch, onto);
+    const revision = r.branches.find((b) => b.short === onto)?.revision ?? onto;
+    const result = await runOp(r.key, () => commands.opRebase(r.key, revision));
+    let outcome = rebaseOutcome(result, r.branch, onto);
+    if (outcome.failed) {
+      // Git can stop part way without a conflict (an untracked file in the way): only the
+      // status says whether the rebase is still open.
+      await sessions.refetchRefsAndStatus(r.key);
+      if (sessions.sessions.get(r.key)?.status?.inProgress?.kind === "rebase") outcome = rebaseOutcome(result, r.branch, onto, true);
+    }
     // A plain failure leaves nothing open, so the dialog stays for another choice.
     if (outcome.failed) {
       error.value = outcome.message;

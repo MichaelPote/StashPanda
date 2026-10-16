@@ -134,6 +134,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_delete_remote_branch,
             ipc::ops::op_sync,
             ipc::ops::get_upstream,
+            ipc::ops::get_push_target,
+            ipc::ops::op_set_push_default,
             ipc::ops::get_pull_mode,
         ])
         .events(collect_events![

@@ -131,7 +131,10 @@ impl StopControl for crate::repo::OperationGuard<'_> {
 /// Clone `url` into `client.repo`, which `inspect` found to be `folder`. `client` runs in the
 /// target folder; `outer` runs in the folder that contains it, for `git clone`, which creates the
 /// target. On failure or after Stop, what the clone created is deleted again: the whole target
-/// when it did not exist, else its `.git` folder.
+/// when it did not exist, everything in it when it was empty (Stop can land while Git is
+/// writing the files out, before it says so), else its `.git` folder. The exception is a clone
+/// whose checkout alone failed: Git keeps that repository so its files can be checked out again,
+/// and so does this, with a warning.
 pub async fn clone_into(
     client: &GitClient,
     outer: &GitClient,
@@ -154,12 +157,20 @@ pub async fn clone_into(
         CloneFolder::HasFiles { .. } => overlay_clone(client, url, progress, stop, cancel).await,
     };
     if result.is_err() {
-        let leftover = match folder {
-            CloneFolder::Missing => target.clone(),
-            _ => join_native(target, ".git"),
+        let leftovers = match folder {
+            CloneFolder::Missing => vec![target.clone()],
+            CloneFolder::Empty => client.transport.list_dir(target).await.ok().flatten().unwrap_or_default().iter().map(|n| join_native(target, n)).collect(),
+            _ => vec![join_native(target, ".git")],
         };
-        if let Err(e) = client.transport.remove_dir_all(&leftover).await {
-            tracing::warn!("could not remove {} after a failed clone: {e}", leftover.0);
+        for leftover in leftovers {
+            // `remove_file` takes files and symbolic links, `remove_dir_all` folders.
+            let removed = match client.transport.remove_file(&leftover).await {
+                Ok(()) => Ok(()),
+                Err(_) => client.transport.remove_dir_all(&leftover).await,
+            };
+            if let Err(e) = removed {
+                tracing::warn!("could not remove {} after a failed clone: {e}", leftover.0);
+            }
         }
     }
     result
@@ -191,12 +202,22 @@ async fn plain_clone(
         .own_session();
     let out = outer.exec_streaming(req, &report, cancel).await?;
     stop.set_cancellable(false);
+    let mut warnings = Vec::new();
     if !out.success() {
-        return Err(failure(outer, "clone", &out));
+        // A failed clone removes what it made, except when only the checkout failed ("Clone
+        // succeeded, but checkout failed", a path the file system refuses): Git keeps that
+        // repository on purpose, so it is kept here too.
+        let kept = client.transport.list_dir(&client.repo).await.ok().flatten().is_some_and(|names| names.iter().any(|n| n == ".git"));
+        if !kept {
+            return Err(failure(outer, "clone", &out));
+        }
+        let detail = String::from_utf8_lossy(&out.stderr).lines().filter(|l| l.starts_with("error:") || l.starts_with("fatal:")).collect::<Vec<_>>().join(" ");
+        warnings.push(format!("The repository was cloned, but its files could not all be checked out: {detail}"));
     }
     let branch = client.exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "-q", "--short", "HEAD"])).await?;
     Ok(CloneOutcome {
         branch: branch.success().then(|| String::from_utf8_lossy(&branch.stdout).trim().to_string()).filter(|b| !b.is_empty()),
+        warnings,
         ..Default::default()
     })
 }
@@ -462,6 +483,74 @@ mod tests {
         // The folder that would contain the target has to exist.
         let deep = root.join("x").join("y");
         assert!(matches!(inspect(&client(&deep).transport, &NativePath(deep.to_string_lossy().into_owned())).await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Stop while Git writes the files out of a clone into an empty folder, before Git says so:
+    /// Git keeps what it wrote by then, and the folder is emptied again. A clone whose checkout
+    /// alone fails is kept, as Git keeps it.
+    #[tokio::test]
+    async fn stop_during_checkout_and_a_failed_checkout() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("stashpanda-clone-stop-{}", uuid::Uuid::new_v4().simple()));
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        git(&root, &["init", "-q", "-b", "main", src.to_str().unwrap()]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&src, &["config", k, v]);
+        }
+        // Enough files that writing them out takes a while.
+        for i in 0..4000 {
+            std::fs::write(src.join(format!("f{i:04}.txt")), format!("{i}\n")).unwrap();
+        }
+        git(&src, &["add", "-A"]);
+        git(&src, &["commit", "-qm", "many"]);
+
+        // Stop as soon as the first file of the checkout appears.
+        let empty = root.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let cancel = CancellationToken::new();
+        let watch = {
+            let (empty, cancel) = (empty.clone(), cancel.clone());
+            tokio::spawn(async move {
+                while !cancel.is_cancelled() {
+                    if empty.join("f0000.txt").exists() {
+                        cancel.cancel();
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                }
+            })
+        };
+        let (folder, out) = clone(&src, &empty, &cancel).await;
+        cancel.cancel();
+        watch.await.unwrap();
+        assert_eq!(folder, CloneFolder::Empty);
+        assert!(matches!(out, Err(GitError::Cancelled)), "{out:?}");
+        let left: Vec<_> = std::fs::read_dir(&empty).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(left.is_empty(), "left behind: {left:?}");
+
+        // A tree with a folder `.GIT`, which Git refuses to write out: "Clone succeeded, but
+        // checkout failed". The repository stays, with a warning, as `git clone` leaves it.
+        let input = |args: &[&str], stdin: &str| {
+            use std::io::Write;
+            let mut child = Command::new("git").arg("-C").arg(&src).args(args).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+            child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+            String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap().trim().to_string()
+        };
+        let blob = input(&["hash-object", "-w", "--stdin"], "bad\n");
+        let sub = input(&["mktree"], &format!("100644 blob {blob}\tconfig\n"));
+        let tree = input(&["mktree"], &format!("100644 blob {blob}\tok.txt\n040000 tree {sub}\t.GIT\n"));
+        let commit = input(&["commit-tree", "-m", "bad", &tree], "");
+        git(&src, &["update-ref", "refs/heads/main", &commit]);
+        let target = root.join("bad-checkout");
+        let (folder, out) = clone(&src, &target, &CancellationToken::new()).await;
+        assert_eq!(folder, CloneFolder::Missing);
+        let out = out.unwrap();
+        assert_eq!(out.branch.as_deref(), Some("main"));
+        assert!(out.warnings.len() == 1 && out.warnings[0].contains("invalid path '.GIT/config'"), "{:?}", out.warnings);
+        assert_eq!(git(&target, &["rev-parse", "HEAD"]).trim(), commit);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

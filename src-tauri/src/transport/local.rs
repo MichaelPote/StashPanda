@@ -165,6 +165,16 @@ pub fn apply_stdin(c: &mut Command, mode: &StdinMode) {
     c.stdout(Stdio::piped()).stderr(Stdio::piped());
 }
 
+/// `WSLENV` for a Windows program started from inside WSL: interop hands a Linux environment
+/// variable on only when `WSLENV` names it, so without this Windows `git.exe` would never see
+/// `GIT_TERMINAL_PROMPT` or `LC_ALL`. The names in `env` come first, then whatever `existing`
+/// (the user's own `WSLENV`) already lists.
+fn wslenv(env: &[(String, String)], existing: Option<String>) -> String {
+    let mut names: Vec<String> = env.iter().map(|(k, _)| k.clone()).collect();
+    names.extend(existing.filter(|e| !e.is_empty()));
+    names.join(":")
+}
+
 impl LocalTransport {
     fn program_path(&self, p: &Program) -> String {
         match p {
@@ -194,6 +204,9 @@ impl Transport for LocalTransport {
         c.args(&cmd.args);
         for (k, v) in &cmd.env {
             c.env(k, v);
+        }
+        if self.windows_git_from_linux && !cmd.env.is_empty() {
+            c.env("WSLENV", wslenv(&cmd.env, std::env::var("WSLENV").ok()));
         }
         apply_stdin(&mut c, &cmd.stdin);
         if cmd.own_session {
@@ -265,10 +278,26 @@ impl Transport for LocalTransport {
     async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>> {
         super::host_modified_times(self.mapper.as_ref(), paths).await
     }
+    async fn symlinks(&self, paths: &[NativePath]) -> Result<Vec<bool>> {
+        super::host_symlinks(self.mapper.as_ref(), paths).await
+    }
     async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>> {
         super::host_list_dir(self.mapper.as_ref(), path).await
     }
     async fn remove_dir_all(&self, path: &NativePath) -> Result<()> {
         super::host_remove_dir_all(self.mapper.as_ref(), path).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wslenv_names_the_variables_before_the_users_own() {
+        let env = vec![("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()), ("LC_ALL".to_string(), "C.UTF-8".to_string())];
+        assert_eq!(wslenv(&env, None), "GIT_TERMINAL_PROMPT:LC_ALL");
+        assert_eq!(wslenv(&env, Some(String::new())), "GIT_TERMINAL_PROMPT:LC_ALL");
+        assert_eq!(wslenv(&env, Some("USERPROFILE/p:TERM".into())), "GIT_TERMINAL_PROMPT:LC_ALL:USERPROFILE/p:TERM");
     }
 }

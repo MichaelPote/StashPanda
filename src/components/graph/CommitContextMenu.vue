@@ -27,6 +27,7 @@ import {
   requestCheckout,
   resetReason,
   resetTo,
+  revisionOf,
 } from "@/lib/repoActions";
 import type { RepoSession } from "@/stores/sessions";
 
@@ -52,7 +53,10 @@ function checkoutReason(label: RefLabel): string | null {
 }
 
 /** Merge by branch name when the row has one, else by oid. */
-const mergeSource = computed(() => localBranches.value[0]?.short ?? props.row.oid);
+const mergeSource = computed(() => {
+  const first = localBranches.value[0];
+  return first ? revisionOf(first, props.session.refs?.refs ?? []) : props.row.oid;
+});
 const mergeLabel = computed(() => localBranches.value[0]?.short ?? sha.value);
 const mergeReason = computed(() => {
   if (props.row.isHead) return "This commit is HEAD already.";
