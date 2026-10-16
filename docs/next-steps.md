@@ -783,6 +783,47 @@ throwaway repository with branch folders, a bare remote and a tag, unless it say
 - [x] **The dev server no longer reloads the app when an agent's git worktree under `.claude/`
       changes** (`vite.config.ts`).
 
+## Review of every Git command (done 2026-10-15)
+
+Started from a bug report: committing a moved file failed with an error about its old path. That
+and two other rename bugs were fixed, then a review of every Git command the app runs found 45
+more, each reproduced in a scratch repository with the app's exact arguments and fixed with a
+test that fails without its fix (commit `d6c3e6b`; 168 Rust tests, 74 frontend tests, including
+the test that drives Windows Git from WSL). The worst of them, now fixed: a checkout of a name
+that was no longer a branch restored a file of that name over the user's edits; Pull could rebase
+onto a tag that shared the branch's name; the merge editor could write through a conflicted
+symlink; discarding an intent-to-add file emptied it; Reset silently ended a conflicted merge.
+
+- [x] **Push and Sync follow `push.default` as `git push` does**, unless the target was picked in
+      the Push dialog. When a branch's upstream has a different name and the setting would refuse,
+      `PushDefaultDialog.vue` explains why and offers: push there this time only; always push to
+      the branch it pulls from (`push.default = upstream`); or always push to a branch of the same
+      name (`push.default = current`). The setting is saved in the repository's own config by
+      `op_set_push_default`. Sync asks before it pulls, so cancelling changes nothing.
+
+Decisions to revisit:
+
+- File names that are not valid UTF-8 are refused by every action, with a reason. Supporting
+  them means carrying paths as raw bytes through Rust, IPC and the frontend.
+- Blame still refuses when `blame.ignoreRevsFile` names a missing file, since Git offers no
+  override; it now names the setting as the cause.
+- Taking a side on a submodule conflict leaves the submodule's own checkout where it is, as Git
+  does, so it shows as modified until it is updated.
+
+Still open:
+
+- [ ] With a custom fetch mapping, Delete Remote Branch's messages show the remote-tracking name,
+      although the right branch is deleted.
+- [ ] `branch.<name>.pushRemote` and `remote.pushDefault` are not read.
+- [ ] No test covers the merge time limit, `--no-show-signature` on the stash list, or which
+      function each `.vue` menu item calls (no DOM testing library is installed).
+- [ ] The local transport's symlink check has not been run on Windows.
+- [ ] Discard now runs a full `git status`, and stage, discard and commit each run a few more Git
+      commands than before; measure on a large repository.
+- [ ] Not confirmed, so not fixed: SSH or askpass prompts with no terminal, lock files left by a
+      forced Stop on Windows, a stalled automatic fetch blocking other writes, and the Pull
+      dialog's default when the upstream is gone.
+
 ## Milestone 3: remote and history operations
 
 - [x] **Pull** (2026-10-01). `op_pull(key, opId, remote, branch, mode, autostash)` runs two
