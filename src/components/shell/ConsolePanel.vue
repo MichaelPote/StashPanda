@@ -286,7 +286,8 @@ function categoryShort(category: Category): string {
               </template>
             </span>
             <template v-if="logMode">
-              <!-- The git command alone, then the full command line off to the right. -->
+              <!-- What the command does, the git command alone, then the full command line off to the right. -->
+              <span class="w-36 shrink-0 truncate font-sans font-medium text-foreground" :title="entry.title">{{ entry.title }}</span>
               <span class="shrink-0 text-foreground" :title="entry.display">{{ entry.command }}</span>
               <span class="shrink-0 pr-2 pl-6 text-muted-foreground/70" :title="entry.display">{{ entry.display }}</span>
             </template>
@@ -297,6 +298,7 @@ function categoryShort(category: Category): string {
               >
                 {{ categoryShort(entry.category) }}
               </span>
+              <span class="w-36 shrink-0 truncate font-sans font-medium text-foreground" :title="entry.title">{{ entry.title }}</span>
               <span class="shrink-0 pr-2" :title="entry.display">{{ entry.display }}</span>
             </template>
           </button>

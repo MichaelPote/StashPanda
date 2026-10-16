@@ -806,6 +806,11 @@ export type ConsoleEvent = {
 	 *  transport wrapper or the flags every command carries. The console lists this first.
 	 */
 	command: string,
+	/**
+	 *  What the command does, in a few words ("Fetch", "Abort rebase", "Delete remote branch"),
+	 *  worked out from its arguments by `command_title`. The console shows it before `command`.
+	 */
+	title: string,
 	startedAtMs: number,
 	durationMs: number | null,
 	exitCode: number | null,

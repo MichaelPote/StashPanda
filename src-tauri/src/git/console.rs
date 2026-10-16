@@ -33,6 +33,9 @@ pub struct ConsoleEvent {
     /// Just the git arguments the app asked for, shell-quoted (`checkout master`), without the
     /// transport wrapper or the flags every command carries. The console lists this first.
     pub command: String,
+    /// What the command does, in a few words ("Fetch", "Abort rebase", "Delete remote branch"),
+    /// worked out from its arguments by `command_title`. The console shows it before `command`.
+    pub title: String,
     pub started_at_ms: u64,
     pub duration_ms: Option<u64>,
     pub exit_code: Option<i32>,
@@ -65,6 +68,7 @@ pub struct ConsoleTicket {
     argv: Vec<String>,
     display: String,
     command: String,
+    title: String,
 }
 
 fn lossy_capped(bytes: &[u8], cap: usize) -> (String, bool) {
@@ -149,6 +153,7 @@ impl ConsoleRecorder {
         let display = display_command(&argv);
         let summary: Vec<String> = cmd.summary.as_deref().unwrap_or(&cmd.args).iter().map(|a| hide_passwords(a)).collect();
         let command = display_command(&summary);
+        let title = command_title(&summary);
         let ticket = ConsoleTicket {
             seq,
             started: Instant::now(),
@@ -158,6 +163,7 @@ impl ConsoleRecorder {
             argv,
             display,
             command,
+            title,
         };
         let ev = ConsoleEvent {
             repo_id: self.repo_id.clone(),
@@ -168,6 +174,7 @@ impl ConsoleRecorder {
             argv: ticket.argv.clone(),
             display: ticket.display.clone(),
             command: ticket.command.clone(),
+            title: ticket.title.clone(),
             started_at_ms: ticket.started_at_ms,
             duration_ms: None,
             exit_code: None,
@@ -214,6 +221,7 @@ impl ConsoleRecorder {
             argv: ticket.argv,
             display: ticket.display,
             command: ticket.command,
+            title: ticket.title,
             started_at_ms: ticket.started_at_ms,
             duration_ms: Some(ticket.started.elapsed().as_millis() as u64),
             exit_code: output.and_then(|o| o.exit_code),
@@ -232,9 +240,148 @@ impl ConsoleRecorder {
     }
 }
 
+/// What a Git command does, in a few words, from the arguments StashPanda gave it (`fetch
+/// --progress origin`, `-c merge.conflictStyle=diff3 merge feature`): "Fetch", "Merge", "Abort
+/// rebase", "Delete remote branch". Options before the subcommand (`-c <key=value>`, `-C <dir>`)
+/// are skipped. A subcommand with no title of its own gets its name with a capital letter.
+pub fn command_title(args: &[String]) -> String {
+    let mut rest = args.iter().map(String::as_str);
+    let sub = loop {
+        match rest.next() {
+            Some("-c" | "-C" | "--git-dir" | "--work-tree") => {
+                rest.next();
+            }
+            Some(a) if a.starts_with('-') => {}
+            Some(a) => break a,
+            None => return "Git".to_string(),
+        }
+    };
+    let after: Vec<&str> = rest.collect();
+    let has = |flag: &str| after.iter().any(|a| *a == flag || a.strip_prefix(flag).is_some_and(|r| r.starts_with('=')));
+    let first = after.iter().find(|a| !a.starts_with('-')).copied();
+    // A `+` refspec forces that one update, as `--force` forces them all.
+    let forced = has("--force") || has("-f") || has("--force-with-lease") || after.iter().any(|a| a.starts_with('+') && a.contains(':'));
+    // `--abort`, `--continue` and `--skip` for the commands that stop part way.
+    let step = |name: &str| {
+        if has("--abort") {
+            format!("Abort {name}")
+        } else if has("--continue") {
+            format!("Continue {name}")
+        } else if has("--skip") {
+            format!("Skip a commit in the {name}")
+        } else {
+            let mut c = name.chars();
+            c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+        }
+    };
+    let title = match sub {
+        // `git fetch . a:b` moves local branch b to a: a push from this repository into itself.
+        "fetch" if first == Some(".") && forced => "Force-move branch",
+        "fetch" if first == Some(".") => "Move branch",
+        "fetch" => "Fetch",
+        "pull" => "Pull",
+        "push" if has("--delete") || has("-d") => "Delete remote branch",
+        "push" if forced => "Force push",
+        "push" => "Push",
+        "clone" => "Clone",
+        "init" => "Create repository",
+        "commit" if has("--amend") => "Amend commit",
+        "commit" => "Commit",
+        "merge" if has("--ff-only") && !has("--abort") && !has("--continue") => "Fast-forward",
+        "rebase" | "merge" | "cherry-pick" | "revert" => return step(sub),
+        "checkout" | "switch" => "Checkout",
+        "reset" => "Reset",
+        "stash" => match first {
+            Some("pop") => "Pop stash",
+            Some("apply") => "Apply stash",
+            Some("drop") => "Drop stash",
+            Some("list") => "List stashes",
+            Some("show") => "Show stash",
+            Some("store") => "Store stash",
+            Some("create") => "Create stash",
+            _ => "Stash",
+        },
+        "branch" if has("-d") || has("-D") || has("--delete") => "Delete branch",
+        "branch" if has("-m") || has("-M") || has("--move") => "Rename branch",
+        "branch" if has("--set-upstream-to") || has("-u") => "Set upstream",
+        "branch" if has("--unset-upstream") => "Remove upstream",
+        "branch" if first.is_none() || has("--list") || has("-l") || has("-a") || has("-r") => "List branches",
+        "branch" => "Create branch",
+        "tag" if has("-d") || has("--delete") => "Delete tag",
+        "tag" if first.is_none() || has("-l") || has("--list") => "List tags",
+        "tag" => "Create tag",
+        "add" | "update-index" => "Stage",
+        "rm" => "Remove files",
+        "restore" | "checkout-index" => "Restore files",
+        "apply" if has("--cached") => "Stage lines",
+        "apply" => "Apply patch",
+        "clean" => "Delete untracked files",
+        "status" => "Status",
+        "log" => "History",
+        "show" => "Show commit",
+        "diff" | "diff-tree" | "diff-index" | "diff-files" => "Diff",
+        "blame" => "Blame",
+        "rev-parse" => "Resolve revision",
+        "rev-list" => "List commits",
+        "merge-base" if has("--is-ancestor") => "Check ancestry",
+        "merge-base" => "Find merge base",
+        "for-each-ref" | "show-ref" => "List refs",
+        "ls-remote" => "List remote refs",
+        "symbolic-ref" if after.iter().filter(|a| !a.starts_with('-')).count() > 1 => "Set HEAD",
+        "symbolic-ref" => "Read HEAD",
+        "update-ref" if has("-d") => "Delete ref",
+        "update-ref" => "Move ref",
+        "reflog" => "Reflog",
+        "config" if has("--get") || has("--get-all") || has("--get-regexp") || has("--list") || has("-l") => "Read config",
+        "config" if has("--unset") || has("--unset-all") || has("--remove-section") => "Remove config",
+        "config" => "Change config",
+        "remote" => "Remotes",
+        "cat-file" => "Read objects",
+        "ls-files" => "List files",
+        "ls-tree" => "List tree",
+        "worktree" => "Worktrees",
+        "submodule" => "Submodules",
+        "check-attr" => "Check attributes",
+        "check-ignore" => "Check ignored files",
+        "write-tree" => "Write tree",
+        "hash-object" => "Store object",
+        "version" => "Version",
+        other => return step(other),
+    };
+    title.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn titles_say_what_each_command_does() {
+        let title = |line: &str| command_title(&line.split_whitespace().map(String::from).collect::<Vec<_>>());
+        assert_eq!(title("fetch --all --progress"), "Fetch");
+        assert_eq!(title("commit -F - --amend"), "Amend commit");
+        assert_eq!(title("-c merge.conflictStyle=diff3 merge -q feature"), "Merge");
+        assert_eq!(title("merge --no-edit --ff-only FETCH_HEAD"), "Fast-forward");
+        assert_eq!(title("rebase --onto FETCH_HEAD abc123"), "Rebase");
+        assert_eq!(title("rebase --abort"), "Abort rebase");
+        assert_eq!(title("cherry-pick --continue"), "Continue cherry-pick");
+        assert_eq!(title("push --progress origin --delete refs/heads/x"), "Delete remote branch");
+        assert_eq!(title("push --progress origin refs/heads/main:refs/heads/main"), "Push");
+        assert_eq!(title("push --progress --force-with-lease=refs/heads/main:abc origin refs/heads/main:refs/heads/main"), "Force push");
+        assert_eq!(title("fetch --no-write-fetch-head . refs/heads/main:refs/heads/release"), "Move branch");
+        assert_eq!(title("fetch --no-write-fetch-head . +refs/heads/feature:refs/heads/side"), "Force-move branch");
+        assert_eq!(title("fetch --progress origin +refs/heads/*:refs/remotes/origin/*"), "Fetch");
+        assert_eq!(title("stash pop --index stash@{0}"), "Pop stash");
+        assert_eq!(title("stash push -m wip"), "Stash");
+        assert_eq!(title("branch -d topic"), "Delete branch");
+        assert_eq!(title("branch --set-upstream-to=refs/remotes/origin/x -- x"), "Set upstream");
+        assert_eq!(title("config --get push.default"), "Read config");
+        assert_eq!(title("config --local push.default current"), "Change config");
+        assert_eq!(title("update-ref -m fast-forward refs/heads/r abc def"), "Move ref");
+        assert_eq!(title("symbolic-ref --quiet HEAD"), "Read HEAD");
+        assert_eq!(title("frobnicate --now"), "Frobnicate");
+        assert_eq!(title(""), "Git");
+    }
 
     fn out(code: i32, stdout: &str, stderr: &str) -> Output {
         Output { exit_code: Some(code), stdout: stdout.as_bytes().to_vec(), stderr: stderr.as_bytes().to_vec() }

@@ -40,6 +40,8 @@ export interface ConsoleEntry {
   display: string;
   /** Just the git arguments the app asked for (`checkout master`), without the wrapper. */
   command: string;
+  /** What the command does, in a few words ("Fetch", "Abort rebase"), shown before the arguments. */
+  title: string;
   startedAtMs: number;
   durationMs: number | null;
   exitCode: number | null;
@@ -186,6 +188,7 @@ function toEntry(ev: ConsoleEvent): ConsoleEntry {
     argv: ev.argv,
     display: ev.display,
     command: ev.command,
+    title: ev.title,
     startedAtMs: ev.startedAtMs,
     durationMs: ev.durationMs,
     exitCode: ev.exitCode,
