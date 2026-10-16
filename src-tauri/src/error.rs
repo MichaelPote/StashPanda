@@ -79,6 +79,11 @@ pub enum GitError {
     /// StashPanda or outside it. Nothing was merged, rebased or pushed.
     #[error("{expected} is no longer checked out")]
     HeadMoved { expected: String, current: Option<String> },
+    /// `git push` with no target would not push `branch` anywhere StashPanda can push to: the
+    /// remote's push refspecs send it to something other than a branch or leave it out, or
+    /// `push.default` refuses the remote it is pushed to. `reason` says which, as a clause.
+    #[error("{branch} cannot be pushed: {reason}")]
+    PushTargetRefused { branch: String, reason: String },
     #[error("git {label} failed with exit code {exit_code:?}: {stderr}")]
     CommandFailed {
         label: String,

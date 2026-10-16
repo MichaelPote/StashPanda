@@ -227,6 +227,36 @@ export const commands = {
 	/**  Rename local branch `oldName` to `newName`, keeping its upstream. */
 	opBranchRename: (key: string, oldName: string, newName: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_rename", { key, oldName, newName })),
 	/**
+	 *  True when local branch `branch` is not checked out, is behind HEAD, and lies on the checked-out
+	 *  branch's own first-parent line, so `opBranchFastForward` can move it up to HEAD. The branch's
+	 *  menu offers "Fast-forward to <current branch>" only then.
+	 */
+	getFastForwardsToHead: (key: string, branch: string) => typedError<boolean, GitError>(__TAURI_INVOKE("get_fast_forwards_to_head", { key, branch })),
+	/**
+	 *  Move local branch `branch` forward to the checked-out branch `current`, without checking it
+	 *  out, so uncommitted changes are fine: `git fetch . <current>:<branch>`. Refused with `ok:
+	 *  false`, changing nothing, when it would not be a fast-forward (`[rejected]` in stderr) or when
+	 *  a worktree has the branch checked out.
+	 */
+	opBranchFastForward: (key: string, branch: string, current: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_branch_fast_forward", { key, branch, current })),
+	/**
+	 *  Push local branch `branch` to branch `target` on `remote`, or, with no `remote`, to local
+	 *  branch `target` of this repository (`git fetch . <branch>:<target>`, which checks nothing out).
+	 *  Without `force`, only a fast-forward is allowed: a refusal comes back with `ok: false` and
+	 *  `[rejected]` in stderr. With `force`, both ends are pinned to the commits the dropped list was
+	 *  made from: `source`, which `branch` must still point at (otherwise `ok: false` with "source
+	 *  moved" in stderr), is what is sent, and the target must still be at `expected` (a remote push
+	 *  fails with `(stale info)` in stderr; a local move is refused by `git update-ref`). Never sets an upstream. `opId` works as for `opPush`
+	 *  for a remote; a local push is too quick to stop.
+	 */
+	opPushTo: (key: string, opId: string, branch: string, remote: string | null, target: string, force: boolean, expected: string | null, source: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push_to", { key, opId, branch, remote, target, force, expected, source })),
+	/**
+	 *  The commits a force push of commit `source` over a branch now at commit `tip` would drop from
+	 *  it, newest first (at most 50), and how many in all: what the Push To dialog lists before a
+	 *  force push, for the same `source` and `tip` it then passes to `opPushTo`.
+	 */
+	getCommitsDropped: (key: string, source: string, tip: string) => typedError<DroppedCommits, GitError>(__TAURI_INVOKE("get_commits_dropped", { key, source, tip })),
+	/**
 	 *  Make local `branch` track the remote branch whose remote-tracking branch is `upstream`, given
 	 *  by its full name (`refs/remotes/origin/dev`), or with null stop it tracking any branch. Fails
 	 *  with `invalidPath` when `upstream` is not under `refs/remotes/`. Git refuses an upstream that
@@ -383,8 +413,8 @@ export const commands = {
 	opFetch: (key: string, opId: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_fetch", { key, opId })),
 	/**
 	 *  Push local `branch`. With no `target`, where plain `git push` would push it (failing with
-	 *  `invalidPath` when it has no upstream, or when `push.default` refuses an upstream with another
-	 *  name: call `getPushTarget` first); with a `target` the user chose, there. It never sets the
+	 *  `invalidPath` when it has no upstream, or when Git would refuse: call `getPushTarget` first);
+	 *  with a `target` the user chose, there. It never sets the
 	 *  upstream; to make the branch track the target, call `opBranchSetUpstream` after it succeeds,
 	 *  as its own step that can be retried if `.git/config` is locked. Never forces: a rejected push comes back with `ok: false` and
 	 *  `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
@@ -412,9 +442,12 @@ export const commands = {
 	 *  commits are complete) and the branch has commits the upstream lacks. `opCancel` stops it while
 	 *  it fetches or pushes, not while it merges or rebases; a stop after the merge comes back as
 	 *  `pushStopped` rather than `cancelled`, since the pull did happen. Fails with `invalidPath`
-	 *  when the branch has no upstream, and, before anything runs, when `git push` would not push to
-	 *  its upstream because the names differ (see `ops::push_target_for`). A `pushTo` the user chose
-	 *  for this sync replaces where `git push` would push.
+	 *  when the branch has no upstream, and, before anything runs, when `git push` would refuse to
+	 *  push it (see `ops::implicit_push_target`). The push goes where `git push` would send it, which
+	 *  `remote.pushDefault`, `branch.<name>.pushRemote` or the remote's push refspecs can make another
+	 *  remote or name than the upstream that was pulled. A `pushTo` the user chose
+	 *  for this sync replaces where `git push` would push. Fails with `headMoved`, changing nothing,
+	 *  when `branch` is not the checked-out branch.
 	 */
 	opSync: (key: string, opId: string, branch: string, mode: PullMode, autostash: boolean, pushTo: {
 	remote: string,
@@ -428,15 +461,29 @@ export const commands = {
 	branch: string,
 } | null, GitError>(__TAURI_INVOKE("get_upstream", { key, branch })),
 	/**
-	 *  Where local `branch` goes when it is pushed without choosing a target: its upstream, or null
-	 *  when it has none. Fails with `invalidPath` when the upstream has another name and `push.default`
-	 *  does not push there (see `ops::push_target_for`); the Push dialog can still choose it.
+	 *  Where local `branch` goes when it is pushed without choosing a target, as `git push` decides it
+	 *  from `branch.<name>.pushRemote`, `remote.pushDefault`, the remote's push refspecs, the upstream
+	 *  and `push.default`; null when it has no upstream and nothing else says. Fails with
+	 *  `invalidPath` when `git push` would refuse, or would push somewhere that is not a branch (see
+	 *  `ops::implicit_push_target`); the Push dialog can still choose a target.
 	 */
 	getPushTarget: (key: string, branch: string) => typedError<{
 	remote: string,
 	/**  The branch name on the remote, without `refs/heads/`. */
 	branch: string,
 } | null, GitError>(__TAURI_INVOKE("get_push_target", { key, branch })),
+	/**
+	 *  True when HEAD is already on the remote branch that local `branch` is pushed to (as last
+	 *  fetched), so amending it and pushing would need a force push. False when `branch` has nowhere
+	 *  `git push` would send it.
+	 */
+	getHeadOnPushTarget: (key: string, branch: string) => typedError<boolean, GitError>(__TAURI_INVOKE("get_head_on_push_target", { key, branch })),
+	/**
+	 *  After a push of local `branch` to `target` was refused, true when the branch lacks the
+	 *  target's commits because they were rewritten here (an amend or a rebase), not because someone
+	 *  else pushed: pulling cannot fix that, and only a force push would replace them.
+	 */
+	getRewrotePushedCommits: (key: string, branch: string, target: PushTarget) => typedError<boolean, GitError>(__TAURI_INVOKE("get_rewrote_pushed_commits", { key, branch, target })),
 	/**
 	 *  Set `push.default` to `mode` in this repository's own config, so a branch whose upstream has
 	 *  another name is pushed to it (`upstream`) or to its own name (`current`) from now on, here and
@@ -990,6 +1037,22 @@ export type DiffView = {
 	split?: number | null,
 };
 
+export type DroppedCommit = {
+	oid: string,
+	subject: string,
+	authorName: string,
+	/**  Seconds since the Unix epoch. */
+	authorTime: number,
+};
+
+/**  The commits a forced move of a branch from `tip` to local branch `branch` drops from it. */
+export type DroppedCommits = {
+	/**  Newest first, at most the `limit` asked for. */
+	commits: DroppedCommit[],
+	/**  How many there are in all. */
+	total: number,
+};
+
 export type Edge = {
 	fromLane: number,
 	toLane: number,
@@ -1110,7 +1173,13 @@ export type GitError = { kind: "gitNotFound"; searched: string[] } | { kind: "gi
  *  run another branch was (`current`, or None for a detached HEAD): a checkout ran first, in
  *  StashPanda or outside it. Nothing was merged, rebased or pushed.
  */
-{ kind: "headMoved"; expected: string; current: string | null } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
+{ kind: "headMoved"; expected: string; current: string | null } | 
+/**
+ *  `git push` with no target would not push `branch` anywhere StashPanda can push to: the
+ *  remote's push refspecs send it to something other than a branch or leave it out, or
+ *  `push.default` refuses the remote it is pushed to. `reason` says which, as a clause.
+ */
+{ kind: "pushTargetRefused"; branch: string; reason: string } | { kind: "commandFailed"; label: string; argv: string[]; exitCode: number | null; stderr: string } | { kind: "parseError"; what: string; detail: string } | { kind: "timeout"; secs: number } | { kind: "cancelled" } | { kind: "repoNotOpen"; repoId: string } | { kind: "staleVersion"; requested: number; current: number } | { kind: "io"; detail: string } | { kind: "internal"; detail: string };
 
 /**  Which git executable to run when a repository has no override. */
 export type GitSettings = {
@@ -1715,6 +1784,11 @@ export type SyncResult = {
 	 *  finish.
 	 */
 	pushStopped: boolean,
+	/**
+	 *  The push was refused because the rebase rewrote commits `push_target` already had, not
+	 *  because someone pushed (see `rewrote_pushed_commits`): syncing again cannot fix it.
+	 */
+	rewrotePushed: boolean,
 };
 
 export type Theme = "system" | "dark" | "light";

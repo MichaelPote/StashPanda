@@ -20,6 +20,7 @@ import SshPasswordDialog from "@/components/dialogs/SshPasswordDialog.vue";
 import MergeDialog from "@/components/dialogs/MergeDialog.vue";
 import PullDialog from "@/components/dialogs/PullDialog.vue";
 import PushDialog from "@/components/dialogs/PushDialog.vue";
+import PushToDialog from "@/components/dialogs/PushToDialog.vue";
 import PushDefaultDialog from "@/components/dialogs/PushDefaultDialog.vue";
 import RebaseDialog from "@/components/dialogs/RebaseDialog.vue";
 import StashDialog from "@/components/dialogs/StashDialog.vue";
@@ -268,6 +269,7 @@ function dismissRepoWarning(warning: string): void {
     <ApplyStashDialog />
     <PullDialog />
     <PushDialog />
+    <PushToDialog />
     <PushDefaultDialog />
     <FileHistoryDialog />
     <BlameDialog />

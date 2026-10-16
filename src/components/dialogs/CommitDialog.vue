@@ -47,6 +47,26 @@ watch(request, (r) => {
   loadingPrevious.value = false;
 });
 
+/**
+ * Whether the last commit is already on the remote branch this branch is pushed to, as last
+ * fetched: amending it and pushing would then need a force push. Null while it is being looked up,
+ * or for no branch. Asked when Amend is ticked, and again when the refs change.
+ */
+const amendedIsPublished = ref<boolean | null>(null);
+watch(
+  () => [request.value, amend.value, session.value?.refs] as const,
+  async ([r, amending]) => {
+    amendedIsPublished.value = null;
+    if (!r || !amending || r.branch === null) return;
+    try {
+      const published = await unwrap(commands.getHeadOnPushTarget(r.key, r.branch));
+      if (request.value === r && amend.value) amendedIsPublished.value = published;
+    } catch {
+      // Unknown: Amend & Push stays blocked, Amend Commit is unaffected.
+    }
+  },
+);
+
 // Keep the draft on the session, so Cancel and reopening brings the text back.
 watch(message, (text) => {
   const s = session.value;
@@ -193,11 +213,11 @@ const pushBlocked = computed(() => {
   const s = session.value;
   if (s?.refs && s.refs.remotes.length === 0) return "This repository has no remotes to push to.";
   if (s?.operation) return `Wait for the current operation to finish (${s.operation.title.toLowerCase()}).`;
-  // Amending a commit the upstream already has would need a force push. The branch being no
-  // commits ahead of its upstream means HEAD is on it.
-  const tip = s?.refs?.refs.find((x) => x.kind.type === "localBranch" && x.short === r.branch);
-  if (amend.value && tip?.upstream && (tip.ahead ?? 0) === 0) {
-    return "The last commit is already on the remote, so pushing the amended one would need a force push, which StashPanda does not do.";
+  // Amending a commit the remote branch it is pushed to already has would need a force push. That
+  // is not always the upstream: with push.default=current or a pushRemote, it is another branch.
+  if (amend.value && amendedIsPublished.value === null) return "Checking whether the last commit is already on the remote…";
+  if (amend.value && amendedIsPublished.value) {
+    return "The last commit is already on the remote, so pushing the amended one needs a force push. Amend it, then use Push To… on the branch with Force push ticked.";
   }
   return null;
 });

@@ -7,7 +7,9 @@ use specta::Type;
 
 use crate::error::{classify_git_failure, GitError, Result};
 use crate::git::queries::in_progress::InProgressKind;
+use crate::git::queries::diff::join_repo_path;
 use crate::git::{GitClient, GitReq};
+use crate::transport::paths::NativePath;
 use crate::transport::TransportKind;
 
 pub mod lines;
@@ -22,6 +24,11 @@ pub struct OpResult {
     /// True when a merge stopped on conflicts (the working tree now has
     /// unmerged paths; the user resolves them or aborts).
     pub conflicts: bool,
+}
+
+/// A refusal decided before running Git: `ok: false` with `reason` as stderr.
+fn refusal(reason: String) -> OpResult {
+    OpResult { ok: false, exit_code: None, stdout: String::new(), stderr: reason, conflicts: false }
 }
 
 fn result(out: crate::transport::Output) -> OpResult {
@@ -334,25 +341,127 @@ pub async fn upstream_of(client: &GitClient, branch: &str) -> Result<Option<Push
 }
 
 /// Where `branch` goes when it is pushed without choosing a target, as plain `git push` decides
-/// it: its upstream, or None when it has none. See `push_target_for`.
+/// it, or None when it has no upstream and nothing else says where it goes:
+///
+/// - The remote is `branch.<branch>.pushRemote`, else `remote.pushDefault`, else the upstream's
+///   remote.
+/// - When that remote has `remote.<remote>.push` refspecs, they decide the name there. One that
+///   sends the branch somewhere other than a branch (`refs/for/main`, for a review server) is
+///   refused with `PushTargetRefused` rather than pushed onto the branch itself, and so is a
+///   branch none of them includes, which `git push` would not push.
+/// - Otherwise, pushing to the remote the branch pulls from follows `push.default` as in
+///   `push_target_for` (whose refusal is `InvalidPath`, which the frontend answers by asking where
+///   to push). Pushing to another remote (a fork) pushes to the branch's own name for `simple` and
+///   `current`, as Git does, and is refused with `PushTargetRefused` for the other values.
 pub async fn implicit_push_target(client: &GitClient, branch: &str) -> Result<Option<PushTarget>> {
-    match upstream_of(client, branch).await? {
-        Some(upstream) => push_target_for(client, branch, upstream).await.map(Some),
-        None => Ok(None),
+    valid_ref_name(branch)?;
+    let upstream = upstream_of(client, branch).await?;
+    let chosen_remote = match config_all(client, &format!("branch.{branch}.pushRemote")).await?.pop() {
+        Some(r) => Some(r),
+        None => config_all(client, "remote.pushDefault").await?.pop(),
+    };
+    let Some(remote) = chosen_remote.or_else(|| upstream.as_ref().map(|u| u.remote.clone())) else {
+        return Ok(None);
+    };
+    valid_remote(&remote)?;
+    let refspecs = config_all(client, &format!("remote.{remote}.push")).await?;
+    if !refspecs.is_empty() {
+        let head = client.exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "--quiet", "--short", "HEAD"])).await?;
+        let checked_out = head.success().then(|| String::from_utf8_lossy(&head.stdout).trim().to_string());
+        let refused = |reason: String| GitError::PushTargetRefused { branch: branch.to_string(), reason };
+        return match push_ref_for(refspecs.iter().map(String::as_str), branch, checked_out.as_deref()) {
+            Some(dst) => match dst.strip_prefix("refs/heads/") {
+                Some(name) => Ok(Some(PushTarget { remote, branch: name.to_string() })),
+                None => Err(refused(format!(
+                    "the repository's remote.{remote}.push setting sends it to {dst}, which is not a branch, and StashPanda only pushes to branches"
+                ))),
+            },
+            None => Err(refused(format!("the repository's remote.{remote}.push setting does not include it, so git push would not push it"))),
+        };
     }
+    // The remote the branch pulls from; Git takes origin when the branch tracks nothing.
+    let pulls_from = upstream.as_ref().map_or("origin", |u| u.remote.as_str());
+    if remote == pulls_from {
+        return match upstream {
+            Some(u) => push_target_for(client, branch, u).await.map(Some),
+            None => Ok(None),
+        };
+    }
+    let mode = push_default(client).await?.unwrap_or_default();
+    match mode.as_str() {
+        "" | "simple" | "current" => Ok(Some(PushTarget { remote, branch: branch.to_string() })),
+        _ => Err(GitError::PushTargetRefused {
+            branch: branch.to_string(),
+            reason: format!("it is pushed to {remote}, which it does not pull from, and Git's push.default ({mode}) does not choose a branch there"),
+        }),
+    }
+}
+
+/// Every value of config `key`, in the order Git reads them (the last one wins for a single-valued
+/// key); empty when it is not set.
+async fn config_all(client: &GitClient, key: &str) -> Result<Vec<String>> {
+    let out = client.exec_allow_failure(GitReq::new("config", ["config".to_string(), "--get-all".into(), key.to_string()])).await?;
+    // Exit 1, with nothing printed, when it is not set.
+    if !out.success() && out.exit_code != Some(1) {
+        return Err(classify_git_failure("config", vec![], out.exit_code, &out.stderr, &client.transport.kind()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+}
+
+/// The full ref name a push with `refspecs` (a remote's `remote.<name>.push` values) sends local
+/// branch `branch` to, or None when none of them includes it. The first refspec that matches wins.
+/// Short names (`main:review/main`) are branch names, `HEAD` is `checked_out`, and a refspec with
+/// no `:` keeps the name. Force (`+`) is ignored, since StashPanda never forces; negative (`^…`)
+/// and deleting (`:dst`) refspecs never match.
+fn push_ref_for<'a>(refspecs: impl IntoIterator<Item = &'a str>, branch: &str, checked_out: Option<&str>) -> Option<String> {
+    let full = format!("refs/heads/{branch}");
+    let qualify = |name: &str| if name.starts_with("refs/") { name.to_string() } else { format!("refs/heads/{name}") };
+    refspecs.into_iter().find_map(|spec| {
+        let spec = spec.trim().trim_start_matches('+');
+        if spec.starts_with('^') {
+            return None;
+        }
+        let (src, dst) = match spec.split_once(':') {
+            Some((s, d)) => (s, Some(d)),
+            None => (spec, None),
+        };
+        // `:` alone pushes every branch to the branch of the same name.
+        if src.is_empty() {
+            return (dst == Some("")).then(|| full.clone());
+        }
+        let dst = dst.filter(|d| !d.is_empty());
+        let src = match src {
+            "HEAD" | "@" => qualify(checked_out?),
+            s => qualify(s),
+        };
+        match src.split_once('*') {
+            Some((pre, post)) => {
+                let middle = full.strip_prefix(pre)?.strip_suffix(post)?;
+                Some(dst.map_or_else(|| full.clone(), |d| qualify(&d.replacen('*', middle, 1))))
+            }
+            None => (src == full).then(|| dst.map_or_else(|| full.clone(), qualify)),
+        }
+    })
 }
 
 /// Where `branch`, which tracks `upstream`, goes when it is pushed without choosing a target. The
 /// upstream itself when it has the same name. Otherwise `push.default` decides, as for `git
 /// push`: `upstream` (or its old name `tracking`) pushes to the upstream, `current` to the
-/// branch's own name on the upstream's remote. `simple`, the default, refuses, and so do
-/// `matching` and `nothing`: fails with `InvalidPath`, so that a branch started from
-/// `origin/main` is never pushed onto `main` without the user choosing that.
+/// branch's own name on the upstream's remote. `simple`, the default, refuses, and so does
+/// `matching`: fails with `InvalidPath`, so that a branch started from `origin/main` is never
+/// pushed onto `main` without the user choosing that. `nothing` refuses every push without a
+/// target, whatever the names, with `PushTargetRefused`, as `git push` does.
 pub async fn push_target_for(client: &GitClient, branch: &str, upstream: PushTarget) -> Result<PushTarget> {
+    let mode = push_default(client).await?.unwrap_or_default();
+    if mode == "nothing" {
+        return Err(GitError::PushTargetRefused {
+            branch: branch.to_string(),
+            reason: "Git's push.default is nothing, so git push pushes nothing unless it is told where".into(),
+        });
+    }
     if upstream.branch == branch {
         return Ok(upstream);
     }
-    let mode = push_default(client).await?.unwrap_or_default();
     match mode.as_str() {
         "upstream" | "tracking" => Ok(upstream),
         "current" => Ok(PushTarget { remote: upstream.remote, branch: branch.to_string() }),
@@ -441,6 +550,77 @@ pub async fn push(
     Ok(result(out))
 }
 
+/// The remote-tracking branch here (`refs/remotes/origin/dev`) that holds `target` as last
+/// fetched, from the remote's `remote.<remote>.fetch` refspecs; None when none maps it (a remote
+/// given as a URL has none) or this repository has never fetched it.
+pub async fn tracking_ref_of(client: &GitClient, target: &PushTarget) -> Result<Option<String>> {
+    valid_remote(&target.remote)?;
+    valid_ref_name(&target.branch)?;
+    let refspecs = config_all(client, &format!("remote.{}.fetch", target.remote)).await?;
+    let Some(tracking) = tracking_ref_for(refspecs.iter().map(String::as_str), &format!("refs/heads/{}", target.branch)) else {
+        return Ok(None);
+    };
+    let exists = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", tracking.as_str()])).await?;
+    Ok(exists.success().then_some(tracking))
+}
+
+/// The forward direction of `remote_ref_for`: where a fetch with `refspecs` stores the remote's
+/// `remote_ref`, or None when none of them fetches it.
+fn tracking_ref_for<'a>(refspecs: impl IntoIterator<Item = &'a str>, remote_ref: &str) -> Option<String> {
+    refspecs.into_iter().find_map(|spec| {
+        let spec = spec.trim().trim_start_matches('+');
+        let (src, dst) = spec.split_once(':').filter(|_| !spec.starts_with('^'))?;
+        match src.split_once('*') {
+            Some((pre, post)) => {
+                let middle = remote_ref.strip_prefix(pre)?.strip_suffix(post)?;
+                dst.contains('*').then(|| dst.replacen('*', middle, 1))
+            }
+            None => (src == remote_ref && !dst.is_empty()).then(|| dst.to_string()),
+        }
+    })
+}
+
+/// True when `ancestor` is `descendant` or one of its ancestors.
+async fn is_ancestor(client: &GitClient, ancestor: &str, descendant: &str) -> Result<bool> {
+    let out = client.exec_allow_failure(GitReq::new("merge-base", ["merge-base", "--is-ancestor", ancestor, descendant])).await?;
+    Ok(out.exit_code == Some(0))
+}
+
+/// True when HEAD is already on `target` as last fetched: amending it and pushing the amended
+/// commit there would then need a force push.
+pub async fn head_on_push_target(client: &GitClient, target: &PushTarget) -> Result<bool> {
+    match tracking_ref_of(client, target).await? {
+        Some(tracking) => is_ancestor(client, "HEAD", &tracking).await,
+        None => Ok(false),
+    }
+}
+
+/// True when local `branch` lacks commits that `target` has (as last fetched) because they were
+/// rewritten here, by an amend or a rebase, rather than because someone else pushed: an earlier
+/// position of the branch, from its reflog, contained the target's tip. Pushing would then replace
+/// those commits on the target, which needs a force push; pulling the target would bring the old
+/// copies back beside the new ones. False when the branch has no reflog, or contains the tip.
+pub async fn rewrote_pushed_commits(client: &GitClient, branch: &str, target: &PushTarget) -> Result<bool> {
+    valid_ref_name(branch)?;
+    let Some(tracking) = tracking_ref_of(client, target).await? else { return Ok(false) };
+    let local = format!("refs/heads/{branch}");
+    if is_ancestor(client, &tracking, &local).await? {
+        return Ok(false);
+    }
+    let reflog = client
+        .exec_allow_failure(GitReq::new("reflog", ["reflog".to_string(), "show".into(), "--format=%H".into(), "-n".into(), "100".into(), local]))
+        .await?;
+    let earlier: Vec<String> = String::from_utf8_lossy(&reflog.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    if !reflog.success() || earlier.is_empty() {
+        return Ok(false);
+    }
+    // Empty when every commit on the target is reachable from some earlier position of the branch.
+    let mut args = vec!["rev-list".to_string(), "-n".into(), "1".into(), tracking, "--not".into()];
+    args.extend(earlier);
+    let missing = client.exec(GitReq::new("rev-list", args)).await?;
+    Ok(String::from_utf8_lossy(&missing.stdout).trim().is_empty())
+}
+
 /// How many commits HEAD has that `tracking` (`FETCH_HEAD` after a pull, or
 /// `refs/remotes/origin/dev`) does not: what a push would send.
 pub async fn commits_ahead(client: &GitClient, tracking: &str) -> Result<u32> {
@@ -469,6 +649,9 @@ pub struct SyncResult {
     /// Stop was pressed after the pull had merged or rebased: the push did not run or did not
     /// finish.
     pub push_stopped: bool,
+    /// The push was refused because the rebase rewrote commits `push_target` already had, not
+    /// because someone pushed (see `rewrote_pushed_commits`): syncing again cannot fix it.
+    pub rewrote_pushed: bool,
 }
 
 /// True when the remote refused a push because it has commits the pushed branch does not:
@@ -597,6 +780,236 @@ fn rename_flag(old: &str, new: &str, new_exists: bool) -> &'static str {
     } else {
         "-m"
     }
+}
+
+/// True when local branch `branch` is not checked out, is behind HEAD, and its tip lies on the
+/// checked-out branch's own lane: the first-parent line from HEAD, the column the graph draws the
+/// current branch in. That is a branch the current one has overtaken along its own history (a
+/// release branch cut from `main`, say), which `branch_fast_forward` can move up to HEAD. A branch
+/// that HEAD only contains through a merge's second parent is behind HEAD too, but not on its
+/// lane, so it is not offered.
+pub async fn fast_forwards_to_head(client: &GitClient, branch: &str) -> Result<bool> {
+    valid_ref_name(branch)?;
+    let head = client.exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "--quiet", "HEAD"])).await?;
+    if !head.success() || String::from_utf8_lossy(&head.stdout).trim() == format!("refs/heads/{branch}") {
+        return Ok(false);
+    }
+    let tip = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")])).await?;
+    let tip = String::from_utf8_lossy(&tip.stdout).trim().to_string();
+    if tip.is_empty() || !is_ancestor(client, &tip, "HEAD").await? {
+        return Ok(false);
+    }
+    // The oldest commit on HEAD's first-parent line that the branch lacks has the branch's tip as
+    // its first parent exactly when the tip is on that line. None when HEAD is the tip.
+    let line = client.exec(GitReq::new("rev-list", ["rev-list", "--first-parent", "--reverse", &format!("{tip}..HEAD")])).await?;
+    let Some(oldest) = String::from_utf8_lossy(&line.stdout).lines().next().map(str::to_string) else {
+        return Ok(false);
+    };
+    let parent = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", &format!("{oldest}^1")])).await?;
+    Ok(String::from_utf8_lossy(&parent.stdout).trim() == tip)
+}
+
+/// A refusal with `ok: false`, sending nothing, when local branch `branch` no longer points at
+/// commit `source` (the commit a force push's dropped list was made against); None when it does.
+async fn branch_moved(client: &GitClient, branch: &str, source: &str) -> Result<Option<OpResult>> {
+    valid_ref_name(branch)?;
+    valid_revision(source)?;
+    let now = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", &format!("refs/heads/{branch}^{{commit}}")])).await?;
+    let now = String::from_utf8_lossy(&now.stdout).trim().to_string();
+    let listed = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", &format!("{source}^{{commit}}")])).await?;
+    if now == String::from_utf8_lossy(&listed.stdout).trim() && !now.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(OpResult {
+        ok: false,
+        exit_code: None,
+        stdout: String::new(),
+        stderr: format!("{branch} has moved since the list of dropped commits was made (source moved), so nothing was pushed."),
+        conflicts: false,
+    }))
+}
+
+/// Why local branch `branch` must not be moved from outside the worktree using it, or None when
+/// nothing is using it. Git's own rule (`git branch -f` refuses the same branches): in this or any
+/// linked worktree, HEAD is on it, a rebase is replaying it (`rebase-merge/head-name` or
+/// `rebase-apply/head-name`, while HEAD itself is detached) or will move it when it finishes
+/// (`rebase-merge/update-refs`, with `rebase.updateRefs`), or a bisect started from it
+/// (`BISECT_START`). Moving it under a rebase leaves the rebase unable to finish.
+pub async fn branch_in_use(client: &GitClient, branch: &str) -> Result<Option<String>> {
+    valid_ref_name(branch)?;
+    let refname = format!("refs/heads/{branch}");
+    let common = client.exec(GitReq::new("rev-parse", ["rev-parse", "--path-format=absolute", "--git-common-dir"])).await?;
+    let common = NativePath(String::from_utf8_lossy(&common.stdout).trim().to_string());
+    let mut dirs = vec![common.clone()];
+    if let Ok(Some(names)) = client.transport.list_dir(&join_repo_path(&common, "worktrees")).await {
+        dirs.extend(names.iter().map(|n| join_repo_path(&common, &format!("worktrees/{n}"))));
+    }
+    for dir in &dirs {
+        if read_trimmed(client, dir, "HEAD").await.as_deref() == Some(format!("ref: {refname}").as_str()) {
+            return Ok(Some("it is checked out at a worktree".into()));
+        }
+        for name in ["rebase-merge/head-name", "rebase-apply/head-name"] {
+            if read_trimmed(client, dir, name).await.as_deref() == Some(refname.as_str()) {
+                return Ok(Some("a rebase of it is in progress".into()));
+            }
+        }
+        // Three lines per branch: its name, then the commits it moves from and to.
+        if let Some(listed) = read_trimmed(client, dir, "rebase-merge/update-refs").await {
+            if listed.lines().step_by(3).any(|l| l.trim() == refname) {
+                return Ok(Some("a rebase in progress will move it when it finishes".into()));
+            }
+        }
+        if let Some(start) = read_trimmed(client, dir, "BISECT_START").await {
+            if start == branch || start == refname {
+                return Ok(Some("a bisect started from it is in progress".into()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// A small file in a git directory, trimmed, or None when it is missing or cannot be read.
+async fn read_trimmed(client: &GitClient, dir: &NativePath, name: &str) -> Option<String> {
+    let bytes = client.transport.read_file(&join_repo_path(dir, name), 4096).await.ok()?;
+    Some(String::from_utf8_lossy(&bytes).trim().to_string())
+}
+
+/// Move local branch `target` to commit `source`, which local branch `branch` must still point at,
+/// whether or not that is a fast-forward: the forced form of `push_to_local_branch`. `git update-ref
+/// refs/heads/<target> <source> <expected>`, so the move happens only while `target` is still at
+/// `expected`, the commit the dropped list was made from, and Git refuses otherwise. Refused with
+/// `ok: false` (`refusing to move …` in stderr) when `branch` has moved, or when `target` is in
+/// use (`branch_in_use`): `git update-ref` does not check that itself. Checks nothing out.
+pub async fn force_move_local_branch(client: &GitClient, branch: &str, source: &str, target: &str, expected: &str) -> Result<OpResult> {
+    valid_ref_name(target)?;
+    valid_revision(expected)?;
+    if branch == target {
+        return Err(GitError::InvalidPath { path: target.to_string(), reason: "a branch cannot be pushed into itself".into() });
+    }
+    if let Some(moved) = branch_moved(client, branch, source).await? {
+        return Ok(moved);
+    }
+    let refname = format!("refs/heads/{target}");
+    if let Some(reason) = branch_in_use(client, target).await? {
+        return Ok(refusal(format!("refusing to move {target}: {reason}")));
+    }
+    let message = format!("push to: forced update from {branch}");
+    let out = client
+        .exec_allow_failure(GitReq::new("update-ref", ["update-ref", "-m", message.as_str(), refname.as_str(), source, expected]).user())
+        .await?;
+    Ok(result(out))
+}
+
+/// Push local branch `source` into local branch `target` of this same repository: `git fetch .
+/// refs/heads/<source>:refs/heads/<target>`, which moves `target` to `source`'s commit, or creates
+/// it. Neither branch is checked out for it, so the working tree, the index and HEAD are not
+/// touched; uncommitted changes are fine and no checkout hooks run. Git refuses a move that is
+/// not a fast-forward (`! [rejected] … (non-fast-forward)`), and a `target` that this or another
+/// worktree has checked out (`refusing to fetch into branch … checked out at …`), whose files
+/// would then not match it. The forced form is `force_move_local_branch`.
+pub async fn push_to_local_branch(client: &GitClient, source: &str, target: &str) -> Result<OpResult> {
+    valid_ref_name(source)?;
+    valid_ref_name(target)?;
+    if source == target {
+        return Err(GitError::InvalidPath { path: target.to_string(), reason: "a branch cannot be pushed into itself".into() });
+    }
+    // Git 2.36, the oldest StashPanda runs, only refuses the branch HEAD is on.
+    if let Some(reason) = branch_in_use(client, target).await? {
+        return Ok(refusal(format!("refusing to move {target}: {reason}")));
+    }
+    let refspec = format!("refs/heads/{source}:refs/heads/{target}");
+    let args = ["fetch", "--no-write-fetch-head", ".", refspec.as_str()];
+    let out = client.exec_allow_failure(GitReq::new("fetch", args).user()).await?;
+    Ok(result(out))
+}
+
+/// The commits a forced move of a branch from `tip` to local branch `branch` drops from it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedCommits {
+    /// Newest first, at most the `limit` asked for.
+    pub commits: Vec<DroppedCommit>,
+    /// How many there are in all.
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedCommit {
+    pub oid: String,
+    pub subject: String,
+    pub author_name: String,
+    /// Seconds since the Unix epoch.
+    pub author_time: i64,
+}
+
+/// What a force push of commit `source` over a branch now at commit `tip` throws away: the commits
+/// `tip` has that `source` does not. The Push To dialog lists them before a force push, for the
+/// same `source` and `tip` the push then sends and expects (see `force_push` and
+/// `force_move_local_branch`), so nothing is dropped that the user was not shown. Empty when it
+/// would be a fast-forward.
+pub async fn commits_dropped(client: &GitClient, source: &str, tip: &str, limit: u32) -> Result<DroppedCommits> {
+    valid_revision(source)?;
+    valid_revision(tip)?;
+    let local = source.to_string();
+    let count = client.exec(GitReq::new("rev-list", ["rev-list", "--count", tip, "--not", local.as_str(), "--"])).await?;
+    let text = String::from_utf8_lossy(&count.stdout);
+    let total: u32 = text.trim().parse().map_err(|_| GitError::ParseError { what: "rev-list --count".into(), detail: text.trim().to_string() })?;
+    let limit = format!("-n{limit}");
+    let listed = client
+        .exec(GitReq::new("log", ["log", "--format=%H%x1f%s%x1f%an%x1f%at", limit.as_str(), tip, "--not", local.as_str(), "--"]))
+        .await?;
+    let commits = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\x1f');
+            Some(DroppedCommit {
+                oid: parts.next()?.to_string(),
+                subject: parts.next()?.to_string(),
+                author_name: parts.next()?.to_string(),
+                author_time: parts.next()?.trim().parse().ok()?,
+            })
+        })
+        .collect();
+    Ok(DroppedCommits { commits, total })
+}
+
+/// Push commit `source`, which local branch `branch` must still point at, to `target`, forced:
+/// `git push <remote> <source>:refs/heads/<target branch>` with
+/// `--force-with-lease=refs/heads/<target branch>:<expected>`. Both ends are pinned to the commits
+/// the dropped list was made from (`commits_dropped`): the remote's branch is replaced only if it
+/// is still at `expected`, the commit the user was shown for it, and what replaces it is `source`,
+/// not wherever `branch` has moved since. A branch that has moved is refused with `ok: false`
+/// before anything is sent.
+/// That is not the remote-tracking branch as it is now: an automatic fetch can move that in the
+/// background, after which a lease taken from it would let the push throw away commits the user
+/// never saw. When the remote's branch is anywhere else, Git refuses with `[rejected] … (stale
+/// info)` (see `push_stale`) and its commits stay. An empty `expected` only lets the push through
+/// when the remote has no such branch.
+#[allow(clippy::too_many_arguments)]
+pub async fn force_push(
+    client: &GitClient,
+    branch: &str,
+    source: &str,
+    target: &PushTarget,
+    expected: &str,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_ref_name(branch)?;
+    valid_remote(&target.remote)?;
+    valid_ref_name(&target.branch)?;
+    if !expected.is_empty() {
+        valid_revision(expected)?;
+    }
+    if let Some(moved) = branch_moved(client, branch, source).await? {
+        return Ok(moved);
+    }
+    let lease = format!("--force-with-lease=refs/heads/{}:{expected}", target.branch);
+    let refspec = format!("{source}:refs/heads/{}", target.branch);
+    let args = ["push", "--progress", lease.as_str(), target.remote.as_str(), refspec.as_str()];
+    let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
+    Ok(result(out))
 }
 
 /// Make local branch `branch` track the remote branch `upstream`, given by the full name of its
@@ -3118,10 +3531,14 @@ mod e2e {
         // `simple` (the default), `matching` and `nothing` refuse, `upstream` pushes there and
         // `current` pushes to topic's own name.
         assert_eq!(implicit_push_target(&client, "main").await.unwrap(), Some(main.clone()));
-        for refusing in ["simple", "matching", "nothing"] {
+        for refusing in ["simple", "matching"] {
             git(&local, &["config", "push.default", refusing]);
             assert!(matches!(implicit_push_target(&client, "topic").await, Err(GitError::InvalidPath { .. })), "{refusing}");
         }
+        // `nothing` refuses even a branch whose upstream has the same name.
+        git(&local, &["config", "push.default", "nothing"]);
+        assert!(matches!(implicit_push_target(&client, "topic").await, Err(GitError::PushTargetRefused { .. })));
+        assert!(matches!(implicit_push_target(&client, "main").await, Err(GitError::PushTargetRefused { .. })));
         assert_eq!(push_default(&client).await.unwrap().as_deref(), Some("nothing"));
         assert!(set_push_default(&client, PushDefault::Upstream).await.unwrap().ok);
         assert_eq!(out(&local, &["config", "--local", "--get", "push.default"]), "upstream");
@@ -3133,6 +3550,35 @@ mod e2e {
         assert_eq!(push_default(&client).await.unwrap(), None);
         git(&local, &["branch", "untracked"]);
         assert_eq!(implicit_push_target(&client, "untracked").await.unwrap(), None);
+
+        // `remote.pushDefault` and `branch.<name>.pushRemote` send the push to another remote (a
+        // fork), under the branch's own name, as `git push` does with push.default=simple.
+        git(&local, &["remote", "add", "fork", &origin.to_string_lossy()]);
+        git(&local, &["config", "remote.pushDefault", "fork"]);
+        let to_fork = |branch: &str| Some(PushTarget { remote: "fork".into(), branch: branch.into() });
+        assert_eq!(implicit_push_target(&client, "main").await.unwrap(), to_fork("main"));
+        assert_eq!(implicit_push_target(&client, "topic").await.unwrap(), to_fork("topic"));
+        assert_eq!(implicit_push_target(&client, "untracked").await.unwrap(), to_fork("untracked"));
+        git(&local, &["config", "push.default", "upstream"]);
+        assert!(matches!(implicit_push_target(&client, "main").await, Err(GitError::PushTargetRefused { .. })));
+        git(&local, &["config", "--unset", "push.default"]);
+        git(&local, &["config", "--unset", "remote.pushDefault"]);
+        git(&local, &["config", "branch.main.pushRemote", "fork"]);
+        assert_eq!(implicit_push_target(&client, "main").await.unwrap(), to_fork("main"));
+        // topic has no pushRemote: still its upstream's remote, which push.default=simple refuses.
+        assert!(matches!(implicit_push_target(&client, "topic").await, Err(GitError::InvalidPath { .. })));
+        git(&local, &["config", "--unset", "branch.main.pushRemote"]);
+
+        // `remote.<name>.push` refspecs choose the name on the remote; one that leads somewhere
+        // other than a branch, or that leaves the branch out, is refused rather than pushed onto
+        // the upstream.
+        git(&local, &["config", "remote.origin.push", "refs/heads/main:refs/heads/for-review/main"]);
+        assert_eq!(implicit_push_target(&client, "main").await.unwrap(), Some(PushTarget { remote: "origin".into(), branch: "for-review/main".into() }));
+        assert!(matches!(implicit_push_target(&client, "topic").await, Err(GitError::PushTargetRefused { .. })));
+        git(&local, &["config", "remote.origin.push", "HEAD:refs/for/main"]);
+        assert!(matches!(implicit_push_target(&client, "main").await, Err(GitError::PushTargetRefused { .. })));
+        git(&local, &["config", "--unset-all", "remote.origin.push"]);
+        assert_eq!(implicit_push_target(&client, "main").await.unwrap(), Some(main.clone()));
 
         // An upstream whose remote is a URL, as `git push -u <url>` writes it: pushed to and
         // pulled from, as `git push` and `git pull` do.
@@ -3148,6 +3594,214 @@ mod e2e {
         cancel.cancel();
         assert!(matches!(fetch_all(&client, &progress, &cancel).await, Err(GitError::Cancelled)));
         assert!(matches!(push(&client, "main", &PushTarget { remote: "-o".into(), branch: "main".into() }, &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn fast_forwards_a_branch_left_behind_on_the_current_lane() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-ff-{}", uuid::Uuid::new_v4().simple()));
+        let dir = root.join("repo");
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&dir, &["config", k, v]);
+        }
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&dir, &["branch", "release"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        git(&dir, &["switch", "-q", "-c", "side"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "side work"]);
+        git(&dir, &["switch", "-q", "main"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "three"]);
+        git(&dir, &["merge", "-q", "--no-ff", "--no-edit", "side"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "four"]);
+        git(&dir, &["branch", "at-head"]);
+        git(&dir, &["switch", "-q", "-c", "own", "HEAD~1"]);
+        git(&dir, &["commit", "-q", "--allow-empty", "-m", "own work"]);
+        git(&dir, &["switch", "-q", "main"]);
+        let client = client_for(&dir);
+        let ff = |b: &'static str| fast_forwards_to_head(&client, b);
+
+        // release is on main's first-parent line; side is behind HEAD only through the merge;
+        // own has a commit of its own; at-head and main itself have nothing to move.
+        assert!(ff("release").await.unwrap());
+        assert!(!ff("side").await.unwrap());
+        assert!(!ff("own").await.unwrap());
+        assert!(!ff("at-head").await.unwrap());
+        assert!(!ff("main").await.unwrap());
+        assert!(!ff("missing").await.unwrap());
+
+        // Moved with uncommitted changes, which stay; HEAD stays on main.
+        std::fs::write(dir.join("dirty.txt"), "not committed\n").unwrap();
+        let (release, head) = (out(&dir, &["rev-parse", "release"]), out(&dir, &["rev-parse", "HEAD"]));
+        let moved = push_to_local_branch(&client, "main", "release").await.unwrap();
+        assert!(moved.ok, "{moved:?}");
+        assert_eq!(out(&dir, &["rev-parse", "release"]), head);
+        assert_eq!(out(&dir, &["symbolic-ref", "--short", "HEAD"]), "main");
+        assert_eq!(std::fs::read_to_string(dir.join("dirty.txt")).unwrap(), "not committed\n");
+        assert!(!dir.join(".git/FETCH_HEAD").exists(), "a pull's FETCH_HEAD is not overwritten");
+
+        // One that would not fast-forward is refused, unless forced.
+        let own = out(&dir, &["rev-parse", "own"]);
+        let not_ff = push_to_local_branch(&client, "main", "own").await.unwrap();
+        assert!(!not_ff.ok && not_ff.stderr.contains("[rejected]"), "{not_ff:?}");
+        assert_eq!(out(&dir, &["rev-parse", "own"]), own);
+        // What forcing it drops: own's own commit, and nothing for a fast-forward.
+        let dropped = commits_dropped(&client, &head, &own, 50).await.unwrap();
+        assert_eq!((dropped.total, dropped.commits.len()), (1, 1));
+        assert_eq!(dropped.commits[0].subject, "own work");
+        assert_eq!(dropped.commits[0].author_name, "T");
+        assert_eq!(commits_dropped(&client, &head, &release, 50).await.unwrap().total, 0);
+        // Forced, the move is pinned at both ends: not while own has moved on from the listed
+        // commit, nor once main has moved on from the commit the list was made against.
+        git(&dir, &["branch", "-f", "own-moved", &own]);
+        let elsewhere = out(&dir, &["rev-parse", "own-moved~1"]);
+        let stale_target = force_move_local_branch(&client, "main", &head, "own", &elsewhere).await.unwrap();
+        assert!(!stale_target.ok, "{stale_target:?}");
+        assert_eq!(out(&dir, &["rev-parse", "own"]), own);
+        let stale_source = force_move_local_branch(&client, "main", &own, "own", &own).await.unwrap();
+        assert!(!stale_source.ok && stale_source.stderr.contains("source moved"), "{stale_source:?}");
+        let forced = force_move_local_branch(&client, "main", &head, "own", &own).await.unwrap();
+        assert!(forced.ok, "{forced:?}");
+        assert_eq!(out(&dir, &["rev-parse", "own"]), head);
+        // A new branch is created; a branch into itself is refused.
+        assert!(push_to_local_branch(&client, "main", "brand-new").await.unwrap().ok);
+        assert_eq!(out(&dir, &["rev-parse", "brand-new"]), head);
+        assert!(matches!(push_to_local_branch(&client, "main", "main").await, Err(GitError::InvalidPath { .. })));
+
+        // The checked-out branch, and one checked out in another worktree, are refused even forced.
+        let into_head = push_to_local_branch(&client, "release", "main").await.unwrap();
+        assert!(!into_head.ok && into_head.stderr.contains("checked out"), "{into_head:?}");
+        let release_now = out(&dir, &["rev-parse", "release"]);
+        let forced_into_head = force_move_local_branch(&client, "release", &release_now, "main", &head).await.unwrap();
+        assert!(!forced_into_head.ok && forced_into_head.stderr.contains("checked out"), "{forced_into_head:?}");
+        git(&dir, &["branch", "-f", "release", &release]);
+        git(&dir, &["worktree", "add", "-q", &root.join("wt").to_string_lossy(), "release"]);
+        let in_worktree = force_move_local_branch(&client, "main", &head, "release", &release).await.unwrap();
+        assert!(!in_worktree.ok && in_worktree.stderr.contains("checked out"), "{in_worktree:?}");
+        assert_eq!(out(&dir, &["rev-parse", "release"]), release);
+
+        // A branch being rebased in a worktree, where HEAD is detached, is refused too, forced or
+        // not, and so is one a bisect started from: moving it would leave them unable to finish.
+        git(&dir, &["branch", "busy", "HEAD~1"]);
+        let wt2 = root.join("wt2");
+        git(&dir, &["worktree", "add", "-q", &wt2.to_string_lossy(), "busy"]);
+        git(&wt2, &["commit", "-q", "--allow-empty", "-m", "busy work"]);
+        let busy = out(&dir, &["rev-parse", "busy"]);
+        assert!(!Command::new("git").arg("-C").arg(&wt2).args(["-c", "user.email=t@t", "-c", "user.name=T", "rebase", "-q", "--exec", "false", "main"]).status().unwrap().success());
+        assert_eq!(branch_in_use(&client, "busy").await.unwrap().as_deref(), Some("a rebase of it is in progress"));
+        let rebasing = force_move_local_branch(&client, "main", &head, "busy", &busy).await.unwrap();
+        assert!(!rebasing.ok && rebasing.stderr.contains("rebase"), "{rebasing:?}");
+        assert!(!push_to_local_branch(&client, "main", "busy").await.unwrap().ok);
+        assert_eq!(out(&dir, &["rev-parse", "busy"]), busy);
+        git(&wt2, &["rebase", "--abort"]);
+        // A branch the rebase will move at the end, with rebase.updateRefs.
+        git(&dir, &["branch", "-f", "brand-new", "busy"]);
+        assert!(!Command::new("git").arg("-C").arg(&wt2).args(["-c", "user.email=t@t", "-c", "user.name=T", "-c", "rebase.updateRefs=true", "rebase", "-q", "--exec", "false", "main"]).status().unwrap().success());
+        assert_eq!(branch_in_use(&client, "brand-new").await.unwrap().as_deref(), Some("a rebase in progress will move it when it finishes"));
+        git(&wt2, &["rebase", "--abort"]);
+        git(&dir, &["branch", "-f", "brand-new", &head]);
+        git(&wt2, &["bisect", "start"]);
+        git(&wt2, &["switch", "-q", "--detach", "HEAD~1"]);
+        assert_eq!(branch_in_use(&client, "busy").await.unwrap().as_deref(), Some("a bisect started from it is in progress"));
+        git(&wt2, &["bisect", "reset"]);
+        assert_eq!(branch_in_use(&client, "busy").await.unwrap().as_deref(), Some("it is checked out at a worktree"));
+        assert_eq!(branch_in_use(&client, "brand-new").await.unwrap(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn tells_rewritten_history_from_someone_else_pushing() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-rewrote-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local, other) = (root.join("origin.git"), root.join("local"), root.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), local.as_os_str()]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&local, &["config", k, v]);
+        }
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        git(&local, &["push", "-q", "origin", "main"]);
+        // my-work tracks shared but is pushed to its own name (push.default=current).
+        git(&local, &["push", "-q", "origin", "main:refs/heads/shared"]);
+        git(&local, &["fetch", "-q"]);
+        git(&local, &["switch", "-q", "-c", "my-work", "--track", "origin/shared"]);
+        git(&local, &["config", "push.default", "current"]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "mine"]);
+        git(&local, &["push", "-q", "origin", "my-work"]);
+        let client = client_for(&local);
+        let my_work = PushTarget { remote: "origin".into(), branch: "my-work".into() };
+        assert_eq!(implicit_push_target(&client, "my-work").await.unwrap(), Some(my_work.clone()));
+        assert_eq!(tracking_ref_of(&client, &my_work).await.unwrap().as_deref(), Some("refs/remotes/origin/my-work"));
+        // HEAD is on origin/my-work, though it is ahead of its upstream origin/shared.
+        assert!(head_on_push_target(&client, &my_work).await.unwrap());
+        assert!(!rewrote_pushed_commits(&client, "my-work", &my_work).await.unwrap());
+
+        // An amend rewrites the pushed commit.
+        git(&local, &["commit", "-q", "--amend", "--allow-empty", "-m", "mine, amended"]);
+        assert!(!head_on_push_target(&client, &my_work).await.unwrap());
+        assert!(rewrote_pushed_commits(&client, "my-work", &my_work).await.unwrap());
+
+        // A rebase onto new commits on shared does too.
+        git(&local, &["reset", "-q", "--hard", "origin/my-work"]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), other.as_os_str()]);
+        git(&other, &["-c", "user.email=o@o", "-c", "user.name=O", "commit", "-q", "--allow-empty", "-m", "theirs on shared"]);
+        git(&other, &["push", "-q", "origin", "HEAD:refs/heads/shared"]);
+        git(&local, &["fetch", "-q"]);
+        git(&local, &["rebase", "-q", "origin/shared"]);
+        assert!(rewrote_pushed_commits(&client, "my-work", &my_work).await.unwrap());
+
+        // Someone else pushing to my-work is not a rewrite here.
+        git(&local, &["reset", "-q", "--hard", "origin/my-work"]);
+        git(&other, &["fetch", "-q"]);
+        git(&other, &["switch", "-q", "-c", "my-work", "origin/my-work"]);
+        git(&other, &["-c", "user.email=o@o", "-c", "user.name=O", "commit", "-q", "--allow-empty", "-m", "theirs on my-work"]);
+        git(&other, &["push", "-q", "origin", "my-work"]);
+        git(&local, &["fetch", "-q"]);
+        assert!(!rewrote_pushed_commits(&client, "my-work", &my_work).await.unwrap());
+
+        // A force push replaces the remote's my-work only while it is where this repository last
+        // fetched it: here it is, so the amended commit replaces it.
+        let (progress, cancel) = (|_: String| {}, tokio_util::sync::CancellationToken::new());
+        git(&local, &["reset", "-q", "--hard", "origin/my-work"]);
+        git(&local, &["commit", "-q", "--amend", "--allow-empty", "-m", "replaces theirs"]);
+        let shown = out(&local, &["rev-parse", "origin/my-work"]);
+        let mine = out(&local, &["rev-parse", "my-work"]);
+        let forced = force_push(&client, "my-work", &mine, &my_work, &shown, &progress, &cancel).await.unwrap();
+        assert!(forced.ok, "{forced:?}");
+        assert_eq!(out(&origin, &["rev-parse", "refs/heads/my-work"]), out(&local, &["rev-parse", "my-work"]));
+        // Someone pushes after the last fetch: the lease refuses, and their commit stays.
+        git(&other, &["fetch", "-q"]);
+        git(&other, &["reset", "-q", "--hard", "origin/my-work"]);
+        git(&other, &["-c", "user.email=o@o", "-c", "user.name=O", "commit", "-q", "--allow-empty", "-m", "unseen"]);
+        git(&other, &["push", "-q", "origin", "my-work"]);
+        let unseen = out(&other, &["rev-parse", "my-work"]);
+        git(&local, &["commit", "-q", "--amend", "--allow-empty", "-m", "replaces again"]);
+        let shown = out(&local, &["rev-parse", "my-work"]);
+        let mine = out(&local, &["rev-parse", "my-work"]);
+        let stale = force_push(&client, "my-work", &mine, &my_work, &shown, &progress, &cancel).await.unwrap();
+        assert!(push_stale(&stale), "{stale:?}");
+        assert_eq!(out(&origin, &["rev-parse", "refs/heads/my-work"]), unseen);
+        // An automatic fetch brings the commit into origin/my-work, but the user was shown the
+        // older tip: the lease is still on that, so it still refuses.
+        git(&local, &["fetch", "-q"]);
+        let after_fetch = force_push(&client, "my-work", &mine, &my_work, &shown, &progress, &cancel).await.unwrap();
+        assert!(push_stale(&after_fetch), "{after_fetch:?}");
+        assert_eq!(out(&origin, &["rev-parse", "refs/heads/my-work"]), unseen);
+        // The branch moved after the list was made: nothing is sent.
+        let now = out(&origin, &["rev-parse", "refs/heads/my-work"]);
+        git(&local, &["reset", "-q", "--hard", "HEAD~1"]);
+        let source_moved = force_push(&client, "my-work", &mine, &my_work, &now, &progress, &cancel).await.unwrap();
+        assert!(!source_moved.ok && source_moved.stderr.contains("source moved"), "{source_moved:?}");
+        assert_eq!(out(&origin, &["rev-parse", "refs/heads/my-work"]), now);
+
+        // A target this repository has no remote-tracking branch for.
+        let nowhere = PushTarget { remote: "origin".into(), branch: "never-pushed".into() };
+        assert_eq!(tracking_ref_of(&client, &nowhere).await.unwrap(), None);
+        assert!(!head_on_push_target(&client, &nowhere).await.unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -3284,6 +3938,21 @@ mod e2e {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn push_refspecs_map_a_branch_as_git_push_does() {
+        let map = |specs: &[&str], branch: &str| push_ref_for(specs.iter().copied(), branch, Some("main"));
+        assert_eq!(map(&["refs/heads/main:refs/heads/for-review/main"], "main").as_deref(), Some("refs/heads/for-review/main"));
+        assert_eq!(map(&["main:review/main"], "main").as_deref(), Some("refs/heads/review/main"));
+        assert_eq!(map(&["+refs/heads/*:refs/heads/mine/*"], "feature/x").as_deref(), Some("refs/heads/mine/feature/x"));
+        assert_eq!(map(&["HEAD:refs/for/main"], "main").as_deref(), Some("refs/for/main"));
+        assert_eq!(map(&["HEAD:refs/for/main"], "topic"), None, "HEAD is the checked-out branch only");
+        assert_eq!(map(&["refs/heads/main"], "main").as_deref(), Some("refs/heads/main"));
+        assert_eq!(map(&[":"], "topic").as_deref(), Some("refs/heads/topic"));
+        assert_eq!(map(&["^refs/heads/main", ":refs/heads/gone", "refs/heads/dev:refs/heads/dev"], "main"), None);
+        // The first refspec that matches wins.
+        assert_eq!(map(&["refs/heads/*:refs/heads/a/*", "main:b"], "main").as_deref(), Some("refs/heads/a/main"));
+    }
 
     #[test]
     fn pull_mode_follows_git_config_precedence() {

@@ -3,9 +3,11 @@ import type { PushTarget, SyncResult } from "@/lib/bindings";
 
 const commands = vi.hoisted(() => ({
   getPushTarget: vi.fn(),
+  getRewrotePushedCommits: vi.fn(),
   getUpstream: vi.fn(),
   getPullMode: vi.fn(),
   opPush: vi.fn(),
+  opPushTo: vi.fn(),
   opSync: vi.fn(),
   opSetPushDefault: vi.fn(),
   opBranchSetUpstream: vi.fn(),
@@ -30,7 +32,7 @@ vi.mock("@/stores/sessions", () => ({
   }),
 }));
 
-import { pushBranch, pushCurrentBranch, syncCurrentBranch, syncOutcome } from "./repoActions";
+import { pushBranch, pushBranchTo, pushCurrentBranch, syncCurrentBranch, syncOutcome } from "./repoActions";
 
 const ok = <T>(data: T) => Promise.resolve({ status: "ok", data });
 const pushed = { ok: true, exitCode: 0, stdout: "", stderr: "", conflicts: false };
@@ -184,6 +186,7 @@ describe("syncing a branch whose upstream has another name", () => {
     push: pushed,
     nothingToPush: false,
     pushStopped: false,
+    rewrotePushed: false,
   };
 
   it("asks before pulling, and can push to the upstream this time only", async () => {
@@ -220,7 +223,164 @@ describe("syncing a branch whose upstream has another name", () => {
       push: pushed,
       nothingToPush: false,
       pushStopped: false,
+      rewrotePushed: false,
     };
     expect(syncOutcome("repo", result, "feature", "merge").message).toBe("Pushed feature to origin/feature.");
+  });
+});
+
+describe("pushes that git push would send elsewhere, or that were refused", () => {
+  const rejected = { ok: false, exitCode: 1, stdout: "", stderr: " ! [rejected]        feature -> feature (non-fast-forward)", conflicts: false };
+
+  it("does not push where Git cannot, and offers the Push dialog instead", async () => {
+    commands.getPushTarget.mockReturnValue(
+      Promise.resolve({ status: "error", error: { kind: "pushTargetRefused", branch: "feature", reason: "the repository's remote.origin.push setting sends it to refs/for/main, which is not a branch, and StashPanda only pushes to branches" } }),
+    );
+    await pushCurrentBranch(session());
+    expect(commands.opPush).not.toHaveBeenCalled();
+    expect(dialogs.open).not.toHaveBeenCalled();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]!.message).toMatch(/refs\/for\/main/);
+    expect(notices[0]!.action?.label).toBe("Choose where…");
+  });
+
+  it("says a refusal caused by rewriting the branch here needs a force push, not a pull", async () => {
+    commands.getPushTarget.mockReturnValue(ok({ remote: "origin", branch: "feature" }));
+    commands.opPush.mockReturnValue(ok(rejected));
+    commands.getRewrotePushedCommits.mockReturnValue(ok(true));
+    await pushCurrentBranch(session());
+    expect(commands.getRewrotePushedCommits).toHaveBeenCalledWith("repo", "feature", { remote: "origin", branch: "feature" });
+    expect(notices[0]!.message).toMatch(/rewritten here by an amend or a rebase/);
+    expect(notices[0]!.action?.label).toBe("Force push…");
+  });
+
+  it("offers to pull when someone else pushed", async () => {
+    commands.getPushTarget.mockReturnValue(ok({ remote: "origin", branch: "feature" }));
+    commands.opPush.mockReturnValue(ok(rejected));
+    commands.getRewrotePushedCommits.mockReturnValue(ok(false));
+    await pushCurrentBranch(session());
+    expect(notices[0]!.message).toBe("origin/feature has commits that feature does not have. Pull them first, then push again.");
+    expect(notices[0]!.action?.label).toBe("Pull…");
+  });
+
+  it("offers no pull into the checked-out branch for a branch that is not checked out", async () => {
+    const s = session() as unknown as { refs: { refs: { kind: { type: string }; short: string; upstream: string | null }[] } };
+    s.refs.refs.push({ kind: { type: "localBranch" }, short: "hotfix/x", upstream: "refs/remotes/origin/hotfix/x" });
+    commands.getPushTarget.mockReturnValue(ok({ remote: "origin", branch: "hotfix/x" }));
+    commands.opPush.mockReturnValue(ok(rejected));
+    commands.getRewrotePushedCommits.mockReturnValue(ok(false));
+    await pushBranch(s as never, "hotfix/x");
+    expect(notices[0]!.message).toMatch(/Check out hotfix\/x, pull origin\/hotfix\/x into it/);
+    expect(notices[0]!.action).toBeNull();
+  });
+
+  it("offers a force push, not another sync, after the sync's own rebase rewrote pushed commits", () => {
+    const result: SyncResult = {
+      target: { remote: "origin", branch: "main" },
+      pushTarget: { remote: "origin", branch: "feature" },
+      pull: { ok: true, exitCode: 0, stdout: "Successfully rebased and updated refs/heads/feature.", stderr: "", conflicts: false },
+      push: rejected,
+      nothingToPush: false,
+      pushStopped: false,
+      rewrotePushed: true,
+    };
+    const outcome = syncOutcome("repo", result, "feature", "rebase");
+    expect(outcome.message).toMatch(/rewrote commits that origin\/feature already had/);
+    expect(outcome.action?.label).toBe("Force push…");
+  });
+});
+
+describe("Push To", () => {
+  /** feature (checked out, tracking origin/main), release and topic locally; origin has main and release. */
+  function withBranches() {
+    const s = session() as unknown as { refs: { refs: { kind: { type: string; remote?: string }; short: string; upstream: string | null; target?: string }[] } };
+    s.refs.refs.push(
+      { kind: { type: "localBranch" }, short: "release", upstream: null, target: "local-release" },
+      { kind: { type: "localBranch" }, short: "topic", upstream: null, target: "local-topic" },
+      { kind: { type: "remoteBranch", remote: "origin" }, short: "origin/HEAD", upstream: null, target: "shown-main" },
+      { kind: { type: "remoteBranch", remote: "origin" }, short: "origin/main", upstream: null, target: "shown-main" },
+      { kind: { type: "remoteBranch", remote: "origin" }, short: "origin/release", upstream: null, target: "shown-release" },
+    );
+    return s;
+  }
+
+  it("offers this repository's other branches and each remote's branches, starting on the upstream", async () => {
+    withBranches();
+    dialogs.open.mockResolvedValue(null);
+    await pushBranchTo("repo", "topic");
+    expect(dialogs.open).toHaveBeenCalledWith("pushTo", {
+      key: "repo",
+      branch: "topic",
+      sourceOid: "local-topic",
+      servers: [
+        // Neither topic itself nor the checked-out feature.
+        { remote: null, label: "This repository (local)", branches: [{ name: "release", oid: "local-release" }] },
+        {
+          remote: "origin",
+          label: "origin",
+          branches: [
+            { name: "main", oid: "shown-main" },
+            { name: "release", oid: "shown-release" },
+          ],
+        },
+      ],
+      server: 1,
+      target: "topic",
+      force: false,
+    });
+    expect(commands.opPushTo).not.toHaveBeenCalled();
+  });
+
+  it("pushes into a local branch, and offers a force push when Git refuses", async () => {
+    withBranches();
+    dialogs.open.mockResolvedValue({ remote: null, target: "release", force: false, expected: "local-release", source: "local-topic" });
+    commands.opPushTo.mockReturnValue(ok({ ok: false, exitCode: 1, stdout: "", stderr: " ! [rejected]        topic -> release  (non-fast-forward)", conflicts: false }));
+    await pushBranchTo("repo", "topic");
+    expect(commands.opPushTo).toHaveBeenCalledWith("repo", expect.any(String), "topic", null, "release", false, "local-release", "local-topic");
+    expect(notices[0]!.message).toBe("release has commits that topic does not have, so it was not moved: only a fast-forward goes through without Force push.");
+    expect(notices[0]!.action?.label).toBe("Force push…");
+  });
+
+  it("force-pushes to a remote branch, and says so when the lease refuses", async () => {
+    withBranches();
+    // The commit the dialog listed the dropped commits for, which the lease then expects.
+    dialogs.open.mockResolvedValue({ remote: "origin", target: "release", force: true, expected: "listed-release", source: "listed-topic" });
+    commands.opPushTo.mockReturnValueOnce(ok(pushed));
+    await pushBranchTo("repo", "topic");
+    // Both ends pinned to the commits the dialog listed against.
+    expect(commands.opPushTo).toHaveBeenCalledWith("repo", expect.any(String), "topic", "origin", "release", true, "listed-release", "listed-topic");
+    expect(notices[notices.length - 1]!.message).toBe("Force-pushed topic to origin/release.");
+    commands.opPushTo.mockReturnValueOnce(ok({ ok: false, exitCode: 1, stdout: "", stderr: " ! [rejected]        topic -> release (stale info)", conflicts: false }));
+    await pushBranchTo("repo", "topic");
+    expect(notices[notices.length - 1]!.message).toMatch(/has moved since it was shown here, so the force push was refused/);
+    commands.opPushTo.mockReturnValueOnce(ok({ ok: false, exitCode: null, stdout: "", stderr: "topic has moved since the list of dropped commits was made (source moved), so nothing was pushed.", conflicts: false }));
+    await pushBranchTo("repo", "topic");
+    expect(notices[notices.length - 1]!.message).toMatch(/^topic has moved since the list of dropped commits was made, so nothing was pushed/);
+  });
+
+  it("starts with Force push ticked when a notice asked for it", async () => {
+    withBranches();
+    dialogs.open.mockResolvedValue(null);
+    await pushBranchTo("repo", "topic", { remote: "origin", target: "release", force: true });
+    expect(dialogs.open).toHaveBeenCalledWith("pushTo", expect.objectContaining({ server: 1, target: "release", force: true }));
+  });
+});
+
+describe("a sync whose push goes somewhere other than the branch it pulls from", () => {
+  it("says the push target has to be pulled, instead of offering to sync again", () => {
+    const result: SyncResult = {
+      target: { remote: "origin", branch: "shared" },
+      pushTarget: { remote: "origin", branch: "my-work" },
+      pull: { ok: true, exitCode: 0, stdout: "Already up to date.", stderr: "", conflicts: false },
+      push: { ok: false, exitCode: 1, stdout: "", stderr: " ! [rejected]        my-work -> my-work (fetch first)", conflicts: false },
+      nothingToPush: false,
+      pushStopped: false,
+      rewrotePushed: false,
+    };
+    const outcome = syncOutcome("repo", result, "my-work", "merge");
+    expect(outcome.message).toBe(
+      "origin/my-work has commits that my-work does not have, so the push was refused. Sync only pulls origin/shared, so pull origin/my-work into my-work first, then push again.",
+    );
+    expect(outcome.action?.label).toBe("Pull…");
   });
 });

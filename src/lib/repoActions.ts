@@ -23,7 +23,7 @@ import { commitFiles, selectedConflicts, worktreeActionPaths, type FileItem, typ
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
-import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice } from "@/stores/dialogs";
+import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice, type PushToServer } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
@@ -261,12 +261,13 @@ export function pullReason(session: RepoSession | null | undefined): string | nu
 }
 
 /**
- * Opens the Pull dialog for the checked-out branch, with its upstream picked. When the working tree
- * has uncommitted changes, asks first; going ahead pulls with `--autostash`. The mode starts as
- * the one last used in this repository, else what the repository's Git config asks for, else
- * Merge. The dialog runs the pull itself and reports the outcome.
+ * Opens the Pull dialog for the checked-out branch, with `preferSource` (a remote branch's short
+ * name, `origin/dev`) picked when there is one, else its upstream. When the working tree has
+ * uncommitted changes, asks first; going ahead pulls with `--autostash`. The mode starts as the
+ * one last used in this repository, else what the repository's Git config asks for, else Merge.
+ * The dialog runs the pull itself and reports the outcome.
  */
-export async function openPullDialog(session: RepoSession | null): Promise<void> {
+export async function openPullDialog(session: RepoSession | null, preferSource: string | null = null): Promise<void> {
   const sessions = useSessionsStore();
   const dialogs = useDialogsStore();
   const reason = pullReason(session);
@@ -286,7 +287,8 @@ export async function openPullDialog(session: RepoSession | null): Promise<void>
   }
   const upstream = refs.find((r) => r.kind.type === "localBranch" && r.short === into)?.upstream ?? null;
   const upstreamSource = upstream === null ? undefined : sources.find((s) => `refs/remotes/${s.short}` === upstream);
-  const source = upstreamSource ?? sources.find((s) => s.short === `origin/${into}`) ?? sources[0];
+  const preferred = preferSource === null ? undefined : sources.find((s) => s.short === preferSource);
+  const source = preferred ?? upstreamSource ?? sources.find((s) => s.short === `origin/${into}`) ?? sources[0];
 
   const autostash = await confirmAutostash(session, "Pull");
   if (autostash === null) return;
@@ -527,6 +529,44 @@ async function askWhereToPush(key: string, branch: string, upstream: PushTarget,
   return null;
 }
 
+/**
+ * The notice for a push of `branch` to `target` that the remote refused because it has commits the
+ * branch lacks. When they are missing because they were rewritten here (an amend or a rebase),
+ * pulling cannot help and only a force push would replace them, so it says that and offers
+ * nothing. Otherwise someone else pushed: for the checked-out branch, the button opens the Pull
+ * dialog on `target` itself, which is not the upstream when the two differ; another branch has to
+ * be checked out before anything can be pulled into it.
+ */
+async function rejectedPushNotice(key: string, branch: string, target: PushTarget): Promise<[string, NoticeAction | null]> {
+  const sessions = useSessionsStore();
+  const to = `${target.remote}/${target.branch}`;
+  let rewritten = false;
+  try {
+    rewritten = await unwrap(commands.getRewrotePushedCommits(key, branch, target));
+  } catch {
+    // Only chooses the wording; the usual reading is safe.
+  }
+  if (rewritten) {
+    return [
+      `${to} refused the push: ${branch} no longer has commits that ${to} has, because they were rewritten here by an amend or a rebase. ` +
+        `Replacing them on ${to} needs a force push. Pulling ${to} would bring the old copies back beside the new ones.`,
+      forcePushAction(key, branch, target.remote, target.branch),
+    ];
+  }
+  if (branch !== currentBranch(sessions.sessions.get(key))) {
+    return [`${to} has commits that ${branch} does not have. Check out ${branch}, pull ${to} into it, then push again.`, null];
+  }
+  return [
+    `${to} has commits that ${branch} does not have. Pull them first, then push again.`,
+    { label: "Pull…", run: () => openPullDialog(sessions.sessions.get(key) ?? null, `${target.remote}/${target.branch}`) },
+  ];
+}
+
+/** A notice's button that opens Push To for `branch`, to push it to a branch the user picks. */
+function chooseWhereToPush(key: string, branch: string): NoticeAction {
+  return { label: "Choose where…", run: () => pushBranchTo(key, branch) };
+}
+
 /** Why local branch `branch` cannot be pushed right now, or null when it can. */
 export function pushBranchReason(session: RepoSession | null | undefined, branch: string): string | null {
   if (!session) return "Open a repository first.";
@@ -549,13 +589,16 @@ export async function pushCurrentBranch(session: RepoSession | null): Promise<vo
 
 /**
  * Pushes local `branch`, checked out or not, where plain `git push` would: the remote branch it
- * tracks, with progress and Stop in the status bar. A branch that tracks nothing opens the Push
+ * tracks, or where `remote.pushDefault`, `branch.<name>.pushRemote` or the remote's push refspecs
+ * send it, with progress and Stop in the status bar. A branch that tracks nothing opens the Push
  * dialog to choose where, and to create that remote branch; it then tracks it, set as a step of
  * its own after the push (`trackAfter`), as `git push --set-upstream` would leave it untracking
  * without failing when `.git/config` is locked. One whose upstream has another name, when Git's
  * `push.default` does not push there, asks first (`askWhereToPush`), so that a branch started
- * from `origin/main` is never pushed onto `main` unasked. Never forces: when the remote has
- * commits the branch lacks, the notice offers to pull them.
+ * from `origin/main` is never pushed onto `main` unasked. One that `git push` would send
+ * somewhere StashPanda cannot push (a review ref such as `refs/for/main`) is not pushed; the
+ * notice offers Push To instead. Never forces: when the remote has commits the branch lacks, the
+ * notice offers to pull them.
  */
 export async function pushBranch(session: RepoSession | null, branch: string): Promise<void> {
   const sessions = useSessionsStore();
@@ -565,13 +608,17 @@ export async function pushBranch(session: RepoSession | null, branch: string): P
     return;
   }
   const key = session.key;
-  let target: PushTarget | null;
+  let target: PushTarget | null = null;
   let tracks: string | null = null;
   // Pushed where Git decides, the backend works the target out again; a chosen one is passed.
   let chosen = false;
   try {
     target = await unwrap(commands.getPushTarget(key, branch));
   } catch (e) {
+    if (e instanceof IpcError && e.error.kind === "pushTargetRefused") {
+      sessions.notify(errorMessage(e), chooseWhereToPush(key, branch));
+      return;
+    }
     if (!(e instanceof IpcError && e.error.kind === "invalidPath")) {
       sessions.notify(errorMessage(e));
       return;
@@ -617,10 +664,7 @@ export async function pushBranch(session: RepoSession | null, branch: string): P
       if (setUpstream) await trackAfter(key, branch, `refs/remotes/${target.remote}/${target.branch}`, done);
       else sessions.notifySuccess(done);
     } else if (result.stderr.includes("[rejected]")) {
-      sessions.notify(`${to} has commits that ${branch} does not have. Pull them first, then push again.`, {
-        label: "Pull…",
-        run: () => openPullDialog(sessions.sessions.get(key) ?? null),
-      });
+      sessions.notify(...(await rejectedPushNotice(key, branch, target)));
     } else {
       sessions.notify(networkFailureText(result, `Pushing ${branch} to ${to}`));
     }
@@ -669,6 +713,11 @@ export async function syncCurrentBranch(session: RepoSession | null): Promise<vo
   try {
     await unwrap(commands.getPushTarget(key, branch));
   } catch (e) {
+    if (e instanceof IpcError && e.error.kind === "pushTargetRefused") {
+      // Nothing has been pulled yet, and a sync cannot push where Git would; push it by itself.
+      sessions.notify(`${errorMessage(e)} Nothing was synced.`, chooseWhereToPush(key, branch));
+      return;
+    }
     if (!(e instanceof IpcError && e.error.kind === "invalidPath")) {
       sessions.notify(errorMessage(e));
       return;
@@ -722,6 +771,26 @@ export function syncOutcome(key: string, result: SyncResult, branch: string, mod
   }
   const push = result.push;
   if (push?.ok) return { message: `${pullPart}Pushed ${branch} to ${pushTo}.`, kind: pulled.kind, action: null, failed: false };
+  if (push && push.stderr.includes("[rejected]") && result.rewrotePushed) {
+    // Syncing again would rebase and be refused again; only a force push would replace them.
+    return {
+      message:
+        `${pullPart}The rebase onto ${to} rewrote commits that ${pushTo} already had, so ${pushTo} refused the push. ` +
+        `Replacing them on ${pushTo} needs a force push. To keep ${pushTo} as it is instead, reset ${branch} to ${pushTo}, then sync with Merge rather than Rebase.`,
+      kind: "error",
+      action: forcePushAction(key, branch, result.pushTarget.remote, result.pushTarget.branch),
+      failed: false,
+    };
+  }
+  if (push && push.stderr.includes("[rejected]") && pushTo !== to) {
+    // The sync pulls the upstream, never the push target, so syncing again cannot bring these in.
+    return {
+      message: `${pullPart}${pushTo} has commits that ${branch} does not have, so the push was refused. Sync only pulls ${to}, so pull ${pushTo} into ${branch} first, then push again.`,
+      kind: "error",
+      action: { label: "Pull…", run: () => openPullDialog(sessions.sessions.get(key) ?? null, pushTo) },
+      failed: false,
+    };
+  }
   if (push && push.stderr.includes("[rejected]")) {
     return {
       message: `${pullPart}${pushTo} received new commits while the sync was running, so the push was refused. Sync again.`,
@@ -1369,6 +1438,142 @@ export async function deleteRemoteBranch(key: string, short: string, remote: str
   } catch (e) {
     sessions.notify(isCancelled(e) ? `The deletion was stopped. ${remote} may already have deleted ${branch}; the next fetch shows whether it did.` : errorMessage(e));
   }
+}
+
+/** Why a branch cannot be fast-forwarded or pushed to another branch right now, or null when it can. */
+export function fastForwardReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (!session.refs) return "The repository is still loading.";
+  return busyReason(session);
+}
+
+/**
+ * Moves local branch `branch`, which is not checked out, forward to the checked-out branch with
+ * `git fetch . <current>:<branch>`, without checking it out: the files, the index and the
+ * checked-out branch stay as they are, so uncommitted changes are fine. The branch menu offers it
+ * only for a branch on the current branch's own lane (`getFastForwardsToHead`); Git refuses when
+ * it is no longer a fast-forward.
+ */
+export async function fastForwardToHead(key: string, branch: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const session = sessions.sessions.get(key);
+  const current = currentBranch(session);
+  const reason = fastForwardReason(session);
+  if (reason || current === null) {
+    sessions.notify(reason ?? "HEAD is detached. Check out a branch first.");
+    return;
+  }
+  try {
+    const result = await runOp(key, () => commands.opBranchFastForward(key, branch, current));
+    if (result.ok) sessions.notifySuccess(`Fast-forwarded ${branch} to ${current}.`);
+    else sessions.notify(localPushFailure(result, current, branch, false), null);
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/** Where Push To starts: a server (by remote name, null for this repository), a branch there, and Force push. */
+export interface PushToPreset {
+  remote: string | null;
+  target: string;
+  force: boolean;
+}
+
+/**
+ * Opens the Push To dialog for local branch `branch`: choose a server (this repository, or one of
+ * its remotes) and one of the branches there, and whether to force. Then pushes: to a remote with
+ * `git push` (forced with `--force-with-lease`, against the commit last fetched), or into a local
+ * branch with `git fetch . <branch>:<target>`, which checks nothing out. Without Force push only a
+ * fast-forward goes through. `preset` picks the server, branch and Force push the dialog starts
+ * with; otherwise it starts on the branch's upstream, else the same name on origin.
+ */
+export async function pushBranchTo(key: string, branch: string, preset: PushToPreset | null = null): Promise<void> {
+  const sessions = useSessionsStore();
+  const session = sessions.sessions.get(key);
+  const reason = fastForwardReason(session);
+  if (reason || !session?.refs) {
+    sessions.notify(reason ?? "The repository is still loading.");
+    return;
+  }
+  const refs = session.refs.refs;
+  const current = currentBranch(session);
+  // During a rebase HEAD is detached, but the branch being rebased is just as much in use.
+  const rebasing = session.status?.inProgress?.branch ?? null;
+  const local = refs
+    .filter((r) => r.kind.type === "localBranch" && r.short !== branch && r.short !== current && r.fullName !== rebasing)
+    .map((r) => ({ name: r.short, oid: r.target }));
+  const servers: PushToServer[] = [
+    { remote: null, label: "This repository (local)", branches: local },
+    ...session.refs.remotes.map((remote) => ({
+      remote: remote.name,
+      label: remote.name,
+      branches: refs.flatMap((r) => {
+        if (r.kind.type !== "remoteBranch" || r.kind.remote !== remote.name) return [];
+        const name = stripRemote(r.short, remote.name);
+        return name === "HEAD" ? [] : [{ name, oid: r.target }];
+      }),
+    })),
+  ];
+  const upstream = refs.find((r) => r.kind.type === "localBranch" && r.short === branch)?.upstream ?? null;
+  const tracked = upstream === null ? null : servers.find((s) => s.remote !== null && upstream.startsWith(`refs/remotes/${s.remote}/`));
+  const start = preset ?? {
+    remote: tracked?.remote ?? (servers.some((s) => s.remote === "origin") ? "origin" : null),
+    target: tracked && upstream ? upstream.slice(`refs/remotes/${tracked.remote}/`.length) : branch,
+    force: false,
+  };
+  const server = Math.max(0, servers.findIndex((s) => s.remote === start.remote));
+  const sourceOid = refs.find((r) => r.kind.type === "localBranch" && r.short === branch)?.target ?? null;
+  if (sourceOid === null) {
+    sessions.notify(`${branch} is not a branch here any more.`);
+    return;
+  }
+  const choice = await useDialogsStore().open("pushTo", { key, branch, sourceOid, servers, server, target: start.target, force: start.force });
+  if (!choice) return;
+  const to = choice.remote === null ? choice.target : `${choice.remote}/${choice.target}`;
+  const what = `${choice.force ? "Force-pushing" : "Pushing"} ${branch} to ${to}`;
+  try {
+    // A force push replaces the remote branch only if it is still at the commit whose dropped
+    // commits the dialog listed, not wherever a background fetch has moved it since.
+    const result = await runOperation(key, what, (opId) => commands.opPushTo(key, opId, branch, choice.remote, choice.target, choice.force, choice.expected, choice.source));
+    if (result.ok) {
+      sessions.notifySuccess(choice.remote === null ? `${choice.target} now points at ${branch}'s commit.` : `${choice.force ? "Force-pushed" : "Pushed"} ${branch} to ${to}.`);
+    } else if (result.stderr.includes("(source moved)")) {
+      sessions.notify(`${branch} has moved since the list of dropped commits was made, so nothing was pushed. Open Push To again to see what would be dropped now.`);
+    } else if (choice.remote === null && choice.force && /cannot lock ref|but expected/i.test(result.stderr)) {
+      sessions.notify(`${choice.target} has moved since the list of dropped commits was made, so it was not moved. Open Push To again to see what would be dropped now.`);
+    } else if (choice.remote === null) {
+      // Forcing only helps a move that is not a fast-forward, not one into a branch in use.
+      const forceHelps = !choice.force && result.stderr.includes("[rejected]");
+      sessions.notify(localPushFailure(result, branch, choice.target, choice.force), forceHelps ? forcePushAction(key, branch, null, choice.target) : null);
+    } else if (result.stderr.includes("(stale info)")) {
+      sessions.notify(`${to} has moved since it was shown here, so the force push was refused and its new commits were kept. Fetch, look at them, then push again.`);
+    } else if (result.stderr.includes("[rejected]")) {
+      sessions.notify(...(await rejectedPushNotice(key, branch, { remote: choice.remote, branch: choice.target })));
+    } else {
+      sessions.notify(networkFailureText(result, what));
+    }
+  } catch (e) {
+    sessions.notify(isCancelled(e) ? `The push was stopped. ${to} may already have the commits; the next fetch shows whether it does.` : errorMessage(e));
+  }
+}
+
+/** The notice for a push of local branch `source` into local branch `target` that Git refused. */
+function localPushFailure(result: OpResult, source: string, target: string, forced: boolean): string {
+  const detail = `${result.stderr}\n${result.stdout}`;
+  const inUse = /refusing to move [^:]+: (.+)$/m.exec(result.stderr);
+  if (inUse) return `${target} cannot be moved: ${inUse[1]}. Moving it now would leave that worktree out of step with it.`;
+  if (/checked out at/i.test(detail)) {
+    return `${target} is checked out, here or in another worktree, so Git will not move it: its files would no longer match it. Check out another branch there first.`;
+  }
+  if (!forced && detail.includes("[rejected]")) {
+    return `${target} has commits that ${source} does not have, so it was not moved: only a fast-forward goes through without Force push.`;
+  }
+  return opFailureText(result, `Moving ${target} to ${source}`);
+}
+
+/** A notice's button that opens Push To with Force push ticked, on `remote` (null for this repository) and `target`. */
+function forcePushAction(key: string, branch: string, remote: string | null, target: string): NoticeAction {
+  return { label: "Force push…", run: () => pushBranchTo(key, branch, { remote, target, force: true }) };
 }
 
 /**

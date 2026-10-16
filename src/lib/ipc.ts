@@ -87,6 +87,8 @@ export function GitErrorMessage(error: GitError): string {
       return `Git could not save to the repository's settings file, because ${error.lockPath} is there. Another Git process may be saving to it.`;
     case "invalidPath":
       return `The path ${error.path} is not valid: ${error.reason}`;
+    case "pushTargetRefused":
+      return `${error.branch} cannot be pushed where git push would send it: ${error.reason}.`;
     case "headMoved":
       return error.current === null
         ? `${error.expected} is no longer checked out (HEAD is detached now), so nothing was changed.`

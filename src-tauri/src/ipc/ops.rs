@@ -345,9 +345,12 @@ async fn pull_steps(
 /// commits are complete) and the branch has commits the upstream lacks. `opCancel` stops it while
 /// it fetches or pushes, not while it merges or rebases; a stop after the merge comes back as
 /// `pushStopped` rather than `cancelled`, since the pull did happen. Fails with `invalidPath`
-/// when the branch has no upstream, and, before anything runs, when `git push` would not push to
-/// its upstream because the names differ (see `ops::push_target_for`). A `pushTo` the user chose
-/// for this sync replaces where `git push` would push.
+/// when the branch has no upstream, and, before anything runs, when `git push` would refuse to
+/// push it (see `ops::implicit_push_target`). The push goes where `git push` would send it, which
+/// `remote.pushDefault`, `branch.<name>.pushRemote` or the remote's push refspecs can make another
+/// remote or name than the upstream that was pulled. A `pushTo` the user chose
+/// for this sync replaces where `git push` would push. Fails with `headMoved`, changing nothing,
+/// when `branch` is not the checked-out branch.
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
@@ -387,13 +390,16 @@ async fn sync_steps(
     })?;
     let push_target = match push_to {
         Some(chosen) => chosen,
-        None => ops::push_target_for(&h.client, branch, target.clone()).await?,
+        // Where `git push` would push, which `remote.pushDefault` or the remote's push refspecs
+        // can make another remote or another name than the upstream.
+        None => ops::implicit_push_target(&h.client, branch).await?.unwrap_or_else(|| target.clone()),
     };
     let pull = pull_steps(h, &op, emit, &target.remote, &target.branch, branch, mode, autostash).await?;
     if let Some(lock_path) = ops::index_lock_in(&pull) {
         return Err(GitError::IndexLocked { lock_path });
     }
-    let mut result = SyncResult { target: target.clone(), push_target: push_target.clone(), pull, push: None, nothing_to_push: false, push_stopped: false };
+    let mut result =
+        SyncResult { target: target.clone(), push_target: push_target.clone(), pull, push: None, nothing_to_push: false, push_stopped: false, rewrote_pushed: false };
     if !result.pull.ok {
         return Ok(result);
     }
@@ -412,7 +418,11 @@ async fn sync_steps(
     }
     let progress = |line: String| emit(line, true);
     match ops::push(&h.client, branch, &push_target, &progress, &op.token).await {
-        Ok(r) => result.push = Some(r),
+        Ok(r) => {
+            // Only says why; a failure to tell leaves the usual "someone pushed" reading.
+            result.rewrote_pushed = ops::push_rejected(&r) && ops::rewrote_pushed_commits(&h.client, branch, &push_target).await.unwrap_or(false);
+            result.push = Some(r);
+        }
         Err(GitError::Cancelled) => result.push_stopped = true,
         Err(e) => return Err(e),
     }
@@ -464,8 +474,8 @@ pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, o
 }
 
 /// Push local `branch`. With no `target`, where plain `git push` would push it (failing with
-/// `invalidPath` when it has no upstream, or when `push.default` refuses an upstream with another
-/// name: call `getPushTarget` first); with a `target` the user chose, there. It never sets the
+/// `invalidPath` when it has no upstream, or when Git would refuse: call `getPushTarget` first);
+/// with a `target` the user chose, there. It never sets the
 /// upstream; to make the branch track the target, call `opBranchSetUpstream` after it succeeds,
 /// as its own step that can be retried if `.git/config` is locked. Never forces: a rejected push comes back with `ok: false` and
 /// `[rejected]` in stderr. `opId` works as for `opPull`; `opCancel` stops it at any point.
@@ -529,15 +539,43 @@ pub async fn get_upstream(state: State<'_, AppState>, key: String, branch: Strin
     ops::upstream_of(&h.client, &branch).await
 }
 
-/// Where local `branch` goes when it is pushed without choosing a target: its upstream, or null
-/// when it has none. Fails with `invalidPath` when the upstream has another name and `push.default`
-/// does not push there (see `ops::push_target_for`); the Push dialog can still choose it.
+/// Where local `branch` goes when it is pushed without choosing a target, as `git push` decides it
+/// from `branch.<name>.pushRemote`, `remote.pushDefault`, the remote's push refspecs, the upstream
+/// and `push.default`; null when it has no upstream and nothing else says. Fails with
+/// `invalidPath` when `git push` would refuse, or would push somewhere that is not a branch (see
+/// `ops::implicit_push_target`); the Push dialog can still choose a target.
 #[tauri::command]
 #[specta::specta]
 pub async fn get_push_target(state: State<'_, AppState>, key: String, branch: String) -> Result<Option<PushTarget>> {
     let h = repo(&state, &key).await?;
     let _shared = h.lock.read().await;
     ops::implicit_push_target(&h.client, &branch).await
+}
+
+/// True when HEAD is already on the remote branch that local `branch` is pushed to (as last
+/// fetched), so amending it and pushing would need a force push. False when `branch` has nowhere
+/// `git push` would send it.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_head_on_push_target(state: State<'_, AppState>, key: String, branch: String) -> Result<bool> {
+    let h = repo(&state, &key).await?;
+    let _shared = h.lock.read().await;
+    match ops::implicit_push_target(&h.client, &branch).await {
+        Ok(Some(target)) => ops::head_on_push_target(&h.client, &target).await,
+        Ok(None) | Err(GitError::InvalidPath { .. } | GitError::PushTargetRefused { .. }) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// After a push of local `branch` to `target` was refused, true when the branch lacks the
+/// target's commits because they were rewritten here (an amend or a rebase), not because someone
+/// else pushed: pulling cannot fix that, and only a force push would replace them.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_rewrote_pushed_commits(state: State<'_, AppState>, key: String, branch: String, target: PushTarget) -> Result<bool> {
+    let h = repo(&state, &key).await?;
+    let _shared = h.lock.read().await;
+    ops::rewrote_pushed_commits(&h.client, &branch, &target).await
 }
 
 /// Set `push.default` to `mode` in this repository's own config, so a branch whose upstream has
@@ -603,6 +641,87 @@ pub async fn op_stash_pop(app: AppHandle, state: State<'_, AppState>, key: Strin
 #[specta::specta]
 pub async fn op_stash_drop(app: AppHandle, state: State<'_, AppState>, key: String, index: u32, oid: String) -> Result<OpResult> {
     write_op!(app, state, key, |c| ops::stash_drop(c, index, &oid).await)
+}
+
+/// True when local branch `branch` is not checked out, is behind HEAD, and lies on the checked-out
+/// branch's own first-parent line, so `opBranchFastForward` can move it up to HEAD. The branch's
+/// menu offers "Fast-forward to <current branch>" only then.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_fast_forwards_to_head(state: State<'_, AppState>, key: String, branch: String) -> Result<bool> {
+    let h = repo(&state, &key).await?;
+    let _shared = h.lock.read().await;
+    ops::fast_forwards_to_head(&h.client, &branch).await
+}
+
+/// Move local branch `branch` forward to the checked-out branch `current`, without checking it
+/// out, so uncommitted changes are fine: `git fetch . <current>:<branch>`. Refused with `ok:
+/// false`, changing nothing, when it would not be a fast-forward (`[rejected]` in stderr) or when
+/// a worktree has the branch checked out.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_branch_fast_forward(app: AppHandle, state: State<'_, AppState>, key: String, branch: String, current: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::push_to_local_branch(c, &current, &branch).await)
+}
+
+/// The commits a force push of commit `source` over a branch now at commit `tip` would drop from
+/// it, newest first (at most 50), and how many in all: what the Push To dialog lists before a
+/// force push, for the same `source` and `tip` it then passes to `opPushTo`.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_commits_dropped(state: State<'_, AppState>, key: String, source: String, tip: String) -> Result<ops::DroppedCommits> {
+    let h = repo(&state, &key).await?;
+    let _shared = h.lock.read().await;
+    ops::commits_dropped(&h.client, &source, &tip, 50).await
+}
+
+/// Push local branch `branch` to branch `target` on `remote`, or, with no `remote`, to local
+/// branch `target` of this repository (`git fetch . <branch>:<target>`, which checks nothing out).
+/// Without `force`, only a fast-forward is allowed: a refusal comes back with `ok: false` and
+/// `[rejected]` in stderr. With `force`, both ends are pinned to the commits the dropped list was
+/// made from: `source`, which `branch` must still point at (otherwise `ok: false` with "source
+/// moved" in stderr), is what is sent, and the target must still be at `expected` (a remote push
+/// fails with `(stale info)` in stderr; a local move is refused by `git update-ref`). Never sets an upstream. `opId` works as for `opPush`
+/// for a remote; a local push is too quick to stop.
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::too_many_arguments)]
+pub async fn op_push_to(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    op_id: String,
+    branch: String,
+    remote: Option<String>,
+    target: String,
+    force: bool,
+    expected: Option<String>,
+    source: Option<String>,
+) -> Result<OpResult> {
+    let pinned = || -> Result<(String, String)> {
+        match (&source, &expected) {
+            (Some(s), Some(e)) => Ok((s.clone(), e.clone())),
+            _ => Err(GitError::InvalidPath { path: target.clone(), reason: "a force push needs the commits its dropped list was made from".into() }),
+        }
+    };
+    match remote {
+        Some(remote) => network_op!(app, state, key, op_id, |h, progress, cancel| {
+            let to = PushTarget { remote, branch: target.clone() };
+            if force {
+                match pinned() {
+                    Ok((source, expected)) => ops::force_push(&h.client, &branch, &source, &to, &expected, &progress, cancel).await,
+                    Err(e) => Err(e),
+                }
+            } else {
+                ops::push(&h.client, &branch, &to, &progress, cancel).await
+            }
+        }),
+        None if force => {
+            let (source, expected) = pinned()?;
+            write_op!(app, state, key, |c| ops::force_move_local_branch(c, &branch, &source, &target, &expected).await)
+        }
+        None => write_op!(app, state, key, |c| ops::push_to_local_branch(c, &branch, &target).await),
+    }
 }
 
 /// Rename local branch `oldName` to `newName`, keeping its upstream.

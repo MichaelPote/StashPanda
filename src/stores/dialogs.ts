@@ -147,6 +147,47 @@ export interface PushDefaultPayload {
  */
 export type PushDefaultChoice = { kind: "once" } | { kind: "always"; mode: PushDefault } | { kind: "otherTarget" };
 
+/** A place the Push To dialog can push to: this repository itself, or one of its remotes. */
+export interface PushToServer {
+  /** The remote's name, or null for this repository (`git fetch .`). */
+  remote: string | null;
+  /** What the dropdown shows: `origin`, or "This repository (local)". */
+  label: string;
+  /**
+   * The branches there that can be pushed to, by their name on that server (`dev`, not
+   * `origin/dev`), each with the commit this repository shows for it.
+   */
+  branches: { name: string; oid: string }[];
+}
+
+export interface PushToPayload {
+  key: string;
+  /** The local branch being pushed. */
+  branch: string;
+  /** The commit `branch` points at as shown: what a force push's dropped list is made against, and what it then sends. */
+  sourceOid: string;
+  servers: PushToServer[];
+  /** Picked when the dialog opens: the index into `servers`, and a branch name there (or null for the first). */
+  server: number;
+  target: string | null;
+  /** Whether "Force push" starts ticked. */
+  force: boolean;
+}
+
+/** Where the Push To dialog chose to push `branch`, and whether to force it. */
+export interface PushToChoice {
+  remote: string | null;
+  target: string;
+  force: boolean;
+  /**
+   * The commit the dialog showed for the target, whose dropped commits it listed: a force push
+   * expects the target to be exactly there.
+   */
+  expected: string;
+  /** The commit the list was made against (`sourceOid`): a force push sends exactly this one. */
+  source: string;
+}
+
 /** Where the Push dialog chose to push, and whether the branch should track it from now on. */
 export interface PushChoice {
   target: PushTarget;
@@ -276,6 +317,7 @@ export interface DialogSpecs {
   merge: { payload: MergePayload; result: OpResult | null };
   rebase: { payload: RebasePayload; result: OpResult | null };
   push: { payload: PushPayload; result: PushChoice | null };
+  pushTo: { payload: PushToPayload; result: PushToChoice | null };
   pushDefault: { payload: PushDefaultPayload; result: PushDefaultChoice | null };
   /** Resolves with the command's result, or null when nothing ran (cancelled, or nothing changed). */
   trackRemoteBranch: { payload: TrackRemoteBranchPayload; result: OpResult | null };
@@ -307,6 +349,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   merge: null,
   rebase: null,
   push: null,
+  pushTo: null,
   pushDefault: null,
   trackRemoteBranch: null,
   confirm: false,

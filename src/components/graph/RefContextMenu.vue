@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
-import type { RefKind } from "@/lib/bindings";
+import { computed, ref } from "vue";
+import { commands, type RefKind } from "@/lib/bindings";
+import { unwrap } from "@/lib/ipc";
 import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import HueSubmenu from "@/components/ui/HueSubmenu.vue";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
@@ -14,9 +15,12 @@ import {
   deleteRemoteBranch,
   deleteRemoteBranchReason,
   dirtyTreeReason,
+  fastForwardReason,
+  fastForwardToHead,
   isDetached,
   mergeInto,
   pushBranch,
+  pushBranchTo,
   pushBranchReason,
   removeTag,
   renameBranch,
@@ -82,6 +86,23 @@ const mergeReason = computed(() => {
 
 const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch cannot be deleted." : null));
 
+/**
+ * True when this local branch is behind HEAD on the checked-out branch's own lane, so it can be
+ * fast-forwarded to it. Asked each time the menu opens; the item shows once the answer is yes.
+ */
+const fastForwards = ref(false);
+const fastForwardBlocked = computed(() => fastForwardReason(session.value));
+async function onOpenChange(open: boolean): Promise<void> {
+  if (!open) return;
+  fastForwards.value = false;
+  if (props.kind.type !== "localBranch" || props.isCurrent || branch.value === null) return;
+  try {
+    fastForwards.value = await unwrap(commands.getFastForwardsToHead(props.sessionKey, props.short));
+  } catch {
+    // Not offered.
+  }
+}
+
 /** A local branch pushes to the remote branch it tracks; with none, the Push dialog creates one. */
 const pushUpstream = computed(() => {
   if (props.kind.type !== "localBranch") return null;
@@ -105,7 +126,7 @@ function chooseColour(colour: number | null): void {
 </script>
 
 <template>
-  <ContextMenu>
+  <ContextMenu @update:open="onOpenChange">
     <ContextMenuTrigger as-child @contextmenu.stop>
       <slot />
     </ContextMenuTrigger>
@@ -116,11 +137,15 @@ function chooseColour(colour: number | null): void {
       <ActionMenuItem v-if="kind.type !== 'tag'" :reason="mergeReason" @select="mergeInto(sessionKey, revisionOf(props, session?.refs?.refs ?? []), short)">
         Merge {{ short }} into {{ branch ?? "current branch" }}
       </ActionMenuItem>
+      <ActionMenuItem v-if="fastForwards && branch" :reason="fastForwardBlocked" @select="fastForwardToHead(sessionKey, short)">
+        Fast-forward to {{ branch }}
+      </ActionMenuItem>
       <ActionMenuItem @select="createBranchHere(sessionKey, target, short)">Create Branch Here…</ActionMenuItem>
 
       <template v-if="kind.type === 'localBranch'">
         <ContextMenuSeparator />
         <ActionMenuItem :reason="pushReason" @select="pushBranch(session, short)">{{ pushText }}</ActionMenuItem>
+        <ActionMenuItem :reason="fastForwardBlocked" @select="pushBranchTo(sessionKey, short)">Push To…</ActionMenuItem>
         <ActionMenuItem @select="trackRemoteBranch(sessionKey, short)">Track Remote Branch…</ActionMenuItem>
         <ActionMenuItem @select="renameBranch(sessionKey, short)">Rename Branch…</ActionMenuItem>
         <ActionMenuItem destructive :reason="deleteReason" @select="deleteBranch(sessionKey, short)">Delete Branch…</ActionMenuItem>
