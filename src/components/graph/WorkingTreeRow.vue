@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils";
 const props = defineProps<{
   row: GraphRow;
   selected: boolean;
+  /** Where the label starts, in pixels, when the lanes are drawn inside the message column; null when they have their own. */
+  indent?: number | null;
 }>();
 
 const badges = computed(() => {
@@ -29,7 +31,7 @@ const badges = computed(() => {
     :aria-selected="selected"
   >
     <div />
-    <div class="flex min-w-0 items-center gap-1.5 overflow-hidden pr-2 leading-(--row-h)">
+    <div class="flex min-w-0 items-center gap-1.5 overflow-hidden pr-2 leading-(--row-h)" :style="indent != null ? { paddingLeft: `${indent}px` } : undefined">
       <span class="shrink-0 italic">Working Tree</span>
       <span
         v-for="b in badges"

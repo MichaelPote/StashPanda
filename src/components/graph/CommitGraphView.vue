@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from "vue";
-import { useEventListener } from "@vueuse/core";
+import { useElementSize, useEventListener } from "@vueuse/core";
 import type { DateFormat, GraphRow } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
@@ -16,7 +16,7 @@ import WorkingTreeRow from "@/components/graph/WorkingTreeRow.vue";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { useGraphPages } from "@/composables/useGraphPages";
 import { autoAuthorWidth, autoDateWidth, autoIdWidth, fontsVersion } from "@/lib/graph/columnWidths";
-import { autoGraphColumnWidth, ROW_HEIGHT } from "@/lib/graph/paths";
+import { autoGraphColumnWidth, messageIndent, ROW_HEIGHT } from "@/lib/graph/paths";
 import { isEditableTarget } from "@/lib/files";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useDialogsStore } from "@/stores/dialogs";
@@ -74,6 +74,14 @@ const total = computed(() => meta.value?.total ?? 0);
 const graphWidth = computed(
   () => uiState.state?.graphColumns?.graph ?? autoGraphColumnWidth(meta.value?.maxLanes ?? 0),
 );
+/**
+ * With `appearance.graphInMessageColumn` the lanes are drawn over the start of the commit
+ * message column, which then takes the graph column's place, and each row's message starts just
+ * past the lanes on that row (`messageIndent`).
+ */
+const graphInMessages = computed(() => settings.settings?.appearance?.graphInMessageColumn ?? false);
+/** How wide the lanes are drawn: the graph column, or every lane when they share the message column. */
+const lanesWidth = computed(() => (graphInMessages.value ? autoGraphColumnWidth(meta.value?.maxLanes ?? 0) : graphWidth.value));
 watch(
   () => meta.value?.maxLanes,
   (lanes, before) => {
@@ -97,7 +105,7 @@ const idWidth = computed(() => {
 });
 
 const columnStyle = computed(() => ({
-  "--col-graph": `${graphWidth.value}px`,
+  "--col-graph": graphInMessages.value ? "0px" : `${graphWidth.value}px`,
   "--col-author": `${authorWidth.value}px`,
   "--col-date": `${dateWidth.value}px`,
   "--col-id": `${idWidth.value}px`,
@@ -112,8 +120,24 @@ function onResize(column: ResizableColumn, width: number | null): void {
 // ---- Rows in the window --------------------------------------------------------------------
 
 const list = ref<InstanceType<typeof VirtualRowList> | null>(null);
+/** The rows' width inside the scroller, without its scrollbar. */
+const { width: rowsWidth } = useElementSize(computed(() => list.value?.element ?? null));
+/**
+ * How wide the lanes are drawn. Sharing the message column, they stop at its right edge, so a
+ * message column narrowed by wide Author, Date or ID columns clips the outer lanes rather than
+ * drawing them over those columns.
+ */
+const lanesClip = computed(() => {
+  if (!graphInMessages.value || rowsWidth.value <= 0) return lanesWidth.value;
+  return Math.max(0, Math.min(lanesWidth.value, rowsWidth.value - authorWidth.value - dateWidth.value - idWidth.value));
+});
 const start = computed(() => list.value?.start ?? 0);
 const end = computed(() => list.value?.end ?? 0);
+
+/** Where row `index`'s message starts when the graph shares its column, or null when it has a column of its own. */
+function indentOf(index: number, row: GraphRow): number | null {
+  return graphInMessages.value ? messageIndent(row, index > 0 ? pages.rowAt(index - 1) : undefined) : null;
+}
 
 const visibleRows = computed<(GraphRow | undefined)[]>(() => {
   // Reading `pagesVersion` makes this recompute when a page lands.
@@ -357,7 +381,14 @@ function onFindClosed(): void {
         </span>
       </template>
     </PanelHeader>
-    <GraphHeader :graph-width="graphWidth" :author-width="authorWidth" :date-width="dateWidth" :id-width="idWidth" @resize="onResize" />
+    <GraphHeader
+      :graph-width="graphWidth"
+      :author-width="authorWidth"
+      :date-width="dateWidth"
+      :id-width="idWidth"
+      :graph-column="!graphInMessages"
+      @resize="onResize"
+    />
 
     <EmptyState v-if="meta && meta.version > 0 && meta.total === 0 && !session.graph.loading" message="This repository has no commits yet." />
 
@@ -370,15 +401,15 @@ function onFindClosed(): void {
         @update:scroll-top="onScrollTop"
       >
         <template #default="{ start: s }">
-          <div class="graph-lanes-clip pointer-events-none absolute top-0 left-0 z-10 h-full overflow-hidden" :style="{ width: `${graphWidth}px` }">
-            <GraphLanesSvg :rows="svgRows" :first="svgFirst" :block-start="s" :row-height="ROW_HEIGHT" :width="graphWidth" />
+          <div class="graph-lanes-clip pointer-events-none absolute top-0 left-0 z-10 h-full overflow-hidden" :style="{ width: `${lanesClip}px` }">
+            <GraphLanesSvg :rows="svgRows" :first="svgFirst" :block-start="s" :row-height="ROW_HEIGHT" :width="lanesWidth" />
           </div>
           <template v-for="(row, k) in visibleRows" :key="s + k">
             <WorkingTreeContextMenu v-if="row && row.kind === 'workingTree'" :session="session">
-              <WorkingTreeRow :row="row" :selected="selection.oids.has(row.oid)" />
+              <WorkingTreeRow :row="row" :selected="selection.oids.has(row.oid)" :indent="indentOf(s + k, row)" />
             </WorkingTreeContextMenu>
             <CommitContextMenu v-else-if="row" :row="row" :session="session">
-              <CommitRow :row="row" :selected="selection.oids.has(row.oid)" />
+              <CommitRow :row="row" :selected="selection.oids.has(row.oid)" :indent="indentOf(s + k, row)" />
             </CommitContextMenu>
             <RowSkeleton v-else :index="s + k" />
           </template>

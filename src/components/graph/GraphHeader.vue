@@ -8,6 +8,8 @@ const props = defineProps<{
   authorWidth: number;
   dateWidth: number;
   idWidth: number;
+  /** False when the lanes are drawn inside the commit message column, which leaves no graph column to resize. */
+  graphColumn: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -91,7 +93,7 @@ function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEve
     <div class="flex min-w-0 items-center truncate px-2">ID</div>
 
     <button
-      v-for="d in DIVIDERS"
+      v-for="d in DIVIDERS.filter((x) => graphColumn || x.column !== 'graph')"
       :key="d.column"
       type="button"
       class="group absolute top-0 z-10 flex h-full w-[7px] cursor-col-resize justify-center outline-none"

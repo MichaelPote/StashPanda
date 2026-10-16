@@ -150,6 +150,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         help: "Draw remote branches solid and local branches outlined in the commit graph, instead of the other way round. Tags stay solid.",
       },
       {
+        kind: "toggle",
+        group: "appearance",
+        key: "graphInMessageColumn",
+        label: "Graph inside the commit message column",
+        help: "Draw the lanes at the start of the commit message column instead of in a column of their own, so each message starts just past the lanes on its row.",
+      },
+      {
         kind: "select",
         group: "appearance",
         key: "avatarSource",

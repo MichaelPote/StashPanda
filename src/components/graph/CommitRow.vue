@@ -12,6 +12,8 @@ import { useSettingsStore } from "@/stores/settings";
 const props = defineProps<{
   row: GraphRow;
   selected: boolean;
+  /** Where the message starts, in pixels, when the lanes are drawn inside its column; null when they have their own. */
+  indent?: number | null;
 }>();
 
 const ctx = inject(GRAPH_CONTEXT, null);
@@ -40,7 +42,7 @@ const dateText = computed(() =>
     <div />
     <!-- Pills always show their whole name; the subject truncates. A column narrower than the
          pills clips them at its edge rather than letting them cover the next column. -->
-    <div class="flex min-w-0 items-center gap-1 overflow-hidden pr-2 leading-(--row-h)">
+    <div class="flex min-w-0 items-center gap-1 overflow-hidden pr-2 leading-(--row-h)" :style="indent != null ? { paddingLeft: `${indent}px` } : undefined">
       <RefLabels v-if="row.refs.length > 0 || detachedHead" :refs="row.refs" :oid="row.oid" :colour="row.refColour" :detached-head="detachedHead" />
       <span class="min-w-0 truncate" :title="row.subject">{{ row.subject }}</span>
     </div>

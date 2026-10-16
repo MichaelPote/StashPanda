@@ -488,6 +488,12 @@ export type Appearance = {
 	 *  outlined. Off (the default) draws local branches solid and remote branches outlined.
 	 */
 	solidRemotePills?: boolean,
+	/**
+	 *  Draw the commit graph's lanes at the start of the commit message column instead of in a
+	 *  column of their own, so each message starts just past the lanes drawn on its row and the
+	 *  messages indent as the number of lanes changes down the list.
+	 */
+	graphInMessageColumn?: boolean,
 	showRemoteBranches?: boolean,
 	showStashesInGraph?: boolean,
 	avatarSource?: AvatarSource,

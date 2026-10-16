@@ -61,6 +61,32 @@ export function autoGraphColumnWidth(maxLanes: number): number {
   return Math.round(lanes * LANE_WIDTH + LANE_WIDTH / 2);
 }
 
+/**
+ * How far right the lanes reach within `row`'s height, as a lane position (fractional halfway
+ * through a curve): its own dot; its own edges, whose top halves run from its centre down to the
+ * row's bottom edge; and `previous`'s edges, whose bottom halves arrive at its centre from the row's
+ * top edge. Half of a curve between two lanes reaches from its end lane to the midpoint between
+ * them. `previous` is undefined for the first row or while its page loads.
+ */
+export function laneExtent(row: GraphRow, previous: GraphRow | undefined): number {
+  let far = row.lane;
+  for (const e of row.edges) far = Math.max(far, e.fromLane, (e.fromLane + e.toLane) / 2);
+  for (const e of previous?.edges ?? []) {
+    // A dangling stub stops within the row it starts on.
+    if (e.kind !== "dangling") far = Math.max(far, e.toLane, (e.fromLane + e.toLane) / 2);
+  }
+  return far;
+}
+
+/**
+ * Where a row's commit message starts when the graph is drawn inside the message column: half a
+ * lane plus a small gap past the furthest lane drawn on that row, so the head commit's larger dot
+ * clears it too. In pixels from the column's left edge.
+ */
+export function messageIndent(row: GraphRow, previous: GraphRow | undefined, laneWidth: number = LANE_WIDTH): number {
+  return Math.round(laneX(laneExtent(row, previous), laneWidth) + laneWidth / 2 + 4);
+}
+
 export interface ColourPath {
   colour: number;
   d: string;
