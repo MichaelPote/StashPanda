@@ -407,8 +407,9 @@ export const commands = {
 	 */
 	opCancel: (key: string, opId: string) => typedError<boolean, GitError>(__TAURI_INVOKE("op_cancel", { key, opId })),
 	/**
-	 *  Fetch from every remote (`git fetch --all`). `opId` works as for `opPull`; `opCancel` stops
-	 *  the fetch at any point, leaving the remote-tracking branches where they were.
+	 *  Fetch from every remote (`git fetch --all --prune`), removing the remote-tracking branches of
+	 *  branches the remotes no longer have. `opId` works as for `opPull`; `opCancel` stops the fetch
+	 *  at any point, leaving the remote-tracking branches where they were.
 	 */
 	opFetch: (key: string, opId: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_fetch", { key, opId })),
 	/**

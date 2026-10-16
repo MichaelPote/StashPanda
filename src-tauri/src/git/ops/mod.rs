@@ -311,10 +311,12 @@ async fn fast_forwards(client: &GitClient) -> Result<bool> {
     Ok(out.exit_code != Some(1))
 }
 
-/// `git fetch --all --progress`: every remote, honouring `fetch.prune` and the remotes' own
-/// settings. Stopping it is safe, as for `pull_fetch`.
+/// `git fetch --all --prune --progress`: every remote, with the remotes' own settings. `--prune`
+/// removes the remote-tracking branches of branches the remotes no longer have, so a branch
+/// deleted on the server goes from the list here too, and a local branch that tracked it shows
+/// its upstream as gone. Tags are left alone. Stopping it is safe, as for `pull_fetch`.
 pub async fn fetch_all(client: &GitClient, progress: &(dyn Fn(String) + Send + Sync), cancel: &tokio_util::sync::CancellationToken) -> Result<OpResult> {
-    let req = GitReq::new("fetch", ["fetch", "--all", "--progress"]).user().timeout(None).own_session();
+    let req = GitReq::new("fetch", ["fetch", "--all", "--prune", "--progress"]).user().timeout(None).own_session();
     let out = client.exec_streaming(req, progress, cancel).await?;
     Ok(result(out))
 }
@@ -3511,6 +3513,15 @@ mod e2e {
         let fetched = fetch_all(&client, &progress, &cancel).await.unwrap();
         assert!(fetched.ok, "{fetched:?}");
         assert_eq!(rev(&local, "origin/main"), rev(&other, "HEAD"));
+
+        // A branch deleted on the server goes from the remote-tracking branches here at the next fetch.
+        git(&other, &["push", "-q", "origin", "HEAD:refs/heads/short-lived"]);
+        assert!(fetch_all(&client, &progress, &cancel).await.unwrap().ok);
+        let has_tracking = || Command::new("git").arg("-C").arg(&local).args(["rev-parse", "--verify", "-q", "refs/remotes/origin/short-lived"]).status().unwrap().success();
+        assert!(has_tracking());
+        git(&other, &["push", "-q", "origin", "--delete", "short-lived"]);
+        assert!(fetch_all(&client, &progress, &cancel).await.unwrap().ok);
+        assert!(!has_tracking(), "pruned");
         std::fs::write(local.join("c.txt"), "3\n").unwrap();
         git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "three"]);
         let rejected = push(&client, "main", &main, &progress, &cancel).await.unwrap();

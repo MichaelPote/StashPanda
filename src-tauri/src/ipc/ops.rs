@@ -465,8 +465,9 @@ macro_rules! network_op {
     }};
 }
 
-/// Fetch from every remote (`git fetch --all`). `opId` works as for `opPull`; `opCancel` stops
-/// the fetch at any point, leaving the remote-tracking branches where they were.
+/// Fetch from every remote (`git fetch --all --prune`), removing the remote-tracking branches of
+/// branches the remotes no longer have. `opId` works as for `opPull`; `opCancel` stops the fetch
+/// at any point, leaving the remote-tracking branches where they were.
 #[tauri::command]
 #[specta::specta]
 pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String) -> Result<OpResult> {
