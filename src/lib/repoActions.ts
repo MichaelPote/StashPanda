@@ -417,10 +417,28 @@ export function networkFailureText(result: OpResult, what: string): string {
   return opFailureText(result, what);
 }
 
+/**
+ * Repositories where a sync or push has been clicked and is still getting ready: reading the
+ * upstream and the push target, and asking about uncommitted changes, before `runOperation` puts
+ * it in the status bar. Without this a double click started two.
+ */
+const starting = new Set<string>();
+
+/** Runs `action` with the repository marked busy from the first moment, so `busyReason` refuses a second one meanwhile. */
+async function claimed(key: string, action: () => Promise<void>): Promise<void> {
+  starting.add(key);
+  try {
+    await action();
+  } finally {
+    starting.delete(key);
+  }
+}
+
 /** Why a fetch, pull or push cannot start because one is already running, or null. */
 function busyReason(session: RepoSession): string | null {
   const op = session.operation;
-  return op ? `Wait for the current operation to finish (${op.title.toLowerCase()}).` : null;
+  if (op) return `Wait for the current operation to finish (${op.title.toLowerCase()}).`;
+  return starting.has(session.key) ? "Wait for the current operation to finish." : null;
 }
 
 /**
@@ -638,6 +656,13 @@ export async function pushBranch(session: RepoSession | null, branch: string): P
     sessions.notify(reason ?? "The repository is still loading.");
     return;
   }
+  await claimed(session.key, () => pushBranchNow(session, branch));
+}
+
+/** The rest of `pushBranch`, once the repository is marked busy. */
+async function pushBranchNow(session: RepoSession, branch: string): Promise<void> {
+  const sessions = useSessionsStore();
+  if (!session.refs) return;
   const key = session.key;
   let target: PushTarget | null = null;
   let tracks: string | null = null;
@@ -726,6 +751,12 @@ export async function syncCurrentBranch(session: RepoSession | null): Promise<vo
     sessions.notify(reason ?? "The repository is still loading.");
     return;
   }
+  await claimed(session.key, () => syncBranch(session, branch));
+}
+
+/** The rest of `syncCurrentBranch`, once the repository is marked busy. */
+async function syncBranch(session: RepoSession, branch: string): Promise<void> {
+  const sessions = useSessionsStore();
   const key = session.key;
   let upstream: PushTarget | null;
   try {

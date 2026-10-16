@@ -431,3 +431,25 @@ describe("a rebase that finished but could not move a branch rebase.updateRefs l
   });
 });
 
+describe("a second click on Sync while the first is getting ready", () => {
+  it("is refused, so only one sync runs", async () => {
+    session();
+    commands.getPushTarget.mockReturnValue(ok({ remote: "origin", branch: "main" }));
+    commands.opSync.mockReturnValue(
+      ok({
+        target: { remote: "origin", branch: "main" },
+        pushTarget: { remote: "origin", branch: "main" },
+        pull: { ok: true, exitCode: 0, stdout: "Already up to date.", stderr: "", conflicts: false },
+        push: null,
+        nothingToPush: true,
+        pushStopped: false,
+        rewrotePushed: false,
+      }),
+    );
+    const first = syncCurrentBranch(sessionMap.get("repo") as never);
+    await syncCurrentBranch(sessionMap.get("repo") as never);
+    await first;
+    expect(commands.opSync).toHaveBeenCalledTimes(1);
+    expect(notices[0]!.message).toBe("Wait for the current operation to finish.");
+  });
+});
