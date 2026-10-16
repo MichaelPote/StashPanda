@@ -44,7 +44,7 @@ Each item names the files it touches so it can be picked up cold.
       |---|---|
       | `npm run win:ux` | Vite runs in WSL; the Windows app loads its frontend from it, so Vue, TypeScript and CSS edits hot reload. Every 2 seconds it copies `src-tauri/` to the Windows mirror (leaving out `target` and `gen`), so the Windows `tauri dev` rebuilds on Rust changes. Ctrl-C stops both sides. No empty console window opens on Windows. |
       | `npm run win:dev` | Runs `tauri dev` entirely on Windows, including its own Vite. Ctrl-C stops the whole Windows process tree; before starting, it refuses to run if a leftover process holds port 1420 on Windows, and names it. |
-      | `npm run win:build` | Runs `tauri build` on Windows, then copies the release binary and the NSIS and MSI installers to `bundle/` in both the WSL checkout (ignored by Git) and `C:\src\stashpanda`. |
+      | `npm run win:build` | Runs `tauri build` on Windows, then copies the release binary and the NSIS installer to `bundle/` in both the WSL checkout (ignored by Git) and `C:\src\stashpanda`. |
       | `npm run win:sync` | Mirrors the source and runs `npm install` on Windows, nothing else. |
 
       The mirror is one-way: edit in WSL, never in `C:\src\stashpanda`. `win:ux` merges
@@ -1411,8 +1411,9 @@ Still open:
       `npm run win:sync`.
 
 - [ ] **Windows installer** through `npm run win:build` from WSL, which runs `npm run tauri build`
-      in the Windows mirror (NSIS and MSI targets are enabled in `tauri.conf.json` by
-      `"targets": "all"`); an icon set beyond the Tauri defaults.
+      in the Windows mirror. Windows builds only the NSIS installer: `src-tauri/tauri.windows.conf.json`
+      sets `"targets": ["nsis"]` over the `"all"` in `tauri.conf.json`, so there is no MSI. Still to
+      do: an icon set beyond the Tauri defaults.
 - [ ] **GitHub Actions** matrix with `tauri-apps/tauri-action` for `windows-latest` and
       `ubuntu-24.04`, running `cargo test`, `npx vue-tsc --noEmit` and `npm run build` first.
 - [ ] **Release profile check**: `[profile.release]` in `Cargo.toml` uses `lto = true`,

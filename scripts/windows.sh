@@ -273,11 +273,12 @@ collect_bundle() {
   echo
   for out in "$SRC_DIR/bundle" "$WSL_DIR/bundle"; do
     mkdir -p "$out"
+    # The *.msi removal clears installers left from before the build stopped making them.
     rm -f "$out"/*.exe "$out"/*.msi
     cp "$release/stashpanda.exe" "$out/"
-    cp "$release"/bundle/nsis/*-setup.exe "$release"/bundle/msi/*.msi "$out/"
+    cp "$release"/bundle/nsis/*-setup.exe "$out/"
     echo "Windows build copied to $out:"
-    ls -1 "$out"/*.exe "$out"/*.msi | sed 's|^|  |'
+    ls -1 "$out"/*.exe | sed 's|^|  |'
   done
   echo "On Windows: $WIN_DIR\\bundle"
 }
