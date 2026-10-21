@@ -1353,12 +1353,14 @@ function toggleContext(value: string): void {
       </div>
 
       <!-- Divider between the two sides: drag to move it, double-click to go back to half and half.
-           Its line shows only on hover and while dragging, so it does not cut through the curves. -->
+           It takes the whole gap between the sides, whose curves ignore the mouse, so the resize
+           cursor shows anywhere between them. Its line shows only on hover and while dragging,
+           so it does not cut through the curves. -->
       <button
         v-if="mode === 'side' && rowsWidth > 0"
         type="button"
-        class="group absolute top-0 bottom-0 z-10 flex w-[7px] cursor-col-resize justify-center outline-none"
-        :style="{ left: `${leftPx - 3}px` }"
+        class="group absolute top-0 bottom-0 z-10 flex cursor-col-resize justify-center outline-none"
+        :style="{ left: `${leftPx - GAP_PX / 2}px`, width: `${GAP_PX}px` }"
         aria-label="Resize the two sides of the diff"
         title="Drag to resize the two sides; double-click to split them evenly"
         @pointerdown="startSplitDrag"
