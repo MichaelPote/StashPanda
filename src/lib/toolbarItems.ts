@@ -70,8 +70,10 @@ export const LAYOUT_ITEMS: readonly { id: string; label: string; help: string; i
 export interface ToolbarCommand {
   /** Stable id, saved in `settings.json`. Never rename one: a saved layout would lose the button. */
   id: string;
-  /** The full name: the button's tooltip, and its name on the Toolbar page in Settings. */
+  /** The full name: the bold first line of the button's tooltip, and its name on the Toolbar page in Settings. */
   label: string;
+  /** What the command does, in a sentence: the line under the name in the button's tooltip. */
+  description: string;
   /** Short caption under the icon; a button is 63px wide, so long labels are cut down. */
   caption: string;
   icon: Component;
@@ -95,11 +97,12 @@ function active(): RepoSession | null {
 
 /** Every command the toolbar can hold, in the order the Toolbar page in Settings lists them. */
 export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
-  { id: "open", label: "Open Repository", caption: "Open", icon: FolderOpenIcon, needsRepo: false, run: () => useDialogsStore().showAddRepo() },
-  { id: "clone", label: "Clone Repository…", caption: "Clone", icon: FolderDownIcon, needsRepo: false, run: () => useDialogsStore().cloneRepo() },
+  { id: "open", label: "Open Repository", description: "Add a repository from this computer, WSL or an SSH server to the library, and open it.", caption: "Open", icon: FolderOpenIcon, needsRepo: false, run: () => useDialogsStore().showAddRepo() },
+  { id: "clone", label: "Clone Repository…", description: "Copy a remote repository into a new folder, and add it to the library.", caption: "Clone", icon: FolderDownIcon, needsRepo: false, run: () => useDialogsStore().cloneRepo() },
   {
     id: "refresh",
     label: "Refresh",
+    description: "Read the open repository's history, branches and working tree again.",
     caption: "Refresh",
     icon: RefreshCwIcon,
     needsRepo: false,
@@ -110,14 +113,15 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   },
   // Greyed out while any fetch, pull or push runs, which would refuse a second; the one running
   // shows a spinner (`RunningOperation.command`).
-  { id: "fetch", label: "Fetch from Every Remote", caption: "Fetch", icon: CloudDownloadIcon, needsRepo: true, run: () => fetchAll(active()), reason: busyReason },
-  { id: "pull", label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, needsRepo: true, run: () => openPullDialog(active()), reason: busyReason },
-  { id: "sync", label: "Sync: Pull, then Push", caption: "Sync", icon: ArrowDownUpIcon, needsRepo: true, run: () => syncCurrentBranch(active()), reason: busyReason },
-  { id: "push", label: "Push to Upstream", caption: "Push", icon: ArrowUpFromLineIcon, needsRepo: true, run: () => pushCurrentBranch(active()), reason: busyReason },
-  { id: "commit", label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, primary: true, needsRepo: true, run: () => openCommitDialog(active()) },
+  { id: "fetch", label: "Fetch from Every Remote", description: "Download new commits, branches and tags from every remote. Your own branches stay as they are.", caption: "Fetch", icon: CloudDownloadIcon, needsRepo: true, run: () => fetchAll(active()), reason: busyReason },
+  { id: "pull", label: "Pull", description: "Bring the checked-out branch up to date with a branch on a remote.", caption: "Pull", icon: ArrowDownToLineIcon, needsRepo: true, run: () => openPullDialog(active()), reason: busyReason },
+  { id: "sync", label: "Sync: Pull, then Push", description: "Pull the checked-out branch's upstream into it, then push it back, in one step.", caption: "Sync", icon: ArrowDownUpIcon, needsRepo: true, run: () => syncCurrentBranch(active()), reason: busyReason },
+  { id: "push", label: "Push to Upstream", description: "Send the checked-out branch's new commits to its upstream branch.", caption: "Push", icon: ArrowUpFromLineIcon, needsRepo: true, run: () => pushCurrentBranch(active()), reason: busyReason },
+  { id: "commit", label: "Commit", description: "Record the staged changes as a new commit on the checked-out branch.", caption: "Commit", icon: GitCommitHorizontalIcon, primary: true, needsRepo: true, run: () => openCommitDialog(active()) },
   {
     id: "stage",
     label: "Stage the Selected Files",
+    description: "Add the changes in the files selected in the Files panel to the next commit.",
     caption: "Stage",
     icon: ListPlusIcon,
     needsRepo: true,
@@ -127,6 +131,7 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   {
     id: "unstage",
     label: "Unstage the Selected Files",
+    description: "Take the selected files' changes out of the next commit. The files keep the changes.",
     caption: "Unstage",
     icon: ListMinusIcon,
     needsRepo: true,
@@ -136,16 +141,18 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   {
     id: "discard",
     label: "Discard Changes to the Selected Files…",
+    description: "Throw away the uncommitted changes to the selected files. This cannot be undone.",
     caption: "Discard",
     icon: Undo2Icon,
     needsRepo: true,
     run: () => discardSelected(active()),
     reason: (s) => fileActionReason(s, "discard"),
   },
-  { id: "stash", label: "Stash Changes", caption: "Stash", icon: ArchiveIcon, needsRepo: true, run: () => openStashDialog(active()) },
+  { id: "stash", label: "Stash Changes", description: "Set the uncommitted changes aside in a stash, leaving the files as they were at the last commit.", caption: "Stash", icon: ArchiveIcon, needsRepo: true, run: () => openStashDialog(active()) },
   {
     id: "applyStash",
     label: "Apply Stash…",
+    description: "Bring back the changes set aside in a stash.",
     caption: "Apply",
     icon: ArchiveRestoreIcon,
     needsRepo: true,
@@ -155,6 +162,7 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   {
     id: "merge",
     label: "Merge a Branch into the Current Branch…",
+    description: "Join another branch's commits into the checked-out branch.",
     caption: "Merge",
     icon: GitMergeIcon,
     needsRepo: true,
@@ -164,6 +172,7 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   {
     id: "rebase",
     label: "Rebase the Current Branch onto Another…",
+    description: "Replay the checked-out branch's own commits on top of another branch.",
     caption: "Rebase",
     icon: RotateCcwIcon,
     needsRepo: true,
@@ -171,12 +180,13 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
     reason: (s) => mergeRebaseReason(s, "rebase"),
   },
   // Branch and Tag start at the checked-out commit, as Repository > Create Branch and Create Tag do.
-  { id: "createBranch", label: "Create Branch…", caption: "Branch", icon: GitBranchPlusIcon, needsRepo: true, run: () => dispatch("repo.create_branch") },
-  { id: "createTag", label: "Create Tag…", caption: "Tag", icon: TagIcon, needsRepo: true, run: () => dispatch("repo.create_tag") },
-  { id: "find", label: "Find Commit…", caption: "Find", icon: SearchIcon, needsRepo: true, run: () => useSessionsStore().openFind() },
+  { id: "createBranch", label: "Create Branch…", description: "Start a new branch at the checked-out commit.", caption: "Branch", icon: GitBranchPlusIcon, needsRepo: true, run: () => dispatch("repo.create_branch") },
+  { id: "createTag", label: "Create Tag…", description: "Put a tag on the checked-out commit.", caption: "Tag", icon: TagIcon, needsRepo: true, run: () => dispatch("repo.create_tag") },
+  { id: "find", label: "Find Commit…", description: "Search the commits by message, author or commit ID.", caption: "Find", icon: SearchIcon, needsRepo: true, run: () => useSessionsStore().openFind() },
   {
     id: "toggleSidebar",
     label: "Toggle Sidebar",
+    description: "Show or hide the Repositories and Branches panels.",
     caption: "Sidebar",
     icon: PanelLeftIcon,
     needsRepo: false,
@@ -188,6 +198,7 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   {
     id: "toggleConsole",
     label: "Toggle Console",
+    description: "Show or hide the Console, which lists the Git commands the app runs.",
     caption: "Console",
     icon: PanelBottomIcon,
     needsRepo: false,
@@ -196,7 +207,7 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
       uiState.setConsoleCollapsed(!uiState.consoleCollapsed);
     },
   },
-  { id: "settings", label: "Settings…", caption: "Settings", icon: SettingsIcon, needsRepo: false, run: () => useDialogsStore().open("settings", {}) },
+  { id: "settings", label: "Settings…", description: "Change how StashPanda looks and works.", caption: "Settings", icon: SettingsIcon, needsRepo: false, run: () => useDialogsStore().open("settings", {}) },
 ];
 
 const COMMANDS_BY_ID: ReadonlyMap<string, ToolbarCommand> = new Map(TOOLBAR_COMMANDS.map((c) => [c.id, c]));

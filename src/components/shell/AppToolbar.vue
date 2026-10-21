@@ -77,9 +77,16 @@ function badge(command: ToolbarCommand): string | null {
   return commitCount.value > 999 ? "999+" : String(commitCount.value);
 }
 
+/** The tooltip's bold first line: the command's name, with the Commit button's file count. */
 function title(command: ToolbarCommand): string {
   const count = badge(command);
   return count ? `${command.label} (${count} ${commitCount.value === 1 ? "file" : "files"})` : command.label;
+}
+
+/** The tooltip's last line, when the button cannot be used: what is running, or why not. */
+function note(command: ToolbarCommand): string | null {
+  if (disabled(command)) return "Open a repository first.";
+  return running(command) ?? blocked(command);
 }
 const CAPTION_CLASS = "block max-w-[59px] truncate text-[9px] font-medium tracking-[0.04em] uppercase";
 </script>
@@ -98,39 +105,46 @@ const CAPTION_CLASS = "block max-w-[59px] truncate text-[9px] font-medium tracki
           />
           <!-- Takes the free width, so the items after it sit at the right-hand end. -->
           <div v-else-if="entry.kind === 'spacer'" class="h-full w-full grow" aria-hidden="true" />
-          <template v-else>
-            <button
-              v-if="!disabled(entry.command) && !blocked(entry.command)"
-              type="button"
-              :class="buttonClass(entry.command)"
-              :title="title(entry.command)"
-              @click="entry.command.run()"
-            >
-              <component :is="entry.command.icon" />
-              <span :class="CAPTION_CLASS">{{ entry.command.caption }}</span>
-              <span v-if="badge(entry.command)" :class="BADGE_CLASS" aria-hidden="true">{{ badge(entry.command) }}</span>
-            </button>
-            <!-- With no repository open there is no reason to give, so the plain label is the tooltip. -->
-            <span v-else-if="disabled(entry.command)" class="inline-flex shrink-0" :title="entry.command.label">
-              <button type="button" :class="buttonClass(entry.command)" :aria-label="entry.command.label" disabled>
-                <component :is="entry.command.icon" />
-                <span :class="CAPTION_CLASS">{{ entry.command.caption }}</span>
-              </button>
-            </span>
-            <Tooltip v-else>
-              <TooltipTrigger as-child>
-                <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->
-                <span class="inline-flex shrink-0">
-                  <button type="button" :class="buttonClass(entry.command)" :aria-label="entry.command.label" :aria-busy="running(entry.command) !== null" disabled>
-                    <LoaderCircleIcon v-if="running(entry.command)" class="animate-spin" />
-                    <component :is="entry.command.icon" v-else />
-                    <span :class="CAPTION_CLASS">{{ entry.command.caption }}</span>
-                  </button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" class="max-w-72">{{ running(entry.command) ?? `${entry.command.label}: ${blocked(entry.command)}` }}</TooltipContent>
-            </Tooltip>
-          </template>
+          <!-- Every button has the same tooltip: the name in bold, what it does, and, when it cannot
+               be used, what is running or why not. A disabled button swallows pointer events, so
+               the wrapper span carries the tooltip. -->
+          <Tooltip v-else>
+            <TooltipTrigger as-child>
+              <span class="inline-flex shrink-0">
+                <button
+                  v-if="note(entry.command) === null"
+                  type="button"
+                  :class="buttonClass(entry.command)"
+                  :aria-label="title(entry.command)"
+                  @click="entry.command.run()"
+                >
+                  <component :is="entry.command.icon" />
+                  <span :class="CAPTION_CLASS">{{ entry.command.caption }}</span>
+                  <span v-if="badge(entry.command)" :class="BADGE_CLASS" aria-hidden="true">{{ badge(entry.command) }}</span>
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  :class="buttonClass(entry.command)"
+                  :aria-label="entry.command.label"
+                  :aria-busy="running(entry.command) !== null"
+                  disabled
+                >
+                  <LoaderCircleIcon v-if="running(entry.command)" class="animate-spin" />
+                  <component :is="entry.command.icon" v-else />
+                  <span :class="CAPTION_CLASS">{{ entry.command.caption }}</span>
+                </button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" class="max-w-72">
+              <!-- A column: the tooltip lays its content out in a row. -->
+              <div class="flex flex-col gap-0.5">
+                <span class="font-semibold">{{ title(entry.command) }}</span>
+                <span>{{ entry.command.description }}</span>
+                <span v-if="note(entry.command)" class="italic">{{ note(entry.command) }}</span>
+              </div>
+            </TooltipContent>
+          </Tooltip>
         </template>
       </header>
     </ContextMenuTrigger>
