@@ -232,6 +232,11 @@ export const useSessionsStore = defineStore("sessions", () => {
   const activeKey = ref<string | null>(null);
   /** Keys whose `repoOpen` call is still running, so the tree can show a spinner. */
   const opening = shallowReactive(new Set<string>());
+  /**
+   * Tabs restored at startup that have not been shown yet: their graph, status and refs load
+   * the first time they become the active tab, so only the tab on screen loads at startup.
+   */
+  const unloaded = new Set<string>();
   /** One-line error shown in the red strip under the toolbar. */
   const notice = ref<string | null>(null);
   /** Optional button shown next to the notice (for example "Pull…" after a push the remote refused). */
@@ -568,6 +573,11 @@ export const useSessionsStore = defineStore("sessions", () => {
     activeKey.value = key;
   }
 
+  watch(activeKey, (key) => {
+    const session = key === null ? undefined : sessions.get(key);
+    if (session && unloaded.delete(session.key)) bootstrap(session);
+  });
+
   /** Starts the graph load and fetches status and refs, all in parallel. Failures become notices. */
   function bootstrap(session: RepoSession): void {
     session.graph.loading = true;
@@ -581,8 +591,11 @@ export const useSessionsStore = defineStore("sessions", () => {
     });
   }
 
-  /** Opens a tab. Throws when `repoOpen` fails and creates no tab, so callers decide how to show it. */
-  async function openTab(key: string): Promise<RepoSession> {
+  /**
+   * Opens a tab. Throws when `repoOpen` fails and creates no tab, so callers decide how to show it.
+   * With `show` false the tab is added behind the active one and loads when first shown.
+   */
+  async function openTab(key: string, show = true): Promise<RepoSession> {
     const existing = sessions.get(key);
     if (existing) {
       setActive(key);
@@ -624,8 +637,12 @@ export const useSessionsStore = defineStore("sessions", () => {
       });
       sessions.set(key, session);
       earlyWatcherStates.delete(key);
-      setActive(key);
-      bootstrap(session);
+      if (show) {
+        setActive(key);
+        bootstrap(session);
+      } else {
+        unloaded.add(key);
+      }
       return session;
     } finally {
       opening.delete(key);
@@ -637,6 +654,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     const idx = keys.indexOf(key);
     if (idx < 0) return;
     sessions.delete(key);
+    unloaded.delete(key);
     consoleBuffers.delete(key);
     if (activeKey.value === key) {
       activeKey.value = keys[idx + 1] ?? keys[idx - 1] ?? null;
@@ -651,7 +669,8 @@ export const useSessionsStore = defineStore("sessions", () => {
   /** Full graph refresh plus fresh status and refs for one session (the toolbar Refresh button). */
   async function refreshSession(key: string): Promise<void> {
     const session = sessions.get(key);
-    if (!session) return;
+    // A tab not shown yet loads afresh when it is.
+    if (!session || unloaded.has(key)) return;
     session.graph.loading = true;
     const graph = unwrap(commands.graphRefresh(session.key, true)).then((meta) => {
       // The snapshot event usually lands first; only move forward, never back.
@@ -811,25 +830,33 @@ export const useSessionsStore = defineStore("sessions", () => {
 
   let restoring = false;
 
-  /** Re-opens the tabs saved in `uiState.session`, one at a time, ignoring failures. */
+  /**
+   * Re-opens the tabs saved in `uiState.session`, one at a time, ignoring failures. The tab that
+   * was active opens first and is shown and loaded at once; the others open behind it without
+   * being shown, and load when first clicked, so the window does not switch through every tab.
+   */
   async function restore(): Promise<void> {
     const saved = uiState.state?.session;
     const tabs = saved?.openTabs ?? [];
+    const wanted = saved?.activeTab != null && tabs.includes(saved.activeTab) ? saved.activeTab : (tabs[0] ?? null);
     restoring = true;
     try {
-      for (const key of tabs) {
+      for (const key of wanted === null ? tabs : [wanted, ...tabs.filter((k) => k !== wanted)]) {
         try {
-          await openTab(key);
+          await openTab(key, key === wanted);
         } catch {
           // A repository that no longer opens simply does not get a tab.
         }
       }
-      const wanted = saved?.activeTab ?? null;
-      if (wanted !== null && sessions.has(wanted)) {
-        activeKey.value = wanted;
-      } else if (activeKey.value === null || !sessions.has(activeKey.value)) {
-        activeKey.value = [...sessions.keys()][0] ?? null;
-      }
+      // Back into the saved order: the active tab was opened first, so it went first.
+      const ordered = tabs.flatMap((k) => {
+        const s = sessions.get(k);
+        return s ? [[k, s] as const] : [];
+      });
+      for (const [k] of ordered) sessions.delete(k);
+      for (const [k, s] of ordered) sessions.set(k, s);
+      // Failed to open: show the first tab that did.
+      if (activeKey.value === null || !sessions.has(activeKey.value)) setActive([...sessions.keys()][0] ?? null);
     } finally {
       restoring = false;
     }
