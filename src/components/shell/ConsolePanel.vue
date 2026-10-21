@@ -6,18 +6,16 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   LoaderCircleIcon,
-  PanelBottomCloseIcon,
   PanelBottomOpenIcon,
-  Trash2Icon,
   XIcon,
 } from "@lucide/vue";
 import type { Category } from "@/lib/bindings";
-import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatClockTime, formatDurationMs } from "@/lib/format";
 import { GitErrorMessage } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
 import type { ConsoleEntry, RepoSession } from "@/stores/sessions";
+import { vPixelSnap } from "@/lib/pixelSnap";
 import { useUiStateStore } from "@/stores/uiState";
 
 const props = defineProps<{
@@ -207,30 +205,31 @@ function categoryShort(category: Category): string {
         {{ entries.length }} of {{ session.consoleEntries.length }}
       </span>
 
-      <div :class="cn('flex items-center gap-0.5', collapsed && 'ml-auto')">
-        <Tooltip v-if="!collapsed && session">
-          <TooltipTrigger as-child>
-            <Button variant="ghost" size="icon-xs" class="size-5" @click="clear">
-              <Trash2Icon />
-              <span class="sr-only">Clear console</span>
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">Clear console</TooltipContent>
-        </Tooltip>
+      <!-- 17px tall, so they sit 3px from the top and bottom of the 23px under the border; the
+           12px close icon goes 2px from the top, on a whole pixel (see index.css). v-pixel-snap:
+           against the pane's right edge, which can fall part-way through a pixel. -->
+      <div v-pixel-snap :class="cn('flex items-center gap-[4px]', collapsed && 'ml-auto')">
+        <button
+          v-if="!collapsed && session"
+          type="button"
+          class="h-[17px] rounded-sm border border-border-soft px-2 text-[0.7rem] leading-none font-medium text-foreground transition-colors hover:bg-ghost-hover"
+          @click="clear"
+        >
+          Clear
+        </button>
         <Tooltip>
           <TooltipTrigger as-child>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              class="size-5"
+            <button
+              type="button"
+              class="inline-flex h-[17px] w-[18px] items-start justify-center rounded-sm pt-[2px] text-muted-foreground transition-colors hover:bg-ghost-hover hover:text-foreground"
+              :aria-label="collapsed ? 'Show the console' : 'Close the console'"
               @click="uiState.setConsoleCollapsed(!collapsed)"
             >
-              <PanelBottomOpenIcon v-if="collapsed" />
-              <PanelBottomCloseIcon v-else />
-              <span class="sr-only">{{ collapsed ? "Show console" : "Hide console" }}</span>
-            </Button>
+              <PanelBottomOpenIcon v-if="collapsed" class="size-3.5" />
+              <XIcon v-else class="size-3.5" />
+            </button>
           </TooltipTrigger>
-          <TooltipContent side="top">{{ collapsed ? "Show console" : "Hide console" }}</TooltipContent>
+          <TooltipContent side="top">{{ collapsed ? "Show the console" : "Close the console" }}</TooltipContent>
         </Tooltip>
       </div>
     </div>
