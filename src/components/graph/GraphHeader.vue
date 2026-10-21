@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { ContextMenu, ContextMenuCheckboxItem, ContextMenuContent, ContextMenuLabel, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { Tip } from "@/components/ui/tooltip";
 import { COMMIT_COLUMNS, useCommitColumns } from "@/composables/useCommitColumns";
 import { COLUMN_LIMITS, type SizedColumn } from "@/lib/graph/columnWidths";
 import { useSettingsStore } from "@/stores/settings";
@@ -112,24 +113,27 @@ function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEve
         <div v-if="shown.id" class="flex min-w-0 items-center truncate px-2">ID</div>
         <div v-else />
 
-        <button
+        <Tip
           v-for="d in DIVIDERS.filter((x) => handleShown(x.column))"
           :key="d.column"
-          type="button"
-          class="group absolute top-0 z-10 flex h-full w-[7px] cursor-col-resize justify-center outline-none"
-          :style="d.position"
-          :aria-label="d.label"
-          :title="d.column === 'graph' ? 'Drag to set the graph width; double-click to size it to the graph' : 'Drag to set the column width; double-click to size it to its contents'"
-          @pointerdown="startDrag(d.column, d.direction, $event)"
-          @dblclick="emit('resize', d.column, null)"
+          :content="d.column === 'graph' ? 'Drag to set the graph width; double-click to size it to the graph' : 'Drag to set the column width; double-click to size it to its contents'"
         >
-          <span
-            :class="[
-              'h-full w-px transition-colors',
-              dragging === d.column ? 'w-[2px] bg-primary' : 'bg-border group-hover:w-[2px] group-hover:bg-primary/70 group-focus-visible:bg-primary',
-            ]"
-          />
-        </button>
+          <button
+            type="button"
+            class="group absolute top-0 z-10 flex h-full w-[7px] cursor-col-resize justify-center outline-none"
+            :style="d.position"
+            :aria-label="d.label"
+            @pointerdown="startDrag(d.column, d.direction, $event)"
+            @dblclick="emit('resize', d.column, null)"
+          >
+            <span
+              :class="[
+                'h-full w-px transition-colors',
+                dragging === d.column ? 'w-[2px] bg-primary' : 'bg-border group-hover:w-[2px] group-hover:bg-primary/70 group-focus-visible:bg-primary',
+              ]"
+            />
+          </button>
+        </Tip>
       </div>
     </ContextMenuTrigger>
     <ContextMenuContent class="min-w-40">

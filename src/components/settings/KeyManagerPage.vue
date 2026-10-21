@@ -8,6 +8,7 @@ import { commands, type ExportFormat, type GenerateAlgorithm, type KeychainStatu
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tip } from "@/components/ui/tooltip";
 import { pathBasename } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import { connectionWithKey, extraKeyDirs, isSshEntry, keychainStatus, scanKeys, withPassphrase } from "@/lib/keys";
@@ -375,12 +376,18 @@ const selectClass =
     <div class="grid gap-1 text-xs text-muted-foreground">
       <p>Looking for keys in:</p>
       <ul class="grid gap-0.5">
-        <li v-for="dir in defaultDirs" :key="dir" class="truncate font-mono" :title="dir">{{ dir }}</li>
+        <Tip v-for="dir in defaultDirs" :key="dir" :content="dir">
+          <li class="truncate font-mono">{{ dir }}</li>
+        </Tip>
         <li v-for="dir in extraDirs" :key="dir" class="flex min-w-0 items-center gap-1">
-          <span class="truncate font-mono" :title="dir">{{ dir }}</span>
-          <button type="button" class="shrink-0 rounded p-0.5 hover:bg-row-hover hover:text-foreground" :aria-label="`Stop looking in ${dir}`" :title="`Stop looking in ${dir}`" @click="removeFolder(dir)">
-            <XIcon class="size-3" />
-          </button>
+          <Tip :content="dir">
+            <span class="truncate font-mono">{{ dir }}</span>
+          </Tip>
+          <Tip :content="`Stop looking in ${dir}`">
+            <button type="button" class="shrink-0 rounded p-0.5 hover:bg-row-hover hover:text-foreground" :aria-label="`Stop looking in ${dir}`" @click="removeFolder(dir)">
+              <XIcon class="size-3" />
+            </button>
+          </Tip>
         </li>
         <li v-if="defaultDirs.length === 0 && extraDirs.length === 0">No .ssh folder was found. Generate or import a key to create one.</li>
       </ul>

@@ -8,6 +8,7 @@ import EmptyState from "@/components/shell/EmptyState.vue";
 import MessageToggle from "@/components/files/MessageToggle.vue";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { Tip } from "@/components/ui/tooltip";
 import {
   copyFullPath,
   copyText,
@@ -508,7 +509,7 @@ function pathText(item: FileItem): string {
           <span class="tabular-nums">{{ totalCount }} {{ totalCount === 1 ? "file" : "files" }}</span>
           <label class="inline-flex items-center gap-1">
             Group
-            <select v-model="groupBy" class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground" title="Group the files by">
+            <select v-model="groupBy" class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground">
               <option value="status">Status</option>
               <option value="folder">Folder</option>
               <option value="none">No grouping</option>
@@ -516,7 +517,7 @@ function pathText(item: FileItem): string {
           </label>
           <label class="inline-flex items-center gap-1">
             Sort
-            <select v-model="sortBy" class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground" title="Sort the files by">
+            <select v-model="sortBy" class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground">
               <option value="name">Name</option>
               <option value="status">Git status</option>
               <option value="modified" :disabled="mode !== 'worktree'" :title="mode !== 'worktree' ? 'The files in a commit all share its date' : undefined">Date modified</option>
@@ -532,9 +533,15 @@ function pathText(item: FileItem): string {
       <!-- Commit header -->
       <div v-if="mode === 'commit' && selectedRow" class="shrink-0 border-b border-border-soft bg-muted px-2 pt-[5px] pb-1.5 text-base">
         <div class="flex items-center gap-2 text-xs text-muted-foreground">
-          <span class="font-mono text-foreground select-text" :title="selectedRow.oid">{{ shortOid(selectedRow.oid) }}</span>
-          <span class="truncate" :title="`${selectedRow.authorName} <${selectedRow.authorEmail}>`">{{ selectedRow.authorName }}</span>
-          <span class="ml-auto shrink-0 tabular-nums" :title="isoTime(selectedRow.authorTime)">{{ dateText }}</span>
+          <Tip :content="selectedRow.oid">
+            <span class="font-mono text-foreground select-text">{{ shortOid(selectedRow.oid) }}</span>
+          </Tip>
+          <Tip :content="`${selectedRow.authorName} <${selectedRow.authorEmail}>`">
+            <span class="truncate">{{ selectedRow.authorName }}</span>
+          </Tip>
+          <Tip :content="isoTime(selectedRow.authorTime)">
+            <span class="ml-auto shrink-0 tabular-nums">{{ dateText }}</span>
+          </Tip>
         </div>
         <!-- The More toggle sits in the block's bottom right corner, inside whichever part comes
              last: floated at the end of the subject, beside the message body, or at the end of
@@ -556,22 +563,23 @@ function pathText(item: FileItem): string {
           <template v-if="unchangedParents === null" />
           <template v-else-if="straightMergeParent !== null">
             <GitBranchIcon class="size-3 shrink-0" aria-hidden="true" />
-            <span class="min-w-0 truncate" :title="straightMergeText">{{ straightMergeText }}</span>
+            <Tip :content="straightMergeText">
+              <span class="min-w-0 truncate">{{ straightMergeText }}</span>
+            </Tip>
           </template>
           <template v-else>
             <GitForkIcon class="size-3 shrink-0" aria-hidden="true" />
             <span class="shrink-0">Compare with</span>
-            <button
-              v-for="(p, i) in commitParents"
-              :key="p"
-              type="button"
-              :aria-pressed="parentIndex === i"
-              class="toggle h-[18px] min-w-0 truncate rounded-sm border px-2 leading-none font-medium transition-colors"
-              :title="`${parentLabels[i]} (parent ${i + 1})\n${p}`"
-              @click="parentIndex = i"
-            >
-              {{ parentLabels[i] }}
-            </button>
+            <Tip v-for="(p, i) in commitParents" :key="p" :heading="`${parentLabels[i]} (parent ${i + 1})`" :content="p">
+              <button
+                type="button"
+                :aria-pressed="parentIndex === i"
+                class="toggle h-[18px] min-w-0 truncate rounded-sm border px-2 leading-none font-medium transition-colors"
+                @click="parentIndex = i"
+              >
+                {{ parentLabels[i] }}
+              </button>
+            </Tip>
           </template>
           <MessageToggle class="ml-auto pl-2" :expanded="messageExpanded" @toggle="toggleMessage" />
         </div>
@@ -602,56 +610,59 @@ function pathText(item: FileItem): string {
                   {{ section.title }}
                   <span class="tabular-nums">({{ section.items.length }})</span>
                 </div>
-                <button
-                  v-for="item in section.items"
-                  :id="rowId(item)"
-                  :key="item.id"
-                  type="button"
-                  :class="
-                    cn(
-                      'flex h-(--row-h) w-full items-center gap-1.5 px-2 text-left text-base outline-none',
-                      isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
-                      multiple && isFocus(item) && 'shadow-[inset_2px_0_0_var(--ring)]',
-                    )
-                  "
-                  :aria-selected="isSelected(item)"
-                  :title="item.oldPath ? `${item.oldPath} → ${item.path}` : item.path"
-                  data-file-row
-                  @mousedown="list.onMousedown"
-                  @click="list.onClick(item.id, $event)"
-                  @contextmenu="onRowContextMenu(item)"
-                  @dblclick="onRowDoubleClick(item)"
-                >
-                  <span
-                    :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"
+                <!-- The row's tooltip has the whole path; the modified time inside has its own. -->
+                <Tip v-for="item in section.items" :key="item.id" :content="item.oldPath ? `${item.oldPath} → ${item.path}` : item.path" side="right">
+                  <button
+                    :id="rowId(item)"
+                    type="button"
+                    :class="
+                      cn(
+                        'flex h-(--row-h) w-full items-center gap-1.5 px-2 text-left text-base outline-none',
+                        isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
+                        multiple && isFocus(item) && 'shadow-[inset_2px_0_0_var(--ring)]',
+                      )
+                    "
+                    :aria-selected="isSelected(item)"
+                    data-file-row
+                    @mousedown="list.onMousedown"
+                    @click="list.onClick(item.id, $event)"
+                    @contextmenu="onRowContextMenu(item)"
+                    @dblclick="onRowDoubleClick(item)"
                   >
-                    {{ item.letter }}
-                  </span>
-                  <template v-if="tabular">
-                    <span class="shrink-0 truncate" :style="{ width: `${nameColumnPx}px` }">{{ splitPath(item.path).name }}</span>
-                    <!-- Truncates from the start, so the end of the path, nearest the file, stays visible. -->
-                    <span :class="cn('files-path min-w-0 flex-1 truncate text-[0.85em]', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">
-                      <span dir="ltr">{{ pathText(item) }}</span>
+                    <span
+                      :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"
+                    >
+                      {{ item.letter }}
                     </span>
-                  </template>
-                  <span v-else class="min-w-0 flex-1 truncate">
-                    <template v-if="item.oldPath && item.oldPath !== item.path">
-                      <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
-                      <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
+                    <template v-if="tabular">
+                      <span class="shrink-0 truncate" :style="{ width: `${nameColumnPx}px` }">{{ splitPath(item.path).name }}</span>
+                      <!-- Truncates from the start, so the end of the path, nearest the file, stays visible. -->
+                      <span :class="cn('files-path min-w-0 flex-1 truncate text-[0.85em]', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">
+                        <span dir="ltr">{{ pathText(item) }}</span>
+                      </span>
                     </template>
-                    <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
-                    <span v-if="item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
-                  </span>
-                  <span v-if="isStagedRow(item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
-                  <span v-if="sortingByDate && modifiedText(item)" class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" :title="modifiedTitle(item)">
-                    {{ modifiedText(item) }}
-                  </span>
-                  <span v-if="item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
-                  <span v-else-if="item.added !== null || item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">
-                    <span class="text-diff-add-fg">+{{ item.added ?? 0 }}</span>
-                    <span class="ml-1 text-diff-del-fg">−{{ item.deleted ?? 0 }}</span>
-                  </span>
-                </button>
+                    <span v-else class="min-w-0 flex-1 truncate">
+                      <template v-if="item.oldPath && item.oldPath !== item.path">
+                        <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
+                        <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
+                      </template>
+                      <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
+                      <span v-if="item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
+                    </span>
+                    <span v-if="isStagedRow(item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
+                    <!-- Stops the pointer reaching the row's tooltip, which would otherwise open last and close this one. -->
+                    <Tip v-if="sortingByDate && modifiedText(item)" :content="modifiedTitle(item)">
+                      <span class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" @pointermove.stop>
+                        {{ modifiedText(item) }}
+                      </span>
+                    </Tip>
+                    <span v-if="item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
+                    <span v-else-if="item.added !== null || item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">
+                      <span class="text-diff-add-fg">+{{ item.added ?? 0 }}</span>
+                      <span class="ml-1 text-diff-del-fg">−{{ item.deleted ?? 0 }}</span>
+                    </span>
+                  </button>
+                </Tip>
               </template>
             </template>
           </div>

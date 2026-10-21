@@ -3,6 +3,7 @@ import { computed, ref, watch, type Component } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, PlusIcon, RotateCcwIcon, XIcon } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import {
   availableCommands,
   isDefaultToolbar,
@@ -132,30 +133,36 @@ const ROW_CLASS = "flex h-9 min-w-0 items-center gap-2 rounded-md border border-
               type="button"
               class="shrink-0 cursor-grab touch-none rounded p-0.5 text-muted-foreground hover:bg-row-hover hover:text-foreground active:cursor-grabbing"
               :aria-label="`Drag ${describe(id).label}`"
-              title="Drag to move"
               @pointerdown="startDrag(index, $event)"
             >
               <GripVerticalIcon class="size-4" />
             </button>
             <component :is="describe(id).icon" class="size-4 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1 truncate text-base" :title="describe(id).help ?? describe(id).label">{{ describe(id).label }}</span>
-            <Button type="button" variant="ghost" size="icon-xs" :disabled="index === 0" :aria-label="`Move ${describe(id).label} up, further left`" title="Move up, further left" @click="move(index, index - 1)">
-              <ChevronUpIcon />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-xs"
-              :disabled="index === layout.length - 1"
-              :aria-label="`Move ${describe(id).label} down, further right`"
-              title="Move down, further right"
-              @click="move(index, index + 1)"
-            >
-              <ChevronDownIcon />
-            </Button>
-            <Button type="button" variant="ghost" size="icon-xs" :aria-label="`Remove ${describe(id).label}`" title="Remove from the toolbar" @click="remove(index)">
-              <XIcon />
-            </Button>
+            <Tip :content="describe(id).help ?? describe(id).label">
+              <span class="min-w-0 flex-1 truncate text-base">{{ describe(id).label }}</span>
+            </Tip>
+            <Tip content="Move up, further left">
+              <Button type="button" variant="ghost" size="icon-xs" :disabled="index === 0" :aria-label="`Move ${describe(id).label} up, further left`" @click="move(index, index - 1)">
+                <ChevronUpIcon />
+              </Button>
+            </Tip>
+            <Tip content="Move down, further right">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                :disabled="index === layout.length - 1"
+                :aria-label="`Move ${describe(id).label} down, further right`"
+                @click="move(index, index + 1)"
+              >
+                <ChevronDownIcon />
+              </Button>
+            </Tip>
+            <Tip content="Remove from the toolbar">
+              <Button type="button" variant="ghost" size="icon-xs" :aria-label="`Remove ${describe(id).label}`" @click="remove(index)">
+                <XIcon />
+              </Button>
+            </Tip>
           </li>
         </ol>
       </section>
@@ -165,7 +172,9 @@ const ROW_CLASS = "flex h-9 min-w-0 items-center gap-2 rounded-md border border-
         <ul class="grid gap-1">
           <li v-for="item in LAYOUT_ITEMS" :key="item.id" :class="ROW_CLASS">
             <component :is="item.icon" class="size-4 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1 truncate text-base" :title="item.help">{{ item.label }}</span>
+            <Tip :content="item.help">
+              <span class="min-w-0 flex-1 truncate text-base">{{ item.label }}</span>
+            </Tip>
             <Button type="button" variant="ghost" size="xs" :aria-label="`Add a ${item.label}`" @click="add(item.id)">
               <PlusIcon />
               Add
@@ -173,7 +182,9 @@ const ROW_CLASS = "flex h-9 min-w-0 items-center gap-2 rounded-md border border-
           </li>
           <li v-for="command in available" :key="command.id" :class="ROW_CLASS">
             <component :is="command.icon" class="size-4 shrink-0 text-muted-foreground" />
-            <span class="min-w-0 flex-1 truncate text-base" :title="command.label">{{ command.label }}</span>
+            <Tip :content="command.label">
+              <span class="min-w-0 flex-1 truncate text-base">{{ command.label }}</span>
+            </Tip>
             <Button type="button" variant="ghost" size="xs" :aria-label="`Add ${command.label}`" @click="add(command.id)">
               <PlusIcon />
               Add

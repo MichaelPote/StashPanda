@@ -8,6 +8,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import type { Chunk } from "@codemirror/merge";
 import { commands, type ConflictFile } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import FindBox from "@/components/diff/FindBox.vue";
@@ -844,12 +845,21 @@ const resolveBlocked = computed(() => {
         <section v-else-if="file" class="area flex min-h-0 flex-1 flex-col" :style="textStyle" data-merge-editor @keydown="onEditorKeydown">
           <!-- Toolbar -->
           <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border-soft px-2 py-1 font-sans text-[0.7rem]">
-            <button type="button" class="diff-action" title="Previous conflict (Shift+F7)" :disabled="unresolved.length === 0" @click="goToConflict(-1)">
-              <ChevronUpIcon class="size-3" />
-            </button>
-            <button type="button" class="diff-action" title="Next conflict (F7)" :disabled="unresolved.length === 0" @click="goToConflict(1)">
-              <ChevronDownIcon class="size-3" />
-            </button>
+            <!-- A disabled button lets no pointer events through, so the spans carry the tooltips. -->
+            <Tip content="Previous conflict (Shift+F7)">
+              <span class="inline-flex shrink-0">
+                <button type="button" class="diff-action" aria-label="Previous conflict" :disabled="unresolved.length === 0" @click="goToConflict(-1)">
+                  <ChevronUpIcon class="size-3" />
+                </button>
+              </span>
+            </Tip>
+            <Tip content="Next conflict (F7)">
+              <span class="inline-flex shrink-0">
+                <button type="button" class="diff-action" aria-label="Next conflict" :disabled="unresolved.length === 0" @click="goToConflict(1)">
+                  <ChevronDownIcon class="size-3" />
+                </button>
+              </span>
+            </Tip>
             <span :class="cn('tabular-nums', unresolved.length > 0 ? 'text-foreground' : 'text-muted-foreground')" data-merge-count>{{ conflictCount }}</span>
             <span class="mx-1 h-3 w-px bg-border-soft" aria-hidden="true" />
             <button type="button" class="diff-action" :disabled="unresolved.length === 0" @click="takeAll('left')">Take {{ names.ours }} for All Conflicts</button>
@@ -863,20 +873,26 @@ const resolveBlocked = computed(() => {
                 <input v-model="syncScroll" type="checkbox" class="size-3 accent-primary" />
                 Scroll together
               </label>
-              <button type="button" class="diff-action" title="Write Git's merge of this file again, with its conflict markers" @click="restoreGitMerge">
-                <RotateCcwIcon class="mr-1 size-3" />
-                Start Again from Git's Merge
-              </button>
+              <Tip content="Write Git's merge of this file again, with its conflict markers">
+                <button type="button" class="diff-action" @click="restoreGitMerge">
+                  <RotateCcwIcon class="mr-1 size-3" />
+                  Start Again from Git's Merge
+                </button>
+              </Tip>
             </span>
           </div>
 
           <!-- Pane headers -->
           <div class="merge-columns shrink-0 border-b border-border-soft font-sans text-xs" :style="{ '--merge-gap': `${GAP_PX}px` }">
-            <div class="truncate px-2 py-1" :title="names.ours" data-merge-side="left"><span class="font-semibold">{{ names.ours }}</span></div>
+            <Tip :content="names.ours">
+              <div class="truncate px-2 py-1" data-merge-side="left"><span class="font-semibold">{{ names.ours }}</span></div>
+            </Tip>
             <div />
             <div class="truncate px-2 py-1"><span class="font-semibold">Result</span> <span class="text-muted-foreground">saved to the working tree</span></div>
             <div />
-            <div class="truncate px-2 py-1" :title="names.theirs" data-merge-side="right"><span class="font-semibold">{{ names.theirs }}</span></div>
+            <Tip :content="names.theirs">
+              <div class="truncate px-2 py-1" data-merge-side="right"><span class="font-semibold">{{ names.theirs }}</span></div>
+            </Tip>
           </div>
 
           <!-- Panes and gaps -->
@@ -914,26 +930,28 @@ const resolveBlocked = computed(() => {
               </svg>
               <template v-for="s in leftShapes" :key="`a${s.key}`">
                 <template v-if="!s.dismissed">
-                  <button
-                    type="button"
-                    class="merge-arrow left-0.5"
-                    :style="{ top: `${s.arrowY}px` }"
-                    :title="`Copy these lines from ${names.ours} into the result (Ctrl+click to add them below)`"
-                    data-merge-take="left"
-                    @click="take('left', s.index, $event.ctrlKey || $event.metaKey)"
-                  >
-                    »
-                  </button>
-                  <button
-                    type="button"
-                    class="merge-arrow merge-dismiss left-5"
-                    :style="{ top: `${s.arrowY}px` }"
-                    :title="`Leave these lines from ${names.ours} out (undo brings them back)`"
-                    data-merge-dismiss="left"
-                    @click="dismiss('left', s.index)"
-                  >
-                    ×
-                  </button>
+                  <Tip :content="`Copy these lines from ${names.ours} into the result (Ctrl+click to add them below)`">
+                    <button
+                      type="button"
+                      class="merge-arrow left-0.5"
+                      :style="{ top: `${s.arrowY}px` }"
+                      data-merge-take="left"
+                      @click="take('left', s.index, $event.ctrlKey || $event.metaKey)"
+                    >
+                      »
+                    </button>
+                  </Tip>
+                  <Tip :content="`Leave these lines from ${names.ours} out (undo brings them back)`">
+                    <button
+                      type="button"
+                      class="merge-arrow merge-dismiss left-5"
+                      :style="{ top: `${s.arrowY}px` }"
+                      data-merge-dismiss="left"
+                      @click="dismiss('left', s.index)"
+                    >
+                      ×
+                    </button>
+                  </Tip>
                 </template>
               </template>
             </div>
@@ -958,26 +976,28 @@ const resolveBlocked = computed(() => {
               </svg>
               <template v-for="s in rightShapes" :key="`a${s.key}`">
                 <template v-if="!s.dismissed">
-                  <button
-                    type="button"
-                    class="merge-arrow merge-dismiss right-5"
-                    :style="{ top: `${s.arrowY}px` }"
-                    :title="`Leave these lines from ${names.theirs} out (undo brings them back)`"
-                    data-merge-dismiss="right"
-                    @click="dismiss('right', s.index)"
-                  >
-                    ×
-                  </button>
-                  <button
-                    type="button"
-                    class="merge-arrow right-0.5"
-                    :style="{ top: `${s.arrowY}px` }"
-                    :title="`Copy these lines from ${names.theirs} into the result (Ctrl+click to add them below)`"
-                    data-merge-take="right"
-                    @click="take('right', s.index, $event.ctrlKey || $event.metaKey)"
-                  >
-                    «
-                  </button>
+                  <Tip :content="`Leave these lines from ${names.theirs} out (undo brings them back)`">
+                    <button
+                      type="button"
+                      class="merge-arrow merge-dismiss right-5"
+                      :style="{ top: `${s.arrowY}px` }"
+                      data-merge-dismiss="right"
+                      @click="dismiss('right', s.index)"
+                    >
+                      ×
+                    </button>
+                  </Tip>
+                  <Tip :content="`Copy these lines from ${names.theirs} into the result (Ctrl+click to add them below)`">
+                    <button
+                      type="button"
+                      class="merge-arrow right-0.5"
+                      :style="{ top: `${s.arrowY}px` }"
+                      data-merge-take="right"
+                      @click="take('right', s.index, $event.ctrlKey || $event.metaKey)"
+                    >
+                      «
+                    </button>
+                  </Tip>
                 </template>
               </template>
             </div>
@@ -1004,12 +1024,16 @@ const resolveBlocked = computed(() => {
         <LoaderCircleIcon v-if="saving" class="mr-auto size-4 animate-spin text-muted-foreground" />
         <Button type="button" variant="outline" @click="onOpenChange(false)">Cancel</Button>
         <Button type="button" variant="outline" :disabled="!file || file.refused !== null" @click="save(false)">Save</Button>
-        <span :title="resolveBlocked ?? ''">
-          <Button type="button" variant="outline" :disabled="resolveBlocked !== null" @click="save(true, true)">Save, Resolve and Open Next</Button>
-        </span>
-        <span :title="resolveBlocked ?? ''">
-          <Button type="button" :disabled="resolveBlocked !== null" @click="save(true)">Save and Mark Resolved</Button>
-        </span>
+        <Tip :content="resolveBlocked" side="top">
+          <span>
+            <Button type="button" variant="outline" :disabled="resolveBlocked !== null" @click="save(true, true)">Save, Resolve and Open Next</Button>
+          </span>
+        </Tip>
+        <Tip :content="resolveBlocked" side="top">
+          <span>
+            <Button type="button" :disabled="resolveBlocked !== null" @click="save(true)">Save and Mark Resolved</Button>
+          </span>
+        </Tip>
       </DialogFooter>
     </DialogContent>
   </Dialog>

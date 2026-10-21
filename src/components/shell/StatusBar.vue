@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Tip } from "@/components/ui/tooltip";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { CircleCheckIcon, EyeIcon, GitBranchIcon, InfoIcon, LoaderCircleIcon, MonitorIcon, ServerIcon, UnplugIcon, XIcon } from "@lucide/vue";
 import { Separator } from "@/components/ui/separator";
@@ -93,22 +94,26 @@ const watcherText = computed(() => {
   <footer
     class="flex h-[21px] shrink-0 items-center gap-2 border-t border-window bg-bar px-2 text-xs whitespace-nowrap text-muted-foreground select-none"
   >
-    <span v-if="hostText" class="inline-flex shrink-0 items-center gap-1" :title="'Host operating system'">
+    <span v-if="hostText" class="inline-flex shrink-0 items-center gap-1">
       <MonitorIcon class="size-3" />
       {{ hostText }}
     </span>
     <template v-if="active">
       <Separator orientation="vertical" class="h-3" />
-      <span class="inline-flex min-w-0 items-center gap-1 truncate" :title="active.info.nativePath">
-        <ServerIcon class="size-3 shrink-0" />
-        {{ transportDetail(active.info.transport) }}
-      </span>
+      <Tip :content="active.info.nativePath" side="top">
+        <span class="inline-flex min-w-0 items-center gap-1 truncate">
+          <ServerIcon class="size-3 shrink-0" />
+          {{ transportDetail(active.info.transport) }}
+        </span>
+      </Tip>
       <!-- An SSH connection that is not ready: connecting, lost and trying again, or refused. -->
-      <span v-if="connectionText" :class="cn('inline-flex shrink-0 items-center gap-1', connectionClass)" :title="active.connection?.detail ?? undefined" role="status">
-        <LoaderCircleIcon v-if="active.connection?.state === 'connecting'" class="size-3 animate-spin" />
-        <UnplugIcon v-else class="size-3" />
-        {{ connectionText }}
-      </span>
+      <Tip v-if="connectionText" :content="active.connection?.detail" side="top">
+        <span :class="cn('inline-flex shrink-0 items-center gap-1', connectionClass)" role="status">
+          <LoaderCircleIcon v-if="active.connection?.state === 'connecting'" class="size-3 animate-spin" />
+          <UnplugIcon v-else class="size-3" />
+          {{ connectionText }}
+        </span>
+      </Tip>
       <Separator orientation="vertical" class="h-3" />
       <span class="inline-flex shrink-0 items-center gap-1">
         <GitBranchIcon class="size-3" />
@@ -116,20 +121,24 @@ const watcherText = computed(() => {
       </span>
       <template v-if="watcherText">
         <Separator orientation="vertical" class="h-3" />
-        <span class="inline-flex shrink-0 items-center gap-1" :title="active?.watcherDetail ?? 'How changes in this repository are detected'">
-          <EyeIcon class="size-3" />
-          {{ watcherText }}
-          <!-- The watcher has something to explain, such as why it polls; the tooltip says what. -->
-          <InfoIcon v-if="active?.watcherDetail" class="size-3 text-modified-fg" aria-label="See the tooltip for why" />
-        </span>
+        <Tip :content="active?.watcherDetail ?? 'How changes in this repository are detected'" side="top">
+          <span class="inline-flex shrink-0 items-center gap-1">
+            <EyeIcon class="size-3" />
+            {{ watcherText }}
+            <!-- The watcher has something to explain, such as why it polls; the tooltip says what. -->
+            <InfoIcon v-if="active?.watcherDetail" class="size-3 text-modified-fg" aria-label="See the tooltip for why" />
+          </span>
+        </Tip>
       </template>
     </template>
     <!-- The right-hand side: the last success message, the commit graph loading, and the running fetch, pull or push. -->
     <div class="ml-auto flex min-w-0 items-center gap-2">
       <div v-if="successMessage" class="flex min-w-0 items-center gap-1" role="status" aria-live="polite">
         <CircleCheckIcon class="size-3 shrink-0 text-added-fg" />
-        <span class="min-w-0 truncate text-foreground" :title="successMessage">{{ successMessage }}</span>
-        <button type="button" class="shrink-0 rounded p-px hover:bg-foreground/10" aria-label="Dismiss" title="Dismiss" @click="sessions.dismissSuccess()">
+        <Tip :content="successMessage" side="top">
+          <span class="min-w-0 truncate text-foreground">{{ successMessage }}</span>
+        </Tip>
+        <button type="button" class="shrink-0 rounded p-px hover:bg-foreground/10" aria-label="Dismiss" @click="sessions.dismissSuccess()">
           <XIcon class="size-3" />
         </button>
       </div>
@@ -146,18 +155,24 @@ const watcherText = computed(() => {
         <div class="flex min-w-0 items-center gap-1.5" role="status" aria-live="polite">
           <LoaderCircleIcon class="size-3 shrink-0 animate-spin" />
           <span class="shrink-0 text-foreground">{{ operation.title }}</span>
-          <span v-if="operation.line || operation.stopping" class="min-w-0 truncate font-mono" :title="operation.line">
-            {{ operation.stopping ? "Stopping…" : operation.line }}
-          </span>
-          <button
-            type="button"
-            class="shrink-0 rounded border border-border px-1.5 leading-[15px] text-foreground enabled:hover:bg-foreground/10 disabled:opacity-40"
-            :disabled="!operation.cancellable || operation.stopping"
-            :title="operation.cancellable ? 'Stop it. Git exits cleanly and nothing is half done.' : 'This step cannot be stopped.'"
-            @click="stopOperation(active.key)"
-          >
-            Stop
-          </button>
+          <Tip v-if="operation.line || operation.stopping" :content="operation.line" side="top">
+            <span class="min-w-0 truncate font-mono">
+              {{ operation.stopping ? "Stopping…" : operation.line }}
+            </span>
+          </Tip>
+          <!-- A disabled button lets no pointer events through, so the span carries the tooltip. -->
+          <Tip :content="operation.cancellable ? 'Stop it. Git exits cleanly and nothing is half done.' : 'This step cannot be stopped.'" side="top">
+            <span class="inline-flex shrink-0">
+              <button
+                type="button"
+                class="shrink-0 rounded border border-border px-1.5 leading-[15px] text-foreground enabled:hover:bg-foreground/10 disabled:opacity-40"
+                :disabled="!operation.cancellable || operation.stopping"
+                @click="stopOperation(active.key)"
+              >
+                Stop
+              </button>
+            </span>
+          </Tip>
         </div>
       </template>
       <span v-if="!active" class="shrink-0">No repository open</span>

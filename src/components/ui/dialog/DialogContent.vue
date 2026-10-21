@@ -14,6 +14,7 @@ import { computed, nextTick, ref, watchEffect } from 'vue'
 import type { DialogSize } from '@/lib/bindings'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
 import { useUiStateStore } from '@/stores/uiState'
 import { vPixelSnap } from '@/lib/pixelSnap'
 import DialogOverlay from './DialogOverlay.vue'
@@ -205,20 +206,20 @@ function resetSize(): void {
       <slot />
 
       <!-- Fill the window, or go back to the dialog's own size; beside the close button. -->
-      <Button
-        v-if="resizable"
-        variant="ghost"
-        size="icon"
-        :class="cn('absolute top-4', showCloseButton ? 'right-14' : 'right-4')"
-        :title="maximised ? 'Restore the dialog to its own size' : 'Fill the window'"
-        :aria-pressed="maximised"
-        data-dialog-maximise
-        @click="toggleMaximised"
-      >
-        <Minimize2Icon v-if="maximised" class="size-4" />
-        <Maximize2Icon v-else class="size-4" />
-        <span class="sr-only">{{ maximised ? 'Restore' : 'Maximise' }}</span>
-      </Button>
+      <Tip v-if="resizable" :content="maximised ? 'Restore the dialog to its own size' : 'Fill the window'">
+        <Button
+          variant="ghost"
+          size="icon"
+          :class="cn('absolute top-4', showCloseButton ? 'right-14' : 'right-4')"
+          :aria-pressed="maximised"
+          data-dialog-maximise
+          @click="toggleMaximised"
+        >
+          <Minimize2Icon v-if="maximised" class="size-4" />
+          <Maximize2Icon v-else class="size-4" />
+          <span class="sr-only">{{ maximised ? 'Restore' : 'Maximise' }}</span>
+        </Button>
+      </Tip>
 
       <DialogClose
         v-if="showCloseButton"
@@ -232,17 +233,16 @@ function resetSize(): void {
       </DialogClose>
 
       <template v-if="resizable && !maximised">
-        <div
-          v-for="h in EDGES"
-          :key="h.edge"
-          ref="handleEls"
-          data-dialog-resize
-          aria-hidden="true"
-          :class="cn('absolute z-10 touch-none select-none', h.class)"
-          title="Drag to resize; double-click to reset"
-          @pointerdown="startResize(h.edge, $event)"
-          @dblclick="resetSize"
-        />
+        <Tip v-for="h in EDGES" :key="h.edge" content="Drag to resize; double-click to reset">
+          <div
+            ref="handleEls"
+            data-dialog-resize
+            aria-hidden="true"
+            :class="cn('absolute z-10 touch-none select-none', h.class)"
+            @pointerdown="startResize(h.edge, $event)"
+            @dblclick="resetSize"
+          />
+        </Tip>
       </template>
     </DialogContent>
   </DialogPortal>

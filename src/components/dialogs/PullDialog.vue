@@ -5,6 +5,7 @@ import { commands, type PullMode } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, IpcError } from "@/lib/ipc";
 import { pullOutcome, runOperation, stopOperation } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
@@ -149,9 +150,11 @@ async function submit(): Promise<void> {
             <div v-if="percent !== null" class="h-full bg-primary transition-[width] duration-150" :style="{ width: `${percent}%` }" />
             <div v-else class="h-full w-1/3 animate-pulse bg-primary/60" />
           </div>
-          <p class="truncate font-mono text-xs text-muted-foreground" :title="progressLine">
-            {{ stopping ? "Stopping…" : progressLine || "Starting…" }}
-          </p>
+          <Tip :content="progressLine">
+            <p class="truncate font-mono text-xs text-muted-foreground">
+              {{ stopping ? "Stopping…" : progressLine || "Starting…" }}
+            </p>
+          </Tip>
         </div>
 
         <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
@@ -160,16 +163,12 @@ async function submit(): Promise<void> {
       </form>
 
       <DialogFooter>
-        <Button
-          v-if="running"
-          type="button"
-          variant="outline"
-          :disabled="stopping || !stoppable"
-          :title="stoppable ? 'Stop fetching. Nothing is merged.' : 'The fetch is done; the merge or rebase step cannot be stopped.'"
-          @click="stop"
-        >
-          Stop
-        </Button>
+        <!-- A disabled button lets no pointer events through, so the span carries the tooltip. -->
+        <Tip v-if="running" :content="stoppable ? 'Stop fetching. Nothing is merged.' : 'The fetch is done; the merge or rebase step cannot be stopped.'" side="top">
+          <span class="inline-flex">
+            <Button type="button" variant="outline" :disabled="stopping || !stoppable" @click="stop">Stop</Button>
+          </span>
+        </Tip>
         <Button v-else type="button" variant="outline" @click="dialogs.cancel()">Cancel</Button>
         <Button type="button" :disabled="!canSubmit" @click="submit">
           <LoaderCircleIcon v-if="running" class="animate-spin" />

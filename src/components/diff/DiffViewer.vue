@@ -4,7 +4,7 @@ import { useDebounceFn, usePreferredDark, useResizeObserver } from "@vueuse/core
 import { ChevronDownIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanTextIcon } from "@lucide/vue";
 import { commands, type DiffText, type Eol, type LineAction, type ResolveSide, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { fileViewReason, fileViewRev, mergeEditorReason, openBlame, openFileHistory, openMergeEditor } from "@/lib/fileViews";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import FindBox from "@/components/diff/FindBox.vue";
@@ -1049,14 +1049,16 @@ function toggleContext(value: string): void {
   <section ref="root" class="area flex h-full min-h-0 flex-col outline-none" tabindex="-1" @keydown="onRootKeydown">
     <PanelHeader title="Diff">
       <!-- The same look as the path beside the Commits header (CommitGraphView.vue), and selectable like it. -->
-      <span v-if="selected" class="truncate text-xs text-muted-foreground select-text" :title="headerPath">{{ headerPath }}</span>
-      <span
-        v-if="eolText"
-        :class="cn('shrink-0 rounded-sm border px-1 font-mono text-[0.65rem] leading-[14px]', eolChanged ? 'border-modified/60 text-modified-fg' : 'border-border-soft text-muted-foreground')"
-        :title="eolChanged ? 'The line endings change in this diff' : 'Line endings of the lines this diff shows'"
-      >
-        {{ eolText }}
-      </span>
+      <Tip v-if="selected" :content="headerPath">
+        <span class="truncate text-xs text-muted-foreground select-text">{{ headerPath }}</span>
+      </Tip>
+      <Tip v-if="eolText" :content="eolChanged ? 'The line endings change in this diff' : 'Line endings of the lines this diff shows'">
+        <span
+          :class="cn('shrink-0 rounded-sm border px-1 font-mono text-[0.65rem] leading-[14px]', eolChanged ? 'border-modified/60 text-modified-fg' : 'border-border-soft text-muted-foreground')"
+        >
+          {{ eolText }}
+        </span>
+      </Tip>
       <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
       <template #actions>
         <div v-if="selected" class="flex items-center gap-1 text-[0.7rem]">
@@ -1089,18 +1091,22 @@ function toggleContext(value: string): void {
             >
               Unified
             </button>
-            <!-- An added or deleted file is always unified; the choice is kept for the next file. -->
-            <button
-              type="button"
-              :aria-pressed="mode === 'side'"
-              :disabled="oneSided"
-              :title="oneSided ? 'An added or deleted file is shown unified: side by side, one side would be empty' : undefined"
-              class="toggle h-[18px] px-2 leading-none font-medium rounded-none border-0 border-l border-l-border-soft disabled:opacity-50"
-              data-layout-side
-              @click="chosenLayout = 'side'"
-            >
-              Side by side
-            </button>
+            <!-- An added or deleted file is always unified; the choice is kept for the next file. A
+                 disabled button lets no pointer events through, so the span carries the tooltip. -->
+            <Tip :content="oneSided ? 'An added or deleted file is shown unified: side by side, one side would be empty' : null">
+              <span class="inline-flex">
+                <button
+                  type="button"
+                  :aria-pressed="mode === 'side'"
+                  :disabled="oneSided"
+                  class="toggle h-[18px] px-2 leading-none font-medium rounded-none border-0 border-l border-l-border-soft disabled:opacity-50"
+                  data-layout-side
+                  @click="chosenLayout = 'side'"
+                >
+                  Side by side
+                </button>
+              </span>
+            </Tip>
           </div>
           <label class="inline-flex items-center gap-1 text-muted-foreground">
             Context
@@ -1116,27 +1122,36 @@ function toggleContext(value: string): void {
             type="button"
             :aria-pressed="ignoreWhitespace"
             class="toggle h-[18px] px-2 leading-none font-medium rounded-sm border"
-            title="Ignore whitespace changes (git diff -w)"
             @click="ignoreWhitespace = !ignoreWhitespace"
           >
             Ignore whitespace
           </button>
-          <button
-            type="button"
-            :aria-pressed="ignoreCrAtEol"
-            class="toggle h-[18px] px-2 leading-none font-medium rounded-sm border"
-            title="Ignore carriage returns at the end of lines (git diff --ignore-cr-at-eol)"
-            @click="ignoreCrAtEol = !ignoreCrAtEol"
-          >
-            Ignore CR at EOL
-          </button>
+          <Tip content="Ignore carriage returns at the end of lines (git diff --ignore-cr-at-eol)">
+            <button
+              type="button"
+              :aria-pressed="ignoreCrAtEol"
+              class="toggle h-[18px] px-2 leading-none font-medium rounded-sm border"
+              @click="ignoreCrAtEol = !ignoreCrAtEol"
+            >
+              Ignore CR at EOL
+            </button>
+          </Tip>
           <span class="ml-1 text-muted-foreground tabular-nums">{{ hunkRows.length }} {{ hunkRows.length === 1 ? "hunk" : "hunks" }}</span>
-          <Button variant="ghost" size="icon-xs" class="size-5" title="Previous hunk" :disabled="hunkRows.length === 0" @click="prevHunk">
-            <ChevronUpIcon />
-          </Button>
-          <Button variant="ghost" size="icon-xs" class="size-5" title="Next hunk" :disabled="hunkRows.length === 0" @click="nextHunk">
-            <ChevronDownIcon />
-          </Button>
+          <!-- A disabled button lets no pointer events through, so the spans carry the tooltips. -->
+          <Tip content="Previous hunk">
+            <span class="inline-flex">
+              <Button variant="ghost" size="icon-xs" class="size-5" aria-label="Previous hunk" :disabled="hunkRows.length === 0" @click="prevHunk">
+                <ChevronUpIcon />
+              </Button>
+            </span>
+          </Tip>
+          <Tip content="Next hunk">
+            <span class="inline-flex">
+              <Button variant="ghost" size="icon-xs" class="size-5" aria-label="Next hunk" :disabled="hunkRows.length === 0" @click="nextHunk">
+                <ChevronDownIcon />
+              </Button>
+            </span>
+          </Tip>
         </div>
       </template>
     </PanelHeader>
@@ -1146,54 +1161,60 @@ function toggleContext(value: string): void {
       <span class="text-foreground">{{ conflictSummary(conflictFile.letters, sideNames) }}</span>
       <span class="ml-1 text-muted-foreground">Compare</span>
       <div class="inline-flex overflow-hidden rounded-md border border-border-soft">
-        <button
-          v-for="(c, i) in comparisons"
-          :key="`${c.from}-${c.to}`"
-          type="button"
-          :aria-pressed="isComparing(c)"
-          :class="cn('toggle h-[18px] rounded-none border-0 px-2 leading-none font-medium', i > 0 && 'border-l border-l-border-soft')"
-          :title="comparisonNote(c) ? `${c.title}. ${comparisonNote(c)}` : c.title"
-          :data-compare="`${c.from}-${c.to}`"
-          @click="compare(c)"
-        >
-          {{ c.label }}
-        </button>
+        <Tip v-for="(c, i) in comparisons" :key="`${c.from}-${c.to}`" :content="comparisonNote(c) ? `${c.title}. ${comparisonNote(c)}` : c.title">
+          <button
+            type="button"
+            :aria-pressed="isComparing(c)"
+            :class="cn('toggle h-[18px] rounded-none border-0 px-2 leading-none font-medium', i > 0 && 'border-l border-l-border-soft')"
+            :data-compare="`${c.from}-${c.to}`"
+            @click="compare(c)"
+          >
+            {{ c.label }}
+          </button>
+        </Tip>
       </div>
       <span class="ml-auto flex flex-wrap items-center gap-1">
-        <button
-          type="button"
-          :class="cn('diff-action', mergeEditorReason(conflictFile.letters) && 'opacity-50')"
-          :title="mergeEditorReason(conflictFile.letters) ?? 'Resolve this file block by block in the three-pane merge editor'"
-          :aria-disabled="mergeEditorReason(conflictFile.letters) !== null"
-          data-resolve="editor"
-          @click="!mergeEditorReason(conflictFile.letters) && openMergeEditor(session.key, conflictFile.item.path)"
-        >
-          Merge Editor…
-        </button>
-        <button type="button" class="diff-action" :title="takeTitle('ours')" data-resolve="ours" @click="takeVersion(session, [conflictFile.item], 'ours')">
-          Take the version from {{ sideNames.ours }}
-        </button>
-        <button type="button" class="diff-action" :title="takeTitle('theirs')" data-resolve="theirs" @click="takeVersion(session, [conflictFile.item], 'theirs')">
-          Take the version from {{ sideNames.theirs }}
-        </button>
-        <button
-          type="button"
-          class="diff-action"
-          title="After editing the file to resolve the conflict, stage it as it is on disk (git add)"
-          data-resolve="mark"
-          @click="markResolved(session, [conflictFile.item])"
-        >
-          Mark as resolved
-        </button>
-        <button
-          type="button"
-          :class="cn('diff-action', openReason && 'opacity-50')"
-          :title="openReason ?? 'Open the file in the program your system uses for it, to edit it by hand'"
-          :aria-disabled="openReason !== null"
-          @click="!openReason && openWorktreeFile(session.key, conflictFile.item.path)"
-        >
-          Open
-        </button>
+        <Tip :content="mergeEditorReason(conflictFile.letters) ?? 'Resolve this file block by block in the three-pane merge editor'">
+          <button
+            type="button"
+            :class="cn('diff-action', mergeEditorReason(conflictFile.letters) && 'opacity-50')"
+            :aria-disabled="mergeEditorReason(conflictFile.letters) !== null"
+            data-resolve="editor"
+            @click="!mergeEditorReason(conflictFile.letters) && openMergeEditor(session.key, conflictFile.item.path)"
+          >
+            Merge Editor…
+          </button>
+        </Tip>
+        <Tip :content="takeTitle('ours')">
+          <button type="button" class="diff-action" data-resolve="ours" @click="takeVersion(session, [conflictFile.item], 'ours')">
+            Take the version from {{ sideNames.ours }}
+          </button>
+        </Tip>
+        <Tip :content="takeTitle('theirs')">
+          <button type="button" class="diff-action" data-resolve="theirs" @click="takeVersion(session, [conflictFile.item], 'theirs')">
+            Take the version from {{ sideNames.theirs }}
+          </button>
+        </Tip>
+        <Tip content="After editing the file to resolve the conflict, stage it as it is on disk (git add)">
+          <button
+            type="button"
+            class="diff-action"
+            data-resolve="mark"
+            @click="markResolved(session, [conflictFile.item])"
+          >
+            Mark as resolved
+          </button>
+        </Tip>
+        <Tip :content="openReason ?? 'Open the file in the program your system uses for it, to edit it by hand'">
+          <button
+            type="button"
+            :class="cn('diff-action', openReason && 'opacity-50')"
+            :aria-disabled="openReason !== null"
+            @click="!openReason && openWorktreeFile(session.key, conflictFile.item.path)"
+          >
+            Open
+          </button>
+        </Tip>
       </span>
     </div>
 
@@ -1401,21 +1422,21 @@ function toggleContext(value: string): void {
            border, where that side's line numbers begin. Dragging works within DIVIDER_REACH
            pixels of that border on either side; the curves under it ignore the mouse. The line
            shows only on hover and while dragging. -->
-      <button
-        v-if="mode === 'side' && rowsWidth > 0"
-        type="button"
-        class="group absolute top-0 bottom-0 z-10 cursor-col-resize outline-none"
-        :style="{ left: `${leftTextPx + GAP_PX - DIVIDER_REACH}px`, width: `${2 * DIVIDER_REACH}px` }"
-        aria-label="Resize the two sides of the diff"
-        title="Drag to resize the two sides; double-click to split them evenly"
-        @pointerdown="startSplitDrag"
-        @dblclick="split = 0.5"
-      >
-        <span
-          :class="['absolute top-0 h-full w-px transition-colors', splitDragging ? 'w-[2px] bg-primary' : 'bg-transparent group-hover:w-[2px] group-hover:bg-primary/70']"
-          :style="{ left: `${DIVIDER_REACH}px` }"
-        />
-      </button>
+      <Tip v-if="mode === 'side' && rowsWidth > 0" content="Drag to resize the two sides; double-click to split them evenly">
+        <button
+          type="button"
+          class="group absolute top-0 bottom-0 z-10 cursor-col-resize outline-none"
+          :style="{ left: `${leftTextPx + GAP_PX - DIVIDER_REACH}px`, width: `${2 * DIVIDER_REACH}px` }"
+          aria-label="Resize the two sides of the diff"
+          @pointerdown="startSplitDrag"
+          @dblclick="split = 0.5"
+        >
+          <span
+            :class="['absolute top-0 h-full w-px transition-colors', splitDragging ? 'w-[2px] bg-primary' : 'bg-transparent group-hover:w-[2px] group-hover:bg-primary/70']"
+            :style="{ left: `${DIVIDER_REACH}px` }"
+          />
+        </button>
+      </Tip>
       </div>
     </template>
   </section>

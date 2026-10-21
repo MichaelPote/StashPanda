@@ -19,6 +19,7 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import AddBranchMenu from "@/components/shell/AddBranchMenu.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
@@ -211,74 +212,88 @@ async function reveal(entry: RefEntry): Promise<void> {
         <template v-if="isOpen('local')">
           <p v-if="locals.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No local branches</p>
           <template v-for="row in localRows" :key="row.key">
-            <AddBranchMenu v-if="row.kind === 'folder'" :session-key="activeKey" :prefix="row.prefix">
-              <button
-                type="button"
-                class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left hover:bg-row-hover"
-                :style="indent(12, row.depth)"
-                :title="row.prefix"
-                data-branch-folder
-                @click="onHeadingClick($event, row.key)"
+            <!-- The tooltip's root goes outside the menu and its trigger inside, so both reach the
+                 row element: a menu trigger's attributes are lost on a component whose root is a
+                 tooltip. -->
+            <Tooltip v-if="row.kind === 'folder'">
+              <AddBranchMenu :session-key="activeKey" :prefix="row.prefix">
+                <TooltipTrigger as-child>
+                  <button
+                    type="button"
+                    class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left hover:bg-row-hover"
+                    :style="indent(12, row.depth)"
+                    data-branch-folder
+                    @click="onHeadingClick($event, row.key)"
+                  >
+                    <component :is="isOpen(row.key) ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0 text-muted-foreground" />
+                    <component :is="isOpen(row.key) ? FolderOpenIcon : FolderIcon" class="size-3.5 shrink-0 text-muted-foreground" />
+                    <span class="truncate">{{ row.name }}</span>
+                    <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ row.count }}</span>
+                  </button>
+                </TooltipTrigger>
+              </AddBranchMenu>
+              <TooltipContent side="right" class="max-w-sm [overflow-wrap:anywhere]">{{ row.prefix }}</TooltipContent>
+            </Tooltip>
+            <Tooltip v-else>
+              <RefContextMenu
+                :session-key="activeKey"
+                :full-name="row.entry.fullName"
+                :short="row.entry.short"
+                :kind="row.entry.kind"
+                :target="row.entry.target"
+                :is-current="row.entry.isHead"
               >
-                <component :is="isOpen(row.key) ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0 text-muted-foreground" />
-                <component :is="isOpen(row.key) ? FolderOpenIcon : FolderIcon" class="size-3.5 shrink-0 text-muted-foreground" />
-                <span class="truncate">{{ row.name }}</span>
-                <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ row.count }}</span>
-              </button>
-            </AddBranchMenu>
-            <RefContextMenu
-              v-else
-              :session-key="activeKey"
-              :full-name="row.entry.fullName"
-              :short="row.entry.short"
-              :kind="row.entry.kind"
-              :target="row.entry.target"
-              :is-current="row.entry.isHead"
-            >
-              <div
-                role="button"
-                tabindex="0"
-                :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left', selectedOid === row.entry.target ? 'row-selected' : 'hover:bg-row-hover')"
-                :style="indent(12, row.depth)"
-                :title="`${row.entry.fullName}\n${row.entry.target}\n${row.entry.subject}`"
-                @click="reveal(row.entry)"
-                @dblclick="checkoutOnDoubleClick(row.entry)"
-                @keydown.enter="reveal(row.entry)"
-              >
-                <!-- The checked-out branch: the graph's HEAD dot (GraphLanesSvg.vue), same size and colour. -->
-                <svg
-                  v-if="row.entry.isHead"
-                  viewBox="0 0 12 12"
-                  class="size-[12px] shrink-0 text-muted-foreground"
-                  :style="colourOf(row.entry) !== null ? { color: laneColour(colourOf(row.entry)!) } : undefined"
-                  role="img"
-                  aria-label="Checked out"
-                >
-                  <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="2" />
-                  <circle cx="6" cy="6" r="2" fill="currentColor" />
-                </svg>
-                <span v-else class="size-[12px] shrink-0" />
-                <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
-                <BranchName :name="row.entry.short" :class="cn(row.entry.isHead && 'font-semibold', !isShown(row.entry) && 'text-muted-foreground')" />
-                <!-- The tracked branch gives way first when the row is narrow. -->
-                <span
-                  v-if="upstreamName(row.entry)"
-                  class="flex min-w-0 shrink-[4] items-center text-muted-foreground"
-                  :title="`Tracks ${upstreamName(row.entry)}`"
-                >
-                  <ChevronRightIcon class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="min-w-0 truncate">{{ upstreamLabel(row.entry) }}</span>
-                </span>
-                <!-- Fixed-height badges with the text trimmed to its letters, so items-center centres
-                     the letters rather than IBM Plex Sans's line box, which has far more room above
-                     them than below. Digits and arrows are capital height; "gone" is lowercase. -->
-                <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
-                  <span v-if="row.entry.upstreamGone" class="inline-flex h-[14px] items-center rounded-sm badge-deleted px-1"><span class="pill-text">gone</span></span>
-                  <span v-if="row.entry.ahead" class="inline-flex h-[14px] items-center rounded-sm badge-modified px-1"><span class="text-cap-box">↑{{ row.entry.ahead }}</span></span>
-                  <span v-if="row.entry.behind" class="inline-flex h-[14px] items-center rounded-sm badge-primary px-1"><span class="text-cap-box">↓{{ row.entry.behind }}</span></span>
-                </span>
-              </div>
-            </RefContextMenu>
+                <TooltipTrigger as-child>
+                  <div
+                    role="button"
+                    tabindex="0"
+                    :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left', selectedOid === row.entry.target ? 'row-selected' : 'hover:bg-row-hover')"
+                    :style="indent(12, row.depth)"
+                    @click="reveal(row.entry)"
+                    @dblclick="checkoutOnDoubleClick(row.entry)"
+                    @keydown.enter="reveal(row.entry)"
+                  >
+                    <!-- The checked-out branch: the graph's HEAD dot (GraphLanesSvg.vue), same size and colour. -->
+                    <svg
+                      v-if="row.entry.isHead"
+                      viewBox="0 0 12 12"
+                      class="size-[12px] shrink-0 text-muted-foreground"
+                      :style="colourOf(row.entry) !== null ? { color: laneColour(colourOf(row.entry)!) } : undefined"
+                      role="img"
+                      aria-label="Checked out"
+                    >
+                      <circle cx="6" cy="6" r="5" fill="none" stroke="currentColor" stroke-width="2" />
+                      <circle cx="6" cy="6" r="2" fill="currentColor" />
+                    </svg>
+                    <span v-else class="size-[12px] shrink-0" />
+                    <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
+                    <BranchName :name="row.entry.short" :class="cn(row.entry.isHead && 'font-semibold', !isShown(row.entry) && 'text-muted-foreground')" />
+                    <!-- The tracked branch gives way first when the row is narrow. Its tooltip stops the
+                         pointer reaching the row's, which would otherwise open last and close it. -->
+                    <Tip v-if="upstreamName(row.entry)" :content="`Tracks ${upstreamName(row.entry)}`" side="right">
+                      <span class="flex min-w-0 shrink-[4] items-center text-muted-foreground" @pointermove.stop>
+                        <ChevronRightIcon class="size-3 shrink-0" aria-hidden="true" />
+                        <span class="min-w-0 truncate">{{ upstreamLabel(row.entry) }}</span>
+                      </span>
+                    </Tip>
+                    <!-- Fixed-height badges with the text trimmed to its letters, so items-center centres
+                         the letters rather than IBM Plex Sans's line box, which has far more room above
+                         them than below. Digits and arrows are capital height; "gone" is lowercase. -->
+                    <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
+                      <span v-if="row.entry.upstreamGone" class="inline-flex h-[14px] items-center rounded-sm badge-deleted px-1"><span class="pill-text">gone</span></span>
+                      <span v-if="row.entry.ahead" class="inline-flex h-[14px] items-center rounded-sm badge-modified px-1"><span class="text-cap-box">↑{{ row.entry.ahead }}</span></span>
+                      <span v-if="row.entry.behind" class="inline-flex h-[14px] items-center rounded-sm badge-primary px-1"><span class="text-cap-box">↓{{ row.entry.behind }}</span></span>
+                    </span>
+                  </div>
+                </TooltipTrigger>
+              </RefContextMenu>
+              <TooltipContent side="right" class="max-w-sm">
+                <div class="flex flex-col gap-0.5 whitespace-pre-line [overflow-wrap:anywhere]">
+                  <span class="font-semibold">{{ row.entry.fullName }}</span>
+                  <span>{{ `${row.entry.target}\n${row.entry.subject}` }}</span>
+                </div>
+              </TooltipContent>
+            </Tooltip>
           </template>
         </template>
 
@@ -303,44 +318,56 @@ async function reveal(entry: RefEntry): Promise<void> {
             </AddBranchMenu>
             <template v-if="isOpen(`remote:${group.name}`)">
               <template v-for="row in group.rows" :key="row.key">
-                <AddBranchMenu v-if="row.kind === 'folder'" :session-key="activeKey" :prefix="row.prefix">
-                  <button
-                    type="button"
-                    class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left hover:bg-row-hover"
-                    :style="indent(32, row.depth)"
-                    :title="`${group.name}/${row.prefix}`"
-                    data-branch-folder
-                    @click="onHeadingClick($event, row.key)"
+                <Tooltip v-if="row.kind === 'folder'">
+                  <AddBranchMenu :session-key="activeKey" :prefix="row.prefix">
+                    <TooltipTrigger as-child>
+                      <button
+                        type="button"
+                        class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left hover:bg-row-hover"
+                        :style="indent(32, row.depth)"
+                        data-branch-folder
+                        @click="onHeadingClick($event, row.key)"
+                      >
+                        <component :is="isOpen(row.key) ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0 text-muted-foreground" />
+                        <component :is="isOpen(row.key) ? FolderOpenIcon : FolderIcon" class="size-3.5 shrink-0 text-muted-foreground" />
+                        <span class="truncate">{{ row.name }}</span>
+                        <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ row.count }}</span>
+                      </button>
+                    </TooltipTrigger>
+                  </AddBranchMenu>
+                  <TooltipContent side="right" class="max-w-sm [overflow-wrap:anywhere]">{{ `${group.name}/${row.prefix}` }}</TooltipContent>
+                </Tooltip>
+                <Tooltip v-else>
+                  <RefContextMenu
+                    :session-key="activeKey"
+                    :full-name="row.entry.fullName"
+                    :short="row.entry.short"
+                    :kind="row.entry.kind"
+                    :target="row.entry.target"
+                    :is-current="false"
                   >
-                    <component :is="isOpen(row.key) ? ChevronDownIcon : ChevronRightIcon" class="size-3 shrink-0 text-muted-foreground" />
-                    <component :is="isOpen(row.key) ? FolderOpenIcon : FolderIcon" class="size-3.5 shrink-0 text-muted-foreground" />
-                    <span class="truncate">{{ row.name }}</span>
-                    <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ row.count }}</span>
-                  </button>
-                </AddBranchMenu>
-                <RefContextMenu
-                  v-else
-                  :session-key="activeKey"
-                  :full-name="row.entry.fullName"
-                  :short="row.entry.short"
-                  :kind="row.entry.kind"
-                  :target="row.entry.target"
-                  :is-current="false"
-                >
-                  <div
-                    role="button"
-                    tabindex="0"
-                    :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left', selectedOid === row.entry.target ? 'row-selected' : 'hover:bg-row-hover')"
-                    :style="indent(32, row.depth)"
-                    :title="`${row.entry.fullName}\n${row.entry.target}\n${row.entry.subject}`"
-                    @click="reveal(row.entry)"
-                    @dblclick="checkoutOnDoubleClick(row.entry)"
-                    @keydown.enter="reveal(row.entry)"
-                  >
-                    <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
-                    <BranchName :name="remoteShort(row.entry)" class="text-muted-foreground" />
-                  </div>
-                </RefContextMenu>
+                    <TooltipTrigger as-child>
+                      <div
+                        role="button"
+                        tabindex="0"
+                        :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 text-left', selectedOid === row.entry.target ? 'row-selected' : 'hover:bg-row-hover')"
+                        :style="indent(32, row.depth)"
+                        @click="reveal(row.entry)"
+                        @dblclick="checkoutOnDoubleClick(row.entry)"
+                        @keydown.enter="reveal(row.entry)"
+                      >
+                        <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
+                        <BranchName :name="remoteShort(row.entry)" class="text-muted-foreground" />
+                      </div>
+                    </TooltipTrigger>
+                  </RefContextMenu>
+                  <TooltipContent side="right" class="max-w-sm">
+                    <div class="flex flex-col gap-0.5 whitespace-pre-line [overflow-wrap:anywhere]">
+                      <span class="font-semibold">{{ row.entry.fullName }}</span>
+                      <span>{{ `${row.entry.target}\n${row.entry.subject}` }}</span>
+                    </div>
+                  </TooltipContent>
+                </Tooltip>
               </template>
             </template>
           </template>
@@ -357,30 +384,37 @@ async function reveal(entry: RefEntry): Promise<void> {
         </AddBranchMenu>
         <template v-if="isOpen('tags')">
           <p v-if="tags.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No tags</p>
-          <RefContextMenu
-            v-for="t in tags"
-            :key="t.fullName"
-            :session-key="activeKey"
-            :full-name="t.fullName"
-            :short="t.short"
-            :kind="t.kind"
-            :target="t.target"
-            :is-current="false"
-          >
-            <div
-              role="button"
-              tabindex="0"
-              :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-row-hover')"
-              :title="`${t.fullName}\n${t.target}\n${t.subject}`"
-              @click="reveal(t)"
-              @keydown.enter="reveal(t)"
+          <Tooltip v-for="t in tags" :key="t.fullName">
+            <RefContextMenu
+              :session-key="activeKey"
+              :full-name="t.fullName"
+              :short="t.short"
+              :kind="t.kind"
+              :target="t.target"
+              :is-current="false"
             >
-              <span class="size-3.5 shrink-0" />
-              <RefToggleTag :colour="colourOf(t)" :visible="isShown(t)" :name="t.short" @toggle="toggleShown(t)" />
-              <span :class="cn('truncate', !isShown(t) && 'text-muted-foreground')">{{ t.short }}</span>
-              <span v-if="t.kind.type === 'tag' && t.kind.annotated" class="ml-auto text-[0.7rem] text-muted-foreground">annotated</span>
-            </div>
-          </RefContextMenu>
+              <TooltipTrigger as-child>
+                <div
+                  role="button"
+                  tabindex="0"
+                  :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === t.target ? 'row-selected' : 'hover:bg-row-hover')"
+                  @click="reveal(t)"
+                  @keydown.enter="reveal(t)"
+                >
+                  <span class="size-3.5 shrink-0" />
+                  <RefToggleTag :colour="colourOf(t)" :visible="isShown(t)" :name="t.short" @toggle="toggleShown(t)" />
+                  <span :class="cn('truncate', !isShown(t) && 'text-muted-foreground')">{{ t.short }}</span>
+                  <span v-if="t.kind.type === 'tag' && t.kind.annotated" class="ml-auto text-[0.7rem] text-muted-foreground">annotated</span>
+                </div>
+              </TooltipTrigger>
+            </RefContextMenu>
+            <TooltipContent side="right" class="max-w-sm">
+              <div class="flex flex-col gap-0.5 whitespace-pre-line [overflow-wrap:anywhere]">
+                <span class="font-semibold">{{ t.fullName }}</span>
+                <span>{{ `${t.target}\n${t.subject}` }}</span>
+              </div>
+            </TooltipContent>
+          </Tooltip>
         </template>
 
         <!-- Stashes -->
@@ -396,23 +430,34 @@ async function reveal(entry: RefEntry): Promise<void> {
           <p v-if="stashCount === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No stashes</p>
           <!-- Stash commits are not in the graph, so a click has nothing to reveal; the actions are
                in the context menu. -->
-          <ContextMenu v-for="s in stashes" :key="s.oid">
-            <ContextMenuTrigger as-child>
-              <div class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 hover:bg-row-hover" :title="stashTitle(s)">
-                <span class="size-3.5 shrink-0" />
-                <span class="truncate">{{ stashParts(s).text }}</span>
-                <span class="ml-auto shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
+          <Tooltip v-for="s in stashes" :key="s.oid">
+            <ContextMenu>
+              <ContextMenuTrigger as-child>
+                <TooltipTrigger as-child>
+                  <div class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 hover:bg-row-hover">
+                    <span class="size-3.5 shrink-0" />
+                    <span class="truncate">{{ stashParts(s).text }}</span>
+                    <span class="ml-auto shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
+                  </div>
+                </TooltipTrigger>
+              </ContextMenuTrigger>
+              <ContextMenuContent class="min-w-52">
+                <ContextMenuItem class="text-base" @select="applyStash(activeKey, s)">Apply (keep the stash)</ContextMenuItem>
+                <ContextMenuItem class="text-base" @select="popStash(activeKey, s)">Pop (apply, then drop)</ContextMenuItem>
+                <ContextMenuSeparator />
+                <ContextMenuItem class="text-base" variant="destructive" @select="dropStash(activeKey, s, stashParts(s).text)">
+                  Drop…
+                </ContextMenuItem>
+              </ContextMenuContent>
+            </ContextMenu>
+            <!-- The stash and its commit in bold, then where and when it was made, and its message. -->
+            <TooltipContent side="right" class="max-w-sm">
+              <div class="flex flex-col gap-0.5 whitespace-pre-line [overflow-wrap:anywhere]">
+                <span class="font-semibold">{{ stashTitle(s).split("\n")[0] }}</span>
+                <span>{{ stashTitle(s).split("\n").slice(1).join("\n") }}</span>
               </div>
-            </ContextMenuTrigger>
-            <ContextMenuContent class="min-w-52">
-              <ContextMenuItem class="text-base" @select="applyStash(activeKey, s)">Apply (keep the stash)</ContextMenuItem>
-              <ContextMenuItem class="text-base" @select="popStash(activeKey, s)">Pop (apply, then drop)</ContextMenuItem>
-              <ContextMenuSeparator />
-              <ContextMenuItem class="text-base" variant="destructive" @select="dropStash(activeKey, s, stashParts(s).text)">
-                Drop…
-              </ContextMenuItem>
-            </ContextMenuContent>
-          </ContextMenu>
+            </TooltipContent>
+          </Tooltip>
         </template>
       </div>
     </ScrollArea>

@@ -2,6 +2,7 @@
 import { computed, inject } from "vue";
 import type { RefLabel } from "@/lib/bindings";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tip } from "@/components/ui/tooltip";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import RefPill, { type PillShape } from "@/components/graph/RefPill.vue";
@@ -58,14 +59,14 @@ function shapeFor(label: RefLabel): PillShape {
 </script>
 
 <template>
-  <span
-    v-if="detachedHead"
-    class="pill-flat pill-lane-solid inline-flex shrink-0 items-center px-1.5 text-sm leading-none font-normal"
-    :style="laneVars(colour)"
-    title="Detached HEAD"
-  >
-    <span class="pill-text">HEAD</span>
-  </span>
+  <Tip v-if="detachedHead" content="Detached HEAD">
+    <span
+      class="pill-flat pill-lane-solid inline-flex shrink-0 items-center px-1.5 text-sm leading-none font-normal"
+      :style="laneVars(colour)"
+    >
+      <span class="pill-text">HEAD</span>
+    </span>
+  </Tip>
   <template v-for="label in visible" :key="label.fullName">
     <RefContextMenu
       v-if="sessionKey"
@@ -91,7 +92,6 @@ function shapeFor(label: RefLabel): PillShape {
       <button
         type="button"
         class="pill-flat pill-remote inline-flex shrink-0 items-center px-1.5 text-sm leading-none font-normal hover:text-foreground"
-        :title="`${hidden.length} more`"
       >
         <span class="pill-text">+{{ hidden.length }}</span>
       </button>

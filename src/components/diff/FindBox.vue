@@ -2,6 +2,7 @@
 import { ref } from "vue";
 import { ChevronLeftIcon, ChevronRightIcon, SearchIcon, XIcon } from "@lucide/vue";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
+import { Tip } from "@/components/ui/tooltip";
 
 /**
  * The Find box of a read-only view of lines (the diff view, the Blame dialog), which places it in
@@ -60,15 +61,26 @@ defineExpose({ focus });
       <InputGroupInput v-model="query" :placeholder="placeholder" :aria-label="placeholder" spellcheck="false" />
       <InputGroupAddon align="inline-end">
         <InputGroupText v-if="summary" class="text-xs tabular-nums" data-diff-find-count>{{ summary }}</InputGroupText>
-        <InputGroupButton size="icon-xs" title="Previous match (Shift+Enter)" aria-label="Previous match" :disabled="!canStep" @click="emit('step', -1)">
-          <ChevronLeftIcon />
-        </InputGroupButton>
-        <InputGroupButton size="icon-xs" title="Next match (Enter)" aria-label="Next match" :disabled="!canStep" @click="emit('step', 1)">
-          <ChevronRightIcon />
-        </InputGroupButton>
-        <InputGroupButton size="icon-xs" title="Close (Escape)" aria-label="Close" @click="emit('close')">
-          <XIcon />
-        </InputGroupButton>
+        <!-- A disabled button lets no pointer events through, so the spans carry the tooltips. -->
+        <Tip content="Previous match (Shift+Enter)">
+          <span class="inline-flex shrink-0">
+            <InputGroupButton size="icon-xs" aria-label="Previous match" :disabled="!canStep" @click="emit('step', -1)">
+              <ChevronLeftIcon />
+            </InputGroupButton>
+          </span>
+        </Tip>
+        <Tip content="Next match (Enter)">
+          <span class="inline-flex shrink-0">
+            <InputGroupButton size="icon-xs" aria-label="Next match" :disabled="!canStep" @click="emit('step', 1)">
+              <ChevronRightIcon />
+            </InputGroupButton>
+          </span>
+        </Tip>
+        <Tip content="Close (Escape)">
+          <InputGroupButton size="icon-xs" aria-label="Close" @click="emit('close')">
+            <XIcon />
+          </InputGroupButton>
+        </Tip>
       </InputGroupAddon>
     </InputGroup>
   </div>

@@ -10,7 +10,7 @@ import {
   XIcon,
 } from "@lucide/vue";
 import type { Category } from "@/lib/bindings";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatClockTime, formatDurationMs } from "@/lib/format";
 import { GitErrorMessage } from "@/lib/ipc";
 import { cn } from "@/lib/utils";
@@ -25,10 +25,11 @@ const props = defineProps<{
 
 const uiState = useUiStateStore();
 
-const CATEGORIES: { id: Category; label: string }[] = [
-  { id: "userAction", label: "User" },
-  { id: "internal", label: "Internal" },
-  { id: "watcher", label: "Watcher" },
+/** The filter buttons; `help` is each one's tooltip. */
+const CATEGORIES: { id: Category; label: string; help: string }[] = [
+  { id: "userAction", label: "User", help: "Commands from your own actions: commits, checkouts, fetches and the rest." },
+  { id: "internal", label: "Internal", help: "Commands the app runs to read the repository: its history, branches and status." },
+  { id: "watcher", label: "Watcher", help: "Commands run when the app notices files change in the repository." },
 ];
 
 type ConsoleButtons = Record<Category, boolean> & { log: boolean };
@@ -180,25 +181,29 @@ function categoryShort(category: Category): string {
       </span>
 
       <div v-if="!collapsed" class="ml-2 flex items-center gap-1">
-        <button
-          type="button"
-          :aria-pressed="logMode"
-          class="toggle mr-1 h-[18px] rounded-sm border px-2 text-[0.7rem] leading-none font-medium transition-colors"
-          title="The standard output of your own commands, as plain text"
-          @click="toggleLog"
-        >
-          Log
-        </button>
-        <button
-          v-for="c in CATEGORIES"
-          :key="c.id"
-          type="button"
-          :aria-pressed="!logMode && filters[c.id] !== false"
-          class="toggle h-[18px] rounded-sm border px-2 text-[0.7rem] leading-none font-medium transition-colors"
-          @click="toggleFilter(c.id)"
-        >
-          {{ c.label }}
-        </button>
+        <Tooltip>
+          <TooltipTrigger as-child>
+            <button
+              type="button"
+              :aria-pressed="logMode"
+              class="toggle mr-1 h-[18px] rounded-sm border px-2 text-[0.7rem] leading-none font-medium transition-colors"
+              @click="toggleLog"
+            >
+              Log
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">The standard output of your own commands, as plain text</TooltipContent>
+        </Tooltip>
+        <Tip v-for="c in CATEGORIES" :key="c.id" :content="c.help" side="top">
+          <button
+            type="button"
+            :aria-pressed="!logMode && filters[c.id] !== false"
+            class="toggle h-[18px] rounded-sm border px-2 text-[0.7rem] leading-none font-medium transition-colors"
+            @click="toggleFilter(c.id)"
+          >
+            {{ c.label }}
+          </button>
+        </Tip>
       </div>
 
       <span v-if="!collapsed && session" class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">
@@ -268,37 +273,43 @@ function categoryShort(category: Category): string {
             />
             <span v-if="!logMode" class="shrink-0 text-muted-foreground tabular-nums">{{ formatClockTime(entry.startedAtMs) }}</span>
             <!-- How long it took: a tick and green for exit code 0, a cross and red with the code after a dash otherwise. -->
-            <span
-              :class="
-                cn(
-                  'inline-flex h-4 min-w-16 shrink-0 items-center justify-center gap-1 rounded border px-1.5 tabular-nums',
-                  resultClass(entry),
-                )
-              "
-              :title="resultTitle(entry)"
-            >
-              <LoaderCircleIcon v-if="entry.running" class="size-3 animate-spin" />
-              <template v-else>
-                <CheckIcon v-if="succeeded(entry)" class="size-3 shrink-0" aria-label="Succeeded" />
-                <XIcon v-else class="size-3 shrink-0" aria-label="Failed" />
-                {{ resultText(entry) }}
-              </template>
-            </span>
+            <Tip :content="resultTitle(entry)" side="top">
+              <span
+                :class="
+                  cn(
+                    'inline-flex h-4 min-w-16 shrink-0 items-center justify-center gap-1 rounded border px-1.5 tabular-nums',
+                    resultClass(entry),
+                  )
+                "
+              >
+                <LoaderCircleIcon v-if="entry.running" class="size-3 animate-spin" />
+                <template v-else>
+                  <CheckIcon v-if="succeeded(entry)" class="size-3 shrink-0" aria-label="Succeeded" />
+                  <XIcon v-else class="size-3 shrink-0" aria-label="Failed" />
+                  {{ resultText(entry) }}
+                </template>
+              </span>
+            </Tip>
             <template v-if="logMode">
               <!-- What the command does, the git command alone, then the full command line off to the right. -->
-              <span class="w-36 shrink-0 truncate font-sans font-medium text-foreground" :title="entry.title">{{ entry.title }}</span>
-              <span class="shrink-0 text-foreground" :title="entry.display">{{ entry.command }}</span>
-              <span class="shrink-0 pr-2 pl-6 text-muted-foreground/70" :title="entry.display">{{ entry.display }}</span>
+              <Tip :content="entry.title" side="top">
+                <span class="w-36 shrink-0 truncate font-sans font-medium text-foreground">{{ entry.title }}</span>
+              </Tip>
+              <Tip :content="entry.display" side="top">
+                <span class="shrink-0 text-foreground">{{ entry.command }}</span>
+              </Tip>
+              <span class="shrink-0 pr-2 pl-6 text-muted-foreground/70">{{ entry.display }}</span>
             </template>
             <template v-else>
-              <span
-                :class="cn('h-4 shrink-0 rounded px-1.5 leading-4 font-sans text-[0.7rem]', categoryClass(entry.category))"
-                :title="entry.label"
-              >
-                {{ categoryShort(entry.category) }}
-              </span>
-              <span class="w-36 shrink-0 truncate font-sans font-medium text-foreground" :title="entry.title">{{ entry.title }}</span>
-              <span class="shrink-0 pr-2" :title="entry.display">{{ entry.display }}</span>
+              <Tip :content="entry.label" side="top">
+                <span :class="cn('h-4 shrink-0 rounded px-1.5 leading-4 font-sans text-[0.7rem]', categoryClass(entry.category))">
+                  {{ categoryShort(entry.category) }}
+                </span>
+              </Tip>
+              <Tip :content="entry.title" side="top">
+                <span class="w-36 shrink-0 truncate font-sans font-medium text-foreground">{{ entry.title }}</span>
+              </Tip>
+              <span class="shrink-0 pr-2">{{ entry.display }}</span>
             </template>
           </button>
 

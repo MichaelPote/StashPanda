@@ -18,6 +18,7 @@ import {
 } from "@/lib/bindings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
@@ -587,13 +588,19 @@ const selectClass =
               </div>
               <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
                 <dt class="text-muted-foreground">Native path</dt>
-                <dd class="truncate font-mono" :title="resolution.nativePath">{{ resolution.nativePath }}</dd>
+                <Tip :content="resolution.nativePath">
+                  <dd class="truncate font-mono">{{ resolution.nativePath }}</dd>
+                </Tip>
                 <template v-if="resolution.hostPath && resolution.hostPath !== resolution.nativePath">
                   <dt class="text-muted-foreground">Host path</dt>
-                  <dd class="truncate font-mono" :title="resolution.hostPath">{{ resolution.hostPath }}</dd>
+                  <Tip :content="resolution.hostPath">
+                    <dd class="truncate font-mono">{{ resolution.hostPath }}</dd>
+                  </Tip>
                 </template>
                 <dt class="text-muted-foreground">Key</dt>
-                <dd class="truncate font-mono text-muted-foreground" :title="resolution.key">{{ resolution.key }}</dd>
+                <Tip :content="resolution.key">
+                  <dd class="truncate font-mono text-muted-foreground">{{ resolution.key }}</dd>
+                </Tip>
               </dl>
               <div v-if="cloneTarget" class="mt-1 grid gap-1">
                 <p v-if="cloneTarget.folder.type === 'missing'" class="text-muted-foreground">
@@ -713,21 +720,24 @@ const selectClass =
                         <!-- A key file chosen with the button, or saved before, that is not in the scanned folders. -->
                         <option v-if="ssh.identityFile && !pickedKey && !keysLoading" :value="ssh.identityFile">{{ ssh.identityFile }}</option>
                       </select>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="icon"
-                        class="shrink-0"
-                        title="Choose an SSH key file"
-                        aria-label="Choose an SSH key file"
-                        @click="browseIdentityFile"
-                      >
-                        <EllipsisIcon />
-                      </Button>
+                      <Tip content="Choose an SSH key file">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          class="shrink-0"
+                          aria-label="Choose an SSH key file"
+                          @click="browseIdentityFile"
+                        >
+                          <EllipsisIcon />
+                        </Button>
+                      </Tip>
                     </div>
                     <p v-if="keysError" class="text-xs text-destructive">Could not look for keys: {{ keysError }}</p>
                     <p v-else-if="pickedKey" class="grid gap-0.5 text-xs text-muted-foreground">
-                      <span v-if="pickedKey.fingerprint" class="truncate font-mono" :title="pickedKey.fingerprint">{{ pickedKey.fingerprint }}</span>
+                      <Tip v-if="pickedKey.fingerprint" :content="pickedKey.fingerprint">
+                        <span class="truncate font-mono">{{ pickedKey.fingerprint }}</span>
+                      </Tip>
                       <span v-if="pickedKey.error" class="text-destructive">{{ pickedKey.error }}</span>
                       <span v-else-if="pickedKey.encrypted && pickedKey.passphraseRemembered === 'none'">
                         This key is encrypted. StashPanda asks for its passphrase when it connects.
@@ -755,7 +765,9 @@ const selectClass =
 
         <div v-if="progress" class="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-base">
           <LoaderCircleIcon class="size-3.5 shrink-0 animate-spin" />
-          <span class="truncate font-mono text-xs" :title="progress.line">{{ progress.line }}</span>
+          <Tip :content="progress.line">
+            <span class="truncate font-mono text-xs">{{ progress.line }}</span>
+          </Tip>
         </div>
         <p v-else-if="submitError" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base text-destructive">
           {{ submitError }}
@@ -763,27 +775,25 @@ const selectClass =
       </form>
 
       <DialogFooter>
-        <Button
-          v-if="editingKey"
-          type="button"
-          variant="destructive"
-          class="sm:mr-auto"
-          title="Remove this repository from the library. The files on disk are not touched."
-          :disabled="submitting"
-          @click="removeEntry"
-        >
-          Remove
-        </Button>
-        <Button
+        <!-- A disabled button lets no pointer events through, so these spans carry the tooltips. -->
+        <Tip v-if="editingKey" content="Remove this repository from the library. The files on disk are not touched." side="top">
+          <span class="inline-flex shrink-0 sm:mr-auto">
+            <Button type="button" variant="destructive" :disabled="submitting" @click="removeEntry">
+              Remove
+            </Button>
+          </span>
+        </Tip>
+        <Tip
           v-if="cloneRunning"
-          type="button"
-          variant="outline"
-          :disabled="!progress?.cancellable || progress?.stopping"
-          :title="progress?.cancellable ? 'Stop the clone. The folder is left as it was before.' : 'The files are being written out; this step runs to the end.'"
-          @click="stopClone"
+          :content="progress?.cancellable ? 'Stop the clone. The folder is left as it was before.' : 'The files are being written out; this step runs to the end.'"
+          side="top"
         >
-          Stop
-        </Button>
+          <span class="inline-flex shrink-0">
+            <Button type="button" variant="outline" :disabled="!progress?.cancellable || progress?.stopping" @click="stopClone">
+              Stop
+            </Button>
+          </span>
+        </Tip>
         <Button v-else type="button" variant="outline" @click="open = false">Cancel</Button>
         <Button type="button" :disabled="!canSubmit" @click="submit">
           <LoaderCircleIcon v-if="submitting" class="animate-spin" />

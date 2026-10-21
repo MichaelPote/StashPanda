@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { STATE_CLASSES, commitPaths, partlyStagedCommitted, splitPath } from "@/lib/files";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import { opFailureText, pushCurrentBranch, runOp } from "@/lib/repoActions";
@@ -317,49 +317,48 @@ async function submit(push = false): Promise<void> {
             <li v-if="files.length === 0" class="flex h-(--row-h) items-center px-2 text-base text-muted-foreground italic">
               {{ amend ? "No files; only the message changes." : "Nothing to commit." }}
             </li>
-            <li
-              v-for="file in files"
-              :id="rowId(file.path)"
-              :key="file.path"
-              role="option"
-              :aria-selected="list.isSelected(file.path)"
-              :class="
-                cn(
-                  'flex h-(--row-h) min-w-0 cursor-default items-center gap-1.5 px-2 text-base select-none',
-                  list.isSelected(file.path) ? 'row-selected' : 'hover:bg-row-hover',
-                  list.isCursor(file.path) && 'shadow-[inset_2px_0_0_var(--ring)]',
-                )
-              "
-              :title="file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path"
-              @mousedown="list.onMousedown"
-              @click="list.onClick(file.path, $event)"
-            >
-              <!-- The checkbox flips only its own file; tabindex -1 keeps Tab moving past the list. -->
-              <input
-                type="checkbox"
-                tabindex="-1"
-                class="size-3.5 shrink-0 accent-primary"
-                :checked="ticked.has(file.path)"
-                :disabled="!!request.finishing"
-                :aria-label="`Include ${file.path}`"
-                @click.stop
-                @change="toggleFile(file.path)"
-              />
-              <span
-                :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[file.state].badge)"
+            <Tip v-for="file in files" :key="file.path" :content="file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path">
+              <li
+                :id="rowId(file.path)"
+                role="option"
+                :aria-selected="list.isSelected(file.path)"
+                :class="
+                  cn(
+                    'flex h-(--row-h) min-w-0 cursor-default items-center gap-1.5 px-2 text-base select-none',
+                    list.isSelected(file.path) ? 'row-selected' : 'hover:bg-row-hover',
+                    list.isCursor(file.path) && 'shadow-[inset_2px_0_0_var(--ring)]',
+                  )
+                "
+                @mousedown="list.onMousedown"
+                @click="list.onClick(file.path, $event)"
               >
-                {{ file.letter }}
-              </span>
-              <span :class="cn('min-w-0 flex-1 truncate', !ticked.has(file.path) && 'opacity-55')">
-                <template v-if="file.oldPath && file.oldPath !== file.path">
-                  <span class="text-muted-foreground">{{ file.oldPath }}</span>
-                  <span class="mx-1 text-muted-foreground">→</span>
-                </template>
-                <span class="text-muted-foreground">{{ splitPath(file.path).dir }}</span><span>{{ splitPath(file.path).name }}</span>
-              </span>
-              <span v-if="file.staged && file.unstaged" class="shrink-0 text-[0.7rem] text-muted-foreground">partly staged</span>
-              <span v-else-if="file.staged" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
-            </li>
+                <!-- The checkbox flips only its own file; tabindex -1 keeps Tab moving past the list. -->
+                <input
+                  type="checkbox"
+                  tabindex="-1"
+                  class="size-3.5 shrink-0 accent-primary"
+                  :checked="ticked.has(file.path)"
+                  :disabled="!!request.finishing"
+                  :aria-label="`Include ${file.path}`"
+                  @click.stop
+                  @change="toggleFile(file.path)"
+                />
+                <span
+                  :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[file.state].badge)"
+                >
+                  {{ file.letter }}
+                </span>
+                <span :class="cn('min-w-0 flex-1 truncate', !ticked.has(file.path) && 'opacity-55')">
+                  <template v-if="file.oldPath && file.oldPath !== file.path">
+                    <span class="text-muted-foreground">{{ file.oldPath }}</span>
+                    <span class="mx-1 text-muted-foreground">→</span>
+                  </template>
+                  <span class="text-muted-foreground">{{ splitPath(file.path).dir }}</span><span>{{ splitPath(file.path).name }}</span>
+                </span>
+                <span v-if="file.staged && file.unstaged" class="shrink-0 text-[0.7rem] text-muted-foreground">partly staged</span>
+                <span v-else-if="file.staged" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
+              </li>
+            </Tip>
           </ul>
           <p v-if="partlyStaged.length > 0" class="flex items-start gap-1.5 text-xs text-modified-fg">
             <TriangleAlertIcon class="mt-px size-3.5 shrink-0" />

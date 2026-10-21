@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ContextMenuItem } from "@/components/ui/context-menu";
+import { Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 /**
  * A context menu item that can be disabled for a stated reason. The reason becomes the item's
- * `title`, so hovering a greyed-out item explains why it is unavailable. shadcn's item turns
- * pointer events off when disabled, which would also hide the title, so that is switched back on.
+ * tooltip, so hovering a greyed-out item explains why it is unavailable. shadcn's item turns
+ * pointer events off when disabled, which would also stop the tooltip, so that is switched back on.
  */
 const props = defineProps<{
   /** Why the item is unavailable; null or undefined means it is enabled. */
@@ -19,13 +20,14 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <ContextMenuItem
-    :class="cn('text-base', props.reason && 'data-disabled:pointer-events-auto')"
-    :disabled="!!props.reason"
-    :title="props.reason ?? undefined"
-    :variant="props.destructive ? 'destructive' : 'default'"
-    @select="emit('select')"
-  >
-    <slot />
-  </ContextMenuItem>
+  <Tip :content="props.reason" side="right">
+    <ContextMenuItem
+      :class="cn('text-base', props.reason && 'data-disabled:pointer-events-auto')"
+      :disabled="!!props.reason"
+      :variant="props.destructive ? 'destructive' : 'default'"
+      @select="emit('select')"
+    >
+      <slot />
+    </ContextMenuItem>
+  </Tip>
 </template>

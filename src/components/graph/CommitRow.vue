@@ -3,7 +3,7 @@ import { computed, inject } from "vue";
 import type { GraphRow } from "@/lib/bindings";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefLabels from "@/components/graph/RefLabels.vue";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCommitColumns } from "@/composables/useCommitColumns";
 import { formatAbsoluteTime, formatRelativeTime, hashString, initials, isoTime, shortOid } from "@/lib/format";
 import { matchSegments, oidSegments } from "@/lib/graph/find";
@@ -97,13 +97,17 @@ const dateText = computed(() =>
       </Tooltip>
     </div>
     <div v-else />
-    <div v-if="shown.date" class="truncate px-1.5 leading-(--row-h) text-muted-foreground tabular-nums" :title="isoTime(row.authorTime)">
-      {{ dateText }}
-    </div>
+    <Tip v-if="shown.date" :content="isoTime(row.authorTime)">
+      <div class="truncate px-1.5 leading-(--row-h) text-muted-foreground tabular-nums">
+        {{ dateText }}
+      </div>
+    </Tip>
     <div v-else />
-    <div v-if="shown.id" class="truncate px-1.5 font-mono text-xs leading-(--row-h) text-muted-foreground select-text" :title="row.oid">
-      <template v-for="(part, i) in idParts" :key="i"><mark v-if="part.match" class="find-match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template>
-    </div>
+    <Tip v-if="shown.id" :content="row.oid">
+      <div class="truncate px-1.5 font-mono text-xs leading-(--row-h) text-muted-foreground select-text">
+        <template v-for="(part, i) in idParts" :key="i"><mark v-if="part.match" class="find-match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template>
+      </div>
+    </Tip>
     <div v-else />
   </div>
 </template>

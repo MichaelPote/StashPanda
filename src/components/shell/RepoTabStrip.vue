@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { FolderRootIcon, XIcon } from "@lucide/vue";
-import { transportLabel } from "@/lib/format";
 import { vPixelSnap } from "@/lib/pixelSnap";
 import { cn } from "@/lib/utils";
 import { useLibraryStore } from "@/stores/library";
@@ -39,7 +38,6 @@ function onAuxClick(event: MouseEvent, key: string): void {
             : 'border-transparent text-muted-foreground hover:bg-ghost-hover hover:text-foreground',
         )
       "
-      :title="`${session.info.nativePath} (${transportLabel(session.info.transport)})`"
       @click="sessions.setActive(session.key)"
       @auxclick="onAuxClick($event, session.key)"
       @mousedown.middle.prevent

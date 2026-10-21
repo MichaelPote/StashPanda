@@ -6,7 +6,7 @@ import { commands, type BlameCommit, type BlameOrigin, type Eol, type FileBlame 
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import FindBox from "@/components/diff/FindBox.vue";
@@ -418,33 +418,38 @@ const pickedText = computed(() => {
       <div class="-mx-6 -my-5 flex min-h-0 flex-1 flex-col bg-window p-1.5" data-dialog-grow>
         <section class="area flex min-h-0 flex-1 flex-col">
           <PanelHeader title="Lines">
-            <span class="truncate text-xs text-muted-foreground select-text" :title="view.path">{{ view.path }}</span>
-            <span v-if="eolText && layout" class="shrink-0 rounded-sm border border-border-soft px-1 font-mono text-[0.65rem] leading-[14px] text-muted-foreground" title="Line endings of the file">
-              {{ eolText }}
-            </span>
+            <Tip :content="view.path">
+              <span class="truncate text-xs text-muted-foreground select-text">{{ view.path }}</span>
+            </Tip>
+            <Tip v-if="eolText && layout" content="Line endings of the file">
+              <span class="shrink-0 rounded-sm border border-border-soft px-1 font-mono text-[0.65rem] leading-[14px] text-muted-foreground">
+                {{ eolText }}
+              </span>
+            </Tip>
             <LoaderCircleIcon v-if="loading" class="size-3 shrink-0 animate-spin text-muted-foreground" />
             <template #actions>
               <span class="mr-1 text-[0.7rem] text-muted-foreground tabular-nums">{{ summaryText }}</span>
               <!-- Newest to oldest, as the commit column shades them. -->
-              <span v-if="layout" class="mr-2 inline-flex items-center gap-1 text-[0.7rem] text-muted-foreground" title="Each block of lines is shaded by how recent its commit is among this file's commits">
-                Newer
-                <span class="h-2 w-12 rounded-sm border border-border-soft bg-linear-to-r from-[color-mix(in_srgb,var(--foreground)_18%,var(--background))] to-[color-mix(in_srgb,var(--foreground)_2%,var(--background))]" />
-                Older
-              </span>
+              <Tip v-if="layout" content="Each block of lines is shaded by how recent its commit is among this file's commits">
+                <span class="mr-2 inline-flex items-center gap-1 text-[0.7rem] text-muted-foreground">
+                  Newer
+                  <span class="h-2 w-12 rounded-sm border border-border-soft bg-linear-to-r from-[color-mix(in_srgb,var(--foreground)_18%,var(--background))] to-[color-mix(in_srgb,var(--foreground)_2%,var(--background))]" />
+                  Older
+                </span>
+              </Tip>
+              <Tip v-if="backStack.length > 0" :content="backTitle">
+                <button
+                  type="button"
+                  class="toggle inline-flex h-[18px] items-center gap-1 rounded-sm border px-2 text-[0.7rem] leading-none font-medium [&_svg]:size-3"
+                  @click="goBack"
+                >
+                  <ArrowLeftIcon />
+                  Back
+                </button>
+              </Tip>
               <button
-                v-if="backStack.length > 0"
                 type="button"
                 class="toggle inline-flex h-[18px] items-center gap-1 rounded-sm border px-2 text-[0.7rem] leading-none font-medium [&_svg]:size-3"
-                :title="backTitle"
-                @click="goBack"
-              >
-                <ArrowLeftIcon />
-                Back
-              </button>
-              <button
-                type="button"
-                class="toggle inline-flex h-[18px] items-center gap-1 rounded-sm border px-2 text-[0.7rem] leading-none font-medium [&_svg]:size-3"
-                title="Every commit that changed this file"
                 @click="showHistory"
               >
                 <HistoryIcon />
@@ -484,27 +489,28 @@ const pickedText = computed(() => {
                       :class="['blame-row', row.blockStart && row.index > 0 && 'blame-block-start', isPicked(row.index) && 'blame-line-selected']"
                     >
                       <div class="blame-fixed">
-                        <div
-                          :class="['blame-commit', isPicked(row.index) && 'blame-commit-selected']"
-                          :style="{ backgroundColor: shade(row.index) }"
-                          :title="row.commit ? commitTitle(row.commit) : undefined"
-                          @mousedown.left="pick(row.index)"
-                          @contextmenu="pick(row.index)"
-                        >
-                          <template v-if="row.commit">
-                            <span class="blame-commit-bar" :style="{ backgroundColor: barColour(row.commit) }" />
-                            <template v-if="row.blockStart && row.commit.uncommitted">
-                              <span class="font-mono text-modified-fg">0000000</span>
-                              <span class="col-span-3 truncate italic">Not committed yet</span>
+                        <Tip :content="row.commit ? commitTitle(row.commit) : null" side="right">
+                          <div
+                            :class="['blame-commit', isPicked(row.index) && 'blame-commit-selected']"
+                            :style="{ backgroundColor: shade(row.index) }"
+                            @mousedown.left="pick(row.index)"
+                            @contextmenu="pick(row.index)"
+                          >
+                            <template v-if="row.commit">
+                              <span class="blame-commit-bar" :style="{ backgroundColor: barColour(row.commit) }" />
+                              <template v-if="row.blockStart && row.commit.uncommitted">
+                                <span class="font-mono text-modified-fg">0000000</span>
+                                <span class="col-span-3 truncate italic">Not committed yet</span>
+                              </template>
+                              <template v-else-if="row.blockStart">
+                                <span :class="cn('font-mono', row.commit.boundary && 'text-muted-foreground')">{{ shortOid(row.commit.oid) }}</span>
+                                <span class="truncate">{{ row.commit.authorName }}</span>
+                                <span class="truncate tabular-nums">{{ dateText(row.commit) }}</span>
+                                <span class="truncate">{{ row.commit.summary }}</span>
+                              </template>
                             </template>
-                            <template v-else-if="row.blockStart">
-                              <span :class="cn('font-mono', row.commit.boundary && 'text-muted-foreground')">{{ shortOid(row.commit.oid) }}</span>
-                              <span class="truncate">{{ row.commit.authorName }}</span>
-                              <span class="truncate tabular-nums">{{ dateText(row.commit) }}</span>
-                              <span class="truncate">{{ row.commit.summary }}</span>
-                            </template>
-                          </template>
-                        </div>
+                          </div>
+                        </Tip>
                         <span class="diff-num"><span class="diff-glyphs">{{ row.index + 1 }}</span></span>
                       </div>
                       <span class="diff-code pl-2"><span v-for="(seg, k) in lineSpans(row.index, row.text)" :key="k" :class="glyphClass(seg)" :style="spanStyle(seg)" :data-find-current="seg.found === 2 ? '' : undefined">{{ seg.text }}</span></span>
@@ -526,7 +532,9 @@ const pickedText = computed(() => {
       </div>
 
       <DialogFooter>
-        <span class="mr-auto min-w-0 truncate text-xs text-muted-foreground" :title="pickedCommit && !pickedCommit.uncommitted ? pickedCommit.oid : undefined">{{ pickedText }}</span>
+        <Tip :content="pickedCommit && !pickedCommit.uncommitted ? pickedCommit.oid : null" side="top">
+          <span class="mr-auto min-w-0 truncate text-xs text-muted-foreground">{{ pickedText }}</span>
+        </Tip>
         <Tooltip v-for="action in footerActions" :key="action.label" :disabled="action.reason === null">
           <TooltipTrigger as-child>
             <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->

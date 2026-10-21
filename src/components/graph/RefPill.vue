@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { ChevronRightIcon, TagIcon } from "@lucide/vue";
+import { Tip } from "@/components/ui/tooltip";
 import type { RefLabel } from "@/lib/bindings";
 import { laneVars } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
@@ -8,6 +9,10 @@ import { useSettingsStore } from "@/stores/settings";
 
 /** `tail` has a chevron cut into its left side; `head` has the matching point on its right. */
 export type PillShape = "flat" | "tail" | "head";
+
+// The root is the tooltip, which would drop the attributes and listeners a parent passes (the
+// context menu's trigger, a double-click), so they go on the button itself.
+defineOptions({ inheritAttrs: false });
 
 const props = defineProps<{
   label: RefLabel;
@@ -90,54 +95,56 @@ const title = computed(() => {
        the remote styled like a remote branch and the branch like a local one. The branch
        pill moves left by the chevron's depth plus 1px, so the remote pill's point sits in its
        notch with the edges overlapping instead of leaving a hairline between them. One button
-       holds both, so the context menu and title cover the pair. -->
-  <button
-    v-if="parityRemote"
-    type="button"
-    class="inline-flex shrink-0 items-stretch text-sm leading-none font-normal whitespace-nowrap"
-    :style="laneVars(colour)"
-    :title="title"
-  >
-    <span :class="cn('pill-head inline-flex items-center', remoteClass)">
-      <span class="pill-text">{{ parityRemote }}</span>
-    </span>
-    <span
-      :class="cn('pill-tail inline-flex items-center gap-1', localClass, isCurrent && 'pill-current')"
-      :style="{ marginLeft: 'calc(-1 * var(--pill-notch) - 1px)' }"
+       holds both, so the context menu and tooltip cover the pair. -->
+  <Tip v-if="parityRemote" :content="title">
+    <button
+      v-bind="$attrs"
+      type="button"
+      class="inline-flex shrink-0 items-stretch text-sm leading-none font-normal whitespace-nowrap"
+      :style="laneVars(colour)"
     >
-      <!-- The HEAD ring: not a Lucide icon, so the global svg.lucide stroke rule leaves it alone. -->
+      <span :class="cn('pill-head inline-flex items-center', remoteClass)">
+        <span class="pill-text">{{ parityRemote }}</span>
+      </span>
+      <span
+        :class="cn('pill-tail inline-flex items-center gap-1', localClass, isCurrent && 'pill-current')"
+        :style="{ marginLeft: 'calc(-1 * var(--pill-notch) - 1px)' }"
+      >
+        <!-- The HEAD ring: not a Lucide icon, so the global svg.lucide stroke rule leaves it alone. -->
+        <svg v-if="isCurrent" width="9" height="9" viewBox="0 0 9 9" class="shrink-0" aria-hidden="true">
+          <circle cx="4.5" cy="4.5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5" />
+          <circle cx="4.5" cy="4.5" r="1.4" fill="currentColor" />
+        </svg>
+        <span class="pill-text">{{ text }}</span>
+      </span>
+    </button>
+  </Tip>
+  <Tip v-else :content="title">
+    <button
+      v-bind="$attrs"
+      type="button"
+      :class="
+        cn(
+          'inline-flex shrink-0 items-center gap-1 text-sm leading-none font-normal whitespace-nowrap',
+          shapeClass,
+          colourClass,
+          isCurrent && 'pill-current',
+        )
+      "
+      :style="laneVars(colour)"
+    >
+      <TagIcon v-if="label.kind.type === 'tag'" class="size-3 shrink-0" />
+      <template v-if="remoteName">
+        <span class="pill-text">{{ remoteName }}</span>
+        <ChevronRightIcon class="-mx-0.5 size-3 shrink-0 [stroke-width:1.5px]" aria-hidden="true" />
+      </template>
+      <!-- The HEAD ring on the checked-out branch: not a Lucide icon, so the global svg.lucide stroke
+           rule leaves it alone, and currentColor gives it the pill's text colour. -->
       <svg v-if="isCurrent" width="9" height="9" viewBox="0 0 9 9" class="shrink-0" aria-hidden="true">
         <circle cx="4.5" cy="4.5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5" />
         <circle cx="4.5" cy="4.5" r="1.4" fill="currentColor" />
       </svg>
       <span class="pill-text">{{ text }}</span>
-    </span>
-  </button>
-  <button
-    v-else
-    type="button"
-    :class="
-      cn(
-        'inline-flex shrink-0 items-center gap-1 text-sm leading-none font-normal whitespace-nowrap',
-        shapeClass,
-        colourClass,
-        isCurrent && 'pill-current',
-      )
-    "
-    :style="laneVars(colour)"
-    :title="title"
-  >
-    <TagIcon v-if="label.kind.type === 'tag'" class="size-3 shrink-0" />
-    <template v-if="remoteName">
-      <span class="pill-text">{{ remoteName }}</span>
-      <ChevronRightIcon class="-mx-0.5 size-3 shrink-0 [stroke-width:1.5px]" aria-hidden="true" />
-    </template>
-    <!-- The HEAD ring on the checked-out branch: not a Lucide icon, so the global svg.lucide stroke
-         rule leaves it alone, and currentColor gives it the pill's text colour. -->
-    <svg v-if="isCurrent" width="9" height="9" viewBox="0 0 9 9" class="shrink-0" aria-hidden="true">
-      <circle cx="4.5" cy="4.5" r="3.4" fill="none" stroke="currentColor" stroke-width="1.5" />
-      <circle cx="4.5" cy="4.5" r="1.4" fill="currentColor" />
-    </svg>
-    <span class="pill-text">{{ text }}</span>
-  </button>
+    </button>
+  </Tip>
 </template>

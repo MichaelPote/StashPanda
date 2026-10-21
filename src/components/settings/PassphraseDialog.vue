@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { LoaderCircleIcon } from "@lucide/vue";
 import { commands, type KeychainStatus, type PassphraseMemory } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -89,7 +90,9 @@ async function submit(): Promise<void> {
         <DialogTitle>Passphrase for {{ request.keyName }}</DialogTitle>
         <DialogDescription>
           StashPanda needs the passphrase {{ request.purpose }}.
-          <span v-if="request.path" class="mt-1 block truncate font-mono text-xs" :title="request.path">{{ request.path }}</span>
+          <Tip v-if="request.path" :content="request.path">
+            <span class="mt-1 block truncate font-mono text-xs">{{ request.path }}</span>
+          </Tip>
         </DialogDescription>
       </DialogHeader>
 
@@ -120,9 +123,11 @@ async function submit(): Promise<void> {
             {{ choice.label }}
           </label>
           <!-- The keychain's own error is for diagnosing, so it is the tooltip rather than the text. -->
-          <p v-if="keychain && !keychain.available" class="text-xs text-muted-foreground" :title="keychain.detail ?? undefined">
-            No system keychain is available here, so a passphrase can only be remembered until StashPanda closes.
-          </p>
+          <Tip v-if="keychain && !keychain.available" :content="keychain.detail">
+            <p class="text-xs text-muted-foreground">
+              No system keychain is available here, so a passphrase can only be remembered until StashPanda closes.
+            </p>
+          </Tip>
           <p v-if="request.forConnection" class="text-xs text-muted-foreground">
             The connection needs it again if it drops and reconnects, so it is kept at least until StashPanda closes.
           </p>

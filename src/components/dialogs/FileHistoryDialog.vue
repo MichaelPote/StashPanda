@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import DiffViewer from "@/components/diff/DiffViewer.vue";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
@@ -232,31 +232,30 @@ const countText = computed(() => {
                   >
                     <div class="relative" :style="{ height: `${entries.length * ROW_HEIGHT}px` }">
                       <div class="absolute inset-x-0 top-0" :style="{ transform: `translateY(${virtual.start.value * ROW_HEIGHT}px)` }">
-                        <div
-                          v-for="(e, k) in visible"
-                          :key="e.oid"
-                          :class="
-                            cn(
-                              'grid h-(--row-h) cursor-default grid-cols-[4.5rem_1.25rem_minmax(0,1fr)_minmax(6rem,11rem)_7.5rem] items-center gap-2 px-2 text-base',
-                              e.oid === selectedOid ? 'row-selected' : 'hover:bg-row-hover',
-                            )
-                          "
-                          :title="rowTitle(e)"
-                          :aria-selected="e.oid === selectedOid"
-                          @mousedown="select(virtual.start.value + k)"
-                          @contextmenu="onRowContextMenu(virtual.start.value + k)"
-                        >
-                          <span class="font-mono text-xs">{{ shortOid(e.oid) }}</span>
-                          <span :class="cn('inline-flex h-4 min-w-4 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', badge(e).className)">
-                            {{ badge(e).letter }}
-                          </span>
-                          <span class="flex min-w-0 items-baseline gap-2">
-                            <span class="truncate">{{ e.subject }}</span>
-                            <span v-if="pathNote(e)" class="min-w-0 shrink truncate text-[0.7rem] text-muted-foreground">{{ pathNote(e) }}</span>
-                          </span>
-                          <span class="truncate text-xs text-muted-foreground">{{ e.authorName }}</span>
-                          <span class="truncate text-right text-xs text-muted-foreground tabular-nums">{{ dateText(e) }}</span>
-                        </div>
+                        <Tip v-for="(e, k) in visible" :key="e.oid" :content="rowTitle(e)">
+                          <div
+                            :class="
+                              cn(
+                                'grid h-(--row-h) cursor-default grid-cols-[4.5rem_1.25rem_minmax(0,1fr)_minmax(6rem,11rem)_7.5rem] items-center gap-2 px-2 text-base',
+                                e.oid === selectedOid ? 'row-selected' : 'hover:bg-row-hover',
+                              )
+                            "
+                            :aria-selected="e.oid === selectedOid"
+                            @mousedown="select(virtual.start.value + k)"
+                            @contextmenu="onRowContextMenu(virtual.start.value + k)"
+                          >
+                            <span class="font-mono text-xs">{{ shortOid(e.oid) }}</span>
+                            <span :class="cn('inline-flex h-4 min-w-4 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', badge(e).className)">
+                              {{ badge(e).letter }}
+                            </span>
+                            <span class="flex min-w-0 items-baseline gap-2">
+                              <span class="truncate">{{ e.subject }}</span>
+                              <span v-if="pathNote(e)" class="min-w-0 shrink truncate text-[0.7rem] text-muted-foreground">{{ pathNote(e) }}</span>
+                            </span>
+                            <span class="truncate text-xs text-muted-foreground">{{ e.authorName }}</span>
+                            <span class="truncate text-right text-xs text-muted-foreground tabular-nums">{{ dateText(e) }}</span>
+                          </div>
+                        </Tip>
                       </div>
                     </div>
                   </div>

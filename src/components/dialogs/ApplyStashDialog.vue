@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import type { StashEntry } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Tip } from "@/components/ui/tooltip";
 import { formatRelativeTime } from "@/lib/format";
 import { stashParts, stashTitle } from "@/lib/stash";
 import { cn } from "@/lib/utils";
@@ -62,22 +63,21 @@ function submit(): void {
           class="max-h-72 overflow-auto rounded-lg border border-border well py-0.5 scrollbar-thin"
         >
           <p v-if="stashes.length === 0" class="flex h-(--row-h) items-center px-2 text-base text-muted-foreground italic">No stashes</p>
-          <label
-            v-for="s in stashes"
-            :key="s.oid"
-            :class="
-              cn(
-                'flex h-(--row-h) min-w-0 cursor-default items-center gap-2 px-2 text-base select-none',
-                picked?.oid === s.oid ? 'row-selected' : 'hover:bg-row-hover',
-              )
-            "
-            :title="stashTitle(s)"
-          >
-            <input v-model="pickedOid" type="radio" name="apply-stash" class="size-3.5 shrink-0 accent-primary" :value="s.oid" />
-            <span class="shrink-0 font-mono text-xs text-muted-foreground">{{ s.selector }}</span>
-            <span class="min-w-0 flex-1 truncate">{{ stashParts(s).text }}</span>
-            <span class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
-          </label>
+          <Tip v-for="s in stashes" :key="s.oid" :content="stashTitle(s)">
+            <label
+              :class="
+                cn(
+                  'flex h-(--row-h) min-w-0 cursor-default items-center gap-2 px-2 text-base select-none',
+                  picked?.oid === s.oid ? 'row-selected' : 'hover:bg-row-hover',
+                )
+              "
+            >
+              <input v-model="pickedOid" type="radio" name="apply-stash" class="size-3.5 shrink-0 accent-primary" :value="s.oid" />
+              <span class="shrink-0 font-mono text-xs text-muted-foreground">{{ s.selector }}</span>
+              <span class="min-w-0 flex-1 truncate">{{ stashParts(s).text }}</span>
+              <span class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
+            </label>
+          </Tip>
         </div>
 
         <p v-if="pickedGone" class="text-base text-destructive">The stash you picked is no longer there. Choose one from the list.</p>

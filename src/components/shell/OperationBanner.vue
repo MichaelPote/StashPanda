@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { CherryIcon, GitMergeIcon, LoaderCircleIcon, RotateCcwIcon, Undo2Icon } from "@lucide/vue";
+import { Tip } from "@/components/ui/tooltip";
 import { OPERATION_VERBS, operationNames } from "@/lib/conflicts";
 import { abortOperation, continueOperation, continueReason, skipOperation } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
@@ -68,40 +69,42 @@ const BUTTON_CLASS =
     <span :class="['shrink-0 text-xs', conflicted > 0 ? 'text-foreground' : 'text-muted-foreground']">{{ stateText }}</span>
     <span class="ml-auto flex shrink-0 items-center gap-1.5">
       <!-- aria-disabled rather than disabled, so the tooltip with the reason still shows. -->
-      <button
-        type="button"
-        :class="BUTTON_CLASS"
-        :aria-disabled="continueBlocked !== null || busy !== null"
-        :title="continueTitle"
-        data-operation-continue
-        @click="run('continue')"
-      >
-        <LoaderCircleIcon v-if="busy === 'continue'" class="size-3 animate-spin" />
-        Continue
-      </button>
-      <button
-        v-if="canSkip"
-        type="button"
-        :class="BUTTON_CLASS"
-        :aria-disabled="busy !== null"
-        :title="`Leave out ${names.theirs} and throw away its changes${op.kind === 'rebase' ? ', then go on with the next commit' : ''}`"
-        data-operation-skip
-        @click="run('skip')"
-      >
-        <LoaderCircleIcon v-if="busy === 'skip' && !asking" class="size-3 animate-spin" />
-        Skip
-      </button>
-      <button
-        type="button"
-        :class="[BUTTON_CLASS, 'text-destructive']"
-        :aria-disabled="busy !== null"
-        :title="`Stop the ${verb} and put the branch back where it was`"
-        data-operation-abort
-        @click="run('abort')"
-      >
-        <LoaderCircleIcon v-if="busy === 'abort' && !asking" class="size-3 animate-spin" />
-        Abort
-      </button>
+      <Tip :content="continueTitle">
+        <button
+          type="button"
+          :class="BUTTON_CLASS"
+          :aria-disabled="continueBlocked !== null || busy !== null"
+          data-operation-continue
+          @click="run('continue')"
+        >
+          <LoaderCircleIcon v-if="busy === 'continue'" class="size-3 animate-spin" />
+          Continue
+        </button>
+      </Tip>
+      <Tip v-if="canSkip" :content="`Leave out ${names.theirs} and throw away its changes${op.kind === 'rebase' ? ', then go on with the next commit' : ''}`">
+        <button
+          type="button"
+          :class="BUTTON_CLASS"
+          :aria-disabled="busy !== null"
+          data-operation-skip
+          @click="run('skip')"
+        >
+          <LoaderCircleIcon v-if="busy === 'skip' && !asking" class="size-3 animate-spin" />
+          Skip
+        </button>
+      </Tip>
+      <Tip :content="`Stop the ${verb} and put the branch back where it was`">
+        <button
+          type="button"
+          :class="[BUTTON_CLASS, 'text-destructive']"
+          :aria-disabled="busy !== null"
+          data-operation-abort
+          @click="run('abort')"
+        >
+          <LoaderCircleIcon v-if="busy === 'abort' && !asking" class="size-3 animate-spin" />
+          Abort
+        </button>
+      </Tip>
     </span>
   </div>
 </template>

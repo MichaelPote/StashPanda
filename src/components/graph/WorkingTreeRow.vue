@@ -37,7 +37,6 @@ const badges = computed(() => {
         v-for="b in badges"
         :key="b.label"
         :class="cn('inline-flex h-(--pill-h) shrink-0 items-center rounded-sm px-1 text-[0.7rem] leading-[1.3] tabular-nums', b.classes)"
-        :title="`${b.count} ${b.label}`"
       >
         {{ b.count }} {{ b.label }}
       </span>
