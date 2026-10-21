@@ -135,6 +135,11 @@ webview_debug_prefix() {
 # Set by start_win_logged, read by stop_win_logged.
 win_pid=""
 tail_pid=""
+# Set by ux_mode, read by its cleanup. Not local to ux_mode: the cleanup also runs from the EXIT
+# trap, after ux_mode has returned, and would then find nothing to stop and leave Vite on the
+# port and the sync loop running.
+vite_pid=""
+sync_pid=""
 
 # Start a Windows command detached, with its output going to tauri-dev.log and
 # tauri-dev.err.log in the mirror, and follow both logs here.
@@ -223,7 +228,8 @@ ux_mode() {
   # A Windows process on the port would shadow WSL's Vite for the app.
   require_free_win_port
 
-  local vite_pid="" sync_pid=""
+  # Also runs from the EXIT trap, after ux_mode has returned; vite_pid and sync_pid are set at the
+  # top of the script for that reason.
   cleanup() {
     trap - EXIT INT TERM
     echo
