@@ -544,20 +544,24 @@ function pathText(item: FileItem): string {
           </Tip>
         </div>
         <!-- The More toggle sits in the block's bottom right corner, inside whichever part comes
-             last: floated at the end of the subject, beside the message body, or at the end of
-             the Compare with row. -->
+             last: floated at the end of the subject, over the message body's corner, or at the
+             end of the Compare with row. -->
         <p class="mt-0.5 flow-root break-words select-text">
           {{ selectedRow.subject }}
           <MessageToggle v-if="!messageExpanded && !isMerge" class="float-right ml-2" :expanded="false" @toggle="toggleMessage" />
         </p>
-        <div v-if="messageExpanded" class="flex items-end gap-2 pt-1">
-          <div class="min-w-0 flex-1">
-            <p v-if="messageLoading" class="text-xs text-muted-foreground">Loading message…</p>
-            <p v-else-if="messageError" class="text-xs text-destructive">{{ messageError }}</p>
-            <pre v-else-if="messageBody.length > 0" class="max-h-40 overflow-auto font-sans text-xs whitespace-pre-wrap text-muted-foreground select-text scrollbar-thin">{{ messageBody }}</pre>
-            <p v-else class="text-xs text-muted-foreground italic">No further message body.</p>
-          </div>
-          <MessageToggle v-if="!isMerge" :expanded="true" @toggle="toggleMessage" />
+        <!-- The body takes the whole width; Less lies over its bottom right corner, on the header's
+             own background. The body keeps the toggle's height free at its end, so the toggle
+             never covers the last line, and a long body can scroll it clear. -->
+        <div v-if="messageExpanded" class="relative pt-1">
+          <p v-if="messageLoading" :class="cn('text-xs text-muted-foreground', !isMerge && 'pb-[18px]')">Loading message…</p>
+          <p v-else-if="messageError" :class="cn('text-xs text-destructive', !isMerge && 'pb-[18px]')">{{ messageError }}</p>
+          <pre
+            v-else-if="messageBody.length > 0"
+            :class="cn('max-h-40 overflow-auto font-sans text-xs whitespace-pre-wrap text-muted-foreground select-text scrollbar-thin', !isMerge && 'pb-[18px]')"
+          >{{ messageBody }}</pre>
+          <p v-else :class="cn('text-xs text-muted-foreground italic', !isMerge && 'pb-[18px]')">No further message body.</p>
+          <MessageToggle v-if="!isMerge" class="absolute right-0 bottom-0 bg-muted pl-2" :expanded="true" @toggle="toggleMessage" />
         </div>
         <div v-if="isMerge" class="mt-1 flex min-w-0 items-center gap-1 text-[0.7rem] text-muted-foreground">
           <template v-if="unchangedParents === null" />
