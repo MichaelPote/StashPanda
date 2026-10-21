@@ -1,13 +1,22 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import { getVersion } from "@tauri-apps/api/app";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { hostLabel } from "@/lib/format";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 
-/** `package.json` cannot be imported from the frontend bundle, so the version is written here. */
-const VERSION = "0.1.0";
+/**
+ * The version of the running app, as built into it from `src-tauri/tauri.conf.json`, which
+ * `npm version` keeps in step with `package.json` (scripts/sync-version.mjs). Null until it has
+ * been read, or when it could not be.
+ */
+const version = ref<string | null>(null);
+getVersion().then(
+  (v) => (version.value = v),
+  () => (version.value = null),
+);
 
 const dialogs = useDialogsStore();
 const host = useHostStore();
@@ -30,7 +39,7 @@ function onOpenChange(open: boolean): void {
       </DialogHeader>
       <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-base">
         <dt class="text-muted-foreground">Version</dt>
-        <dd class="tabular-nums">{{ VERSION }}</dd>
+        <dd class="tabular-nums">{{ version ?? "Unknown" }}</dd>
         <dt class="text-muted-foreground">Host</dt>
         <dd>{{ hostText }}</dd>
       </dl>
