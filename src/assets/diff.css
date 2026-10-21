@@ -31,6 +31,12 @@
   .diff-line-del {
     @apply bg-diff-del;
   }
+  /* A removed line's text in the unified layout, slightly faded so it reads as gone at a glance.
+     The syntax colours stay; only the text span fades, so the line numbers and the row's red
+     background keep their full strength. The changed-word highlights inside it fade with it. */
+  .diff-line-del .diff-code {
+    opacity: 0.85;
+  }
   .diff-line-meta {
     @apply text-muted-foreground italic;
   }
