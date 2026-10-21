@@ -16,6 +16,7 @@
         "width": 1400,
         "height": 900,
         "theme": "Dark",
+        "backgroundColor": "#191b1e",
         "minWidth": 900,
         "minHeight": 600
       }

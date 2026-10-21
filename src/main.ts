@@ -1,6 +1,8 @@
 import { createApp, watchEffect } from "vue";
 import { createPinia } from "pinia";
 import { usePreferredDark } from "@vueuse/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 // Every font ships with the app from these packages; nothing is fetched at runtime, so the
 // app looks the same offline. Each file covers all of the font's scripts (Latin, Cyrillic,
 // Greek, Vietnamese), loaded only when a character from it appears.
@@ -39,6 +41,14 @@ watchEffect(() => {
   const theme = settings.theme;
   const dark = theme === "dark" || (theme === "system" && preferredDark.value);
   document.documentElement.classList.toggle("dark", dark);
+  // The window and the webview behind the page take the theme's window colour, so whatever the
+  // webview paints before the page has drawn (WebView2 paints white by default) matches it.
+  // `tauri.conf.json` starts them dark, the default theme.
+  const colour = getComputedStyle(document.documentElement).getPropertyValue("--window").trim();
+  if (colour) {
+    void getCurrentWindow().setBackgroundColor(colour).catch(() => {});
+    void getCurrentWebview().setBackgroundColor(colour).catch(() => {});
+  }
 });
 
 disableBrowserContextMenu();
