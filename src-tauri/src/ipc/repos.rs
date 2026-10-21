@@ -371,6 +371,71 @@ pub async fn repo_close(state: State<'_, AppState>, key: String) -> Result<()> {
     Ok(())
 }
 
+/// The checked-out branch of a repository in the library, for its row in the Repositories list.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoHead {
+    pub key: String,
+    /// The checked-out branch's short name; None when HEAD is detached.
+    pub branch: Option<String>,
+    /// The short ID of the commit a detached HEAD is at; None on a branch.
+    pub commit: Option<String>,
+}
+
+/// The checked-out branch of each of `keys`, read without opening them and kept out of the
+/// console. A repository on an SSH server is read only while a connection to that server is
+/// already open, so this never logs in or asks for a password. Repositories that are skipped or
+/// cannot be read (moved, deleted) are left out.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_heads(state: State<'_, AppState>, keys: Vec<String>) -> Result<Vec<RepoHead>> {
+    let settings = state.settings();
+    let mut reads = tokio::task::JoinSet::new();
+    for key in keys {
+        let Some(entry) = settings.library.find(&key) else { continue };
+        let Ok(res) = resolve(entry, &settings, &state.host, Some(&state.ssh)) else { continue };
+        reads.spawn(read_head(key, res));
+    }
+    let mut heads = Vec::new();
+    while let Some(done) = reads.join_next().await {
+        if let Ok(Some(head)) = done {
+            heads.push(head);
+        }
+    }
+    Ok(heads)
+}
+
+async fn read_head(key: String, res: Resolution) -> Option<RepoHead> {
+    if !res.transport.connected().await {
+        return None;
+    }
+    let client = GitClient {
+        transport: res.transport.clone(),
+        repo: res.native_path.clone(),
+        caps: Capabilities::default(),
+        // No app handle, so nothing reaches the console.
+        console: Arc::new(ConsoleRecorder::new(None, key.clone(), 0)),
+    };
+    let timeout = Some(std::time::Duration::from_secs(15));
+    let outs = client
+        .exec_batch(vec![
+            crate::git::GitReq::new("symbolic-ref", ["symbolic-ref", "-q", "--short", "HEAD"]).timeout(timeout),
+            crate::git::GitReq::new("rev-parse", ["rev-parse", "-q", "--verify", "--short", "HEAD"]).timeout(timeout),
+        ])
+        .await
+        .ok()?;
+    let text = |i: usize| {
+        outs.get(i)
+            .filter(|o| o.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    // An unborn branch still has its name; a detached HEAD has only its commit.
+    let branch = text(0);
+    let commit = if branch.is_some() { None } else { text(1) };
+    (branch.is_some() || commit.is_some()).then_some(RepoHead { key, branch, commit })
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_list_open(state: State<'_, AppState>) -> Result<Vec<RepoInfo>> {

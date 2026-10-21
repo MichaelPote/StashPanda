@@ -63,6 +63,13 @@ export const commands = {
 	repoFixSafeDirectory: (key: string, path: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("repo_fix_safe_directory", { key, path })),
 	repoClose: (key: string) => typedError<null, GitError>(__TAURI_INVOKE("repo_close", { key })),
 	repoListOpen: () => typedError<RepoInfo[], GitError>(__TAURI_INVOKE("repo_list_open")),
+	/**
+	 *  The checked-out branch of each of `keys`, read without opening them and kept out of the
+	 *  console. A repository on an SSH server is read only while a connection to that server is
+	 *  already open, so this never logs in or asks for a password. Repositories that are skipped or
+	 *  cannot be read (moved, deleted) are left out.
+	 */
+	repoHeads: (keys: string[]) => typedError<RepoHead[], GitError>(__TAURI_INVOKE("repo_heads", { keys })),
 	wslListDistros: () => typedError<string[], GitError>(__TAURI_INVOKE("wsl_list_distros")),
 	hostInfo: () => typedError<HostInfo, GitError>(__TAURI_INVOKE("host_info")),
 	/**  Record the host key a server offered, so the next open succeeds. */
@@ -1608,6 +1615,15 @@ export type RepoEntry = {
 	 *  first automatic lane colour in its graph. Without one, the lanes start from cyan.
 	 */
 	colour?: number | null,
+};
+
+/**  The checked-out branch of a repository in the library, for its row in the Repositories list. */
+export type RepoHead = {
+	key: string,
+	/**  The checked-out branch's short name; None when HEAD is detached. */
+	branch: string | null,
+	/**  The short ID of the commit a detached HEAD is at; None on a branch. */
+	commit: string | null,
 };
 
 /**  What the frontend learns when a repository opens. */

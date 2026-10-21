@@ -1,6 +1,6 @@
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
-import { commands, type CloneResult, type Connection, type LibraryGroup, type RepoEntry } from "@/lib/bindings";
+import { commands, events, type CloneResult, type Connection, type LibraryGroup, type RepoEntry, type RepoHead } from "@/lib/bindings";
 import { unwrap } from "@/lib/ipc";
 import { pathBasename } from "@/lib/format";
 import { useSettingsStore } from "@/stores/settings";
@@ -57,6 +57,31 @@ export const useLibraryStore = defineStore("library", () => {
   });
 
   const isEmpty = computed(() => repos.value.length === 0 && groups.value.length === 0);
+
+  /**
+   * The branch checked out in each repository, by key, for the Repositories list, read without
+   * opening them (`repoHeads`). Local and WSL repositories are always read; SSH ones only while
+   * their server is connected, so a disconnected one is missing and its row shows the transport.
+   * Read at the start and whenever the library changes, when an SSH connection comes or goes,
+   * and when the window comes back into focus, at most every 30 seconds.
+   */
+  const heads = ref(new Map<string, RepoHead>());
+  let headsReadAt = 0;
+  async function refreshHeads(): Promise<void> {
+    const keys = repos.value.map((r) => r.key).filter((k): k is string => !!k);
+    headsReadAt = Date.now();
+    try {
+      const read = await unwrap(commands.repoHeads(keys));
+      heads.value = new Map(read.map((h) => [h.key, h]));
+    } catch {
+      // Only the rows' branch names are missing; they show the transport instead.
+    }
+  }
+  watch(() => repos.value.map((r) => r.key).join("\n"), () => void refreshHeads(), { immediate: true });
+  void events.transportState.listen(() => void refreshHeads());
+  window.addEventListener("focus", () => {
+    if (Date.now() - headsReadAt >= 30_000) void refreshHeads();
+  });
 
   async function addRepo(
     path: string,
@@ -120,5 +145,5 @@ export const useLibraryStore = defineStore("library", () => {
     await settings.update({ library: { groups: next } });
   }
 
-  return { groups, repos, repoByKey, tree, isEmpty, addRepo, cloneRepo, updateRepo, setRepoColour, removeRepo, setGroupCollapsed };
+  return { groups, repos, repoByKey, tree, isEmpty, heads, addRepo, cloneRepo, updateRepo, setRepoColour, removeRepo, setGroupCollapsed };
 });

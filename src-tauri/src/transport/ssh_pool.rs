@@ -344,6 +344,14 @@ impl SshPool {
         (now < b.next_try).then(|| (b.error.clone(), b.next_try - now))
     }
 
+    /// Whether a connection to `target` is open now. Never connects, and never waits: while
+    /// another caller holds the pool (connecting, say), the answer is no.
+    pub fn is_open(&self, target: &SshTarget) -> bool {
+        let key = (target.host.clone(), target.port, target.user.clone());
+        let Ok(conns) = self.conns.try_lock() else { return false };
+        conns.get(&key).is_some_and(|c| c.handle.try_lock().is_ok_and(|h| !h.is_closed()))
+    }
+
     pub async fn disconnect_all(&self) {
         let mut conns = self.conns.lock().await;
         for (_, c) in conns.drain() {

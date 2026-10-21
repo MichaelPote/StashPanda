@@ -52,6 +52,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::repos::repo_fix_safe_directory,
             ipc::repos::repo_close,
             ipc::repos::repo_list_open,
+            ipc::repos::repo_heads,
             ipc::repos::wsl_list_distros,
             ipc::repos::host_info,
             ipc::repos::ssh_trust_host,

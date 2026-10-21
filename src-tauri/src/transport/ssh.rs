@@ -177,6 +177,9 @@ impl Transport for SshTransport {
             term,
         }))
     }
+    async fn connected(&self) -> bool {
+        self.ctx.pool.is_open(&self.target)
+    }
     async fn probe(&self) -> Result<TransportInfo> {
         let cmd = Cmd::git("version", vec!["--version".into()]).timeout(Some(Duration::from_secs(30)));
         let out = self.run(cmd.clone()).await?;

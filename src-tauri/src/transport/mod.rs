@@ -268,6 +268,12 @@ pub trait Transport: Send + Sync {
     async fn remove_dir_all(&self, path: &NativePath) -> Result<()>;
     async fn shutdown(&self) {}
 
+    /// False when a command would first have to connect: an SSH server with no connection open.
+    /// A caller that must never log in or ask for a password checks this first.
+    async fn connected(&self) -> bool {
+        true
+    }
+
     /// True when `run_batch` runs its commands in one process start, which is worth more than
     /// running them side by side (WSL, where every command is a `wsl.exe` start).
     fn batches(&self) -> bool {
