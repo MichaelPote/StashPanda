@@ -516,6 +516,8 @@ const visibleUnified = computed(() => built.value.unified.slice(virtual.start.va
 
 /** Width of the gap between the two sides, where the curves are drawn. */
 const GAP_PX = 36;
+/** How far the divider's drag area reaches to each side of the new side's left border. */
+const DIVIDER_REACH = 20;
 const OVERSCAN = 10;
 
 /** Where each side's first line sits in the scrolled content, for the current scroll position. */
@@ -1353,20 +1355,24 @@ function toggleContext(value: string): void {
       </div>
 
       <!-- Divider between the two sides: drag to move it, double-click to go back to half and half.
-           It takes the whole gap between the sides, whose curves ignore the mouse, so the resize
-           cursor shows anywhere between them. Its line shows only on hover and while dragging,
-           so it does not cut through the curves. -->
+           The curves belong with the old (left) side, so its line sits on the new side's left
+           border, where that side's line numbers begin. Dragging works within DIVIDER_REACH
+           pixels of that border on either side; the curves under it ignore the mouse. The line
+           shows only on hover and while dragging. -->
       <button
         v-if="mode === 'side' && rowsWidth > 0"
         type="button"
-        class="group absolute top-0 bottom-0 z-10 flex cursor-col-resize justify-center outline-none"
-        :style="{ left: `${leftPx - GAP_PX / 2}px`, width: `${GAP_PX}px` }"
+        class="group absolute top-0 bottom-0 z-10 cursor-col-resize outline-none"
+        :style="{ left: `${leftTextPx + GAP_PX - DIVIDER_REACH}px`, width: `${2 * DIVIDER_REACH}px` }"
         aria-label="Resize the two sides of the diff"
         title="Drag to resize the two sides; double-click to split them evenly"
         @pointerdown="startSplitDrag"
         @dblclick="split = 0.5"
       >
-        <span :class="['h-full w-px transition-colors', splitDragging ? 'w-[2px] bg-primary' : 'bg-transparent group-hover:w-[2px] group-hover:bg-primary/70']" />
+        <span
+          :class="['absolute top-0 h-full w-px transition-colors', splitDragging ? 'w-[2px] bg-primary' : 'bg-transparent group-hover:w-[2px] group-hover:bg-primary/70']"
+          :style="{ left: `${DIVIDER_REACH}px` }"
+        />
       </button>
       </div>
     </template>
