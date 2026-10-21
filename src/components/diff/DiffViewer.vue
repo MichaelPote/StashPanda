@@ -596,6 +596,36 @@ const curves = computed<Curve[]>(() => {
 });
 
 /** The two columns of the side-by-side layout, left of the gap and right of it. */
+/**
+ * The line-number gutters, painted on the scroller itself behind the rows, so they run to the
+ * bottom of the panel when the diff is shorter than it: the rows' own number cells stop at the
+ * last line. `local`, so they move sideways with the unified layout's rows. Each gutter is a strip
+ * of the gutter colour starting past the rows' 2px left border, with the dark 1px line that each
+ * number cell draws on its left (`.diff-num` in diff.css).
+ */
+const gutterBackground = computed(() => {
+  const strip = (from: string, to: string, colour: string): string =>
+    `linear-gradient(to right, transparent ${from}, ${colour} ${from}, ${colour} ${to}, transparent ${to})`;
+  const gutters: { left: number; columns: number }[] =
+    mode.value === "side"
+      ? [
+          { left: 0, columns: 1 },
+          { left: leftTextPx.value + GAP_PX, columns: 1 },
+        ]
+      : [{ left: 0, columns: Number(numberColumns.value.old) + Number(numberColumns.value.new) }];
+  const lines: string[] = [];
+  const fills: string[] = [];
+  for (const { left, columns } of gutters) {
+    const start = `${left + 2}px`;
+    for (let i = 0; i < columns; i++) {
+      const x = `calc(${start} + ${i} * var(--diff-num-w))`;
+      lines.push(strip(x, `calc(${x} + 1px)`, "rgba(0, 0, 0, 0.25)"));
+    }
+    fills.push(strip(start, `calc(${start} + ${columns} * var(--diff-num-w))`, "var(--color-diff-gutter)"));
+  }
+  return { backgroundImage: [...lines, ...fills].join(", "), backgroundAttachment: "local" };
+});
+
 const sideColumns = computed(() => [
   { side: "left" as const, left: 0, width: leftTextPx.value, view: leftView.value, change: "del" as const },
   { side: "right" as const, left: leftTextPx.value + GAP_PX, width: rightTextPx.value, view: rightView.value, change: "add" as const },
@@ -623,12 +653,24 @@ const insertMarks = computed<{ key: number; side: Side; y: number }[]>(() => {
 });
 
 /**
- * Unified only: the rows are as wide as the longest line and the whole view scrolls sideways. The
- * gutter is the border, two line numbers and the marker (widths from `diffTextStyle`).
+ * Unified only: which line-number columns show. A new file has no old line numbers and a deleted
+ * file no new ones, so that column would be empty all the way down; it is left out.
  */
-const contentMinWidth = computed(
-  () => `calc(2px + 2 * var(--diff-num-w) + var(--diff-mark-w) + ${Math.max(20, built.value.maxLen + 2)}ch)`,
-);
+const numberColumns = computed(() => {
+  const lines = file.value?.hunks.flatMap((h) => h.lines) ?? [];
+  const old = lines.some((l) => l.oldNo != null);
+  const added = lines.some((l) => l.newNo != null);
+  return { old: old || !added, new: added || !old };
+});
+
+/**
+ * Unified only: the rows are as wide as the longest line and the whole view scrolls sideways. The
+ * gutter is the border, the line numbers shown and the marker (widths from `diffTextStyle`).
+ */
+const contentMinWidth = computed(() => {
+  const columns = Number(numberColumns.value.old) + Number(numberColumns.value.new);
+  return `calc(2px + ${columns} * var(--diff-num-w) + var(--diff-mark-w) + ${Math.max(20, built.value.maxLen + 2)}ch)`;
+});
 
 // ---- Side by side: split, divider and horizontal scrolling --------------------------------
 //
@@ -1201,7 +1243,7 @@ function toggleContext(value: string): void {
         ref="scroller"
         data-diff-rows
         :class="cn('relative min-h-0 flex-1 select-text scrollbar-thin', mode === 'side' ? 'overflow-x-hidden overflow-y-auto' : 'overflow-auto')"
-        :style="textStyle"
+        :style="[textStyle, gutterBackground]"
         @wheel="mode === 'side' ? onSideWheel($event) : undefined"
       >
         <div class="relative" :style="mode === 'side' ? { height: `${rowCount * rowPx}px` } : { height: `${rowCount * rowPx}px`, minWidth: contentMinWidth }">
@@ -1223,8 +1265,8 @@ function toggleContext(value: string): void {
                   <span class="diff-glyphs"> {{ row.header }}</span>
                 </div>
                 <div v-else :class="['diff-line', lineClass(row.line?.kind), isPicked(row.line) && 'diff-line-picked']">
-                  <span :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.oldNo ?? "" }}</span></span>
-                  <span :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.newNo ?? "" }}</span></span>
+                  <span v-if="numberColumns.old" :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.oldNo ?? "" }}</span></span>
+                  <span v-if="numberColumns.new" :class="['diff-num', canPick(row.line) && 'diff-num-pick']" @mousedown="onPick(row.line, $event)"><span class="diff-glyphs">{{ row.line?.newNo ?? "" }}</span></span>
                   <span class="diff-sign">{{ marker(row.line?.kind) }}</span>
                   <span class="diff-code">
                     <template v-for="(run, i) in runs(`u${virtual.start.value + k}`, row.line, row.pair, row.line?.kind === 'del' ? 'old' : 'new', row.line?.text ?? '')" :key="i">
