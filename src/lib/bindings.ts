@@ -573,6 +573,19 @@ export type Appearance = {
 	 *  which also holds the handles for resizing the columns. On by default.
 	 */
 	showColumnHeadings?: boolean,
+	/**
+	 *  Show only each author's picture (or initials) in the commit list, without the name; the
+	 *  picture's tooltip has the name and email address. Off by default.
+	 */
+	authorAvatarOnly?: boolean,
+	/**
+	 *  Which of the commit list's columns show; the commit message always does, and takes the
+	 *  room the others leave. All on by default.
+	 */
+	showGraphColumn?: boolean,
+	showAuthorColumn?: boolean,
+	showDateColumn?: boolean,
+	showIdColumn?: boolean,
 	showRemoteBranches?: boolean,
 	showStashesInGraph?: boolean,
 	avatarSource?: AvatarSource,

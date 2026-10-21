@@ -14,8 +14,9 @@ import VirtualRowList from "@/components/graph/VirtualRowList.vue";
 import WorkingTreeContextMenu from "@/components/graph/WorkingTreeContextMenu.vue";
 import WorkingTreeRow from "@/components/graph/WorkingTreeRow.vue";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
+import { useCommitColumns } from "@/composables/useCommitColumns";
 import { useGraphPages } from "@/composables/useGraphPages";
-import { autoAuthorWidth, autoDateWidth, autoIdWidth, fitColumns, fontsVersion } from "@/lib/graph/columnWidths";
+import { autoAuthorWidth, autoAvatarOnlyWidth, autoDateWidth, autoIdWidth, fitColumns, fontsVersion } from "@/lib/graph/columnWidths";
 import { autoGraphColumnWidth, messageIndent, ROW_HEIGHT } from "@/lib/graph/paths";
 import { isEditableTarget } from "@/lib/files";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
@@ -78,6 +79,11 @@ const graphWidth = computed(() => savedWidth("graph") ?? autoGraphColumnWidth(me
  * past the lanes on that row (`messageIndent`).
  */
 const graphInMessages = computed(() => settings.settings?.appearance?.graphInMessageColumn ?? false);
+/**
+ * Which columns show (`appearance.show…Column`). A hidden one gets no width, and its heading and
+ * resize handle go too; with the graph hidden there are no lanes at all, in either layout.
+ */
+const { shown } = useCommitColumns();
 /** The row of column headings, with the resize handles in it; the setting can hide it. */
 const showHeadings = computed(() => settings.settings?.appearance?.showColumnHeadings ?? true);
 /**
@@ -108,6 +114,9 @@ watch(
 // fonts load) until a divider is dragged; double-clicking a divider returns to automatic.
 const authorWidth = computed(() => {
   void fontsVersion.value;
+  // The pictures alone have nothing to fill a wider column with, so a dragged width waits until
+  // the names show again (the header hides the Author handle meanwhile).
+  if (settings.settings?.appearance?.authorAvatarOnly) return autoAvatarOnlyWidth(showHeadings.value);
   return savedWidth("author") ?? autoAuthorWidth(meta.value?.widestAuthors ?? []);
 });
 const dateWidth = computed(() => {
@@ -132,9 +141,14 @@ const MESSAGE_MIN = 320;
  */
 const fitted = computed(() =>
   fitColumns(
-    { graph: graphInMessages.value ? 0 : graphWidth.value, author: authorWidth.value, date: dateWidth.value, id: idWidth.value },
+    {
+      graph: graphInMessages.value || !shown.value.graph ? 0 : graphWidth.value,
+      author: shown.value.author ? authorWidth.value : 0,
+      date: shown.value.date ? dateWidth.value : 0,
+      id: shown.value.id ? idWidth.value : 0,
+    },
     rowsWidth.value,
-    Math.max(MESSAGE_MIN + (graphInMessages.value ? Math.min(allLanesWidth.value, 240) : 0), rowsWidth.value / 2),
+    Math.max(MESSAGE_MIN + (graphInMessages.value && shown.value.graph ? Math.min(allLanesWidth.value, 240) : 0), rowsWidth.value / 2),
   ),
 );
 
@@ -170,7 +184,8 @@ const end = computed(() => list.value?.end ?? 0);
 
 /** Where row `index`'s message starts when the graph shares its column, or null when it has a column of its own. */
 function indentOf(index: number, row: GraphRow): number | null {
-  return graphInMessages.value ? LANES_LEFT + messageIndent(row, index > 0 ? pages.rowAt(index - 1) : undefined) : null;
+  if (!graphInMessages.value || !shown.value.graph) return null;
+  return LANES_LEFT + messageIndent(row, index > 0 ? pages.rowAt(index - 1) : undefined);
 }
 
 const visibleRows = computed<(GraphRow | undefined)[]>(() => {
@@ -421,7 +436,7 @@ function onFindClosed(): void {
       :author-width="fitted.author"
       :date-width="fitted.date"
       :id-width="fitted.id"
-      :graph-column="!graphInMessages"
+      :graph-column="!graphInMessages && shown.graph"
       @resize="onResize"
     />
 
@@ -437,6 +452,7 @@ function onFindClosed(): void {
       >
         <template #default="{ start: s }">
           <div
+            v-if="shown.graph"
             class="graph-lanes-clip pointer-events-none absolute top-0 z-10 h-full overflow-hidden"
             :style="{ left: `${graphInMessages ? LANES_LEFT : 0}px`, width: `${lanesClip}px` }"
           >

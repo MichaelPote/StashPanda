@@ -3,6 +3,8 @@ import { computed, inject } from "vue";
 import type { GraphRow } from "@/lib/bindings";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefLabels from "@/components/graph/RefLabels.vue";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useCommitColumns } from "@/composables/useCommitColumns";
 import { formatAbsoluteTime, formatRelativeTime, hashString, initials, isoTime, shortOid } from "@/lib/format";
 import { laneColour, PALETTE_SIZE } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
@@ -24,6 +26,10 @@ const settings = useSettingsStore();
 /** The author's Gravatar picture when the setting asks for it and Gravatar has one. */
 const pictureUrl = computed(() => (settings.settings?.appearance?.avatarSource === "gravatar" ? gravatarUrl(props.row.authorEmail) : null));
 const detachedHead = computed(() => props.row.isHead && !props.row.refs.some((r) => r.isCurrent));
+/** `appearance.authorAvatarOnly`: the picture alone; the tooltip still has the name and email address. */
+const avatarOnly = computed(() => settings.settings?.appearance?.authorAvatarOnly ?? false);
+/** Hidden columns keep an empty cell, at no width, so the grid's columns stay in place. */
+const { shown } = useCommitColumns();
 
 const dateText = computed(() =>
   ctx?.dateFormat.value === "absolute"
@@ -48,30 +54,49 @@ const dateText = computed(() =>
     </div>
     <!-- A size container, so the name can hide once the column is too narrow for even one letter
          and an ellipsis; the column then shows only the avatars. -->
-    <div class="@container flex min-w-0 items-center gap-1.5 px-1.5">
-      <img
-        v-if="pictureUrl"
-        :src="pictureUrl"
-        class="size-4 shrink-0 rounded-full"
-        alt=""
-        aria-hidden="true"
-        @error="gravatarMissing(row.authorEmail)"
-      />
-      <span
-        v-else
-        class="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[0.55rem] leading-none font-semibold text-black/80"
-        :style="{ backgroundColor: avatarColour }"
-        aria-hidden="true"
-      >
-        <span class="text-cap-box">{{ avatarText }}</span>
-      </span>
-      <span class="truncate @max-[40px]:hidden" :title="`${row.authorName} <${row.authorEmail}>`">{{ row.authorName }}</span>
+    <div v-if="shown.author" class="@container flex min-w-0 items-center gap-1.5 px-1.5">
+      <!-- One tooltip for the picture and the name together: the name, then the email address. -->
+      <Tooltip>
+        <TooltipTrigger as-child>
+          <span class="flex min-w-0 items-center gap-1.5">
+            <img
+              v-if="pictureUrl"
+              :src="pictureUrl"
+              class="size-4 shrink-0 rounded-full"
+              :alt="avatarOnly ? row.authorName : ''"
+              :aria-hidden="!avatarOnly"
+              @error="gravatarMissing(row.authorEmail)"
+            />
+            <span
+              v-else
+              class="inline-flex size-4 shrink-0 items-center justify-center rounded-full text-[0.55rem] leading-none font-semibold text-black/80"
+              :style="{ backgroundColor: avatarColour }"
+              :aria-hidden="!avatarOnly"
+              :aria-label="avatarOnly ? row.authorName : undefined"
+            >
+              <span class="text-cap-box">{{ avatarText }}</span>
+            </span>
+            <span v-if="!avatarOnly" class="truncate @max-[40px]:hidden">{{ row.authorName }}</span>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="right">
+          <!-- A column: the tooltip lays its content out in a row. -->
+          <div class="flex flex-col">
+            <span class="font-medium">{{ row.authorName }}</span>
+            <!-- An address has no spaces to wrap at, so a long one would run past the tooltip's width. -->
+            <span class="[overflow-wrap:anywhere]">{{ row.authorEmail }}</span>
+          </div>
+        </TooltipContent>
+      </Tooltip>
     </div>
-    <div class="truncate px-1.5 leading-(--row-h) text-muted-foreground tabular-nums" :title="isoTime(row.authorTime)">
+    <div v-else />
+    <div v-if="shown.date" class="truncate px-1.5 leading-(--row-h) text-muted-foreground tabular-nums" :title="isoTime(row.authorTime)">
       {{ dateText }}
     </div>
-    <div class="truncate px-1.5 font-mono text-xs leading-(--row-h) text-muted-foreground select-text" :title="row.oid">
+    <div v-else />
+    <div v-if="shown.id" class="truncate px-1.5 font-mono text-xs leading-(--row-h) text-muted-foreground select-text" :title="row.oid">
       {{ shortOid(row.oid) }}
     </div>
+    <div v-else />
   </div>
 </template>

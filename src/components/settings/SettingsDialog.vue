@@ -56,6 +56,21 @@ watch(request, (r) => {
 
 const section = computed<SettingsSection>(() => SETTINGS_SECTIONS.find((s) => s.id === sectionId.value) ?? SETTINGS_SECTIONS[0]!);
 
+/** The page's fields in the order drawn: one at a time, or toggles next to each other with the same `list` together. */
+const blocks = computed(() => {
+  const out: { key: string; list: string | null; help: string | null; fields: SettingsFieldDef[] }[] = [];
+  for (const field of section.value.fields) {
+    const list = field.kind === "toggle" ? (field.list ?? null) : null;
+    const last = out[out.length - 1];
+    if (list !== null && last?.list === list) {
+      last.fields.push(field);
+    } else {
+      out.push({ key: fieldId(field), list, help: field.kind === "toggle" ? (field.listHelp ?? null) : null, fields: [field] });
+    }
+  }
+  return out;
+});
+
 /** Each field's stored value from the form, or why it cannot be saved. */
 const parsed = computed(() => {
   const result = new Map<string, { value: unknown } | { error: string }>();
@@ -188,14 +203,27 @@ async function save(): Promise<void> {
           </div>
           <div :class="cn('min-h-0 flex-1 overflow-y-auto px-6 pb-4 scrollbar-thin', section.preview && 'border-t border-border pt-4')">
             <div class="grid gap-4">
-              <SettingsField
-                v-for="field in section.fields"
-                :key="fieldId(field)"
-                v-model="values[fieldId(field)]!"
-                :field="field"
-                :error="fieldError(field)"
-                :changed="fieldChanged(field)"
-              />
+              <template v-for="block in blocks" :key="block.key">
+                <fieldset v-if="block.list" class="grid gap-1.5">
+                  <legend class="mb-1.5 text-base">{{ block.list }}</legend>
+                  <SettingsField
+                    v-for="field in block.fields"
+                    :key="fieldId(field)"
+                    v-model="values[fieldId(field)]!"
+                    :field="field"
+                    :error="fieldError(field)"
+                    :changed="fieldChanged(field)"
+                  />
+                  <p v-if="block.help" class="text-xs text-muted-foreground">{{ block.help }}</p>
+                </fieldset>
+                <SettingsField
+                  v-else
+                  v-model="values[fieldId(block.fields[0]!)]!"
+                  :field="block.fields[0]!"
+                  :error="fieldError(block.fields[0]!)"
+                  :changed="fieldChanged(block.fields[0]!)"
+                />
+              </template>
             </div>
           </div>
           <!-- Lets Enter in a text box save, as in the other dialogs. -->

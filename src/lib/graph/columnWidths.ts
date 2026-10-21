@@ -58,6 +58,16 @@ export function autoAuthorWidth(names: readonly string[]): number {
   return Math.ceil(Math.max(headingWidth("Author"), widest + avatar + cellPadding()));
 }
 
+/**
+ * The Author column's width when it shows only the pictures (`appearance.authorAvatarOnly`): one
+ * avatar (size-4) and the cell's padding, or the "Author" heading when the headings show and it is
+ * wider.
+ */
+export function autoAvatarOnlyWidth(withHeading: boolean): number {
+  const avatar = rootFontSizePx() + cellPadding();
+  return Math.ceil(withHeading ? Math.max(headingWidth("Author"), avatar) : avatar);
+}
+
 /** The widest strings each date format produces: two-digit counts for every unit, or all zeros. */
 const RELATIVE_SAMPLES = [
   "just now",

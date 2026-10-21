@@ -178,6 +178,15 @@ pub struct Appearance {
     /// The row of column headings above the commits ("Commit message", "Author", "Date", "ID"),
     /// which also holds the handles for resizing the columns. On by default.
     pub show_column_headings: bool,
+    /// Show only each author's picture (or initials) in the commit list, without the name; the
+    /// picture's tooltip has the name and email address. Off by default.
+    pub author_avatar_only: bool,
+    /// Which of the commit list's columns show; the commit message always does, and takes the
+    /// room the others leave. All on by default.
+    pub show_graph_column: bool,
+    pub show_author_column: bool,
+    pub show_date_column: bool,
+    pub show_id_column: bool,
     pub show_remote_branches: bool,
     pub show_stashes_in_graph: bool,
     pub avatar_source: AvatarSource,
@@ -193,6 +202,11 @@ impl Default for Appearance {
             solid_remote_pills: false,
             graph_in_message_column: false,
             show_column_headings: true,
+            author_avatar_only: false,
+            show_graph_column: true,
+            show_author_column: true,
+            show_date_column: true,
+            show_id_column: true,
             show_remote_branches: true,
             show_stashes_in_graph: false,
             avatar_source: AvatarSource::Initials,

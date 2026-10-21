@@ -42,6 +42,12 @@ export interface SelectField extends FieldBase {
 
 export interface ToggleField extends FieldBase {
   kind: "toggle";
+  /**
+   * Toggles next to each other with the same `list` are drawn as one list of tickboxes under that
+   * heading. The first one's `listHelp` goes under the list.
+   */
+  list?: string;
+  listHelp?: string;
 }
 
 /** A list of the bundled monospaced fonts and those installed on this machine. */
@@ -174,6 +180,25 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
           { value: "gravatar", label: "Gravatar" },
         ],
       },
+      {
+        kind: "toggle",
+        group: "appearance",
+        key: "authorAvatarOnly",
+        label: "Author pictures only",
+        help: "Show only each author's picture or initials in the commit list, without the name. Hover over a picture to see the name and email address.",
+      },
+      {
+        kind: "toggle",
+        group: "appearance",
+        key: "showGraphColumn",
+        label: "Graph",
+        list: "Commit columns",
+        listHelp:
+          "Which columns the commit list shows. The commit message always shows, and takes the room the others leave. Right-click the column headings to change them there too.",
+      },
+      { kind: "toggle", group: "appearance", key: "showAuthorColumn", label: "Author", list: "Commit columns" },
+      { kind: "toggle", group: "appearance", key: "showDateColumn", label: "Date", list: "Commit columns" },
+      { kind: "toggle", group: "appearance", key: "showIdColumn", label: "ID", list: "Commit columns" },
     ],
   },
   {
