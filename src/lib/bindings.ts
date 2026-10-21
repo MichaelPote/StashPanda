@@ -298,9 +298,11 @@ export const commands = {
 	/**
 	 *  Merge `target` into the current branch, which must still be `into` (null: a detached HEAD);
 	 *  otherwise it fails with `headMoved` and merges nothing. `conflicts` in the result means
-	 *  the merge stopped and the working tree has unmerged paths.
+	 *  the merge stopped and the working tree has unmerged paths. `autostash` stashes uncommitted
+	 *  changes first and puts them back once the merge is over: at once when it completes, or when a
+	 *  stopped merge is continued or aborted.
 	 */
-	opMerge: (key: string, target: string, noFf: boolean, into: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge", { key, target, noFf, into })),
+	opMerge: (key: string, target: string, noFf: boolean, into: string | null, autostash: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge", { key, target, noFf, into, autostash })),
 	opMergeAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge_abort", { key })),
 	opTagCreate: (key: string, name: string, target: string, message: string | null, force: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_create", { key, name, target, message, force })),
 	opTagDelete: (key: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_delete", { key, name })),
@@ -358,11 +360,12 @@ export const commands = {
 	/**
 	 *  Rebase the current branch onto `onto` (a branch name or commit), not interactively. The
 	 *  current branch must still be `branch` (null: a detached HEAD); otherwise it fails with
-	 *  `headMoved` and rebases nothing.
+	 *  `headMoved` and rebases nothing. `autostash` stashes uncommitted changes first and puts them
+	 *  back once the rebase is over: when it finishes, or when a stopped rebase is aborted.
 	 *  `conflicts` in the result means the rebase stopped on a commit and is still open: the status's
 	 *  `inProgress` then describes it, and `opContinue`, `opSkip` or `opRebaseAbort` go on.
 	 */
-	opRebase: (key: string, onto: string, branch: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase", { key, onto, branch })),
+	opRebase: (key: string, onto: string, branch: string | null, autostash: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rebase", { key, onto, branch, autostash })),
 	/**
 	 *  Finish the merge, cherry-pick or revert in progress, or go on with the rebase, once no file is
 	 *  conflicted: `git <command> --continue`, keeping the message Git prepared. A rebase that stops

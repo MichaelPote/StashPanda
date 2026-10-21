@@ -332,6 +332,8 @@ const AUTOSTASH_WORDS = {
   Pull: { doing: "Pulling", does: "pulls" },
   Sync: { doing: "Syncing", does: "pulls" },
   "Fast-forward": { doing: "Fast-forwarding", does: "fast-forwards" },
+  Merge: { doing: "Merging", does: "merges" },
+  Rebase: { doing: "Rebasing", does: "rebases" },
 } as const;
 
 /**
@@ -891,12 +893,16 @@ export function revisionOf(ref: { fullName: string; short: string }, refs: reado
 
 export async function mergeInto(key: string, target: string, label: string = target, noFf = false): Promise<void> {
   const sessions = useSessionsStore();
-  const branch = currentBranch(sessions.sessions.get(key));
+  const session = sessions.sessions.get(key);
+  const branch = currentBranch(session);
   const into = branch ?? "the current branch";
+  // Uncommitted changes do not block a merge: it asks, then stashes them around it.
+  const autostash = session ? await confirmAutostash(session, "Merge") : false;
+  if (autostash === null) return;
   try {
     // The branch named here; the backend refuses when another has been checked out since.
-    const result = await runOp(key, () => commands.opMerge(key, target, noFf, branch));
-    const outcome = mergeOutcome(result, label, into);
+    const result = await runOp(key, () => commands.opMerge(key, target, noFf, branch, autostash));
+    const outcome = mergeOutcome(result, label, into, autostash);
     if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
     else sessions.notify(outcome.message);
   } catch (e) {
@@ -905,8 +911,15 @@ export async function mergeInto(key: string, target: string, label: string = tar
 }
 
 /** What to report after a merge of `label` into `into` ran; `failed` is a plain failure, with nothing left open. */
-export function mergeOutcome(result: OpResult, label: string, into: string): { message: string; kind: "success" | "error"; failed: boolean } {
+export function mergeOutcome(result: OpResult, label: string, into: string, stashed = false): { message: string; kind: "success" | "error"; failed: boolean } {
   const output = `${result.stdout}\n${result.stderr}`;
+  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+    return {
+      message: `Merged ${label} into ${into}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
+      kind: "error",
+      failed: false,
+    };
+  }
   if (result.ok) {
     const message = /Already up to date/i.test(output)
       ? `${into} already has every commit on ${label}.`
@@ -915,7 +928,10 @@ export function mergeOutcome(result: OpResult, label: string, into: string): { m
         : `Merged ${label} into ${into}.`;
     return { message, kind: "success", failed: false };
   }
-  if (result.conflicts) return { message: `Merging ${label} into ${into} stopped on conflicts. ${RESOLVE_HINT}`, kind: "error", failed: false };
+  if (result.conflicts) {
+    const aside = stashed ? " Your uncommitted changes are set aside, and come back when the merge is finished or aborted." : "";
+    return { message: `Merging ${label} into ${into} stopped on conflicts. ${RESOLVE_HINT}${aside}`, kind: "error", failed: false };
+  }
   return { message: opFailureText(result, `Merging ${label} into ${into}`), kind: "error", failed: true };
 }
 
@@ -1281,7 +1297,8 @@ export function mergeRebaseReason(session: RepoSession | null | undefined, actio
     return action === "merge" ? "HEAD is detached. Check out a branch to merge into first." : "HEAD is detached. Check out the branch to rebase first.";
   }
   if (action === "rebase" && session.status.headOid === null) return "This branch has no commits yet, so there is nothing to rebase.";
-  const blocked = dirtyTreeReason(session);
+  // Uncommitted changes do not block either: the dialog asks first, then stashes them around it.
+  const blocked = operationReason(session);
   if (blocked) return blocked;
   if (otherBranches(session).length === 0) return `There is no other branch to ${action === "merge" ? "merge" : "rebase onto"}.`;
   return null;
@@ -1295,7 +1312,9 @@ export async function openMergeDialog(session: RepoSession | null): Promise<void
     useSessionsStore().notify(reason ?? "Open a repository first.");
     return;
   }
-  await useDialogsStore().open("merge", { key: session.key, into, branches: otherBranches(session) });
+  const autostash = await confirmAutostash(session, "Merge");
+  if (autostash === null) return;
+  await useDialogsStore().open("merge", { key: session.key, into, branches: otherBranches(session), autostash });
 }
 
 /** Opens the Rebase dialog to pick a branch to rebase the checked-out branch onto. The dialog runs the rebase. */
@@ -1307,7 +1326,15 @@ export async function openRebaseDialog(session: RepoSession | null): Promise<voi
     return;
   }
   const upstream = session.refs?.refs.find((r) => r.kind.type === "localBranch" && r.short === branch)?.upstream ?? null;
-  await useDialogsStore().open("rebase", { key: session.key, branch, branches: otherBranches(session), upstream: upstream?.replace(/^refs\/remotes\//, "") ?? null });
+  const autostash = await confirmAutostash(session, "Rebase");
+  if (autostash === null) return;
+  await useDialogsStore().open("rebase", {
+    key: session.key,
+    branch,
+    branches: otherBranches(session),
+    upstream: upstream?.replace(/^refs\/remotes\//, "") ?? null,
+    autostash,
+  });
 }
 
 /**
@@ -1315,15 +1342,29 @@ export async function openRebaseDialog(session: RepoSession | null): Promise<voi
  * `open` says the rebase is still in progress afterwards: Git can stop part way without a
  * conflict, as when an untracked file is in the way of a commit it replays.
  */
-export function rebaseOutcome(result: OpResult, branch: string, onto: string, open = false): { message: string; kind: "success" | "error"; failed: boolean } {
+export function rebaseOutcome(
+  result: OpResult,
+  branch: string,
+  onto: string,
+  open = false,
+  stashed = false,
+): { message: string; kind: "success" | "error"; failed: boolean } {
   const output = `${result.stdout}\n${result.stderr}`;
+  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+    return {
+      message: `Rebased ${branch} onto ${onto}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
+      kind: "error",
+      failed: false,
+    };
+  }
   const leftBehind = result.ok ? null : updateRefsLeftBehind(output);
   if (leftBehind) return { message: `Rebased ${branch} onto ${onto}. ${updateRefsNote(leftBehind)}`, kind: "error", failed: false };
   if (result.ok) {
     const message = /is up to date/i.test(output) ? `${branch} already has every commit on ${onto}.` : `Rebased ${branch} onto ${onto}.`;
     return { message, kind: "success", failed: false };
   }
-  if (result.conflicts) return { message: `Rebasing ${branch} onto ${onto} stopped on conflicts. ${RESOLVE_HINT}`, kind: "error", failed: false };
+  const aside = stashed ? " Your uncommitted changes are set aside, and come back when the rebase is finished or aborted." : "";
+  if (result.conflicts) return { message: `Rebasing ${branch} onto ${onto} stopped on conflicts. ${RESOLVE_HINT}${aside}`, kind: "error", failed: false };
   if (open) {
     const text = opFailureText(result, `Rebasing ${branch} onto ${onto}`);
     return { message: `${text} The rebase stopped part way and is still open: fix what Git reports, then press Continue in the bar above the commits, or Abort there.`, kind: "error", failed: false };

@@ -14,7 +14,7 @@ import {
   deleteBranch,
   deleteRemoteBranch,
   deleteRemoteBranchReason,
-  dirtyTreeReason,
+  operationReason,
   fastForwardReason,
   fastForwardToHead,
   fastForwardToUpstream,
@@ -53,7 +53,6 @@ const props = defineProps<{
 const sessions = useSessionsStore();
 const session = computed(() => sessions.sessions.get(props.sessionKey) ?? null);
 
-const dirty = computed(() => dirtyTreeReason(session.value));
 const branch = computed(() => currentBranch(session.value));
 
 /**
@@ -83,7 +82,8 @@ const mergeReason = computed(() => {
   if (props.isCurrent) return `${props.short} is the current branch.`;
   if (isDetached(session.value)) return "HEAD is detached. Check out a branch to merge into first.";
   if (session.value?.status?.headOid === props.target) return `${props.short} points at HEAD already.`;
-  return dirty.value;
+  // Uncommitted changes do not block it: mergeInto asks, then stashes them around the merge.
+  return operationReason(session.value);
 });
 
 const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch cannot be deleted." : null));

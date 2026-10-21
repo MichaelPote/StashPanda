@@ -8,6 +8,7 @@ const commands = vi.hoisted(() => ({
   getPullMode: vi.fn(),
   opPush: vi.fn(),
   opPushTo: vi.fn(),
+  opMerge: vi.fn(),
   opBranchFastForwardToUpstream: vi.fn(),
   opSync: vi.fn(),
   opSetPushDefault: vi.fn(),
@@ -35,6 +36,9 @@ vi.mock("@/stores/sessions", () => ({
 
 import {
   fastForwardToUpstream,
+  mergeInto,
+  mergeOutcome,
+  mergeRebaseReason,
   gitReason,
   opFailureText,
   pullOutcome,
@@ -508,3 +512,40 @@ describe("fast-forwarding a local branch to its upstream", () => {
   });
 });
 
+describe("merging with uncommitted changes", () => {
+  /** feature checked out with an unstaged change, and a second local branch to merge. */
+  function dirty() {
+    const s = session() as unknown as { status: { unstagedCount: number }; refs: { refs: { kind: { type: string }; short: string; fullName?: string; upstream: string | null }[] } };
+    s.status.unstagedCount = 1;
+    s.refs.refs.push({ kind: { type: "localBranch" }, short: "topic", fullName: "refs/heads/topic", upstream: null });
+    return s;
+  }
+
+  it("no longer blocks the Merge or Rebase dialog", () => {
+    const s = dirty();
+    expect(mergeRebaseReason(s as never, "merge")).toBeNull();
+    expect(mergeRebaseReason(s as never, "rebase")).toBeNull();
+  });
+
+  it("asks, then merges with the changes stashed around it", async () => {
+    dirty();
+    dialogs.open.mockResolvedValue(true);
+    commands.opMerge.mockReturnValue(ok(pushed));
+    await mergeInto("repo", "topic");
+    expect(dialogs.open).toHaveBeenCalledWith("confirm", expect.objectContaining({ title: "Merge with uncommitted changes?" }));
+    expect(commands.opMerge).toHaveBeenCalledWith("repo", "topic", false, "feature", true);
+  });
+
+  it("merges nothing when that question is cancelled", async () => {
+    dirty();
+    dialogs.open.mockResolvedValue(false);
+    await mergeInto("repo", "topic");
+    expect(commands.opMerge).not.toHaveBeenCalled();
+  });
+
+  it("says where the changes are when the merge stops on conflicts", () => {
+    const stopped = { ok: false, exitCode: 1, stdout: "CONFLICT (content): Merge conflict in c.txt", stderr: "", conflicts: true };
+    expect(mergeOutcome(stopped, "topic", "feature", true).message).toMatch(/Your uncommitted changes are set aside, and come back when the merge is finished or aborted\.$/);
+    expect(mergeOutcome(stopped, "topic", "feature", false).message).not.toMatch(/set aside/);
+  });
+});

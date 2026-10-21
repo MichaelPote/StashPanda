@@ -170,12 +170,15 @@ pub async fn op_branch_delete(app: AppHandle, state: State<'_, AppState>, key: S
 
 /// Merge `target` into the current branch, which must still be `into` (null: a detached HEAD);
 /// otherwise it fails with `headMoved` and merges nothing. `conflicts` in the result means
-/// the merge stopped and the working tree has unmerged paths.
+/// the merge stopped and the working tree has unmerged paths. `autostash` stashes uncommitted
+/// changes first and puts them back once the merge is over: at once when it completes, or when a
+/// stopped merge is continued or aborted.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_merge(app: AppHandle, state: State<'_, AppState>, key: String, target: String, no_ff: bool, into: Option<String>) -> Result<OpResult> {
+#[allow(clippy::too_many_arguments)]
+pub async fn op_merge(app: AppHandle, state: State<'_, AppState>, key: String, target: String, no_ff: bool, into: Option<String>, autostash: bool) -> Result<OpResult> {
     write_op!(app, state, key, |c| match ops::require_head(c, into.as_deref()).await {
-        Ok(()) => ops::merge(c, &target, no_ff).await,
+        Ok(()) => ops::merge(c, &target, no_ff, autostash).await,
         Err(e) => Err(e),
     })
 }
@@ -194,14 +197,15 @@ pub async fn op_rebase_abort(app: AppHandle, state: State<'_, AppState>, key: St
 
 /// Rebase the current branch onto `onto` (a branch name or commit), not interactively. The
 /// current branch must still be `branch` (null: a detached HEAD); otherwise it fails with
-/// `headMoved` and rebases nothing.
+/// `headMoved` and rebases nothing. `autostash` stashes uncommitted changes first and puts them
+/// back once the rebase is over: when it finishes, or when a stopped rebase is aborted.
 /// `conflicts` in the result means the rebase stopped on a commit and is still open: the status's
 /// `inProgress` then describes it, and `opContinue`, `opSkip` or `opRebaseAbort` go on.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_rebase(app: AppHandle, state: State<'_, AppState>, key: String, onto: String, branch: Option<String>) -> Result<OpResult> {
+pub async fn op_rebase(app: AppHandle, state: State<'_, AppState>, key: String, onto: String, branch: Option<String>, autostash: bool) -> Result<OpResult> {
     write_op!(app, state, key, |c| match ops::require_head(c, branch.as_deref()).await {
-        Ok(()) => ops::rebase(c, &onto).await,
+        Ok(()) => ops::rebase(c, &onto, autostash).await,
         Err(e) => Err(e),
     })
 }

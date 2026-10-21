@@ -124,12 +124,18 @@ pub async fn branch_create(client: &GitClient, name: &str, start_point: &str, ch
     Ok(result(out))
 }
 
-/// Merge `target` (a branch name or commit) into the current branch.
-pub async fn merge(client: &GitClient, target: &str, no_ff: bool) -> Result<OpResult> {
+/// Merge `target` (a branch name or commit) into the current branch. `autostash` stashes
+/// uncommitted changes first and puts them back once the merge is over (`--autostash`): straight
+/// away when it completes, and when it stops on conflicts, once it is concluded with a commit or
+/// aborted. Git keeps them as `stash@{0}` if putting them back conflicts.
+pub async fn merge(client: &GitClient, target: &str, no_ff: bool, autostash: bool) -> Result<OpResult> {
     valid_revision(target)?;
     let mut args = vec!["merge", "--no-edit"];
     if no_ff {
         args.push("--no-ff");
+    }
+    if autostash {
+        args.push("--autostash");
     }
     args.push(target);
     // A merge commit runs the `pre-merge-commit` and `commit-msg` hooks, as a commit does.
@@ -1218,9 +1224,17 @@ pub async fn revert_abort(client: &GitClient) -> Result<OpResult> {
 /// Replay the current branch's own commits on top of `onto` (`git rebase <onto>`, not
 /// interactive). When a commit conflicts, Git stops with `conflicts` in the result and the rebase
 /// stays open: `continue_operation`, `skip_operation` or `rebase_abort` go on from there.
-pub async fn rebase(client: &GitClient, onto: &str) -> Result<OpResult> {
+/// `autostash` stashes uncommitted changes first and puts them back once the rebase is over
+/// (`--autostash`): when it finishes, at once or after Continue, or when it is aborted. Git keeps
+/// them as `stash@{0}` if putting them back conflicts.
+pub async fn rebase(client: &GitClient, onto: &str, autostash: bool) -> Result<OpResult> {
     valid_revision(onto)?;
-    let out = client.exec_allow_failure(GitReq::new("rebase", ["rebase", onto]).user().timeout(Some(COMMIT_TIMEOUT))).await?;
+    let mut args = vec!["rebase"];
+    if autostash {
+        args.push("--autostash");
+    }
+    args.push(onto);
+    let out = client.exec_allow_failure(GitReq::new("rebase", args).user().timeout(Some(COMMIT_TIMEOUT))).await?;
     Ok(result(out))
 }
 
@@ -2031,7 +2045,7 @@ mod e2e {
         std::fs::write(dir.join("b.txt"), "2\n").unwrap();
         git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "two"]);
         assert!(checkout(&client, "main").await.unwrap().ok);
-        let m = merge(&client, "topic", true).await.unwrap();
+        let m = merge(&client, "topic", true, false).await.unwrap();
         assert!(m.ok && !m.conflicts, "{m:?}");
         let refs = get_refs(&client).await.unwrap();
         assert!(refs.refs.iter().any(|r| r.short == "topic"));
@@ -2054,7 +2068,7 @@ mod e2e {
         assert!(checkout(&client, "main").await.unwrap().ok);
         std::fs::write(dir.join("a.txt"), "main\n").unwrap();
         git(&dir, &["commit", "-qam", "main-change"]);
-        let c = merge(&client, "clash", false).await.unwrap();
+        let c = merge(&client, "clash", false, false).await.unwrap();
         assert!(!c.ok && c.conflicts, "{c:?}");
         assert!(merge_abort(&client).await.unwrap().ok);
         assert!(branch_delete(&client, "clash", true).await.unwrap().ok);
@@ -2109,7 +2123,7 @@ mod e2e {
         std::fs::write(dir.join("t.txt"), "t\n").unwrap();
         git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "topic work"]);
         git(&dir, &["checkout", "-q", "main"]);
-        let merged = merge(&client, "refs/heads/topic", true).await.unwrap();
+        let merged = merge(&client, "refs/heads/topic", true, false).await.unwrap();
         assert!(merged.ok, "{merged:?}");
         assert_eq!(out(&dir, &["log", "-1", "--format=%s"]), "Merge branch 'refs/heads/topic'");
         assert!(dir.join("t.txt").exists());
@@ -2519,7 +2533,7 @@ mod e2e {
 
         // A clean rebase replays the commit on top of main.
         git(&dir, &["checkout", "-q", "clean"]);
-        let clean = rebase(&client, "main").await.unwrap();
+        let clean = rebase(&client, "main", false).await.unwrap();
         assert!(clean.ok && !clean.conflicts, "{clean:?}");
         assert_eq!(out(&dir, &["rev-parse", "HEAD~1"]), main);
         assert_eq!(get_in_progress(&client, &git_dir).await, None);
@@ -2528,7 +2542,7 @@ mod e2e {
         // the branch back.
         git(&dir, &["checkout", "-q", "topic"]);
         let before = out(&dir, &["rev-parse", "HEAD"]);
-        let stopped = rebase(&client, "main").await.unwrap();
+        let stopped = rebase(&client, "main", false).await.unwrap();
         assert!(!stopped.ok && stopped.conflicts, "{stopped:?}");
         let op = get_in_progress(&client, &git_dir).await.expect("a rebase in progress");
         assert_eq!(op.kind, InProgressKind::Rebase);
@@ -2552,7 +2566,7 @@ mod e2e {
         // Again: Continue is refused while a.txt is unmerged. Taking topic's version of a.txt
         // ("theirs" during a rebase) resolves it; Continue then stops on the third commit's
         // conflict, and Skip leaves that commit out and finishes.
-        assert!(rebase(&client, "main").await.unwrap().conflicts);
+        assert!(rebase(&client, "main", false).await.unwrap().conflicts);
         let refused = continue_operation(&client, InProgressKind::Rebase).await.unwrap();
         assert!(!refused.ok, "{refused:?}");
         let taken = resolve_conflicts(&client, &strs(&["a.txt"]), ResolveSide::Theirs).await.unwrap();
@@ -2580,7 +2594,7 @@ mod e2e {
         assert_eq!(op.commit.as_deref(), Some(topic_two.as_str()));
         assert_eq!(op.subject.as_deref(), Some("topic two"));
         assert!(rebase_abort(&client).await.unwrap().ok);
-        assert!(matches!(rebase(&client, "-x").await, Err(GitError::InvalidPath { .. })));
+        assert!(matches!(rebase(&client, "-x", false).await, Err(GitError::InvalidPath { .. })));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2617,7 +2631,7 @@ mod e2e {
         git(&dir, &["rm", "-q", "k.txt"]);
         git(&dir, &["commit", "-qam", "main"]);
 
-        let m = merge(&client, "feature", false).await.unwrap();
+        let m = merge(&client, "feature", false, false).await.unwrap();
         assert!(!m.ok && m.conflicts, "{m:?}");
         let op = get_in_progress(&client, &git_dir).await.expect("a merge in progress");
         assert_eq!(op.kind, InProgressKind::Merge);
@@ -2750,7 +2764,7 @@ mod e2e {
         // The submodule's own checkout moves on to a third commit, not staged.
         git(&dir.join("sub"), &["checkout", "-q", sub_elsewhere]);
         let client = client_for(&dir);
-        let m = merge(&client, "feature", false).await.unwrap();
+        let m = merge(&client, "feature", false, false).await.unwrap();
         assert!(!m.ok && m.conflicts, "{m:?}");
         assert_eq!(out(&dir, &["status", "--porcelain", "--", "link", "sub"]), "UU link\nUU sub");
 
@@ -3753,6 +3767,72 @@ mod e2e {
         git(&wt2, &["bisect", "reset"]);
         assert_eq!(branch_in_use(&client, "busy").await.unwrap().as_deref(), Some("it is checked out at a worktree"));
         assert_eq!(branch_in_use(&client, "brand-new").await.unwrap(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn merges_with_uncommitted_changes_stashed_around_it() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-merge-stash-{}", uuid::Uuid::new_v4().simple()));
+        let dir = root.join("repo");
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&dir, &["config", k, v]);
+        }
+        for f in ["a.txt", "c.txt", "d.txt"] {
+            std::fs::write(dir.join(f), "base\n").unwrap();
+        }
+        git(&dir, &["add", "-A"]); git(&dir, &["commit", "-qm", "base"]);
+        let commit_on = |branch: &str, file: &str, text: &str| {
+            git(&dir, &["switch", "-q", branch]);
+            std::fs::write(dir.join(file), text).unwrap();
+            git(&dir, &["commit", "-qam", &format!("{branch} changes {file}")]);
+        };
+        git(&dir, &["branch", "topic"]); git(&dir, &["branch", "clash"]); git(&dir, &["branch", "clash2"]);
+        commit_on("topic", "a.txt", "topic\n");
+        commit_on("clash", "c.txt", "clash\n");
+        commit_on("clash2", "c.txt", "clash two\n");
+        commit_on("main", "c.txt", "main\n");
+        let client = client_for(&dir);
+        let read = |f: &str| std::fs::read_to_string(dir.join(f)).unwrap();
+
+        // A merge that completes puts the uncommitted change straight back.
+        std::fs::write(dir.join("d.txt"), "uncommitted\n").unwrap();
+        let clean = merge(&client, "topic", false, true).await.unwrap();
+        assert!(clean.ok, "{clean:?}");
+        assert_eq!((read("a.txt"), read("d.txt")), ("topic\n".into(), "uncommitted\n".into()));
+
+        // One that stops on conflicts keeps it aside until the merge is concluded.
+        let stopped = merge(&client, "clash", false, true).await.unwrap();
+        assert!(stopped.conflicts, "{stopped:?}");
+        assert_eq!(read("d.txt"), "base\n");
+        std::fs::write(dir.join("c.txt"), "resolved\n").unwrap();
+        git(&dir, &["add", "c.txt"]);
+        let continued = continue_operation(&client, InProgressKind::Merge).await.unwrap();
+        assert!(continued.ok, "{continued:?}");
+        assert_eq!(read("d.txt"), "uncommitted\n");
+
+        // Or aborted.
+        assert!(merge(&client, "clash2", false, true).await.unwrap().conflicts);
+        assert_eq!(read("d.txt"), "base\n");
+        assert!(merge_abort(&client).await.unwrap().ok);
+        assert_eq!(read("d.txt"), "uncommitted\n");
+
+        // A rebase that stops on conflicts keeps the change aside too, and puts it back when the
+        // rebase is continued to the end, or aborted.
+        git(&dir, &["switch", "-q", "clash2"]);
+        std::fs::write(dir.join("d.txt"), "uncommitted on clash2\n").unwrap();
+        assert!(rebase(&client, "main", true).await.unwrap().conflicts);
+        assert_eq!(read("d.txt"), "base\n");
+        assert!(rebase_abort(&client).await.unwrap().ok);
+        assert_eq!(read("d.txt"), "uncommitted on clash2\n");
+        assert!(rebase(&client, "main", true).await.unwrap().conflicts);
+        std::fs::write(dir.join("c.txt"), "resolved again\n").unwrap();
+        git(&dir, &["add", "c.txt"]);
+        let finished = continue_operation(&client, InProgressKind::Rebase).await.unwrap();
+        assert!(finished.ok, "{finished:?}");
+        assert_eq!(read("d.txt"), "uncommitted on clash2\n");
         let _ = std::fs::remove_dir_all(&root);
     }
 

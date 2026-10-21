@@ -47,8 +47,8 @@ async function submit(): Promise<void> {
   error.value = null;
   try {
     const revision = r.branches.find((b) => b.short === from)?.revision ?? from;
-    const result = await runOp(r.key, () => commands.opMerge(r.key, revision, noFf.value, r.into));
-    const outcome = mergeOutcome(result, from, r.into);
+    const result = await runOp(r.key, () => commands.opMerge(r.key, revision, noFf.value, r.into, r.autostash));
+    const outcome = mergeOutcome(result, from, r.into, r.autostash);
     // A plain failure leaves nothing open, so the dialog stays for another choice.
     if (outcome.failed) {
       error.value = outcome.message;
@@ -99,6 +99,10 @@ async function submit(): Promise<void> {
             <template v-else>When {{ request.into }} has no commits of its own, it simply moves forward to the branch, with no merge commit.</template>
           </p>
         </div>
+
+        <p v-if="request.autostash" class="text-xs text-muted-foreground">
+          Your uncommitted changes are stashed first and put back after the merge.
+        </p>
 
         <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
           {{ error }}

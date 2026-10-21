@@ -46,13 +46,13 @@ async function submit(): Promise<void> {
   error.value = null;
   try {
     const revision = r.branches.find((b) => b.short === onto)?.revision ?? onto;
-    const result = await runOp(r.key, () => commands.opRebase(r.key, revision, r.branch));
-    let outcome = rebaseOutcome(result, r.branch, onto);
+    const result = await runOp(r.key, () => commands.opRebase(r.key, revision, r.branch, r.autostash));
+    let outcome = rebaseOutcome(result, r.branch, onto, false, r.autostash);
     if (outcome.failed) {
       // Git can stop part way without a conflict (an untracked file in the way): only the
       // status says whether the rebase is still open.
       await sessions.refetchRefsAndStatus(r.key);
-      if (sessions.sessions.get(r.key)?.status?.inProgress?.kind === "rebase") outcome = rebaseOutcome(result, r.branch, onto, true);
+      if (sessions.sessions.get(r.key)?.status?.inProgress?.kind === "rebase") outcome = rebaseOutcome(result, r.branch, onto, true, r.autostash);
     }
     // A plain failure leaves nothing open, so the dialog stays for another choice.
     if (outcome.failed) {
@@ -100,6 +100,10 @@ async function submit(): Promise<void> {
         <p class="text-xs text-muted-foreground">
           The replayed commits get new ids. If you have already pushed {{ request.branch }} and others work on it, pushing after a rebase
           needs a force push, which StashPanda does not do.
+        </p>
+
+        <p v-if="request.autostash" class="text-xs text-muted-foreground">
+          Your uncommitted changes are stashed first and put back after the rebase.
         </p>
 
         <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">

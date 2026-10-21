@@ -18,7 +18,7 @@ import {
   createBranchHere,
   createTagAt,
   currentBranch,
-  dirtyTreeReason,
+  operationReason,
   isDetached,
   mergeInto,
   pickCommit,
@@ -44,7 +44,6 @@ const tags = computed(() => props.row.refs.filter((r) => r.kind.type === "tag"))
 const singleBranch = computed<RefLabel | null>(() => (localBranches.value.length === 1 ? (localBranches.value[0] ?? null) : null));
 const singleTag = computed<RefLabel | null>(() => (tags.value.length === 1 ? (tags.value[0] ?? null) : null));
 
-const dirty = computed(() => dirtyTreeReason(props.session));
 const branch = computed(() => currentBranch(props.session));
 
 // A dirty working tree does not block a checkout: requestCheckout asks first.
@@ -61,7 +60,8 @@ const mergeLabel = computed(() => localBranches.value[0]?.short ?? sha.value);
 const mergeReason = computed(() => {
   if (props.row.isHead) return "This commit is HEAD already.";
   if (isDetached(props.session)) return "HEAD is detached. Check out a branch to merge into first.";
-  return dirty.value;
+  // Uncommitted changes do not block it: mergeInto asks, then stashes them around the merge.
+  return operationReason(props.session);
 });
 </script>
 

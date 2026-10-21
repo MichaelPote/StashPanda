@@ -105,6 +105,8 @@ export interface MergePayload {
   into: string;
   /** Local branches other than `into`, then remote branches. */
   branches: BranchChoice[];
+  /** True when the user chose to stash uncommitted changes around the merge (`--autostash`). */
+  autostash: boolean;
 }
 
 export interface RebasePayload {
@@ -115,6 +117,8 @@ export interface RebasePayload {
   branches: BranchChoice[];
   /** The remote branch `branch` tracks (`origin/main`), picked first; null when it tracks none. */
   upstream: string | null;
+  /** True when the user chose to stash uncommitted changes around the rebase (`--autostash`). */
+  autostash: boolean;
 }
 
 export interface PushPayload {
