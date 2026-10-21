@@ -165,6 +165,9 @@ pub struct CommitSettings {
 #[serde(default, rename_all = "camelCase")]
 pub struct Appearance {
     pub theme: Theme,
+    /// The whole window's zoom, in percent: everything is drawn this much larger or smaller,
+    /// like a browser's zoom. 100 by default; the front end keeps it between 50 and 200.
+    pub zoom: u16,
     pub date_format: DateFormat,
     pub graph_order: GraphOrder,
     pub commit_lane_colours: CommitLaneColours,
@@ -196,6 +199,7 @@ impl Default for Appearance {
     fn default() -> Self {
         Self {
             theme: Theme::Dark,
+            zoom: 100,
             date_format: DateFormat::Relative,
             graph_order: GraphOrder::Date,
             commit_lane_colours: CommitLaneColours::KeepLane,

@@ -561,6 +561,11 @@ export type AppWarning = {
 
 export type Appearance = {
 	theme?: Theme,
+	/**
+	 *  The whole window's zoom, in percent: everything is drawn this much larger or smaller,
+	 *  like a browser's zoom. 100 by default; the front end keeps it between 50 and 200.
+	 */
+	zoom?: number,
 	dateFormat?: DateFormat,
 	graphOrder?: GraphOrder,
 	commitLaneColours?: CommitLaneColours,

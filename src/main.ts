@@ -51,6 +51,13 @@ watchEffect(() => {
   }
 });
 
+// `appearance.zoom`: the whole page larger or smaller, pixel sizes included, like a browser's zoom.
+watchEffect(() => {
+  const percent = settings.settings?.appearance?.zoom ?? 100;
+  const factor = Math.min(200, Math.max(50, percent)) / 100;
+  void getCurrentWebview().setZoom(factor).catch(() => {});
+});
+
 disableBrowserContextMenu();
 
 app.mount("#app");

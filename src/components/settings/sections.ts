@@ -99,7 +99,7 @@ export interface SettingsSection {
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "general",
-    label: "General",
+    label: "Appearance",
     icon: SlidersHorizontalIcon,
     description: "The look of the window and how the commit graph is drawn.",
     fields: [
@@ -114,6 +114,17 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
           { value: "dark", label: "Dark" },
           { value: "light", label: "Light" },
         ],
+      },
+      {
+        kind: "number",
+        group: "appearance",
+        key: "zoom",
+        label: "Zoom",
+        help: "Draws the whole window larger or smaller.",
+        unit: "%",
+        min: 50,
+        max: 200,
+        step: 10,
       },
       {
         kind: "select",
