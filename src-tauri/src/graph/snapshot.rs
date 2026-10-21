@@ -430,7 +430,7 @@ impl GraphSnapshot {
     pub fn search(&self, query: &str, from_row: Option<u32>, direction: SearchDirection) -> GraphSearchResult {
         let needle = query.trim().to_lowercase();
         if needle.is_empty() {
-            return GraphSearchResult { row: None, matches: 0 };
+            return GraphSearchResult { row: None, matches: 0, rows: Vec::new() };
         }
         let oid_prefix = needle.bytes().all(|b| b.is_ascii_hexdigit()).then_some(needle.as_str());
         // Authors are interned, so each is tested once rather than once per commit.
@@ -455,7 +455,7 @@ impl GraphSnapshot {
             (SearchDirection::Forward, Some(from)) => hits.iter().find(|&&r| r > from).or(hits.first()).copied(),
             (SearchDirection::Backward, Some(from)) => hits.iter().rev().find(|&&r| r < from).or(hits.last()).copied(),
         };
-        GraphSearchResult { row, matches: hits.len() as u32 }
+        GraphSearchResult { row, matches: hits.len() as u32, rows: hits }
     }
 }
 
@@ -466,13 +466,16 @@ pub enum SearchDirection {
     Backward,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphSearchResult {
     /// The matching row to select, or None when nothing matches.
     pub row: Option<u32>,
     /// How many rows match in the whole graph.
     pub matches: u32,
+    /// Every matching row, top to bottom, so the search box can count them and step through
+    /// them without asking again.
+    pub rows: Vec<u32>,
 }
 
 /// Whether `hay` contains `needle`, which the caller has already lowercased.
@@ -573,7 +576,7 @@ mod tests {
         // Rows: 0 Working Tree, 1 c, 2 b, 3 a.
         use SearchDirection::{Backward, Forward};
         let hit = |q: &str, from: Option<u32>, d| snap.search(q, from, d);
-        assert_eq!(hit("PARSER", None, Forward), GraphSearchResult { row: Some(1), matches: 2 });
+        assert_eq!(hit("PARSER", None, Forward), GraphSearchResult { row: Some(1), matches: 2, rows: vec![1, 3] });
         assert_eq!(hit("parser", Some(1), Forward).row, Some(3));
         assert_eq!(hit("parser", Some(3), Forward).row, Some(1), "wraps past the bottom");
         assert_eq!(hit("parser", Some(1), Backward).row, Some(3), "wraps past the top");
@@ -583,7 +586,7 @@ mod tests {
         assert_eq!(hit(&format!("{:0>40}", "a"), None, Forward).row, Some(3), "a whole oid");
         assert_eq!(hit(&"0".repeat(39), None, Forward).matches, 3, "an oid prefix");
         assert_eq!(hit("working", None, Forward).matches, 0, "the Working Tree row is not a commit");
-        assert_eq!(hit("  ", None, Forward), GraphSearchResult { row: None, matches: 0 });
+        assert_eq!(hit("  ", None, Forward), GraphSearchResult { row: None, matches: 0, rows: Vec::new() });
     }
 
     #[test]

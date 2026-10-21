@@ -183,6 +183,8 @@
     --row-hover: #e9e6df;
     --row-head: #e6e2da;            /* checked-out commit row: a step past the hover tint */
     --row-head-hover: #dedad1;
+    --find-match: #f2c14e;                  /* commit search pills: solid amber, dark text */
+    --find-match-foreground: #1d1600;
     --neutral: #d5d1c8;
     --ghost-hover: #d9d5cc;
     --dim: #6c717c;
@@ -376,6 +378,8 @@
     --row-hover: #33363c;
     --row-head: #373a41;            /* checked-out commit row: a step past the hover tint */
     --row-head-hover: #3d4048;
+    --find-match: #e0a526;
+    --find-match-foreground: #1d1600;
     --neutral: #3d4149;
     --ghost-hover: #4a4e57;
     --dim: #8b8f97;
@@ -923,6 +927,15 @@
 @utility badge-neutral {
   color: var(--foreground);
   background-color: var(--neutral);
+}
+
+/* The commit search's matches in the commit list: a pill around the matched text. Padding rather
+   than a spread shadow, so the cell's clipping cannot cut off a pill at the start of the text. */
+mark.find-match {
+  border-radius: 9999px;
+  padding: 0 3px;
+  background-color: var(--find-match);
+  color: var(--find-match-foreground);
 }
 
 /* A `size-3.5` icon is 0.875rem, 12.25px with the 14px root font, so Lucide's 24-unit grid and

@@ -10,6 +10,8 @@ export interface GraphContext {
   upstreamRemotes: ComputedRef<Map<string, string>>;
   /** Full names of the remote branches that a local branch tracks (`refs/remotes/origin/dev`). */
   trackedRemotes: ComputedRef<Set<string>>;
+  /** The text of the last commit search, which the rows mark with pills; "" for none. */
+  findText: ComputedRef<string>;
 }
 
 export const GRAPH_CONTEXT: InjectionKey<GraphContext> = Symbol("graph-context");

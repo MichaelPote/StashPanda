@@ -164,8 +164,8 @@ export const commands = {
 	graphRows: (key: string, version: number, start: number, count: number) => typedError<GraphRow[], GitError>(__TAURI_INVOKE("graph_rows", { key, version, start, count })),
 	graphFind: (key: string, version: number, oids: string[]) => typedError<(number | null)[], GitError>(__TAURI_INVOKE("graph_find", { key, version, oids })),
 	/**
-	 *  The graph's Find box: the next row from `from_row` in `direction` whose subject, author or
-	 *  oid matches `query`, wrapping around the ends, and how many rows match in all.
+	 *  The Commits panel's search box: the next row from `from_row` in `direction` whose subject,
+	 *  author or oid matches `query`, wrapping around the ends, and every row that matches.
 	 */
 	graphSearch: (key: string, version: number, query: string, fromRow: number | null, direction: SearchDirection) => typedError<GraphSearchResult, GitError>(__TAURI_INVOKE("graph_search", { key, version, query, fromRow, direction })),
 	/**
@@ -1323,6 +1323,11 @@ export type GraphSearchResult = {
 	row: number | null,
 	/**  How many rows match in the whole graph. */
 	matches: number,
+	/**
+	 *  Every matching row, top to bottom, so the search box can count them and step through
+	 *  them without asking again.
+	 */
+	rows: number[],
 };
 
 export type GraphSnapshotEvent = {

@@ -6,6 +6,7 @@ import RefLabels from "@/components/graph/RefLabels.vue";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useCommitColumns } from "@/composables/useCommitColumns";
 import { formatAbsoluteTime, formatRelativeTime, hashString, initials, isoTime, shortOid } from "@/lib/format";
+import { matchSegments, oidSegments } from "@/lib/graph/find";
 import { laneColour, PALETTE_SIZE } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
 import { gravatarMissing, gravatarUrl } from "@/lib/avatars";
@@ -31,6 +32,12 @@ const avatarOnly = computed(() => settings.settings?.appearance?.authorAvatarOnl
 /** Hidden columns keep an empty cell, at no width, so the grid's columns stay in place. */
 const { shown } = useCommitColumns();
 
+// The commit search's matches, cut out of what the row shows so each can have a pill.
+const findText = computed(() => ctx?.findText.value ?? "");
+const subjectParts = computed(() => matchSegments(props.row.subject, findText.value));
+const authorParts = computed(() => matchSegments(props.row.authorName, findText.value));
+const idParts = computed(() => oidSegments(shortOid(props.row.oid), props.row.oid, findText.value));
+
 const dateText = computed(() =>
   ctx?.dateFormat.value === "absolute"
     ? formatAbsoluteTime(props.row.authorTime)
@@ -50,7 +57,7 @@ const dateText = computed(() =>
          pills clips them at its edge rather than letting them cover the next column. -->
     <div class="flex min-w-0 items-center gap-1 overflow-hidden pr-2 leading-(--row-h)" :style="indent != null ? { paddingLeft: `${indent}px` } : undefined">
       <RefLabels v-if="row.refs.length > 0 || detachedHead" :refs="row.refs" :oid="row.oid" :colour="row.refColour" :detached-head="detachedHead" />
-      <span class="min-w-0 truncate" :title="row.subject">{{ row.subject }}</span>
+      <span class="min-w-0 truncate" :title="row.subject"><template v-for="(part, i) in subjectParts" :key="i"><mark v-if="part.match" class="find-match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
     </div>
     <!-- A size container, so the name can hide once the column is too narrow for even one letter
          and an ellipsis; the column then shows only the avatars. -->
@@ -76,7 +83,7 @@ const dateText = computed(() =>
             >
               <span class="text-cap-box">{{ avatarText }}</span>
             </span>
-            <span v-if="!avatarOnly" class="truncate @max-[40px]:hidden">{{ row.authorName }}</span>
+            <span v-if="!avatarOnly" class="truncate @max-[40px]:hidden"><template v-for="(part, i) in authorParts" :key="i"><mark v-if="part.match" class="find-match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
           </span>
         </TooltipTrigger>
         <TooltipContent side="right">
@@ -95,7 +102,7 @@ const dateText = computed(() =>
     </div>
     <div v-else />
     <div v-if="shown.id" class="truncate px-1.5 font-mono text-xs leading-(--row-h) text-muted-foreground select-text" :title="row.oid">
-      {{ shortOid(row.oid) }}
+      <template v-for="(part, i) in idParts" :key="i"><mark v-if="part.match" class="find-match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template>
     </div>
     <div v-else />
   </div>

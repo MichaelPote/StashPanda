@@ -114,8 +114,8 @@ pub async fn graph_find(
     Ok(oids.iter().map(|o| snap.find(o)).collect())
 }
 
-/// The graph's Find box: the next row from `from_row` in `direction` whose subject, author or
-/// oid matches `query`, wrapping around the ends, and how many rows match in all.
+/// The Commits panel's search box: the next row from `from_row` in `direction` whose subject,
+/// author or oid matches `query`, wrapping around the ends, and every row that matches.
 #[tauri::command]
 #[specta::specta]
 pub async fn graph_search(

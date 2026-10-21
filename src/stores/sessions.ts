@@ -157,10 +157,11 @@ export interface RepoSession {
    * until the graph holds it and it is selected again, or the first complete graph lacks it.
    */
   restoreOid: string | null;
-  /** The Find box over the Commits panel (Ctrl+F): whether it shows, and the text in it. */
-  findOpen: boolean;
+  /** The text in the search box in the Commits panel's header. */
   findQuery: string;
-  /** Bumped to move the keyboard focus into the Find box, even when it is already open. */
+  /** The text of the last search that ran, which the commit list marks with pills; "" for none. */
+  findText: string;
+  /** Bumped to move the keyboard focus into the search box (Ctrl+F, Edit > Find Commit). */
   findFocus: number;
   watcherKind: WatcherKind | null;
   /** Why the watcher is what it is, when that needs saying ("inotifywait is not installed on …"). */
@@ -623,8 +624,8 @@ export const useSessionsStore = defineStore("sessions", () => {
         scrollTop: 0,
         reveal: null,
         restoreOid: uiState.state?.perRepo?.[key]?.lastSelectedOid ?? null,
-        findOpen: false,
         findQuery: "",
+        findText: "",
         findFocus: 0,
         watcherKind: earlyWatcherStates.get(key)?.kind ?? null,
         watcherDetail: earlyWatcherStates.get(key)?.detail ?? null,
@@ -795,14 +796,13 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
-  /** Shows the Find box over the active tab's Commits panel and puts the keyboard focus in it. */
+  /** Puts the keyboard focus in the search box in the active tab's Commits panel header. */
   function openFind(): void {
     const session = active.value;
     if (!session) {
       notify("Open a repository first.");
       return;
     }
-    session.findOpen = true;
     session.findFocus += 1;
   }
 

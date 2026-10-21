@@ -6,7 +6,7 @@ import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import CommitContextMenu from "@/components/graph/CommitContextMenu.vue";
 import CommitRow from "@/components/graph/CommitRow.vue";
-import GraphFindBar from "@/components/graph/GraphFindBar.vue";
+import GraphSearchField from "@/components/graph/GraphSearchField.vue";
 import GraphHeader, { type ResizableColumn } from "@/components/graph/GraphHeader.vue";
 import GraphLanesSvg from "@/components/graph/GraphLanesSvg.vue";
 import RowSkeleton from "@/components/graph/RowSkeleton.vue";
@@ -63,7 +63,8 @@ const trackedRemotes = computed(() => {
   }
   return set;
 });
-provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes });
+const findText = computed(() => props.session.findText);
+provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes, findText });
 
 // ---- Columns -------------------------------------------------------------------------------
 
@@ -344,11 +345,6 @@ function onKeydown(event: KeyboardEvent): void {
     void copySelection();
     return;
   }
-  if (event.key === "Escape" && props.session.findOpen) {
-    event.preventDefault();
-    props.session.findOpen = false;
-    return;
-  }
   const n = total.value;
   if (n === 0) return;
   const cur = currentIndex();
@@ -395,14 +391,13 @@ function onScrollTop(top: number): void {
   props.session.scrollTop = top;
 }
 
-// ---- Find box ------------------------------------------------------------------------------
+// ---- Search box -----------------------------------------------------------------------------
 
 function openFind(): void {
-  props.session.findOpen = true;
   props.session.findFocus += 1;
 }
 
-// Ctrl+F anywhere in the active tab opens the Find box, except in a text field, where it is
+// Ctrl+F anywhere in the active tab goes to the search box, except in a text field, where it is
 // left to the field, in a diff view, which has a Find box of its own and marks the key handled,
 // and while a dialog is open over the window. The native Edit > Find Commit item does the same
 // through `edit.find`.
@@ -425,9 +420,10 @@ function onFindClosed(): void {
     <PanelHeader title="Commits">
       <span class="truncate text-xs text-muted-foreground select-text">{{ session.info.toplevel }}</span>
       <template #actions>
-        <span v-if="meta && meta.total > 0" class="text-[0.7rem] text-muted-foreground tabular-nums">
+        <span v-if="meta && meta.total > 0" class="mr-1.5 text-[0.7rem] text-muted-foreground tabular-nums">
           {{ meta.total.toLocaleString() }} rows<template v-if="meta.truncated"> (truncated)</template>
         </span>
+        <GraphSearchField :session="session" :current="currentIndex" @close="onFindClosed" />
       </template>
     </PanelHeader>
     <GraphHeader
@@ -469,16 +465,6 @@ function onFindClosed(): void {
           </template>
         </template>
       </VirtualRowList>
-      <GraphFindBar
-        v-if="session.findOpen"
-        class="absolute top-1.5 right-4 z-20"
-        :session="session"
-        :current="currentIndex"
-        @close="onFindClosed"
-        @mousedown.stop
-        @click.stop
-        @contextmenu.stop
-      />
     </div>
   </section>
 </template>
