@@ -505,7 +505,7 @@ function pathText(item: FileItem): string {
       </span>
       <template #actions>
         <div v-if="mode !== 'none'" class="flex items-center gap-1.5 text-[0.7rem] text-muted-foreground">
-          <span class="tabular-nums">{{ totalCount }} files</span>
+          <span class="tabular-nums">{{ totalCount }} {{ totalCount === 1 ? "file" : "files" }}</span>
           <label class="inline-flex items-center gap-1">
             Group
             <select v-model="groupBy" class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground" title="Group the files by">

@@ -1088,7 +1088,7 @@ function toggleContext(value: string): void {
           >
             Ignore CR at EOL
           </button>
-          <span class="ml-1 text-muted-foreground tabular-nums">{{ hunkRows.length }} hunks</span>
+          <span class="ml-1 text-muted-foreground tabular-nums">{{ hunkRows.length }} {{ hunkRows.length === 1 ? "hunk" : "hunks" }}</span>
           <Button variant="ghost" size="icon-xs" class="size-5" title="Previous hunk" :disabled="hunkRows.length === 0" @click="prevHunk">
             <ChevronUpIcon />
           </Button>
