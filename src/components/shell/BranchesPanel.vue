@@ -23,6 +23,7 @@ import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import AddBranchMenu from "@/components/shell/AddBranchMenu.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import RefToggleTag from "@/components/shell/RefToggleTag.vue";
+import BranchName from "@/components/shell/BranchName.vue";
 import { branchTreeRows } from "@/lib/branchTree";
 import { formatRelativeTime } from "@/lib/format";
 import { applyStash, dropStash, popStash, requestCheckout } from "@/lib/repoActions";
@@ -106,9 +107,14 @@ const remoteRows = computed(() =>
   remoteGroups.value.map((group) => ({ ...group, rows: branchTreeRows(group.branches, remoteShort, `folder:remote:${group.name}:`, isOpen) })),
 );
 
-/** Indentation of a row `depth` folders deep below a heading indented `base` pixels. */
+/**
+ * Indentation of a row `depth` folders deep below a heading indented `base` pixels. A level is
+ * 20px, the width of a folder row's chevron and the gap after it plus a little: a folder's
+ * branches then start under its name, and a folder inside it under its folder icon, so each level
+ * reads as inside the one above.
+ */
 function indent(base: number, depth: number): Record<string, string> {
-  return { paddingLeft: `${base + depth * 14}px` };
+  return { paddingLeft: `${base + depth * 20}px` };
 }
 
 function remoteShort(entry: RefEntry): string {
@@ -238,7 +244,7 @@ async function reveal(entry: RefEntry): Promise<void> {
                 </svg>
                 <span v-else class="size-[12px] shrink-0" />
                 <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
-                <span :class="cn('min-w-0 truncate', row.entry.isHead && 'font-semibold', !isShown(row.entry) && 'text-muted-foreground')">{{ row.entry.short }}</span>
+                <BranchName :name="row.entry.short" :class="cn(row.entry.isHead && 'font-semibold', !isShown(row.entry) && 'text-muted-foreground')" />
                 <!-- The tracked branch gives way first when the row is narrow. -->
                 <span
                   v-if="upstreamName(row.entry)"
@@ -314,7 +320,7 @@ async function reveal(entry: RefEntry): Promise<void> {
                     @keydown.enter="reveal(row.entry)"
                   >
                     <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
-                    <span class="truncate text-muted-foreground">{{ remoteShort(row.entry) }}</span>
+                    <BranchName :name="remoteShort(row.entry)" class="text-muted-foreground" />
                   </div>
                 </RefContextMenu>
               </template>

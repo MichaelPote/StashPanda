@@ -71,3 +71,15 @@ export function branchTreeRows<T>(
   walk(root, "", 0);
   return rows;
 }
+
+/**
+ * A branch name split for showing in a narrow row: each folder part with its slash
+ * (`dependabot/`, `npm_and_yarn/`), then the last part (`axios-1.7`), whole. Each part gets its own
+ * `<span>`, so the folder parts can shrink to an ellipsis, the leftmost first, before the last part
+ * gives way.
+ */
+export function nameParts(name: string): { folders: string[]; last: string } {
+  const parts = name.split("/");
+  const last = parts.pop() ?? "";
+  return { folders: parts.map((p) => `${p}/`), last };
+}

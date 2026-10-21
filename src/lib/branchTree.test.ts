@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { branchTreeRows, type BranchTreeRow } from "./branchTree";
+import { branchTreeRows, nameParts, type BranchTreeRow } from "./branchTree";
 
 const names = ["main", "feature/sms", "release", "feature/email", "fix/login/timeout"];
 const describeRows = (rows: BranchTreeRow<string>[]): string[] =>
@@ -28,5 +28,12 @@ describe("branchTreeRows", () => {
 
   it("lists nothing for no branches", () => {
     expect(branchTreeRows([], (n: string) => n, "x:", () => true)).toEqual([]);
+  });
+});
+
+describe("splitting a branch name so its folder parts can shrink first", () => {
+  it("keeps each folder part's slash and the last part whole", () => {
+    expect(nameParts("dependabot/npm_and_yarn/axios-1.7")).toEqual({ folders: ["dependabot/", "npm_and_yarn/"], last: "axios-1.7" });
+    expect(nameParts("main")).toEqual({ folders: [], last: "main" });
   });
 });
