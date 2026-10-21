@@ -911,15 +911,49 @@ pub async fn force_move_local_branch(client: &GitClient, branch: &str, source: &
 /// would then not match it. The forced form is `force_move_local_branch`.
 pub async fn push_to_local_branch(client: &GitClient, source: &str, target: &str) -> Result<OpResult> {
     valid_ref_name(source)?;
+    move_local_branch_to(client, &format!("refs/heads/{source}"), target).await
+}
+
+/// Fast-forward local branch `branch` to its upstream as last fetched (`origin/main`), without
+/// fetching. The checked-out branch moves with `git merge --ff-only`, which also updates the files;
+/// `autostash` stashes uncommitted changes first and puts them back afterwards (`--autostash`),
+/// and when putting them back conflicts Git still exits 0 and keeps them as `stash@{0}`. Any other
+/// branch moves with `git fetch . <upstream>:<branch>`, which touches no files. Git refuses either
+/// move when it is not a fast-forward. Fails with `InvalidPath` when the branch tracks nothing
+/// or its upstream has never been fetched.
+pub async fn fast_forward_to_upstream(client: &GitClient, branch: &str, autostash: bool) -> Result<OpResult> {
+    valid_ref_name(branch)?;
+    let invalid = |reason: &str| GitError::InvalidPath { path: branch.to_string(), reason: reason.into() };
+    let upstream = upstream_of(client, branch).await?.ok_or_else(|| invalid("it does not track a remote branch"))?;
+    let tracking = tracking_ref_of(client, &upstream).await?.ok_or_else(|| invalid("its remote branch has not been fetched"))?;
+    let head = client.exec_allow_failure(GitReq::new("symbolic-ref", ["symbolic-ref", "--quiet", "HEAD"])).await?;
+    if head.success() && String::from_utf8_lossy(&head.stdout).trim() == format!("refs/heads/{branch}") {
+        let mut args = vec!["merge", "--ff-only"];
+        if autostash {
+            args.push("--autostash");
+        }
+        args.push(tracking.as_str());
+        // A fast-forward runs the `post-merge` hook.
+        let out = client.exec_allow_failure(GitReq::new("merge", args).user().timeout(Some(COMMIT_TIMEOUT))).await?;
+        return Ok(result(out));
+    }
+    move_local_branch_to(client, &tracking, branch).await
+}
+
+/// `git fetch --no-write-fetch-head . <source>:refs/heads/<target>` for a full ref name `source`
+/// (`refs/heads/dev`, `refs/remotes/origin/dev`): moves local branch `target` there, or creates it,
+/// when that is a fast-forward, after `branch_in_use` has said nothing is using it.
+async fn move_local_branch_to(client: &GitClient, source: &str, target: &str) -> Result<OpResult> {
+    valid_ref_name(source)?;
     valid_ref_name(target)?;
-    if source == target {
+    if source == format!("refs/heads/{target}") {
         return Err(GitError::InvalidPath { path: target.to_string(), reason: "a branch cannot be pushed into itself".into() });
     }
     // Git 2.36, the oldest StashPanda runs, only refuses the branch HEAD is on.
     if let Some(reason) = branch_in_use(client, target).await? {
         return Ok(refusal(format!("refusing to move {target}: {reason}")));
     }
-    let refspec = format!("refs/heads/{source}:refs/heads/{target}");
+    let refspec = format!("{source}:refs/heads/{target}");
     let args = ["fetch", "--no-write-fetch-head", ".", refspec.as_str()];
     let out = client.exec_allow_failure(GitReq::new("fetch", args).user()).await?;
     Ok(result(out))
@@ -3719,6 +3753,81 @@ mod e2e {
         git(&wt2, &["bisect", "reset"]);
         assert_eq!(branch_in_use(&client, "busy").await.unwrap().as_deref(), Some("it is checked out at a worktree"));
         assert_eq!(branch_in_use(&client, "brand-new").await.unwrap(), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn fast_forwards_a_branch_to_its_upstream_as_last_fetched() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-ff-up-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local, other) = (root.join("origin.git"), root.join("local"), root.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), local.as_os_str()]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&local, &["config", k, v]);
+        }
+        std::fs::write(local.join("a.txt"), "1\n").unwrap();
+        git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "one"]);
+        git(&local, &["push", "-q", "origin", "main", "main:refs/heads/feature"]);
+        git(&local, &["fetch", "-q"]);
+        git(&local, &["branch", "feature", "--track", "origin/feature"]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), other.as_os_str()]);
+        std::fs::write(other.join("a.txt"), "1\n2\n").unwrap();
+        git(&other, &["-c", "user.email=o@o", "-c", "user.name=O", "commit", "-qam", "two"]);
+        git(&other, &["push", "-q", "origin", "HEAD:main", "HEAD:feature"]);
+        let client = client_for(&local);
+        let rev = |r: &str| out(&local, &["rev-parse", r]);
+
+        // Nothing moves until the upstream has been fetched: no network access here.
+        assert!(fast_forward_to_upstream(&client, "main", false).await.unwrap().ok);
+        assert_ne!(rev("main"), out(&other, &["rev-parse", "HEAD"]));
+        git(&local, &["fetch", "-q"]);
+
+        // A branch that is not checked out moves without touching the files.
+        std::fs::write(local.join("b.txt"), "not committed\n").unwrap();
+        let moved = fast_forward_to_upstream(&client, "feature", false).await.unwrap();
+        assert!(moved.ok, "{moved:?}");
+        assert_eq!(rev("feature"), rev("origin/feature"));
+        assert_eq!(std::fs::read_to_string(local.join("a.txt")).unwrap(), "1\n");
+
+        // The checked-out branch moves with its files; uncommitted changes go aside and come back.
+        let checked_out = fast_forward_to_upstream(&client, "main", true).await.unwrap();
+        assert!(checked_out.ok, "{checked_out:?}");
+        assert_eq!(rev("main"), rev("origin/main"));
+        assert_eq!(std::fs::read_to_string(local.join("a.txt")).unwrap(), "1\n2\n");
+        assert_eq!(std::fs::read_to_string(local.join("b.txt")).unwrap(), "not committed\n");
+
+        // Changes that clash with the fast-forward are kept in a stash, and Git still exits 0.
+        std::fs::write(other.join("a.txt"), "1\n2\n3\n").unwrap();
+        git(&other, &["-c", "user.email=o@o", "-c", "user.name=O", "commit", "-qam", "three"]);
+        git(&other, &["push", "-q", "origin", "HEAD:main"]);
+        git(&local, &["fetch", "-q"]);
+        std::fs::write(local.join("a.txt"), "mine\n").unwrap();
+        let clashed = fast_forward_to_upstream(&client, "main", true).await.unwrap();
+        assert!(clashed.ok && format!("{}{}", clashed.stdout, clashed.stderr).contains("Applying autostash resulted in conflicts"), "{clashed:?}");
+        assert_eq!(rev("main"), rev("origin/main"));
+        assert_eq!(crate::git::queries::log::get_stashes(&client).await.unwrap().len(), 1);
+        git(&local, &["reset", "-q", "--hard"]);
+
+        // Not a fast-forward any more: refused, nothing moves.
+        git(&local, &["switch", "-q", "feature"]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "mine on feature"]);
+        git(&local, &["switch", "-q", "main"]);
+        git(&other, &["push", "-q", "origin", "HEAD:feature"]);
+        git(&local, &["fetch", "-q"]);
+        let before = rev("feature");
+        assert!(!fast_forward_to_upstream(&client, "feature", false).await.unwrap().ok);
+        assert_eq!(rev("feature"), before);
+
+        // A branch another worktree has checked out is refused; so is one that tracks nothing.
+        git(&local, &["branch", "-f", "feature", "origin/feature~1"]);
+        git(&local, &["worktree", "add", "-q", &root.join("wt").to_string_lossy(), "feature"]);
+        let in_use = fast_forward_to_upstream(&client, "feature", false).await.unwrap();
+        assert!(!in_use.ok && in_use.stderr.contains("refusing to move"), "{in_use:?}");
+        git(&local, &["branch", "untracked"]);
+        assert!(matches!(fast_forward_to_upstream(&client, "untracked", false).await, Err(GitError::InvalidPath { .. })));
         let _ = std::fs::remove_dir_all(&root);
     }
 

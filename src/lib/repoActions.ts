@@ -11,6 +11,7 @@ import {
   type OpResult,
   type PullMode,
   type PushTarget,
+  type RefEntry,
   type RefKind,
   type ResetMode,
   type ResolveSide,
@@ -326,18 +327,26 @@ export async function openPullDialog(session: RepoSession | null, preferSource: 
   });
 }
 
+/** How the uncommitted-changes question words each action that can stash them first. */
+const AUTOSTASH_WORDS = {
+  Pull: { doing: "Pulling", does: "pulls" },
+  Sync: { doing: "Syncing", does: "pulls" },
+  "Fast-forward": { doing: "Fast-forwarding", does: "fast-forwards" },
+} as const;
+
 /**
  * With uncommitted changes, asks whether to go ahead with `--autostash`. Resolves false when the
  * working tree is clean, true when the user chose to go ahead, and null when they cancelled.
- * `verb` names the action: "Pull" or "Sync".
+ * `verb` names the action.
  */
-async function confirmAutostash(session: RepoSession, verb: string): Promise<boolean | null> {
+async function confirmAutostash(session: RepoSession, verb: keyof typeof AUTOSTASH_WORDS): Promise<boolean | null> {
   const uncommitted = uncommittedSummary(session);
   if (uncommitted === null) return false;
+  const words = AUTOSTASH_WORDS[verb];
   const confirmed = await useDialogsStore().open("confirm", {
     title: `${verb} with uncommitted changes?`,
     message:
-      `The working tree has uncommitted changes (${uncommitted}). ${verb === "Pull" ? "Pulling" : "Syncing"} anyway stashes them first, pulls, ` +
+      `The working tree has uncommitted changes (${uncommitted}). ${words.doing} anyway stashes them first, ${words.does}, ` +
       "then puts them back (--autostash). If putting them back conflicts, they also stay in a stash, so nothing is lost.",
     confirmLabel: `${verb} anyway (autostash)`,
   });
@@ -1557,6 +1566,57 @@ export async function fastForwardToHead(key: string, branch: string): Promise<vo
     const result = await runOp(key, () => commands.opBranchFastForward(key, branch, current));
     if (result.ok) sessions.notifySuccess(`Fast-forwarded ${branch} to ${current}.`);
     else sessions.notify(localPushFailure(result, current, branch, false), null);
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/**
+ * The remote branch (`origin/main`) local branch `ref` can be fast-forwarded to, or null: it has
+ * an upstream that is still there, has no commits of its own beyond it, and is behind it, all as
+ * of the last fetch.
+ */
+export function upstreamFastForward(ref: Pick<RefEntry, "kind" | "upstream" | "upstreamGone" | "ahead" | "behind">): string | null {
+  if (ref.kind.type !== "localBranch" || ref.upstreamGone || !ref.upstream?.startsWith("refs/remotes/")) return null;
+  if (ref.ahead !== 0 || !ref.behind) return null;
+  return ref.upstream.slice("refs/remotes/".length);
+}
+
+/**
+ * Fast-forwards local branch `branch`, checked out or not, to its upstream `upstream`
+ * (`origin/main`) as last fetched, without fetching. The checked-out branch's files change with
+ * it, so with uncommitted changes this asks first and goes ahead with `--autostash`: stash them,
+ * fast-forward, then put them back and drop the stash. Any other branch moves without touching
+ * the files.
+ */
+export async function fastForwardToUpstream(key: string, branch: string, upstream: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const session = sessions.sessions.get(key);
+  const reason = fastForwardReason(session);
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const checkedOut = currentBranch(session) === branch;
+  const autostash = checkedOut ? await confirmAutostash(session, "Fast-forward") : false;
+  if (autostash === null) return;
+  const what = `Fast-forwarding ${branch} to ${upstream}`;
+  try {
+    const result = await runOp(key, () => commands.opBranchFastForwardToUpstream(key, branch, autostash));
+    const output = `${result.stdout}\n${result.stderr}`;
+    if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+      sessions.notify(
+        `Fast-forwarded ${branch} to ${upstream}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
+      );
+    } else if (result.ok) {
+      sessions.notifySuccess(`Fast-forwarded ${branch} to ${upstream}.`);
+    } else if (/refusing to move [^:]+: (.+)$/m.test(result.stderr)) {
+      sessions.notify(localPushFailure(result, upstream, branch, false));
+    } else if (/Not possible to fast-forward|\[rejected\]|non-fast-forward/i.test(output)) {
+      sessions.notify(`${branch} has commits that ${upstream} does not have, so it cannot be fast-forwarded. Pull or rebase it instead.`);
+    } else {
+      sessions.notify(opFailureText(result, what));
+    }
   } catch (e) {
     sessions.notify(errorMessage(e));
   }

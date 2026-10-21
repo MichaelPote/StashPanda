@@ -17,6 +17,7 @@ import {
   dirtyTreeReason,
   fastForwardReason,
   fastForwardToHead,
+  fastForwardToUpstream,
   isDetached,
   mergeInto,
   pushBranch,
@@ -27,6 +28,7 @@ import {
   requestCheckout,
   revisionOf,
   stripRemote,
+  upstreamFastForward,
   trackRemoteBranch,
 } from "@/lib/repoActions";
 import { useSessionsStore } from "@/stores/sessions";
@@ -92,6 +94,16 @@ const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch c
  */
 const fastForwards = ref(false);
 const fastForwardBlocked = computed(() => fastForwardReason(session.value));
+
+/**
+ * The remote branch this local branch can be fast-forwarded to (`origin/main`), checked out or
+ * not, from the refs as last fetched; null hides the item. Uncommitted changes do not block it:
+ * for the checked-out branch, the action asks and stashes them around the fast-forward.
+ */
+const upstreamTarget = computed(() => {
+  const entry = (session.value?.refs?.refs ?? []).find((r) => r.fullName === props.fullName);
+  return entry ? upstreamFastForward(entry) : null;
+});
 async function onOpenChange(open: boolean): Promise<void> {
   if (!open) return;
   fastForwards.value = false;
@@ -139,6 +151,9 @@ function chooseColour(colour: number | null): void {
       </ActionMenuItem>
       <ActionMenuItem v-if="fastForwards && branch" :reason="fastForwardBlocked" @select="fastForwardToHead(sessionKey, short)">
         Fast-forward to {{ branch }}
+      </ActionMenuItem>
+      <ActionMenuItem v-if="upstreamTarget" :reason="fastForwardBlocked" @select="fastForwardToUpstream(sessionKey, short, upstreamTarget)">
+        Fast-forward to {{ upstreamTarget }}
       </ActionMenuItem>
       <ActionMenuItem @select="createBranchHere(sessionKey, target, short)">Create Branch Here…</ActionMenuItem>
 

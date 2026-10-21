@@ -103,6 +103,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_branch_rename,
             ipc::ops::get_fast_forwards_to_head,
             ipc::ops::op_branch_fast_forward,
+            ipc::ops::op_branch_fast_forward_to_upstream,
             ipc::ops::op_push_to,
             ipc::ops::get_commits_dropped,
             ipc::ops::op_branch_set_upstream,

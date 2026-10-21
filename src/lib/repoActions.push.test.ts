@@ -8,6 +8,7 @@ const commands = vi.hoisted(() => ({
   getPullMode: vi.fn(),
   opPush: vi.fn(),
   opPushTo: vi.fn(),
+  opBranchFastForwardToUpstream: vi.fn(),
   opSync: vi.fn(),
   opSetPushDefault: vi.fn(),
   opBranchSetUpstream: vi.fn(),
@@ -32,7 +33,19 @@ vi.mock("@/stores/sessions", () => ({
   }),
 }));
 
-import { gitReason, opFailureText, pullOutcome, pushBranch, pushBranchTo, pushCurrentBranch, syncCurrentBranch, syncOutcome, updateRefsLeftBehind } from "./repoActions";
+import {
+  fastForwardToUpstream,
+  gitReason,
+  opFailureText,
+  pullOutcome,
+  pushBranch,
+  pushBranchTo,
+  pushCurrentBranch,
+  syncCurrentBranch,
+  syncOutcome,
+  updateRefsLeftBehind,
+  upstreamFastForward,
+} from "./repoActions";
 
 const ok = <T>(data: T) => Promise.resolve({ status: "ok", data });
 const pushed = { ok: true, exitCode: 0, stdout: "", stderr: "", conflicts: false };
@@ -453,3 +466,45 @@ describe("a second click on Sync while the first is getting ready", () => {
     expect(notices[0]!.message).toBe("Wait for the current operation to finish.");
   });
 });
+
+describe("fast-forwarding a local branch to its upstream", () => {
+  const local = { kind: { type: "localBranch" } as const, upstream: "refs/remotes/origin/main", upstreamGone: false };
+
+  it("is offered only for a branch that is behind its upstream and has nothing of its own", () => {
+    expect(upstreamFastForward({ ...local, ahead: 0, behind: 2 } as never)).toBe("origin/main");
+    expect(upstreamFastForward({ ...local, ahead: 1, behind: 2 } as never)).toBeNull();
+    expect(upstreamFastForward({ ...local, ahead: 0, behind: 0 } as never)).toBeNull();
+    expect(upstreamFastForward({ ...local, upstreamGone: true, ahead: 0, behind: 2 } as never)).toBeNull();
+    expect(upstreamFastForward({ ...local, upstream: null, ahead: 0, behind: 2 } as never)).toBeNull();
+    expect(upstreamFastForward({ ...local, kind: { type: "remoteBranch", remote: "origin" }, ahead: 0, behind: 2 } as never)).toBeNull();
+  });
+
+  it("asks before stashing uncommitted changes around a fast-forward of the checked-out branch", async () => {
+    const s = session() as unknown as { status: { unstagedCount: number } };
+    s.status.unstagedCount = 1;
+    dialogs.open.mockResolvedValue(true);
+    commands.opBranchFastForwardToUpstream.mockReturnValue(ok(pushed));
+    await fastForwardToUpstream("repo", "feature", "origin/feature");
+    expect(dialogs.open).toHaveBeenCalledWith("confirm", expect.objectContaining({ title: "Fast-forward with uncommitted changes?" }));
+    expect(commands.opBranchFastForwardToUpstream).toHaveBeenCalledWith("repo", "feature", true);
+    expect(notices[notices.length - 1]!.message).toBe("Fast-forwarded feature to origin/feature.");
+  });
+
+  it("does nothing when that question is cancelled", async () => {
+    const s = session() as unknown as { status: { unstagedCount: number } };
+    s.status.unstagedCount = 1;
+    dialogs.open.mockResolvedValue(false);
+    await fastForwardToUpstream("repo", "feature", "origin/feature");
+    expect(commands.opBranchFastForwardToUpstream).not.toHaveBeenCalled();
+  });
+
+  it("does not ask for a branch that is not checked out, whose move leaves the files alone", async () => {
+    const s = session() as unknown as { status: { unstagedCount: number } };
+    s.status.unstagedCount = 1;
+    commands.opBranchFastForwardToUpstream.mockReturnValue(ok(pushed));
+    await fastForwardToUpstream("repo", "release", "origin/release");
+    expect(dialogs.open).not.toHaveBeenCalled();
+    expect(commands.opBranchFastForwardToUpstream).toHaveBeenCalledWith("repo", "release", false);
+  });
+});
+
