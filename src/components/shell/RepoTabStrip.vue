@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { FolderGit2Icon, XIcon } from "@lucide/vue";
+import { FolderRootIcon, XIcon } from "@lucide/vue";
 import { transportLabel } from "@/lib/format";
+import { vPixelSnap } from "@/lib/pixelSnap";
 import { cn } from "@/lib/utils";
 import { useLibraryStore } from "@/stores/library";
 import { useSessionsStore } from "@/stores/sessions";
@@ -44,11 +45,14 @@ function onAuxClick(event: MouseEvent, key: string): void {
       @mousedown.middle.prevent
       @keydown.enter="sessions.setActive(session.key)"
     >
-      <!-- The active tab's icon is the accent, which is its repository's colour when it has one. -->
-      <FolderGit2Icon
-        :class="cn('size-3.5 shrink-0', session.key === sessions.activeKey && 'text-primary')"
-        :style="session.key !== sessions.activeKey && library.repoByKey.get(session.key)?.colour != null ? { color: `var(--graph-lane-${library.repoByKey.get(session.key)?.colour})` } : undefined"
-      />
+      <!-- The active tab's icon is the accent, which is its repository's colour when it has one.
+           Snapped to whole pixels: each tab starts wherever the text of the one before it ends. -->
+      <span v-pixel-snap class="inline-flex shrink-0">
+        <FolderRootIcon
+          :class="cn('size-3.5 shrink-0', session.key === sessions.activeKey && 'text-primary')"
+          :style="session.key !== sessions.activeKey && library.repoByKey.get(session.key)?.colour != null ? { color: `var(--graph-lane-${library.repoByKey.get(session.key)?.colour})` } : undefined"
+        />
+      </span>
       <span class="truncate">{{ session.info.displayName }}</span>
       <button
         type="button"

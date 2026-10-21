@@ -15,6 +15,7 @@ import type { DialogSize } from '@/lib/bindings'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { useUiStateStore } from '@/stores/uiState'
+import { vPixelSnap } from '@/lib/pixelSnap'
 import DialogOverlay from './DialogOverlay.vue'
 
 defineOptions({
@@ -181,11 +182,14 @@ function resetSize(): void {
      - A flex column, not a grid: WebKit (the Linux and macOS builds) ignores `h-fit` on an
        absolutely placed grid and stretches it to the window's full height, so `m-auto` had
        nothing to centre. A flex column takes its content's height in both engines.
+     - v-pixel-snap: `m-auto` still leaves the dialog on a half pixel when the room around it is
+       odd; this moves it back onto whole pixels, for its 12px icons and for ClearType.
      See DialogOverlay.vue. -->
 <template>
   <DialogPortal>
     <DialogOverlay />
     <DialogContent
+      v-pixel-snap
       data-slot="dialog-content"
       v-bind="{ ...$attrs, ...forwarded }"
       :data-resized="size || maximised ? '' : undefined"

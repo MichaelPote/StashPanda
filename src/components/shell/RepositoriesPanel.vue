@@ -44,7 +44,8 @@ async function open(key: string): Promise<void> {
     </EmptyState>
 
     <ScrollArea v-else class="min-h-0 flex-1">
-      <div class="py-1">
+      <!-- Whole pixels (py-1 is 3.5px), so the rows' 12px icons start on whole pixels; see index.css. -->
+      <div class="py-[4px]">
         <LibraryTreeNode
           v-for="node in library.tree"
           :key="node.id"

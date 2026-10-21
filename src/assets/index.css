@@ -925,6 +925,18 @@
   background-color: var(--neutral);
 }
 
+/* A `size-3.5` icon is 0.875rem, 12.25px with the 14px root font, so Lucide's 24-unit grid and
+   its 1px lines fall between pixels and every line is drawn as two grey half-lines. At exactly
+   12px each unit is half a pixel, so the lines fall on pixel edges; moved half a pixel right and
+   down, they fall on pixel centres and come out solid. That needs the icon itself to start on a
+   whole pixel: one that starts on a half pixel comes out worse, so its container's padding must
+   be whole pixels too. Outside the cascade layers, so it wins over the `size-3.5` utility. */
+svg.lucide.size-3\.5 {
+  width: 12px;
+  height: 12px;
+  translate: 0.5px 0.5px;
+}
+
 /* Floating UI, which positions reka-ui's menus, popovers and tooltips, adds `will-change:
    transform` to them on screens scaled 150% or more. That gives them a compositor layer of their
    own, where Chromium never draws ClearType; clear text matters more here than smooth motion.

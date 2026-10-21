@@ -144,10 +144,11 @@ function dismissRepoWarning(warning: string): void {
     <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
       <AppToolbar />
 
-      <!-- An error notice: red, with a warning icon. Success messages show in the status bar instead. -->
+      <!-- An error notice: red, with a warning icon. Success messages show in the status bar instead.
+           Padding in whole pixels, so the 12px icons start on whole pixels (see index.css). -->
       <div
         v-if="sessions.notice"
-        class="flex shrink-0 items-center gap-2 border-b border-diff-del-mark bg-diff-del px-3 py-1 text-base text-destructive"
+        class="flex shrink-0 items-center gap-2 border-b border-diff-del-mark bg-diff-del px-[10px] py-[4px] text-base text-destructive"
         role="alert"
       >
         <TriangleAlertIcon class="size-3.5 shrink-0" />
@@ -161,7 +162,7 @@ function dismissRepoWarning(warning: string): void {
         >
           {{ sessions.noticeAction.label }}
         </button>
-        <button type="button" class="ml-auto rounded p-0.5 hover:bg-destructive/20" aria-label="Dismiss" @click="sessions.dismissNotice()">
+        <button type="button" class="ml-auto rounded p-[2px] hover:bg-destructive/20" aria-label="Dismiss" @click="sessions.dismissNotice()">
           <XIcon class="size-3.5" />
         </button>
       </div>
@@ -169,7 +170,7 @@ function dismissRepoWarning(warning: string): void {
       <div
         v-for="(warning, i) in host.warnings"
         :key="i"
-        class="flex shrink-0 items-center gap-2 border-b border-modified/40 bg-modified/10 px-3 py-1 text-base text-modified-fg"
+        class="flex shrink-0 items-center gap-2 border-b border-modified/40 bg-modified/10 px-[10px] py-[4px] text-base text-modified-fg"
         role="status"
       >
         <TriangleAlertIcon class="size-3.5 shrink-0" />
@@ -184,7 +185,7 @@ function dismissRepoWarning(warning: string): void {
       <div
         v-for="warning in repoWarnings"
         :key="warning"
-        class="flex shrink-0 items-center gap-2 border-b border-modified/40 bg-modified/10 px-3 py-1 text-base text-modified-fg"
+        class="flex shrink-0 items-center gap-2 border-b border-modified/40 bg-modified/10 px-[10px] py-[4px] text-base text-modified-fg"
         role="status"
       >
         <TriangleAlertIcon class="size-3.5 shrink-0" />

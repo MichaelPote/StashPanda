@@ -3,7 +3,7 @@ import { computed } from "vue";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  FolderGit2Icon,
+  FolderRootIcon,
   FolderIcon,
   FolderOpenIcon,
   LoaderCircleIcon,
@@ -128,7 +128,7 @@ function toggleGroup(): void {
           >
             <LoaderCircleIcon v-if="isOpening" class="size-3.5 shrink-0 animate-spin text-muted-foreground" />
             <!-- A repository with a colour shows it here, open or not. -->
-            <FolderGit2Icon
+            <FolderRootIcon
               v-else
               :class="cn('size-3.5 shrink-0', isOpen ? 'text-foreground' : 'text-muted-foreground')"
               :style="node.repo.colour != null ? { color: `var(--graph-lane-${node.repo.colour})` } : undefined"
