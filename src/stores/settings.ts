@@ -6,6 +6,12 @@ import type { JsonObject } from "@/lib/mergePatch";
 
 export const useSettingsStore = defineStore("settings", () => {
   const settings = ref<Settings | null>(null);
+  /**
+   * The toolbar layout being edited on the Settings dialog's Toolbar page, before Save Changes:
+   * the toolbar shows it instead of the saved one while it is set, and the dialog clears it when
+   * it closes, so Cancel puts the toolbar back. Null when nothing is being edited.
+   */
+  const toolbarDraft = ref<string[] | null>(null);
   let listening = false;
 
   /** Fetches settings from the backend and subscribes to `settings-changed` once. */
@@ -32,5 +38,5 @@ export const useSettingsStore = defineStore("settings", () => {
   const consoleMaxLines = computed(() => settings.value?.console?.maxLines ?? 2000);
   const theme = computed(() => settings.value?.appearance?.theme ?? "dark");
 
-  return { settings, load, refresh, update, consoleMaxLines, theme };
+  return { settings, toolbarDraft, load, refresh, update, consoleMaxLines, theme };
 });

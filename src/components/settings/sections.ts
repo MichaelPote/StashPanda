@@ -205,7 +205,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "toolbar",
     label: "Toolbar",
     icon: PanelTopIcon,
-    description: "The buttons along the top of the window. Changes take effect straight away, without Save Changes.",
+    description: "The buttons along the top of the window. The toolbar behind this dialog shows your changes as you make them; Save Changes keeps them, and Cancel puts it back.",
     fields: [],
     page: ToolbarPage,
   },

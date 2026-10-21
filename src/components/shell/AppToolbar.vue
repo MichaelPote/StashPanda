@@ -19,7 +19,8 @@ const sessions = useSessionsStore();
 const settings = useSettingsStore();
 const dialogs = useDialogsStore();
 
-const entries = computed(() => resolveToolbar(settings.settings?.toolbar));
+// The Settings dialog's unsaved layout while one is being edited, so the change shows in place.
+const entries = computed(() => resolveToolbar(settings.toolbarDraft ?? settings.settings?.toolbar));
 /** False when no repository tab is open, which disables the buttons that act on a repository. */
 const hasRepo = computed(() => sessions.active !== null);
 /** Files the Commit dialog would list, badged on the Commit button; hidden at 0. */

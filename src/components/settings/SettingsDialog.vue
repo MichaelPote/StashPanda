@@ -5,6 +5,7 @@ import type { Settings } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { errorMessage } from "@/lib/ipc";
+import { isDefaultToolbar, normaliseToolbar } from "@/lib/toolbarItems";
 import type { JsonObject } from "@/lib/mergePatch";
 import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
@@ -40,6 +41,8 @@ const error = ref<string | null>(null);
 const saving = ref(false);
 
 watch(request, (r) => {
+  // Closed, whether saved or cancelled: the toolbar goes back to showing the saved layout.
+  settingsStore.toolbarDraft = null;
   if (!r) return;
   const current = settingsStore.settings;
   // The store holds a reactive proxy, which structuredClone refuses; clone the plain object under it.
@@ -95,14 +98,24 @@ function fieldChanged(field: SettingsFieldDef): boolean {
 }
 
 const changedFields = computed(() => SETTINGS_SECTIONS.flatMap((s) => s.fields.filter(fieldChanged)));
+/** The Toolbar page's layout, when it differs from the one saved when the dialog opened. */
+const toolbarChanged = computed(() => {
+  const draft = settingsStore.toolbarDraft;
+  if (draft === null || !original.value) return false;
+  const saved = normaliseToolbar(original.value.toolbar);
+  return draft.length !== saved.length || draft.some((id, i) => id !== saved[i]);
+});
 const hasErrors = computed(() => SETTINGS_SECTIONS.some((s) => s.fields.some((f) => fieldError(f) !== null)));
-const canSave = computed(() => original.value !== null && changedFields.value.length > 0 && !hasErrors.value && !saving.value);
+const canSave = computed(
+  () => original.value !== null && (changedFields.value.length > 0 || toolbarChanged.value) && !hasErrors.value && !saving.value,
+);
 
 function sectionHasError(s: SettingsSection): boolean {
   return s.fields.some((f) => fieldError(f) !== null);
 }
 
 function sectionChanged(s: SettingsSection): boolean {
+  if (s.id === "toolbar") return toolbarChanged.value;
   return s.fields.some(fieldChanged);
 }
 
@@ -125,12 +138,15 @@ async function save(): Promise<void> {
   // Only the changed fields go in the merge patch, so a setting changed elsewhere while the
   // dialog was open (the theme from the View menu, a library edit) is kept. A null value
   // deletes the key, which the backend reads back as "not set".
-  const patch: Record<string, JsonObject> = {};
+  const patch: JsonObject = {};
   for (const field of changedFields.value) {
     const p = parsed.value.get(fieldId(field));
     if (!p || "error" in p) continue;
-    (patch[field.group] ??= {})[field.key] = p.value;
+    ((patch[field.group] ??= {}) as JsonObject)[field.key] = p.value as JsonObject[string];
   }
+  // The default layout is saved as null, so a later change to the default reaches it.
+  const draft = settingsStore.toolbarDraft;
+  if (toolbarChanged.value && draft !== null) patch.toolbar = isDefaultToolbar(draft) ? null : draft;
   const rebuildGraphs = changedFields.value.some((f) => GRAPH_FIELDS.has(fieldId(f)));
   saving.value = true;
   error.value = null;

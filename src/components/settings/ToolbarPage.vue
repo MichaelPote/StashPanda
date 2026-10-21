@@ -3,7 +3,6 @@ import { computed, ref, watch, type Component } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, PlusIcon, RotateCcwIcon, XIcon } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
-import { errorMessage } from "@/lib/ipc";
 import {
   availableCommands,
   isDefaultToolbar,
@@ -17,21 +16,21 @@ import { useSettingsStore } from "@/stores/settings";
 
 /**
  * The Toolbar page in Settings: the toolbar's items in order, which can be dragged by their
- * handles or moved with the arrow buttons, and the items that can be added. Every change is
- * saved at once, so the toolbar behind the dialog follows it.
+ * handles or moved with the arrow buttons, and the items that can be added. Changes go into the
+ * dialog's draft (`settingsStore.toolbarDraft`), which the toolbar behind the dialog shows, and
+ * are saved with Save Changes or dropped with Cancel.
  */
 const settingsStore = useSettingsStore();
 
-/** The toolbar's items as drawn, by id. Ahead of the saved setting while a drag or a save is under way. */
-const layout = ref<string[]>(normaliseToolbar(settingsStore.settings?.toolbar));
-const error = ref<string | null>(null);
+/** The toolbar's items as drawn, by id: the dialog's draft once there is one, else the saved layout. */
+const layout = ref<string[]>(settingsStore.toolbarDraft ?? normaliseToolbar(settingsStore.settings?.toolbar));
 /** Where the dragged row is now; null when nothing is being dragged. */
 const dragIndex = ref<number | null>(null);
 
 watch(
-  () => settingsStore.settings?.toolbar,
-  (saved) => {
-    if (dragIndex.value === null) layout.value = normaliseToolbar(saved);
+  () => [settingsStore.toolbarDraft, settingsStore.settings?.toolbar] as const,
+  ([draft, saved]) => {
+    if (dragIndex.value === null) layout.value = draft ?? normaliseToolbar(saved);
   },
 );
 
@@ -46,36 +45,30 @@ function describe(id: string): { label: string; help: string | null; icon: Compo
   return { label: item.label, help: item.help, icon: item.icon };
 }
 
-/** Shows `next` straight away and saves it. The default layout is saved as null, so a later default reaches it. */
-async function save(next: string[]): Promise<void> {
+/** Shows `next` straight away, here and on the toolbar, as the dialog's draft; Save Changes saves it. */
+function save(next: string[]): void {
   layout.value = next;
-  error.value = null;
-  try {
-    await settingsStore.update({ toolbar: isDefaultToolbar(next) ? null : next });
-  } catch (e) {
-    error.value = errorMessage(e);
-    layout.value = normaliseToolbar(settingsStore.settings?.toolbar);
-  }
+  settingsStore.toolbarDraft = next;
 }
 
 function add(id: string): void {
-  void save([...layout.value, id]);
+  save([...layout.value, id]);
 }
 
 function remove(index: number): void {
-  void save(layout.value.filter((_, i) => i !== index));
+  save(layout.value.filter((_, i) => i !== index));
 }
 
 function move(from: number, to: number): void {
-  void save(moveToolbarItem(layout.value, from, to));
+  save(moveToolbarItem(layout.value, from, to));
 }
 
 function reset(): void {
-  void save(normaliseToolbar(null));
+  save(normaliseToolbar(null));
 }
 
 // Dragging a row by its handle. The rows are reordered as the pointer passes over them, and the
-// new order is saved when the button is released. Pointer events are used rather than HTML drag
+// new order goes into the draft when the button is released. Pointer events are used rather than HTML drag
 // and drop, which the window's own file drop handling takes over on Windows.
 const list = ref<HTMLElement | null>(null);
 /** The order when the drag started, to tell whether it changed anything. */
@@ -104,7 +97,7 @@ function endDrag(): void {
   if (dragIndex.value === null) return;
   dragIndex.value = null;
   const next = layout.value;
-  if (next.length !== dragStart.length || next.some((id, i) => id !== dragStart[i])) void save(next);
+  if (next.length !== dragStart.length || next.some((id, i) => id !== dragStart[i])) save(next);
 }
 useEventListener(window, "pointerup", endDrag);
 useEventListener(window, "pointercancel", endDrag);
@@ -123,10 +116,6 @@ const ROW_CLASS = "flex h-9 min-w-0 items-center gap-2 rounded-md border border-
         Reset to Default
       </Button>
     </div>
-
-    <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive" role="alert">
-      {{ error }}
-    </p>
 
     <div class="grid grid-cols-[repeat(auto-fit,minmax(18rem,1fr))] items-start gap-6">
       <section class="grid gap-2" aria-labelledby="toolbar-layout-heading">
