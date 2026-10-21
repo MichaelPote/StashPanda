@@ -105,6 +105,8 @@ export interface RunningOperation {
   cancellable: boolean;
   /** Stop was pressed and the operation has not finished yet. */
   stopping: boolean;
+  /** The toolbar command it belongs to (`fetch`, `pull`, `push` or `sync`), whose button shows a spinner meanwhile; null for none. */
+  command: string | null;
 }
 
 /** Rows selected in the Files panel, by `FileItem.id`. Replaced, never mutated. */

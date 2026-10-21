@@ -446,7 +446,7 @@ async function claimed(key: string, action: () => Promise<void>): Promise<void> 
 }
 
 /** Why a fetch, pull or push cannot start because one is already running, or null. */
-function busyReason(session: RepoSession): string | null {
+export function busyReason(session: RepoSession): string | null {
   const op = session.operation;
   if (op) return `Wait for the current operation to finish (${op.title.toLowerCase()}).`;
   return starting.has(session.key) ? "Wait for the current operation to finish." : null;
@@ -454,18 +454,20 @@ function busyReason(session: RepoSession): string | null {
 
 /**
  * Runs a fetch, pull or push and shows it in the status bar until it finishes: `start` gets the
- * operation id to pass to the command. Refetches refs and status afterwards. Throws what the
- * command throws, including `cancelled` after Stop.
+ * operation id to pass to the command. `command` is the toolbar command whose button shows a
+ * spinner meanwhile. Refetches refs and status afterwards. Throws what the command throws,
+ * including `cancelled` after Stop.
  */
 export async function runOperation<T = OpResult>(
   key: string,
   title: string,
   start: (opId: string) => Promise<IpcResult<T>>,
+  command: "fetch" | "pull" | "push" | "sync" | null = null,
 ): Promise<T> {
   const sessions = useSessionsStore();
   const session = sessions.sessions.get(key);
   const opId = crypto.randomUUID();
-  if (session) session.operation = { opId, title, line: "", cancellable: true, stopping: false };
+  if (session) session.operation = { opId, title, line: "", cancellable: true, stopping: false, command };
   try {
     return await runOp(key, () => start(opId));
   } finally {
@@ -511,7 +513,7 @@ export async function fetchAll(session: RepoSession | null): Promise<void> {
   const from = remotes.length === 1 ? remotes[0] : `${remotes.length} remotes`;
   const key = session.key;
   try {
-    const result = await runOperation(key, `Fetching from ${from}`, (opId) => commands.opFetch(key, opId));
+    const result = await runOperation(key, `Fetching from ${from}`, (opId) => commands.opFetch(key, opId), "fetch");
     session.lastFetchAt = Date.now();
     if (result.ok) {
       session.autoFetchFailed = false;
@@ -542,7 +544,7 @@ export async function autoFetchDue(): Promise<void> {
     const remotes = session.refs.remotes.map((r) => r.name);
     const from = remotes.length === 1 ? remotes[0] : `${remotes.length} remotes`;
     try {
-      const result = await runOperation(key, `Fetching from ${from} (automatic)`, (opId) => commands.opFetch(key, opId));
+      const result = await runOperation(key, `Fetching from ${from} (automatic)`, (opId) => commands.opFetch(key, opId), "fetch");
       session.lastFetchAt = Date.now();
       if (result.ok) {
         session.autoFetchFailed = false;
@@ -724,7 +726,7 @@ async function pushBranchNow(session: RepoSession, branch: string): Promise<void
   }
   const to = `${target.remote}/${target.branch}`;
   try {
-    const result = await runOperation(key, `Pushing ${branch} to ${to}`, (opId) => commands.opPush(key, opId, branch, chosen ? target : null));
+    const result = await runOperation(key, `Pushing ${branch} to ${to}`, (opId) => commands.opPush(key, opId, branch, chosen ? target : null), "push");
     const output = `${result.stdout}\n${result.stderr}`;
     if (result.ok) {
       const done = /Everything up-to-date/i.test(output) ? `${to} already has every commit on ${branch}.` : `Pushed ${branch} to ${to}.`;
@@ -806,7 +808,7 @@ async function syncBranch(session: RepoSession, branch: string): Promise<void> {
   const mode = await pullModeFor(key, branch);
   const to = `${upstream.remote}/${upstream.branch}`;
   try {
-    const result = await runOperation(key, `Syncing ${branch} with ${to}`, (opId) => commands.opSync(key, opId, branch, mode, autostash, pushTo));
+    const result = await runOperation(key, `Syncing ${branch} with ${to}`, (opId) => commands.opSync(key, opId, branch, mode, autostash, pushTo), "sync");
     const outcome = syncOutcome(key, result, branch, mode);
     if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
     else sessions.notify(outcome.message, outcome.action);
@@ -1725,7 +1727,12 @@ export async function pushBranchTo(key: string, branch: string, preset: PushToPr
   try {
     // A force push replaces the remote branch only if it is still at the commit whose dropped
     // commits the dialog listed, not wherever a background fetch has moved it since.
-    const result = await runOperation(key, what, (opId) => commands.opPushTo(key, opId, branch, choice.remote, choice.target, choice.force, choice.expected, choice.source));
+    const result = await runOperation(
+      key,
+      what,
+      (opId) => commands.opPushTo(key, opId, branch, choice.remote, choice.target, choice.force, choice.expected, choice.source),
+      "push",
+    );
     if (result.ok) {
       sessions.notifySuccess(choice.remote === null ? `${choice.target} now points at ${branch}'s commit.` : `${choice.force ? "Force-pushed" : "Pushed"} ${branch} to ${to}.`);
     } else if (result.stderr.includes("(source moved)")) {

@@ -36,6 +36,7 @@ import {
 import { dispatch } from "@/lib/menuActions";
 import {
   applyStashReason,
+  busyReason,
   discardSelected,
   fetchAll,
   fileActionReason,
@@ -107,10 +108,12 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
       if (sessions.activeKey !== null) return sessions.refreshSession(sessions.activeKey);
     },
   },
-  { id: "fetch", label: "Fetch from Every Remote", caption: "Fetch", icon: CloudDownloadIcon, needsRepo: true, run: () => fetchAll(active()) },
-  { id: "pull", label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, needsRepo: true, run: () => openPullDialog(active()) },
-  { id: "sync", label: "Sync: Pull, then Push", caption: "Sync", icon: ArrowDownUpIcon, needsRepo: true, run: () => syncCurrentBranch(active()) },
-  { id: "push", label: "Push to Upstream", caption: "Push", icon: ArrowUpFromLineIcon, needsRepo: true, run: () => pushCurrentBranch(active()) },
+  // Greyed out while any fetch, pull or push runs, which would refuse a second; the one running
+  // shows a spinner (`RunningOperation.command`).
+  { id: "fetch", label: "Fetch from Every Remote", caption: "Fetch", icon: CloudDownloadIcon, needsRepo: true, run: () => fetchAll(active()), reason: busyReason },
+  { id: "pull", label: "Pull", caption: "Pull", icon: ArrowDownToLineIcon, needsRepo: true, run: () => openPullDialog(active()), reason: busyReason },
+  { id: "sync", label: "Sync: Pull, then Push", caption: "Sync", icon: ArrowDownUpIcon, needsRepo: true, run: () => syncCurrentBranch(active()), reason: busyReason },
+  { id: "push", label: "Push to Upstream", caption: "Push", icon: ArrowUpFromLineIcon, needsRepo: true, run: () => pushCurrentBranch(active()), reason: busyReason },
   { id: "commit", label: "Commit", caption: "Commit", icon: GitCommitHorizontalIcon, primary: true, needsRepo: true, run: () => openCommitDialog(active()) },
   {
     id: "stage",

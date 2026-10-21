@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { LoaderCircleIcon } from "@lucide/vue";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Separator } from "@/components/ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -35,6 +36,12 @@ function blocked(command: ToolbarCommand): string | null {
   const session = sessions.active;
   if (!session || !command.reason) return null;
   return command.reason(session);
+}
+
+/** The operation `command` started, while it runs: its button shows a spinner, and its title as the tooltip. */
+function running(command: ToolbarCommand): string | null {
+  const op = sessions.active?.operation;
+  return op && op.command === command.id ? `${op.title}…` : null;
 }
 
 function customise(): void {
@@ -114,13 +121,14 @@ const CAPTION_CLASS = "block max-w-[59px] truncate text-[9px] font-medium tracki
               <TooltipTrigger as-child>
                 <!-- A disabled button swallows pointer events, so the wrapper span carries the tooltip. -->
                 <span class="inline-flex shrink-0">
-                  <button type="button" :class="buttonClass(entry.command)" :aria-label="entry.command.label" disabled>
-                    <component :is="entry.command.icon" />
+                  <button type="button" :class="buttonClass(entry.command)" :aria-label="entry.command.label" :aria-busy="running(entry.command) !== null" disabled>
+                    <LoaderCircleIcon v-if="running(entry.command)" class="animate-spin" />
+                    <component :is="entry.command.icon" v-else />
                     <span :class="CAPTION_CLASS">{{ entry.command.caption }}</span>
                   </button>
                 </span>
               </TooltipTrigger>
-              <TooltipContent side="bottom" class="max-w-72">{{ entry.command.label }}: {{ blocked(entry.command) }}</TooltipContent>
+              <TooltipContent side="bottom" class="max-w-72">{{ running(entry.command) ?? `${entry.command.label}: ${blocked(entry.command)}` }}</TooltipContent>
             </Tooltip>
           </template>
         </template>

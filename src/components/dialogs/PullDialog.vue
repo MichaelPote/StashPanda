@@ -80,8 +80,11 @@ async function submit(): Promise<void> {
   /** True while this dialog is still showing this pull, so the outcome can go inline. */
   const showing = () => request.value === r;
   try {
-    const result = await runOperation(r.key, `Pulling ${from.short} into ${r.into}`, (opId) =>
-      commands.opPull(r.key, opId, from.remote, from.branch, r.into, chosen, r.autostash),
+    const result = await runOperation(
+      r.key,
+      `Pulling ${from.short} into ${r.into}`,
+      (opId) => commands.opPull(r.key, opId, from.remote, from.branch, r.into, chosen, r.autostash),
+      "pull",
     );
     const outcome = pullOutcome(result, from.short, r.into, chosen);
     if (outcome.failed && showing()) {
