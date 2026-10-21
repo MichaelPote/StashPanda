@@ -88,6 +88,11 @@ const showHeadings = computed(() => settings.settings?.appearance?.showColumnHea
 function savedWidth(column: ResizableColumn): number | null {
   return showHeadings.value ? (uiState.state?.graphColumns?.[column] ?? null) : null;
 }
+/**
+ * Room before the lanes when they share the commit message column, so the first lane's dots have
+ * the same gap from the column's left edge as the messages have after the lanes (`messageIndent`).
+ */
+const LANES_LEFT = 4;
 /** Every lane, side by side. */
 const allLanesWidth = computed(() => autoGraphColumnWidth(meta.value?.maxLanes ?? 0));
 /** How wide the lanes are drawn: the graph column, or every lane when they share the message column. */
@@ -158,14 +163,14 @@ const { width: rowsWidth } = useElementSize(computed(() => list.value?.element ?
  */
 const lanesClip = computed(() => {
   if (!graphInMessages.value || rowsWidth.value <= 0) return lanesWidth.value;
-  return Math.max(0, Math.min(lanesWidth.value, rowsWidth.value - fitted.value.author - fitted.value.date - fitted.value.id));
+  return Math.max(0, Math.min(lanesWidth.value, rowsWidth.value - LANES_LEFT - fitted.value.author - fitted.value.date - fitted.value.id));
 });
 const start = computed(() => list.value?.start ?? 0);
 const end = computed(() => list.value?.end ?? 0);
 
 /** Where row `index`'s message starts when the graph shares its column, or null when it has a column of its own. */
 function indentOf(index: number, row: GraphRow): number | null {
-  return graphInMessages.value ? messageIndent(row, index > 0 ? pages.rowAt(index - 1) : undefined) : null;
+  return graphInMessages.value ? LANES_LEFT + messageIndent(row, index > 0 ? pages.rowAt(index - 1) : undefined) : null;
 }
 
 const visibleRows = computed<(GraphRow | undefined)[]>(() => {
@@ -431,7 +436,10 @@ function onFindClosed(): void {
         @update:scroll-top="onScrollTop"
       >
         <template #default="{ start: s }">
-          <div class="graph-lanes-clip pointer-events-none absolute top-0 left-0 z-10 h-full overflow-hidden" :style="{ width: `${lanesClip}px` }">
+          <div
+            class="graph-lanes-clip pointer-events-none absolute top-0 z-10 h-full overflow-hidden"
+            :style="{ left: `${graphInMessages ? LANES_LEFT : 0}px`, width: `${lanesClip}px` }"
+          >
             <GraphLanesSvg :rows="svgRows" :first="svgFirst" :block-start="s" :row-height="ROW_HEIGHT" :width="lanesWidth" />
           </div>
           <template v-for="(row, k) in visibleRows" :key="s + k">
