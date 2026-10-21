@@ -108,13 +108,14 @@ const remoteRows = computed(() =>
 );
 
 /**
- * Indentation of a row `depth` folders deep below a heading indented `base` pixels. A level is
- * 20px, the width of a folder row's chevron and the gap after it plus a little: a folder's
- * branches then start under its name, and a folder inside it under its folder icon, so each level
- * reads as inside the one above.
+ * Indentation of a row `depth` folders deep below a heading indented `base` pixels. A level is a
+ * folder row's chevron (`size-3`, 0.75rem) and the gap after it (`gap-1.5`, 0.375rem): a row inside
+ * a folder then starts where the folder's icon does, so a branch's icon sits under the folder's
+ * name and a folder inside it has its chevron under the folder's icon. In rem, so it follows the
+ * font size.
  */
 function indent(base: number, depth: number): Record<string, string> {
-  return { paddingLeft: `${base + depth * 20}px` };
+  return { paddingLeft: `calc(${base}px + ${depth * 1.125}rem)` };
 }
 
 function remoteShort(entry: RefEntry): string {
@@ -128,6 +129,18 @@ function upstreamName(entry: RefEntry): string | null {
   const up = entry.upstream;
   if (!up) return null;
   return up.replace(/^refs\/(remotes|heads)\//, "");
+}
+
+/**
+ * What a local branch's row shows for its upstream: just the remote ("origin") when the remote
+ * branch has the local branch's name, which is the usual case, else the whole name
+ * ("origin/main"). The tooltip always has the whole name.
+ */
+function upstreamLabel(entry: RefEntry): string | null {
+  const name = upstreamName(entry);
+  if (!name || !entry.upstream?.startsWith("refs/remotes/")) return name;
+  const remote = active.value?.refs?.remotes.find((r) => name.startsWith(`${r.name}/`));
+  return remote && name.slice(remote.name.length + 1) === entry.short ? remote.name : name;
 }
 
 /** Double-clicking a branch checks it out, with the same checks as the Checkout menu item. */
@@ -248,16 +261,19 @@ async function reveal(entry: RefEntry): Promise<void> {
                 <!-- The tracked branch gives way first when the row is narrow. -->
                 <span
                   v-if="upstreamName(row.entry)"
-                  class="flex min-w-0 shrink-[4] items-center gap-0.5 text-muted-foreground"
+                  class="flex min-w-0 shrink-[4] items-center text-muted-foreground"
                   :title="`Tracks ${upstreamName(row.entry)}`"
                 >
                   <ChevronRightIcon class="size-3 shrink-0" aria-hidden="true" />
-                  <span class="min-w-0 truncate">{{ upstreamName(row.entry) }}</span>
+                  <span class="min-w-0 truncate">{{ upstreamLabel(row.entry) }}</span>
                 </span>
+                <!-- Fixed-height badges with the text trimmed to its letters, so items-center centres
+                     the letters rather than IBM Plex Sans's line box, which has far more room above
+                     them than below. Digits and arrows are capital height; "gone" is lowercase. -->
                 <span class="ml-auto flex shrink-0 items-center gap-1 text-[0.7rem] tabular-nums">
-                  <span v-if="row.entry.upstreamGone" class="rounded-sm badge-deleted px-1">gone</span>
-                  <span v-if="row.entry.ahead" class="rounded-sm badge-modified px-1">↑{{ row.entry.ahead }}</span>
-                  <span v-if="row.entry.behind" class="rounded-sm badge-primary px-1">↓{{ row.entry.behind }}</span>
+                  <span v-if="row.entry.upstreamGone" class="inline-flex h-[14px] items-center rounded-sm badge-deleted px-1"><span class="pill-text">gone</span></span>
+                  <span v-if="row.entry.ahead" class="inline-flex h-[14px] items-center rounded-sm badge-modified px-1"><span class="text-cap-box">↑{{ row.entry.ahead }}</span></span>
+                  <span v-if="row.entry.behind" class="inline-flex h-[14px] items-center rounded-sm badge-primary px-1"><span class="text-cap-box">↓{{ row.entry.behind }}</span></span>
                 </span>
               </div>
             </RefContextMenu>
