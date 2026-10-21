@@ -71,16 +71,23 @@ const total = computed(() => meta.value?.total ?? 0);
 // Null (or absent) means "auto": follow the lane count of the current snapshot. A drag on the
 // header handle sets a width, which lasts until the lane count changes (commits load, or refs
 // are hidden or shown in the Branches panel); double-clicking the handle returns to auto at once.
-const graphWidth = computed(
-  () => uiState.state?.graphColumns?.graph ?? autoGraphColumnWidth(meta.value?.maxLanes ?? 0),
-);
+const graphWidth = computed(() => savedWidth("graph") ?? autoGraphColumnWidth(meta.value?.maxLanes ?? 0));
 /**
  * With `appearance.graphInMessageColumn` the lanes are drawn over the start of the commit
  * message column, which then takes the graph column's place, and each row's message starts just
  * past the lanes on that row (`messageIndent`).
  */
 const graphInMessages = computed(() => settings.settings?.appearance?.graphInMessageColumn ?? false);
-/** How wide the lanes are drawn: the graph column, or every lane when they share the message column. */
+/** The row of column headings, with the resize handles in it; the setting can hide it. */
+const showHeadings = computed(() => settings.settings?.appearance?.showColumnHeadings ?? true);
+/**
+ * The width a drag saved for `column`, or null for its automatic width. With the headings hidden
+ * there are no handles to change or reset a width, so every column is automatic; the saved widths
+ * stay stored, and apply again once the headings show.
+ */
+function savedWidth(column: ResizableColumn): number | null {
+  return showHeadings.value ? (uiState.state?.graphColumns?.[column] ?? null) : null;
+}
 /** Every lane, side by side. */
 const allLanesWidth = computed(() => autoGraphColumnWidth(meta.value?.maxLanes ?? 0));
 /** How wide the lanes are drawn: the graph column, or every lane when they share the message column. */
@@ -96,19 +103,23 @@ watch(
 // fonts load) until a divider is dragged; double-clicking a divider returns to automatic.
 const authorWidth = computed(() => {
   void fontsVersion.value;
-  return uiState.state?.graphColumns?.author ?? autoAuthorWidth(meta.value?.widestAuthors ?? []);
+  return savedWidth("author") ?? autoAuthorWidth(meta.value?.widestAuthors ?? []);
 });
 const dateWidth = computed(() => {
   void fontsVersion.value;
-  return uiState.state?.graphColumns?.date ?? autoDateWidth(dateFormat.value);
+  return savedWidth("date") ?? autoDateWidth(dateFormat.value);
 });
 const idWidth = computed(() => {
   void fontsVersion.value;
-  return uiState.state?.graphColumns?.id ?? autoIdWidth();
+  return savedWidth("id") ?? autoIdWidth();
 });
 
-/** Room the commit message column always keeps, plus up to 240px for the lanes when they share it. */
-const MESSAGE_MIN = 160;
+/**
+ * The commit message column comes first when space is short: it keeps at least 320px (plus up to
+ * 240px for the lanes when they share it) or half the table, whichever is more, and the other
+ * columns shrink towards their own minimums before it gives up any of that.
+ */
+const MESSAGE_MIN = 320;
 /**
  * The widths the columns are drawn at: the saved or automatic ones, fitted into the room the
  * table has, so columns dragged wide in a wider window cannot squeeze the commit messages out of
@@ -118,7 +129,7 @@ const fitted = computed(() =>
   fitColumns(
     { graph: graphInMessages.value ? 0 : graphWidth.value, author: authorWidth.value, date: dateWidth.value, id: idWidth.value },
     rowsWidth.value,
-    MESSAGE_MIN + (graphInMessages.value ? Math.min(allLanesWidth.value, 240) : 0),
+    Math.max(MESSAGE_MIN + (graphInMessages.value ? Math.min(allLanesWidth.value, 240) : 0), rowsWidth.value / 2),
   ),
 );
 
@@ -400,6 +411,7 @@ function onFindClosed(): void {
       </template>
     </PanelHeader>
     <GraphHeader
+      v-if="showHeadings"
       :graph-width="fitted.graph"
       :author-width="fitted.author"
       :date-width="fitted.date"

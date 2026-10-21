@@ -175,6 +175,9 @@ pub struct Appearance {
     /// column of their own, so each message starts just past the lanes drawn on its row and the
     /// messages indent as the number of lanes changes down the list.
     pub graph_in_message_column: bool,
+    /// The row of column headings above the commits ("Commit message", "Author", "Date", "ID"),
+    /// which also holds the handles for resizing the columns. On by default.
+    pub show_column_headings: bool,
     pub show_remote_branches: bool,
     pub show_stashes_in_graph: bool,
     pub avatar_source: AvatarSource,
@@ -189,6 +192,7 @@ impl Default for Appearance {
             commit_lane_colours: CommitLaneColours::KeepLane,
             solid_remote_pills: false,
             graph_in_message_column: false,
+            show_column_headings: true,
             show_remote_branches: true,
             show_stashes_in_graph: false,
             avatar_source: AvatarSource::Initials,

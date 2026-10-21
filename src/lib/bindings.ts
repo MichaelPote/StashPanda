@@ -568,6 +568,11 @@ export type Appearance = {
 	 *  messages indent as the number of lanes changes down the list.
 	 */
 	graphInMessageColumn?: boolean,
+	/**
+	 *  The row of column headings above the commits ("Commit message", "Author", "Date", "ID"),
+	 *  which also holds the handles for resizing the columns. On by default.
+	 */
+	showColumnHeadings?: boolean,
 	showRemoteBranches?: boolean,
 	showStashesInGraph?: boolean,
 	avatarSource?: AvatarSource,

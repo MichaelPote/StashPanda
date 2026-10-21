@@ -157,6 +157,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         help: "Draw the lanes at the start of the commit message column instead of in a column of their own, so each message starts just past the lanes on its row.",
       },
       {
+        kind: "toggle",
+        group: "appearance",
+        key: "showColumnHeadings",
+        label: "Column headings above the commits",
+        help: "The Commit message, Author, Date and ID headings. The columns can only be resized while they show, since their resize handles are in the headings.",
+      },
+      {
         kind: "select",
         group: "appearance",
         key: "avatarSource",
