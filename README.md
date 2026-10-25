@@ -27,8 +27,8 @@ A lightweight but fully featured standalone desktop Git GUI. It does not bundle 
 - **File history and blame**.
 - **Commit search.**
 
-Built with [Tauri 2](https://tauri.app), [Vue 3](https://vuejs.org),
-[Tailwind CSS 4](https://tailwindcss.com) and [shadcn-vue](https://www.shadcn-vue.com).
+Built with [Tauri 2](https://tauri.app), [Vue 3](https://vuejs.org) and
+[Tailwind CSS 4](https://tailwindcss.com).
 
 How the app works, and the decisions behind it, are in
 [docs/architecture.md](docs/architecture.md). What is still to build is in
@@ -42,7 +42,7 @@ How the app works, and the decisions behind it, are in
   - `src/stores/` – Pinia stores: settings, UI state, repository library, open sessions.
   - `src/components/shell/` – toolbar, repository and branch panels, tab strip, console, dialogs.
   - `src/components/graph/`, `files/`, `diff/` – the commit graph, file lists and diff viewer.
-  - `src/components/ui/` – shadcn-vue components, added with `npx shadcn-vue@latest add <name>`.
+  - `src/components/ui/` – the shared UI components: buttons, dialogs, menus, tooltips and the like.
 - `src-tauri/src/` – the Rust side. `transport/` reaches Git locally, through `wsl.exe` or over
   SSH; `git/` runs and parses Git commands; `graph/` orders and lays out the commit graph;
   `storage/` is the SQLite cache; `watch/` detects changes; `keys/` is the SSH key manager;
