@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "StashPanda",
   "version": "0.6.0",
-  "identifier": "com.bravedigital.stashpanda",
+  "identifier": "com.mikepote.stashpanda",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -29,6 +29,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Michael Pote",
+    "copyright": "Copyright (C) 2026",
+    "shortDescription": "A standalone desktop Git GUI",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

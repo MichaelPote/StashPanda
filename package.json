@@ -2,6 +2,8 @@
   "name": "stashpanda",
   "private": true,
   "version": "0.6.0",
+  "author": "Michael Pote",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",

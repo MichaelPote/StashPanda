@@ -1,13 +1,36 @@
 # StashPanda
 
-A standalone desktop Git GUI that runs the Git you already have. It does not bundle Git; it works
-with your installed Git and its configuration, treats repositories inside WSL and on remote hosts
-over SSH as first class, paints from a local cache before Git answers, and opens many repositories
-at once in tabs. Built with [Tauri 2](https://tauri.app), [Vue 3](https://vuejs.org),
+A lightweight but fully featured standalone desktop Git GUI. It does not bundle a Git install, it works with your existing installed Git and its configuration.
+
+> StashPanda is still in development. While it has been thoroughly tested on Windows and WSL, please take care when using it on your repositories.
+
+![StashPanda showing a commit graph with branches, the changed files and a side-by-side diff](docs/screenshots/main.jpg)
+
+## Features
+
+- **Visual commit graph**: with customisable branch colours.
+- **First class support for repositories over SSH and inside WSL**: every Git command for that
+  repository runs locally on the machine or distro that holds that repo.
+- **Lightning fast**: All low level git commands are handled by Rust and repo changes and commit graphs are cached for quick open times.
+- **Clone into folders that already have files**: StashPanda will add only the repository files that are missing and never overwrites anything, so your own files show up as changes against the repository.
+- **Built-in SSH key manager**: it reads OpenSSH, PEM, PKCS#8 and PuTTY `.ppk` keys, encrypted or
+  not, and converts between them.
+- **Tabbed repository interface**: Have many repos open at once, switch between them instantly.
+- **The usual Git commands**: Stage, unstage and discard whole files or single lines. Fetch, pull, push and sync, with automatic fetch in the background.
+- **Branches, tags and stashes support**: create, rename, delete, check out, fast-forward and set upstreams.
+- **Merges and conflict handling:** Merge, rebase, cherry-pick, revert and reset, with a three-pane editor for resolving conflicts. ![Merge conflict screenshot](docs/screenshots/merge.jpg)
+- **Side-by-side and unified diffs** with syntax highlighting, and an extremely customisable diff viewer.
+- **Not opinionated**: every design choice has been made to be customisable, so you can configure almost everything: light and dark themes, commit graph style, diff fonts and syntax highlighting, and a zoom setting for high DPI displays. ![Settings screenshot](docs/screenshots/settings.jpg) ![Light mode screenshot](docs/screenshots/light.jpg)
+- **Transparent git log**: every Git command and output is shown in the Console.
+- **File history and blame**.
+- **Commit search.**
+
+Built with [Tauri 2](https://tauri.app), [Vue 3](https://vuejs.org),
 [Tailwind CSS 4](https://tailwindcss.com) and [shadcn-vue](https://www.shadcn-vue.com).
 
-The architecture, the decisions behind it and the implementation status are in
-[docs/architecture.md](docs/architecture.md).
+How the app works, and the decisions behind it, are in
+[docs/architecture.md](docs/architecture.md). What is still to build is in
+[docs/next-steps.md](docs/next-steps.md).
 
 ## Layout
 
@@ -22,7 +45,8 @@ The architecture, the decisions behind it and the implementation status are in
   SSH; `git/` runs and parses Git commands; `graph/` orders and lays out the commit graph;
   `storage/` is the SQLite cache; `watch/` detects changes; `keys/` is the SSH key manager;
   `ipc/` holds the Tauri commands.
-- `docs/architecture.md` – the plan and the notes on what changed while building it.
+- `docs/architecture.md` – how the app works, and the pitfalls found while building it.
+- `docs/next-steps.md` – the work that is still open.
 
 ## Commands
 
@@ -32,7 +56,8 @@ npm run dev            # frontend only, in the browser at http://localhost:1420
 npm run build          # type-check with vue-tsc, then build the frontend into dist/
 npm run tauri dev      # run the desktop app with hot reload
 npm run tauri build    # build the release binary and installers
-cd src-tauri && cargo test   # Rust unit and end-to-end tests (36), also regenerates bindings.ts
+cd src-tauri && cargo test   # Rust unit and end-to-end tests, also regenerates bindings.ts
+npm test               # frontend unit tests (Vitest)
 ```
 
 ## Running on Linux and WSL
@@ -43,10 +68,10 @@ The Linux build runs inside WSL and appears on the Windows desktop through WSLg:
 npm run tauri dev
 ```
 
-Settings live in `~/.config/com.bravedigital.stashpanda/settings.json`. The commit cache and the
+Settings live in `~/.config/com.mikepote.stashpanda/settings.json`. The commit cache and the
 remembered UI state (panel sizes, column widths, open tabs, the Console, Files panel and diff header
 choices, and each repository's hidden branches) live in
-`~/.local/share/com.bravedigital.stashpanda/stashpanda.sqlite`.
+`~/.local/share/com.mikepote.stashpanda/stashpanda.sqlite`.
 
 ## Building for Windows
 
@@ -70,10 +95,12 @@ The `russh` SSH client is built with the `ring` backend, so no CMake or NASM is 
 
 ## Working on the Windows version from WSL
 
-The source lives on the WSL filesystem, but `node_modules/` and `src-tauri/target/` hold
+The source is designed to live on a WSL filesystem (or another Linux filesystem), but `node_modules/` and `src-tauri/target/` hold
 platform-specific binaries, so Windows cannot build from the same folder. `scripts/windows.sh`
-mirrors the source (without those folders) to `C:\src\stashpanda` with `rsync`, then runs the
-Windows toolchain there through WSL interop. Run these from a WSL shell:
+mirrors the source (without those folders) to a Windows folder with `rsync`, then runs the
+Windows toolchain there through WSL interop. Copy `.env.example` to `.env` and set
+`STASHPANDA_WIN_DIR` to that folder, for example `C:\src\stashpanda`. Then run these from a WSL
+shell:
 
 ```bash
 npm run win:ux       # UX work: Vite runs in WSL, the Windows app loads from it, edits hot reload
@@ -84,7 +111,7 @@ npm run win:sync     # mirror the source and run npm install on Windows, nothing
 
 ### How `win:ux` works
 
-1. The source is mirrored to `C:\src\stashpanda` and `npm install` runs there.
+1. The source is mirrored to the `STASHPANDA_WIN_DIR` folder and `npm install` runs there.
 2. Vite starts in WSL on port 1420. WSL2 forwards Windows `localhost:1420` to it.
 3. The Windows `tauri dev` starts with `src-tauri/tauri.wsl-dev.conf.json` merged in, which empties
    `beforeDevCommand` so Windows does not start its own Vite. The app's WebView loads
@@ -100,7 +127,16 @@ overwritten on the next sync.
 
 ### Windows prerequisites
 
-All present on Michael's machine as of 2026-09-21: rustup with the `stable-x86_64-pc-windows-msvc`
-toolchain, Node.js, Visual Studio with the "Desktop development with C++" workload **and** a
-Windows 10/11 SDK component, and the WebView2 runtime. Without the SDK component, Rust cannot find
+- rustup with the `stable-x86_64-pc-windows-msvc`
+toolchain 
+- Node.js 
+- Visual Studio with the "Desktop development with C++" workload **and** the
+Windows 10/11 SDK component
+- the WebView2 runtime
+
+Without the SDK component, Rust cannot find
 the MSVC linker and falls back to Git's `link.exe`, which fails with `link: extra operand`.
+
+## Licence
+
+StashPanda is released under the [MIT License](LICENSE). Copyright (c) 2026 Michael Pote.

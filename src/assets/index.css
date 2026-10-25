@@ -19,8 +19,7 @@
  *     meaning: graph lanes, ref pills and file states. Each has the hue itself, three tints
  *     (strong, chip fill and subtle) and an ink for text on a solid plate. The light theme draws
  *     darker versions of the same twelve, so a lane keeps its identity across themes.
- *   - The colours come from the Stashpanda Design System:
- *     the design system page
+ *   - The colours come from the Stashpanda Design System.
  */
 
 @theme inline {

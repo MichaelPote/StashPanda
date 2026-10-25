@@ -1,397 +1,671 @@
-# StashPanda: architecture and implementation plan
+# StashPanda: architecture
 
-## Context
+How StashPanda works as of 2026-10-25 (version 0.6.0). [next-steps.md](next-steps.md) lists what is
+still to build. The "Pitfalls" section near the end collects the things that cost time to find out,
+so they are not found out twice.
 
-StashPanda is a standalone desktop Git GUI that differs from every other
-Git GUI in four ways:
+## What StashPanda is
 
-1. **It does not ship Git.** It runs whichever Git executable the operating system already has, with
-   the user's existing Git configuration, credential helpers and SSH agent.
-2. **WSL Git and remote Git over SSH are first class.** A repository can live on Windows, inside a
-   WSL distro, or on another machine reached over SSH, and every operation for that repository is
-   run through the right wrapper (`wsl.exe`, `ssh`) transparently.
-3. **It is fast.** Cached history paints before Git answers, every Git call is batched or served by
-   a long-lived helper process, and the commit graph is virtualised SVG.
-4. **Many repositories at once**, one tab per repository, with a global repository tree on the left.
+StashPanda is a standalone desktop Git GUI that differs from other Git GUIs in four ways:
 
-The project lives at `/home/me/code/stashpanda` (WSL path), a fresh Tauri 2 + Vue 3 scaffold with one
-uncommitted "greet" demo. Decisions taken with Michael on 2026-09-18:
+1. **It does not ship Git.** It runs whichever Git executable the operating system already has,
+   with the user's own Git configuration, credential helpers and SSH agent.
+2. **WSL Git and remote Git over SSH are first class.** A repository can live on Windows, inside
+   a WSL distro, or on another machine reached over SSH, and every command for that repository
+   runs through the right wrapper (`wsl.exe`, or an SSH channel) without the user noticing.
+3. **It is fast.** Cached history paints before Git answers, Git calls are batched or served by a
+   long-lived helper process, and the commit graph is a virtualised SVG.
+4. **Many repositories at once:** one tab per repository, with a library of repositories in the
+   left sidebar.
+
+Decisions taken with Michael on 2026-09-18 that still shape the code:
 
 | Decision | Choice |
 |---|---|
-| Runtime platform | Both a Windows `.exe` and a Linux binary (run in WSL through WSLg), one codebase, from day one |
-| "SSHed Git" | SSH is the transport for any repository that is neither a local folder nor a WSL folder: every operation runs over SSH and file contents come through Git, never the local filesystem. The transport is chosen automatically from the path, and an advanced per-repo setting can override it, for example SSH into a WSL distro's own `sshd` when `wsl.exe` interop is too slow |
-| First usable milestone (M1) | Read-only browsing: repos in tabs, branches, commit graph, commit files, working tree files, diffs, console. No write operations |
-| SSH implementation, in order of preference | 1. A Rust SSH library with multiplexing and keepalive (`russh`). 2. Long-lived OpenSSH helper processes. 3. Accept the spawn cost and batch commands |
-| SSH key management | A tenet of the app: keys must be easy. StashPanda reads PEM, PPK (PuTTY v2 and v3), OpenSSH and PKCS#8 private keys directly, encrypted or not, and converts between them. Michael never opens PuTTYgen again |
+| Platforms | A Windows `.exe` and a Linux binary (run in WSL through WSLg) from one codebase. macOS is prepared but not built yet |
+| SSH | SSH is the transport for any repository that is neither a local folder nor a WSL folder. Every command runs over SSH, and file contents come through Git or the SSH channel, never the local filesystem. The transport is chosen automatically from the path, and a per-repository setting can override it |
+| SSH implementation | The in-process Rust library `russh`, with one connection per host and one channel per command. A fallback through OpenSSH is planned only for hosts `russh` cannot serve |
+| SSH keys | Keys must be easy: StashPanda reads PEM, PPK (PuTTY v2 and v3), OpenSSH and PKCS#8 private keys directly, encrypted or not, and converts between them, so PuTTYgen is never needed |
 
-## What exists today (do not rebuild)
+## Platforms and builds
 
-| Piece | Where | State |
-|---|---|---|
-| Tauri 2.11 shell, Rust 1.98, edition 2021 | `src-tauri/` (`lib.rs`, `main.rs`, `Cargo.toml`, `tauri.conf.json`) | Compiles for `x86_64-unknown-linux-gnu`; only the `greet` command |
-| Vue 3.5, Vite 8, TypeScript 6, Tailwind 4, shadcn-vue 2.8 (reka-ui 2.10), lucide icons, @vueuse/core | `src/` | `App.vue` is the demo card; ui components present: `button`, `card`, `input`, `label` |
-| `@` alias to `src/`, `cn()` helper, dark theme tokens | `vite.config.ts`, `tsconfig.json`, `src/lib/utils.ts`, `src/assets/index.css` | Reuse as is. Dark mode is the `.dark` class on `<html>` |
-| Tauri capability file | `src-tauri/capabilities/default.json` | Only `core:default` and `opener:default` |
+- **Linux:** `npm run tauri dev` inside WSL; the window appears through WSLg.
+- **Windows:** built natively on Windows from a one-way mirror, not a separate checkout.
+  `scripts/windows.sh` copies `/home/me/code/stashpanda` to the Windows folder named by
+  `STASHPANDA_WIN_DIR` in `.env` (see `.env.example`) with `rsync`,
+  leaving out `node_modules`, `dist`, `src-tauri/target` and `.git`, and runs the Windows
+  toolchain there through WSL interop. Edit only in WSL, never in the mirror. Run these from a
+  WSL shell:
 
-Environment facts (checked 2026-09-18):
+  | Command | What it does |
+  |---|---|
+  | `npm run win:ux` | Vite runs in WSL and the Windows app loads its frontend from it, so Vue, TypeScript and CSS changes hot reload. Every 2 seconds it copies `src-tauri/` to the mirror, so the Windows `tauri dev` rebuilds on Rust changes. `src-tauri/tauri.wsl-dev.conf.json` empties `beforeDevCommand`, and WSL2 forwards Windows `localhost:1420` to Vite. Ctrl-C stops both sides |
+  | `npm run win:dev` | Runs `tauri dev` entirely on Windows, with its own Vite. It refuses to start if a leftover process holds port 1420 on Windows, and names that process |
+  | `npm run win:build` | Runs `tauri build` on Windows, then copies the release binary and the NSIS installer to `bundle/` in both the WSL checkout (ignored by Git) and the mirror |
+  | `npm run win:sync` | Mirrors the source and runs `npm install` on Windows, nothing else |
 
-- WSL: Ubuntu 24.04, Git 2.43, OpenSSH 9.6, Node 24.16, Rust 1.98 with only the Linux target. No `inotifywait` installed.
-- Windows: Git for Windows 2.47.1 at `C:\Program Files\Git\bin\git.exe`, Windows OpenSSH at `C:\Windows\System32\OpenSSH\ssh.exe`, `wsl.exe` present with one distro (`Ubuntu`, WSL 2). Node installed. **No Rust toolchain on Windows.**
-- PhpStorm currently has an unrelated project open; it is not used for this work.
+  The Windows side has rustup with the `stable-x86_64-pc-windows-msvc` toolchain, Node 24,
+  Visual Studio with the "Desktop development with C++" workload and the Windows 11 SDK, and the
+  WebView2 runtime. Windows builds only the NSIS installer: `src-tauri/tauri.windows.conf.json`
+  sets `"targets": ["nsis"]` over the `"all"` in `tauri.conf.json`.
+- **macOS (code ready, not built):** it needs a Mac or a macOS CI runner, plus an Apple Developer
+  ID certificate and notarization, without which Gatekeeper refuses a downloaded app.
+  `--target universal-apple-darwin` makes one app for Apple Silicon and Intel. The macOS-only
+  code:
+  - `platform::adopt_login_shell_path` gives the app the login shell's `PATH` at start-up, since
+    an app started from Finder gets only `/usr/bin:/bin:/usr/sbin:/sbin`, which is too little for
+    Git hooks and credential helpers.
+  - `transport/discover.rs` tries Homebrew's Git (`/opt/homebrew/bin`, `/usr/local/bin`) before
+    `PATH`, and takes Apple's `/usr/bin/git` only when `xcode-select -p` says the Command Line
+    Tools are installed: without them, that `git` opens an install dialog instead of running.
+  - `menu.rs` builds a Mac menu bar: a StashPanda application menu (About, Settings, Services,
+    Hide, Quit with Cmd+Q) and a Window menu, with real Cmd key equivalents. Quit is
+    StashPanda's own `file.exit`, which closes the window through the close guard in
+    `shutdown.rs`.
+  - Passphrases go to the macOS Keychain through `keyring`'s default features.
+  - It compiles for `aarch64-apple-darwin` (checked from Linux with a stand-in C compiler for
+    `objc2-exception-helper`), but it has never run on a Mac. `tauri-driver` has no macOS
+    support, so a Mac build has to be tested by hand.
+- **CI:** `.github/workflows/build.yml` runs the TypeScript check, the frontend tests and
+  `cargo test --lib` on Ubuntu 22.04, then builds `.deb`, `.rpm` and AppImage there (22.04 is the
+  oldest supported release, for glibc) and the NSIS installer on `windows-latest`. macOS is in its
+  matrix, commented out.
+- **Versions:** `npm version <x.y.z>` bumps the version everywhere. Its `version` script runs
+  `scripts/sync-version.mjs`, which copies the version into `src-tauri/tauri.conf.json`,
+  `src-tauri/Cargo.toml` and `Cargo.lock`.
+- **App icon:** `npm run icons` runs `tauri icon assets/app_icon.png`, which writes every icon
+  size into `src-tauri/icons/`. The Photoshop source in `assets/` is ignored by Git.
 
-## Architecture overview
+Platform-specific code is confined to `platform.rs`, `transport/local.rs` (`CREATE_NO_WINDOW`,
+process groups, discovery paths), `transport/wsl.rs` (used only by the Windows build at runtime,
+but compiled everywhere), `transport/paths.rs`, `keys/agent.rs` (agent socket or named pipe),
+`menu.rs` and `webview.rs`. Everything else is shared, including the whole SSH client, because
+`russh` is pure Rust.
+
+## Overview
 
 ```
 ┌──────────────────────────── Vue 3 frontend (WebView) ─────────────────────────────┐
-│ Pinia stores keyed by repoId  ←→  typed IPC bindings (tauri-specta)  ←→  events    │
+│ Pinia stores, one session per open tab  ←→  typed IPC bindings (tauri-specta)      │
 └───────────────────────────────────────┬────────────────────────────────────────────┘
-                                        │ Tauri commands + events
+                                        │ Tauri commands and events
 ┌───────────────────────────────────────┴────────────────────────────────────────────┐
 │ Rust core (src-tauri/src)                                                          │
-│  app_state ── settings (JSON) ── cache (SQLite) ── repo manager (one RepoSession   │
-│  per open repo: transport + command queue + watcher + cat-file helper)             │
-│  git/ ── transport/{local,wsl,ssh} ── commands (log, status, diff, refs …)         │
-│  ── parsers ── graph layout ── console event emitter                               │
+│  AppState: settings.json, SQLite database (cache and UI state), open repositories │
+│  RepoHandle per open repository: transport, GitClient, locks, cat-file helper,     │
+│  watcher, graph snapshot                                                           │
+│  transport/{local,wsl,ssh} ── git/{queries,ops} ── graph/ ── watch/ ── keys/       │
 └────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Everything Git-related happens in Rust. The frontend never spawns processes and never touches the
-filesystem; it only calls commands and listens to events. That keeps the WebView fast, keeps the
-three transports invisible to the UI, and lets the same UI work on both platforms.
+Everything to do with Git happens in Rust. The frontend never starts a process and never touches
+the filesystem: it only calls commands and listens to events. That keeps the WebView fast, keeps
+the three transports invisible to the interface, and lets the same interface work on every
+platform.
 
-## Measured facts that drive the Git layer (2026-09-18, this machine)
+## Measured facts that shaped the Git layer
+
+Measured on 2026-09-18 on Michael's machine, unless a date says otherwise.
 
 | Fact | Consequence |
 |---|---|
-| Spawn cost from WSL: native `git` about 1 ms, `git.exe` through interop about 46 ms, `wsl.exe -e true` about 87 ms | Anything over `wsl.exe` or SSH must be batched into one spawn or served by a long-lived helper process |
-| `wsl.exe -d Ubuntu -e git -C /path ...` passes stdout bytes and the exit code through unmodified | Use the `-e` form (no login shell). `wsl.exe`'s own error messages can be UTF-16LE, so sniff before decoding |
-| In-box Windows OpenSSH 9.5 with `ControlMaster=auto` dies at once: `getsockname failed: Not a socket` | Connection multiplexing through the OpenSSH client is unusable on Windows. This is the main reason the SSH transport uses the in-process `russh` library (one connection, many channels) rather than driving `ssh.exe` |
-| `russh` 0.63 (pure Rust, tokio), `russh-config` 0.58 (`~/.ssh/config` parser) are current on crates.io. `russh` builds on the RustCrypto `ssh-key` crate and defaults to the `aws-lc-rs` backend | Native multiplexing and keepalive without OpenSSH. Select the `ring` backend feature instead of `aws-lc-rs`, which needs CMake and NASM on Windows |
-| Real `.ssh` folders mix PEM, PPK v2 and v3, OpenSSH and PKCS#8 keys, encrypted or not, and a `.pem` file can hold an OpenSSH-format key. No Rust crate reads PPK | Key detection must be by content, not extension. StashPanda ships its own PPK v2 and v3 parser and converts everything to `ssh_key::PrivateKey` in memory, so any key works without a conversion step |
-| Both Gits (2.43 WSL, 2.47 Windows) support `status --porcelain=v2 -z`, `for-each-ref` with `%00`, `log -z --format`, `diff-tree --raw -z`, `cat-file --batch-command` | Minimum supported Git is 2.36. Anything newer is behind a capability flag |
-| `inotifywait` is not installed in this WSL distro | Remote watching probes for it and falls back to polling, with a visible hint in the UI |
+| Starting a process from WSL: native `git` about 1 ms, `git.exe` through interop about 46 ms, `wsl.exe -e true` about 87 ms | Anything through `wsl.exe` or SSH is batched into one process or served by a long-lived helper |
+| `wsl.exe -d Ubuntu -e git -C /path ...` passes stdout bytes and the exit code through unchanged | The WSL transport uses the `-e` form (no login shell). `wsl.exe`'s own error messages can be UTF-16LE, so the transport checks before decoding |
+| The OpenSSH 9.5 client built into Windows dies at once with `ControlMaster=auto`: `getsockname failed: Not a socket` | Connection sharing through the OpenSSH client is unusable on Windows. This is the main reason the SSH transport uses `russh` in-process rather than driving `ssh.exe` |
+| `russh` defaults to the `aws-lc-rs` crypto backend, which needs CMake and NASM to build on Windows | StashPanda builds `russh` with the `ring` backend |
+| Real `.ssh` folders mix PEM, PPK v2 and v3, OpenSSH and PKCS#8 keys, encrypted or not, and a `.pem` file can hold an OpenSSH-format key | Keys are recognised by their content, never by their extension |
+| Both Gits (2.43 in WSL, 2.47 on Windows) support `status --porcelain=v2 -z`, `for-each-ref` with `%00`, `log -z --format`, `diff-tree --raw -z` and `cat-file --batch-command` | The minimum supported Git is 2.36. Anything newer sits behind a capability flag (`git/versions.rs`) |
+| On git.git (85,563 commits), 2026-10-14, release build: loading the whole cache 260 ms, the first 500 rows 2.6 ms, a refresh after one new commit 299 ms, a 200-row page 0.3 to 2.3 ms | The first paint reads 500 rows when the cache holds more than 10,000 commits. Debug builds build snapshots about nine times slower, so timings in `tauri dev` look worse than the shipped app |
 
-## Part 1: Git interface (Rust, `src-tauri/src/`)
+## Rust backend (`src-tauri/src/`)
 
-### Module tree
+### Modules
 
 ```
-lib.rs                      Tauri builder, tauri-specta builder (collect_commands!/collect_events!), TS export in debug builds, AppState, tracing
-error.rs                    GitError enum + classify(stderr, exit code, transport kind)
-settings.rs                 GlobalSettings, RepoConfig (transport choice, git path, ssh params, poll intervals, console caps); load/save
-state.rs                    AppState { repos: RwLock<HashMap<RepoId, Arc<RepoHandle>>>, settings, cache }
-repo/mod.rs                 RepoHandle: location, transport, GitClient, CatFileHelper, watcher, coalescer, per-repo lock
-repo/queue.rs               per-repo RwLock<()> (reads shared, writes exclusive) + OperationRegistry { op_id -> CancellationToken, remote pid }
-repo/open.rs                open flow: resolve location -> pick transport -> probe -> rev-parse -> start helpers and watcher
-transport/mod.rs            Transport + Process traits, Cmd, Program, StdinMode, TransportKind, spawn helpers (CREATE_NO_WINDOW, kill_on_drop)
-transport/local.rs          direct executable (git, git.exe, /mnt/c/.../git.exe)
-transport/wsl.rs            `wsl.exe -d <distro> -e ...`, distro enumeration, UTF-16LE sniff for wsl.exe's own errors
-transport/ssh.rs            SshTransport over russh: one channel per command; SshChannelProcess implements Process (real stderr, exit status, signal)
-transport/ssh_pool.rs       SshConnectionPool keyed by (host, port, user): connect, authenticate, keepalive, reconnect, channel concurrency bound
-transport/ssh_auth.rs       ~/.ssh/config resolution (russh-config), agent client, key file loading, known_hosts check, UI prompts for host key and passphrase
-transport/ssh_exec.rs       FALLBACK (M3, only if a real host cannot be served by russh): long-lived `ssh -T host sh` helper with sentinel framing
-keys/mod.rs                 KeyManager: scan folders, inspect, load any format to ssh_key::PrivateKey, convert, export, generate
-keys/detect.rs              format detection by content: PPK v2/v3, OpenSSH, PEM PKCS#1 RSA / SEC1 EC / DSA (legacy, encrypted or not), PKCS#8, public-only (.pub, RFC 4716)
-keys/ppk.rs                 PuTTY PPK parser and writer: v2 (SHA-1 KDF, AES-256-CBC, HMAC-SHA-1) and v3 (Argon2id, AES-256-CBC, HMAC-SHA-256)
-keys/pem_legacy.rs          traditional OpenSSL encrypted PEM (`Proc-Type: 4,ENCRYPTED`, `DEK-Info`, EVP_BytesToKey with MD5)
-keys/agent.rs               agent client: list identities, add identity (with lifetime), Windows named pipe and Unix socket
-keys/secrets.rs             passphrase cache: in-memory for the session, optional OS keychain via `keyring`
-ipc/keys.rs                 keys_scan, keys_inspect, keys_convert, keys_export_public, keys_add_to_agent, keys_generate, keys_change_passphrase, keys_import
-transport/discover.rs       find executables (settings override -> `which` -> well-known paths); parse `git --version`; Capabilities
-transport/paths.rs          HostPath / NativePath newtypes, PathMapper trait; pure Rust, never spawns `wslpath`
-git/mod.rs                  GitClient::exec: THE single execution path. Injects common flags, times, runs, records console, classifies errors
-git/console.rs              ConsoleRecorder: display quoting, truncation, sequence numbers, emits ConsoleEvent
-git/catfile.rs              pinned `cat-file --batch-command --buffer` per repo, serialised requests, size cap, auto-respawn
-git/parse.rs                NUL and 0x1F record splitting on bytes, lossy UTF-8 decode, oid/mode parsing
-git/versions.rs             GitVersion, Capabilities
-git/queries/{refs,log,status,commit_files,diff,blob}.rs   one file per query, each with a parser unit test on captured bytes
-git/ops/mod.rs              (M2+) stage/unstage/discard/commit/checkout; streaming fetch/push/pull
-watch/{mod,native,remote,polling,coalesce}.rs             Watcher trait; notify-based, inotifywait-over-transport, polling; RefreshCoalescer
-ipc/{mod,repos,query,ops,events}.rs                       thin #[tauri::command] wrappers and tauri_specta::Event payload structs
+lib.rs                 Tauri builder, tauri-specta command and event lists, TypeScript export, tracing
+main.rs                entry point
+error.rs               GitError and classify(): Git's stderr and exit code to an error kind
+platform.rs            which OS the app runs on, whether that Linux is WSL, the macOS login-shell PATH
+settings.rs            settings.json model, defaults, migrations of old field names
+ui_state.rs            the remembered UI state model (stored in the database)
+state.rs               AppState: paths, settings, UI state, database, open repositories, clones in progress
+persist.rs             debounced writer for settings.json and the UI state rows; flushed on exit
+shutdown.rs            closing the window waits while Git is changing a repository
+menu.rs                native menu bar; clicks go to the frontend as menu_action events
+webview.rs             turns off WebView2's browser shortcuts on Windows
+storage/               SQLite connection, schema.sql (cache), schema_v2.sql (UI state), repo_cache.rs, ui_prefs.rs
+transport/mod.rs       Transport and Process traits, Cmd, Output, run, run_batch, run_streaming
+transport/local.rs     run an executable directly (git, git.exe, or /mnt/c/.../git.exe through interop)
+transport/wsl.rs       wsl.exe -d <distro> -e ..., distro list, batching several commands into one wsl.exe
+transport/ssh.rs       SSH transport: one russh channel per command
+transport/ssh_pool.rs  one russh connection per (host, port, user): authentication, host keys, keepalive, reconnect
+transport/paths.rs     HostPath and NativePath, and translating between them; pure string logic
+transport/discover.rs  find Git executables: settings override, then PATH, then well-known places
+repo/mod.rs            RepoHandle: one open repository, its locks and its operation registry
+repo/resolve.rs        library entry to transport and native path; RepoEntry.key
+repo/open.rs           open: resolve, probe, rev-parse, start the helpers and the watcher
+repo/watch_start.rs    pick and start a repository's watcher and coalescer
+repo/clone.rs          clone, including into a folder that already has files in it
+repo/cross_e2e.rs      tests across the Windows and WSL boundary
+git/mod.rs             GitClient::exec: the one place a Git request becomes a process
+git/console.rs         console events for every command
+git/catfile.rs         the long-lived cat-file helper
+git/parse.rs           byte-level splitting and lossy decoding of Git output
+git/versions.rs        Git version and capability flags
+git/queries/           one module per read query, each with a parser tested on captured output
+git/ops/mod.rs         every write operation
+git/ops/lines.rs       staging, unstaging and discarding single lines and hunks
+graph/                 oid, commit store, display order, lane sweep, snapshot, loader
+watch/                 native (notify), remote (inotifywait), polling, and the coalescer
+keys/                  key detection, legacy PEM decryption, agent, keychain, passphrase cache
+ipc/                   thin #[tauri::command] wrappers: settings, repos, query, graph, ops, keys, fonts, events
 ```
 
-### Crates to add to `src-tauri/Cargo.toml`
+### Main crates
 
-| Crate | Version | Purpose |
-|---|---|---|
-| tokio | 1 (`rt-multi-thread, process, io-util, sync, time, macros, fs`) | async process spawning; already in the lockfile through Tauri |
-| tokio-util | 0.7 | CancellationToken, line and NUL framing codecs |
-| async-trait | 0.1 | `dyn Transport` / `dyn Process` / `dyn Watcher` |
-| thiserror | 2 | `GitError` |
-| tracing, tracing-subscriber (`env-filter, fmt`) | 0.1 / 0.3 | internal logging, separate from the user-facing console |
-| tauri-specta, specta, specta-typescript | `=2.0.0-rc.25`, `=2.0.0-rc.25`, `=0.0.12` (pin exactly; RC bumps break each other) | generated TypeScript bindings for commands, events and `GitError` |
-| notify, notify-debouncer-full | 8 (stable; 9 is still RC), matching debouncer | native filesystem watching |
-| which | 8 | locate `git`, `wsl.exe`, `ssh.exe`, honouring PATHEXT |
-| dunce | 1 | strip `\\?\` from canonicalised Windows paths |
-| bstr | 1 | byte-string splitting and lossy decode; all Git parsing is on `&[u8]` |
-| shlex | 1.3 | POSIX quoting of the remote argv for SSH (`exec` requests are parsed by the remote login shell) |
-| russh | 0.63 | in-process SSH client: one connection, many channels, keepalive, agent and key auth. `russh::keys` replaced the separate `russh-keys` crate; verify at add time |
-| russh-config | 0.58 | parse `~/.ssh/config` (Host aliases, User, Port, IdentityFile, ProxyCommand) |
-| ssh-key | the exact version `russh` 0.63 depends on (check `cargo tree`), features `ed25519, rsa, ecdsa, dsa, encryption, std` | read and write OpenSSH, PKCS#8 and PEM RSA keys; fingerprints; key generation |
-| aes, cbc, sha1, sha2, hmac, argon2, md-5 | current RustCrypto releases | PPK v2 and v3 decryption and MAC, legacy PEM decryption |
-| zeroize | 1 | wipe decrypted key material and passphrases from memory |
-| keyring | 4 | optional passphrase storage in Windows Credential Manager or Secret Service; session-only fallback when unavailable (likely in WSL) |
-| uuid | 1 (`v4`) | RepoId, OpId, and the sentinel nonce for the tier 2 SSH fallback |
-| rusqlite | 0.40 (`bundled`) | commit and ref cache (Part 2) |
-| tauri-plugin-dialog, tauri-plugin-window-state | 2 (stable line for Tauri 2, not the 3.0 alphas) | folder picker; remember window size and position |
+| Crate | Used for |
+|---|---|
+| `tokio`, `tokio-util` | starting processes, cancellation tokens, framing |
+| `tauri-specta`, `specta`, `specta-typescript` | the generated TypeScript bindings. Pinned exactly (`=2.0.0-rc.25`, `=0.0.12`), because release candidates break each other |
+| `russh` (`ring` backend), `russh-config` | the SSH client and `~/.ssh/config` |
+| `ssh-key` (`ppk` feature), `rsa`, `pkcs1`, `aes`, `cbc`, `des`, `md-5` | reading every key format, including PPK v2 and v3; the legacy PEM decryption |
+| `keyring` | passphrases in Windows Credential Manager, the Secret Service or the macOS Keychain |
+| `rusqlite` (`bundled`) | the cache and UI state database |
+| `notify-debouncer-full` | native filesystem watching |
+| `arc-swap`, `rustc-hash`, `smallvec`, `bstr` | swapping graph snapshots, fast hash maps, parent lists, byte strings |
+| `uuid` (`v4`, `v5`) | operation ids and `RepoEntry.key` |
+| `which`, `dunce`, `shlex` | finding executables, plain Windows paths, quoting arguments for SSH |
+| `fontdb` | the list of monospaced fonts for the diff font setting |
+| `tauri-plugin-dialog`, `tauri-plugin-window-state`, `tauri-plugin-opener` | folder picker, window size and position, opening files |
+| `webview2-com`, `windows-core` (Windows only) | WebView2 settings Tauri does not expose, at the versions `wry` uses |
 
-### Core traits
+### Running Git
+
+`GitClient::exec` (`git/mod.rs`) is the single place that turns a request into a process. Every
+command gets:
+
+```
+git --no-optional-locks -c color.ui=never -c core.quotepath=false -c i18n.logOutputEncoding=utf-8 -C <native repo path> ...
+```
+
+with `GIT_TERMINAL_PROMPT=0`, `LC_ALL=C.UTF-8` and `GIT_OPTIONAL_LOCKS=0` in its environment
+(written as `env K=V git ...` through `wsl.exe` and SSH). `--no-optional-locks` stops `git status`
+rewriting `.git/index`, which would otherwise wake the app's own watcher.
+
+Each command has a `Category`: `UserAction` for what the user asked for, and `Internal` for the
+app's own reads and the watcher's checks. Internal commands are logged to the Console only while
+`console.logInternal` is on. A successful internal or watcher command's console event keeps only
+its byte counts, not its output (`kept_output` in `git/console.rs`).
+
+Each `ConsoleEvent` carries the command line as executed (wrapper included), a quoted display
+line, `command` (just the Git arguments the caller asked for, without the common flags or the
+wrapper), `title` (what the command does, such as "Fetch" or "Abort rebase", from
+`command_title`), timing, exit code, and stdout and stderr truncated at `console.outputCapBytes`.
+
+Rules for Git output: everything is parsed as bytes; text is decoded lossily at the last moment,
+so a stray Latin-1 byte never aborts a parse. A file is binary when its first 8000 bytes hold a
+NUL. CRLF is never rewritten in transit; the diff reports each side's line endings, and the
+viewer strips `\r` for display.
+
+### Transports
 
 ```rust
 pub enum TransportKind { Local, Wsl { distro: String }, Ssh { host: String } }
-pub enum Category { UserAction, Internal }   // Internal (reads and watcher polls) logged only while console.logInternal is on
-
-pub struct Cmd { program: Program, args: Vec<String>, env: Vec<(String,String)>, stdin: StdinMode,
-                 category: Category, timeout: Option<Duration>, label: &'static str }
 
 #[async_trait] pub trait Transport: Send + Sync {
     fn kind(&self) -> TransportKind;
     fn paths(&self) -> &dyn PathMapper;
-    fn render(&self, cmd: &Cmd) -> Vec<String>;          // full host command line incl. wsl.exe/ssh wrapper, for the console
-    async fn spawn(&self, cmd: Cmd) -> Result<Box<dyn Process>, GitError>;
-    async fn run(&self, cmd: Cmd) -> Result<Output, GitError>;             // default impl over spawn
-    async fn run_batch(&self, cmds: Vec<Cmd>) -> Result<Vec<Output>, GitError>; // one spawn for several commands on wsl/ssh
-    async fn probe(&self) -> Result<TransportInfo, GitError>;
-    async fn read_file(&self, path: &NativePath, limit: usize) -> Result<Vec<u8>, GitError>;
-    async fn shutdown(&self);
+    fn render(&self, cmd: &Cmd) -> Vec<String>;              // the full host command line, for the console
+    async fn spawn(&self, cmd: Cmd) -> Result<Box<dyn Process>>;
+    async fn probe(&self) -> Result<TransportInfo>;
+    async fn read_file(&self, path: &NativePath, limit: usize) -> Result<Vec<u8>>;
+    async fn write_file(&self, path: &NativePath, bytes: &[u8]) -> Result<()>;  // in place, so the file's mode is kept
+    async fn remove_file(&self, path: &NativePath) -> Result<()>;
+    async fn modified_times(&self, paths: &[NativePath]) -> Result<Vec<Option<i64>>>;
+    async fn symlinks(&self, paths: &[NativePath]) -> Result<Vec<bool>>;
+    async fn list_dir(&self, path: &NativePath) -> Result<Option<Vec<String>>>;
+    async fn remove_dir_all(&self, path: &NativePath) -> Result<()>;
+    fn batches(&self) -> bool;                               // true for WSL
+    async fn run_batch(&self, cmds: Vec<Cmd>) -> Result<Vec<Output>>;
+    async fn run(&self, cmd: Cmd) -> Result<Output>;
+    async fn run_streaming(&self, cmd: Cmd, progress: ..., cancel: &CancellationToken) -> Result<Output>;
+    // plus shutdown() and connected()
 }
+
 #[async_trait] pub trait Process: Send {
-    fn stdin(&mut self) -> Option<Box<dyn AsyncWrite + Send + Unpin>>;
-    fn stdout(&mut self) -> Option<Box<dyn AsyncRead + Send + Unpin>>;
-    fn stderr(&mut self) -> Option<Box<dyn AsyncRead + Send + Unpin>>;   // russh: ExtendedData(1) channel messages; None only for the tier 2 helper (stderr arrives in the trailer)
-    async fn wait(&mut self) -> Result<ExitStatus, GitError>;
-    async fn kill(&mut self) -> Result<(), GitError>;                    // wsl/ssh: `kill -TERM <remote pid>` via a fresh spawn
+    fn stdin(&mut self) / stdout(&mut self) / stderr(&mut self);
+    async fn wait(&mut self) -> Result<Option<i32>>;
+    async fn kill(&mut self) -> Result<()>;
+    async fn terminate(&mut self) -> Result<()>;             // a polite stop that lets Git remove its lock files
     fn remote_pid(&self) -> Option<u32>;
-}
-pub trait PathMapper: Send + Sync {
-    fn to_native(&self, host: &HostPath) -> Result<NativePath, GitError>;   // what `git -C` receives
-    fn to_host(&self, native: &NativePath) -> Result<HostPath, GitError>;   // Err for SSH (no host view)
-}
-#[async_trait] pub trait Watcher: Send {
-    fn kind(&self) -> WatcherKind;                       // Native | RemoteInotify | Polling | Off
-    async fn start(&mut self, tx: mpsc::Sender<WatchEvent>) -> Result<(), GitError>;
-    async fn set_activity(&mut self, a: Activity);       // Focused | Background | Hidden
-    async fn stop(&mut self);
 }
 ```
 
-`GitClient::exec` is the one place that turns a request into a process. It always injects:
-`git --no-optional-locks -c color.ui=never -c core.quotepath=false -c i18n.logOutputEncoding=utf-8 -C <native repo path> ...`
-with env `GIT_TERMINAL_PROMPT=0` and `LC_ALL=C.UTF-8` (rendered as `env K=V git` on wsl/ssh). `--no-optional-locks` stops `git status` rewriting `.git/index`, which would otherwise trip our own watcher.
+`run_streaming` reads stderr as it arrives, splits it on `\r` and `\n`, strips escape codes and
+passes each update to the caller, which sends it to the frontend as an `operationProgress` event.
+The `stderr` it returns keeps only the last update of each line.
 
-### Command table (M1 queries)
+**Local** (`transport/local.rs`): `tokio::process::Command` with `kill_on_drop`. On Windows every
+process gets `CREATE_NO_WINDOW` and never inherits the app's standard input and output.
 
-| Need | Git command (after the common flags) |
-|---|---|
-| Probe on open | `--version`; then `rev-parse --is-inside-work-tree --show-toplevel --absolute-git-dir --git-common-dir --is-bare-repository` (one call). `dubious ownership` in stderr becomes `UnsafeRepository` |
-| Branches, tags, HEAD, upstream | `for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(HEAD)%00%(committerdate:unix)%00%(subject)%00%(worktreepath) refs/heads refs/remotes refs/tags` |
-| Remotes | `config -z --get-regexp ^remote\..*\.(url\|pushurl\|fetch)$` |
-| Commit rows for the graph | `log --branches --tags --remotes HEAD --topo-order -z --max-count=5000 [--skip=K] --format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%s`. Not `--all` (that drags in stash and notes refs). Decorations are joined in Rust from the refs snapshot, so there is one source of truth |
-| Stashes | `stash list -z --format=%H%x1f%gd%x1f%gs%x1f%ct` |
-| Files changed in a commit | `diff-tree -r -z -M -C --root --no-commit-id --raw --numstat <sha>` (merge: explicit `<parent> <sha>`, UI picks the parent). Verify the combined `--raw --numstat` ordering once on real output |
-| Working tree status | `status --porcelain=v2 -z --branch --untracked-files=all --show-stash --ahead-behind` |
-| Diff of one file | commit vs parent: `diff --no-ext-diff -U3 -M <parent> <sha> -- <path>`; staged: `diff --cached ... -- <path>`; unstaged: `diff ... -- <path>`; worktree vs HEAD: `diff HEAD ... -- <path>`; untracked: read the file and render as all-added |
-| Blob content (side-by-side) | pinned `cat-file --batch-command --buffer`: `info <sha>:<path>` first (refuse over 16 MiB), then `contents <sha>:<path>`, then `flush`. Index side is `:0:<path>`; conflict stages `:1:`, `:2:`, `:3:` |
-| Working tree file content | `Transport::read_file` (local: `tokio::fs`; WSL from Windows: `wsl.exe -e cat`; SSH: `cat --`) |
+**WSL** (`transport/wsl.rs`): `wsl.exe -d <distro> -e env ... git ... -C /linux/path ...`. The
+distro list comes from `wsl.exe -l -q`, which answers in UTF-16LE. An argument with a space and
+both kinds of quote arrives unsplit through `-e`, so no `sh -c` fallback is needed (checked on
+2026-10-14). `run_batch` runs several commands in one `wsl.exe -e sh -c` script that prints each
+command's exit code and output lengths and then the bytes; lengths, because `status -z` output
+contains NUL bytes. `queries::refs_and_status` uses it, so a refresh starts one `wsl.exe` instead
+of five.
 
-Bytes rules: never `from_utf8().unwrap()` on Git output; binary means a NUL in the first 8000 bytes, checked on raw bytes; CRLF is never rewritten on the wire, the blob result carries `eol: Lf | CrLf | Mixed | None` and the renderer strips `\r` for display; `--ignore-cr-at-eol` and `-w` are user toggles.
+**SSH** (`transport/ssh.rs`, `transport/ssh_pool.rs`): no `ssh.exe` is involved, so Windows and
+Linux behave the same.
 
-### Path translation (`transport/paths.rs`, table-driven tests)
+- **Connection pool:** one authenticated `russh` connection per `(host, port, user)`, shared by
+  every repository on that host, with a keepalive every 15 s. At most 8 channels run at once on
+  one connection, because OpenSSH servers default `MaxSessions` to 10. After a network failure the
+  pool waits 1, 2, 5, 10, 30 and then 60 seconds between attempts, failing at once in between
+  rather than blocking, and reports `Connecting`, `Ready`, `Degraded` or `Disconnected` in a
+  `transportState` event, which the status bar shows with a countdown to the next attempt.
+- **One command, one channel:** the command line is shell-quoted with `shlex`, because `exec`
+  requests go through the remote login shell. Stdout is the channel's data, stderr its extended
+  data, the exit code its exit status. No pseudo-terminal is ever requested, so nothing
+  translates line endings.
+- **Authentication**, in this order: `~/.ssh/config` is read with `russh-config` for the host
+  alias, and the repository's own settings override it; then the SSH agent (`SSH_AUTH_SOCK`, or
+  the `\\.\pipe\openssh-ssh-agent` named pipe on Windows); then identity files in any format the
+  key manager reads, decrypted in memory after a passphrase prompt if needed; then a password,
+  only if the server offers it. `russh-config` does not expose `IdentitiesOnly`: an explicit
+  identity file implies it. A passphrase-protected default key whose passphrase is not known
+  does not block a server that takes passwords: that server gets the password prompt, as OpenSSH
+  falls back to one.
+- **Host keys** are checked against `~/.ssh/known_hosts`. An unknown host fails the open with
+  `sshHostKeyUnknown` and the SHA-256 fingerprint; the Trust dialog then calls `ssh_trust_host`,
+  which appends the key, and the open is tried again. A changed key is `sshHostKeyChanged`, with
+  no way to override it in the interface.
+- **Not supported:** `ProxyCommand` and `ProxyJump` (refused with `SshUnsupportedFeature`),
+  GSSAPI, certificates and PKCS#11 tokens. PuTTY's `plink` is not used for anything.
+
+**Stopping a command** (`Cmd::own_session`): a command started this way can be stopped together
+with every process it starts, and `run_streaming` returns `Cancelled` only once it has exited, or
+after 5 seconds and a `kill`. So a repository's write lock is never released while Git still
+runs.
+
+- Linux and macOS: `setsid` before `exec`, so Git leads a new session with no controlling
+  terminal, and SIGTERM goes to its whole process group.
+- Windows: `taskkill /T /F` on the process tree. Git for Windows' `cmd\git.exe` only launches
+  `mingw64\bin\git.exe`, so killing the first alone left the real Git and its
+  `git-remote-https.exe` or `ssh.exe` running.
+- WSL: `wsl.exe -e setsid -w sh -c 'echo $$; exec "$@"' sh <command>`. The first stdout line is
+  the process group's id, and stopping runs `kill -TERM -- -<pid>` through a second `wsl.exe`.
+- SSH: SIGTERM is sent on the channel and the transport waits for the exit status; `kill` closes
+  the channel, which OpenSSH's `sshd` answers by ending the remote process and its children.
+
+### Paths (`transport/paths.rs`)
 
 | The app sees | Transport | `git -C` receives |
 |---|---|---|
-| `C:\foo\bar` | Local (Windows git) | `C:\foo\bar` |
-| `C:\foo\bar` | WSL {Ubuntu} | `/mnt/c/foo/bar` (automount root configurable) |
-| `\\wsl.localhost\Ubuntu\home\me\code\x` or `\\wsl$\Ubuntu\...` | WSL {Ubuntu} (distro parsed from the UNC must match) | `/home/me/code/x` |
-| `/home/me/code/x` (app on Linux) | Local (Linux git) | `/home/me/code/x` |
-| `/mnt/c/foo/bar` (app on Linux) | Local using `/mnt/c/Program Files/Git/bin/git.exe` | `C:\foo\bar` |
-| `user@host:/srv/repo` | SSH | `/srv/repo` (`~` rendered as `"$HOME"` because every argument is shlex-quoted) |
+| `C:\foo\bar` | Local (Windows Git) | `C:\foo\bar` |
+| `C:\foo\bar` | WSL | `/mnt/c/foo/bar` (the automount root is a setting) |
+| `\\wsl.localhost\Ubuntu\home\me\code\x` or `\\wsl$\Ubuntu\...` | WSL, Ubuntu (the distro in the path must match) | `/home/me/code/x` |
+| `/home/me/code/x` (Linux build) | Local (Linux Git) | `/home/me/code/x` |
+| `/mnt/c/foo/bar` (Linux build) | Local, with `/mnt/c/Program Files/Git/bin/git.exe` | `C:\foo\bar` |
+| `user@host:/srv/repo` | SSH | `/srv/repo` |
 
-Git's own output paths are repo-relative with `/` and are never translated. An ignored integration test cross-checks the mapper against `wslpath -w` and `wslpath -u` when `wslpath` exists.
+Git's own output paths are relative to the repository, use `/`, and are never translated. An
+ignored test checks the translation against `wslpath -w` and `wslpath -u` when `wslpath` exists.
 
-### Choosing the transport for a repository
+### Choosing the transport
 
-`RepoConfig.connection` is `Auto` by default. `Auto` resolves from the path the user typed or picked, at add time and again on every open (so a moved distro or a changed default is picked up):
+`RepoEntry.connection` is `Auto` by default, resolved from the path when the repository is added
+and again on every open:
 
-| Path as entered | App running on | Resolved transport |
+| Path as entered | App running on | Transport |
 |---|---|---|
 | `C:\...` or any drive letter | Windows | Local, Windows `git.exe` |
-| `\\wsl.localhost\<distro>\...` or `\\wsl$\<distro>\...` | Windows | WSL {distro}, via `wsl.exe` |
-| `/mnt/<d>/...` | Linux (WSL) | Local, Windows `git.exe` found under `/mnt/<d>/Program Files/Git/bin/`, because the files are NTFS and Windows Git handles them correctly; falls back to Linux `git` with a warning if no Windows Git is found |
-| any other `/...` | Linux (WSL) | Local, Linux `git` |
-| `user@host:/path`, `ssh://user@host[:port]/path`, or a `Host` alias from `~/.ssh/config` followed by `:/path` | either | SSH (tier 1, `russh`) |
+| `\\wsl.localhost\<distro>\...` or `\\wsl$\<distro>\...` | Windows | WSL, through `wsl.exe` |
+| `/mnt/<d>/...` | Linux (WSL) | Local, with Windows `git.exe` from `/mnt/<d>/Program Files/Git/bin/`, because the files are on NTFS. Falls back to Linux `git` with a warning if no Windows Git is found |
+| any other `/...` | Linux | Local, Linux `git` |
+| `user@host:/path`, `ssh://user@host[:port]/path`, or a `Host` alias from `~/.ssh/config` followed by `:/path` | either | SSH |
 
-The "Add repository" dialog shows the resolved transport next to the path and an **Advanced** disclosure with a `Connection` select: `Auto`, `Local`, `WSL (distro…)`, `SSH (host, user, port, identity…)`. Overrides that matter in practice:
+The Add Repository dialog shows the resolved transport beside the path, and its Advanced section
+has a Connection list: Auto, Local, WSL (distro) and SSH (host, user, port, identity file, remote
+Git). Useful overrides:
 
-- **WSL folder over SSH instead of `wsl.exe`.** Every `wsl.exe -e` spawn costs about 87 ms on this machine, so a working tree with hundreds of status refreshes a day pays for it. If `sshd` is running inside the distro (`sudo apt install openssh-server`, listening on localhost, port 22 or a custom one), choosing `SSH` with host `localhost` gives one persistent connection and a few milliseconds per command, while the path stays `\\wsl.localhost\Ubuntu\home\me\code\x` in the library and is mapped to `/home/me/code/x` on the wire. The probe reports both timings (`wsl.exe -e true` and an SSH `true` channel) in the console so the choice is informed rather than guessed.
-- **Windows folder from the Linux build with Linux Git.** Allowed when there is no Windows Git; the UI warns that line endings and file modes may be reported differently.
-- **Local override for a UNC WSL path** is allowed but warned against: Windows Git over `\\wsl.localhost` is slow and almost always hits `dubious ownership`.
+- **A WSL folder over SSH instead of `wsl.exe`.** With `sshd` running inside the distro, choosing
+  SSH to `localhost` gives one lasting connection and a few milliseconds per command, instead of
+  87 ms per `wsl.exe`. The library keeps the `\\wsl.localhost\...` path.
+- **A Windows folder from the Linux build with Linux Git**, when there is no Windows Git. Line
+  endings and file modes may then be reported differently.
+- **Windows Git on a `\\wsl.localhost` path** is allowed but slow, and almost always hits
+  "dubious ownership".
 
-Whatever the override, the `RepoEntry.key` is computed from the canonical native path plus the resolved transport, so the same folder reached two ways is two library entries with two caches, and the console always shows which wrapper is in use.
+`RepoEntry.key` is a UUID v5 of the resolved transport and the native path (`repo::resolve::repo_key`),
+so the same folder reached two ways is two library entries with two caches.
 
-### Transports
+### SSH keys (`keys/`)
 
-- **Local**: `tokio::process::Command`, `kill_on_drop(true)`, on Windows `creation_flags(CREATE_NO_WINDOW)` and never inherit stdio. Discovery: settings override, then `which`, then well-known paths (`%ProgramFiles%\Git\bin\git.exe`, `/usr/bin/git`, `/mnt/<d>/Program Files/Git/bin/git.exe`).
-- **WSL**: `wsl.exe -d <distro> -e env GIT_TERMINAL_PROMPT=0 LC_ALL=C.UTF-8 git ... -C /linux/path ...`. Distro list from `wsl.exe -l -q` (UTF-16LE). Cancellable commands are wrapped as `setsid -w sh -c 'echo $$; exec "$@"' sh <argv>` and the first stdout line is the pid of the new session's process group, which terminate signals through a second `wsl.exe`. (As implemented 2026-10-01: killing `wsl.exe` does end the Linux processes it started directly, contrary to the original plan, but abruptly, and not ones in a session of their own.) Startup self-test passes an argument with a space and a quote, and falls back to `-e sh -c '<quoted>'` if `wsl.exe` re-splits it.
-- **SSH, tier 1 (M1, the default): in-process `russh` client.** No `ssh.exe` involved, so Windows and Linux behave identically and the Windows ControlMaster problem disappears.
-  - **Connection pool** (`ssh_pool.rs`): one authenticated `russh::client::Handle` per `(host, port, user)`, shared by every repo on that host. `Config { keepalive_interval: 15 s, keepalive_max: 3, inactivity_timeout: None }`. A dropped connection emits `transport_state: Disconnected` and reconnects with backoff (1, 2, 5, 10, 30, then 60 s between attempts, failing at once in between), then re-opens the pinned channels. Channel concurrency per connection is bounded by a `Semaphore(8)` because OpenSSH servers default `MaxSessions` to 10; a second connection is opened when the bound is saturated.
-  - **One command = one channel** (`ssh.rs`): `channel_open_session()` then `exec(true, "env GIT_TERMINAL_PROMPT=0 LC_ALL=C.UTF-8 git -C /srv/repo ...")` with the remote argv shlex-quoted, because `exec` goes through the remote login shell. `SshChannelProcess` implements the `Process` trait: stdin is `channel.data()` plus `eof()`, stdout is the `Data` messages, stderr is `ExtendedData(1)`, `wait()` resolves on `ExitStatus` (or `ExitSignal`), `kill()` sends `signal(Sig::TERM)` and falls back to `kill -TERM <pid>` on another channel using the echoed-pid wrapper. No sentinel framing, no lost stderr separation, no CRLF translation (no pty is ever requested).
-  - **Pinned helpers are long-lived channels**: `git cat-file --batch-command --buffer` and `inotifywait -m` each hold one channel for the life of the repo session. `run_batch` becomes `sh -c` of several commands on one channel with `printf '\0'` separators only when the round trip matters; with channels this cheap it is an optimisation, not a necessity.
-  - **Authentication** (`ssh_auth.rs`), tried in this order and shown step by step in the console as Internal entries: (1) `~/.ssh/config` is resolved with `russh-config` for the alias, so `Host`, `HostName`, `User`, `Port`, `IdentityFile` and `IdentitiesOnly` are honoured; the per-repo settings override any of them. (2) SSH agent: `SSH_AUTH_SOCK` on Linux, the `\\.\pipe\openssh-ssh-agent` named pipe on Windows (verify that `russh::keys::agent` supports the Windows named pipe; if not, `keys/agent.rs` implements the small agent protocol over `tokio::net::windows::named_pipe`). (3) Identity files in **any format the key manager reads** (PPK, PEM, OpenSSH, PKCS#8): the file is loaded through `KeyManager::load`, decrypted with a passphrase dialog if needed, and handed to `russh` as an `ssh_key::PrivateKey` in memory. No file is ever converted just to log in. (4) Password, via a UI dialog, only if the server offers it.
-  - **Host keys**: checked against `~/.ssh/known_hosts` (platform home directory) with `russh::keys::known_hosts`. Unknown host raises a dialog with the SHA-256 fingerprint and Accept / Reject, and Accept appends to `known_hosts` (the OpenSSH `StrictHostKeyChecking=ask` behaviour). A changed key is a hard `SshHostKeyChanged` error with no override in the UI.
-  - **Not supported by tier 1, routed to tier 2**: `ProxyCommand`, `ProxyJump`, GSSAPI, certificates, PKCS#11 tokens, and any host whose key-exchange or cipher list `russh` cannot negotiate. `ProxyJump` may later be implemented natively by nesting a connection over a `direct-tcpip` channel.
-- **SSH, tier 2 (M3, fallback): long-lived OpenSSH helper processes** (`ssh_exec.rs`). Built only if a real host fails tier 1. Same `Transport` interface. Per repo a small pool of `ssh -T -o BatchMode=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o LogLevel=ERROR ... -- sh` sessions; each command is one line whose stdout streams to a nonce sentinel and whose trailer carries stderr text and `@@RC=<n>`; one command in flight per session; a protocol desync drops the session and reconnects. Pinned helpers run `git cat-file --batch-command` and `inotifywait -m` directly on their own `ssh` processes. This is the design that works with the in-box Windows OpenSSH, which has no ControlMaster.
-- **SSH, tier 3 (implicit): one-shot `ssh` per batch.** Falls out of tier 2's `run_batch` when a session cannot be kept alive. Never the primary path.
-- PuTTY's `plink` is not used in any tier: no multiplexing, different options, interactive host key prompts.
+Any private key file can be used as it is, inspected, converted and exported from inside
+StashPanda.
 
-### SSH key management (`keys/`, a tenet of the app)
+**Formats read**, recognised by content (`keys/detect.rs`):
 
-Goal: any private key file Michael has can be used as-is, inspected, converted and exported from inside StashPanda. No PuTTYgen, no `ssh-keygen -p` on the command line.
-
-**Formats read** (detected by content, never by extension, because several `.pem` files here are OpenSSH format inside):
-
-| Header | Format | How it is loaded |
+| Header | Format | Read by |
 |---|---|---|
-| `PuTTY-User-Key-File-2: <alg>` | PPK v2 | own parser: public and private blobs base64, key from SHA-1 KDF, AES-256-CBC, HMAC-SHA-1 over the MAC input; `Encryption: none` or `aes256-cbc` |
-| `PuTTY-User-Key-File-3: <alg>` | PPK v3 | own parser: Argon2id (or Argon2i/d as declared) with the declared memory, passes, parallelism and salt; AES-256-CBC; HMAC-SHA-256 |
-| `-----BEGIN OPENSSH PRIVATE KEY-----` | OpenSSH new format, optionally bcrypt-pbkdf encrypted | `ssh_key::PrivateKey::from_openssh` and `decrypt` |
-| `-----BEGIN RSA PRIVATE KEY-----`, `-----BEGIN EC PRIVATE KEY-----`, `-----BEGIN DSA PRIVATE KEY-----` | traditional PEM (PKCS#1, SEC1, DSA); `Proc-Type: 4,ENCRYPTED` means OpenSSL legacy encryption | `pem_legacy.rs` decrypts (DEK-Info cipher, EVP_BytesToKey with MD5), then `rsa`, `sec1` or `ssh-key` DSA parsing into `ssh_key::PrivateKey` |
-| `-----BEGIN PRIVATE KEY-----`, `-----BEGIN ENCRYPTED PRIVATE KEY-----` | PKCS#8 | `ssh_key::PrivateKey::from_pkcs8_pem`, PBES2 decryption |
-| `ssh-rsa AAAA...`, `---- BEGIN SSH2 PUBLIC KEY ----`, `.pub` | public only | listed, fingerprinted, matched to a private key by public-key equality |
+| `PuTTY-User-Key-File-2:` / `-3:` | PPK v2 and v3, encrypted or not | `ssh-key` (`PrivateKey::from_ppk`) |
+| `-----BEGIN OPENSSH PRIVATE KEY-----` | OpenSSH, optionally bcrypt-encrypted | `ssh-key` |
+| `-----BEGIN RSA PRIVATE KEY-----`, `EC`, `DSA` | traditional PEM; `Proc-Type: 4,ENCRYPTED` means OpenSSL's legacy encryption | `russh::keys::decode_secret_key`, and `keys/pem_legacy.rs` for encrypted PEM with a cipher other than AES-128-CBC (MD5 `EVP_BytesToKey`, then the named cipher in CBC mode; RSA only) |
+| `-----BEGIN PRIVATE KEY-----`, `ENCRYPTED PRIVATE KEY` | PKCS#8 | `russh::keys` |
+| `ssh-rsa AAAA...`, `---- BEGIN SSH2 PUBLIC KEY ----` | public only | listed and matched to a private key |
 
-Algorithms: RSA, ed25519, ECDSA P-256/384/521, DSA (read and convert only; shown as deprecated because OpenSSH 9 servers reject it).
+PPK keys read by `ssh-key` give the same SHA-256 fingerprint as the same key converted to PEM or
+OpenSSH, which is why no PPK parser of our own was needed.
 
-**Formats written**: OpenSSH new format (default, optionally encrypted with a new passphrase, `.pub` alongside), PEM PKCS#8, PPK v3 (for the rare tool that still wants PuTTY), public key as an `authorized_keys` line or RFC 4716.
+**Formats written:** OpenSSH (with a `.pub` beside it), PKCS#8, and a public key as an
+`authorized_keys` line or RFC 4716. Writing PPK is not supported.
 
-**UI**: a **Settings › SSH Keys** screen and the same list inside the Add Repository dialog's identity picker.
-- Scans `~/.ssh` in the platform home plus, when both sides are visible, the other side's home (`/mnt/c/Users/<name>/.ssh` from Linux, `\\wsl.localhost\<distro>\home\<user>\.ssh` from Windows) plus any folders the user adds. Shows each key's name, algorithm and bits, SHA-256 fingerprint, comment, format badge (PPK 2, PPK 3, PEM, OpenSSH, PKCS#8), encrypted badge, whether a matching `.pub` exists, and whether it is loaded in the agent.
-- Actions per key: **Use for repo**, **Convert to OpenSSH** (writes next to the original, never overwrites, original untouched), **Export** (choose format and passphrase), **Copy public key**, **Add to agent** (optionally for this session only via a lifetime constraint), **Change passphrase**, **Reveal in folder**, **Delete** (confirm, private key only).
-- **Import**: drag a file or paste key text into the window; pasted text is detected the same way.
-- **Generate**: ed25519 by default, RSA 4096 as an option, comment defaults to `michael@<machine>`, saved in OpenSSH format with optional passphrase.
-- **Passphrases**: prompted on first use with "remember for this session" (in memory, zeroized on exit) and "store in system keychain" when `keyring` reports a backend. Wrong passphrase is reported as such, not as a generic auth failure.
-- Errors are specific: `SshKeyUnsupported` is now reserved for genuinely unknown formats (for example PGP or PKCS#12 files), with the detected header quoted.
+**Settings › SSH Keys** (`KeyManagerPage.vue`) lists every key in the `.ssh` folders and
+`keys.extraDirs` with its format, algorithm, fingerprint and badges. From the Windows build that
+includes `\\wsl.localhost\<distro>\home\*\.ssh` for each running distro; a stopped distro is left
+out, because reading its files would start it. Actions: Copy Public Key, Use for Repository,
+Convert to OpenSSH (writes a new file, never overwrites), Export, Add to Agent, Change or Forget
+Passphrase, Reveal in Folder, Delete; plus Generate (ed25519 by default), Import (drop, choose or
+paste) and Add Folder. The Add Repository dialog's identity picker uses the same list.
 
-**Safety rules**: decrypted material lives in `zeroize`-wrapped buffers; nothing is written to disk without an explicit Convert or Export click; converted files get mode 600 on Unix; the console logs key operations as Internal entries with fingerprints only, never key bytes.
+**Passphrases** are asked for on first use. `keys_unlock` takes `PassphraseMemory`: `none`,
+`session` (in memory, wiped on exit) or `keychain` (`keys/keychain.rs`). A passphrase the keychain
+refuses is still kept for the session. Inside WSL there is usually no Secret Service, so the
+dialog offers the session only and says why.
 
-**Tests**: fixtures for every format and algorithm, encrypted and not, generated during implementation with `ssh-keygen`, `openssl` and PuTTY's own `puttygen.exe` run from WSL if PuTTY is installed on Windows (so the fixtures come from an independent implementation, not from our own writer); throwaway keys only, never real ones. An ignored local test additionally reads every real key in the Windows and WSL `.ssh` folders and checks that each one parses and fingerprints, skipping encrypted keys unless a passphrase is supplied through an environment variable; a round-trip test converts each fixture to OpenSSH and back and compares public keys and signatures; a smoke test authenticates to the local `sshd` with a key loaded from a PPK file.
+**Safety:** decrypted keys and passphrases are wiped from memory with `zeroize`; nothing is written
+to disk without an explicit Convert, Export or Generate; written private keys get mode 600 on Unix;
+the console logs key operations with fingerprints only.
 
-### Watching and refresh
+### Read queries (`git/queries/`)
 
-- `choose_watcher`: Local repos use `notify` 8 with a 250 ms debouncer, watching the worktree recursively, `.git` non-recursively (HEAD, index, packed-refs, ORIG_HEAD, MERGE_HEAD, rebase dirs) and `.git/refs` recursively, plus the common dir for linked worktrees. Never `.git/objects`; drop `*.lock`. Overflow or `ENOSPC` downgrades to polling and emits `WatcherStateEvent`.
-- WSL-from-Windows and SSH repos use `inotifywait -m -r -q -e modify,close_write,create,delete,move,attrib --exclude '(/\.git/(objects|lfs|logs)/|\.lock$)' --format '%w%f|%e' <worktree> <gitdir>` streamed through the transport if `command -v inotifywait` succeeds; otherwise polling.
-- Polling: every 3 s when focused, 15 s in the background, paused when hidden. Runs status and for-each-ref as `Category::Internal` (one spawn via `run_batch` on wsl/ssh), hashes the outputs, emits only on change.
-- `RefreshCoalescer` per repo: worktree or index events arm a 300 ms trailing debounce (2 s maximum hold under bursts like `npm install`) and set `status = true`; HEAD, refs, packed-refs and merge-state events set `refs = true`. One `RepoChangedEvent { status, refs }` per burst; the frontend then calls `get_status`, or `get_refs` and `get_log`.
-
-### Events (all carry `repo_id`)
-
-| Event | Payload |
+| Need | Git command (after the common flags) |
 |---|---|
-| `console_event` | seq, phase (Started or Finished), category, label, argv as executed (wrapper included), display string, started_at, duration, exit code, stdout and stderr (lossy, truncated at 64 KiB with a flag), classified error |
-| `repo_changed` | status: bool, refs: bool, cause: WatcherKind |
-| `operation_progress` / `operation_finished` (M2+) | op_id, streamed line, stream; exit code, error |
-| `watcher_state` | kind, detail (for example "inotifywait not found; polling every 3 s") |
-| `transport_state` | Connecting, Ready, Degraded, Disconnected, detail |
+| Probe on open | `--version`, then one `rev-parse --is-inside-work-tree --show-toplevel --absolute-git-dir --git-common-dir --is-bare-repository`. "dubious ownership" becomes `UnsafeRepository` |
+| Branches, tags, HEAD, upstreams | `for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(HEAD)%00%(committerdate:unix)%00%(subject)%00%(worktreepath)`, then `rev-parse HEAD --symbolic-full-name HEAD`, `symbolic-ref -q HEAD` (for an unborn branch) and `config -z --get-regexp ^remote\..*\.(url\|pushurl)$` |
+| Commits for the graph | `log --branches --tags --remotes HEAD -z --format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%s`, streamed. No `--topo-order` and no `--skip` (see "Commit graph") |
+| Stashes | `stash list -z --no-show-signature --format=%H%x1f%gd%x1f%gs%x1f%ct` |
+| Files changed in a commit | `diff-tree -r -z -M -C --root --no-commit-id --raw --numstat <sha>`; for a merge, against the parent the user picks |
+| Working tree status | `status --porcelain=v2 -z --branch --untracked-files=all --ahead-behind` |
+| Diff of one file | `diff --no-ext-diff` against the parent, the index or HEAD, with `-w` and `--ignore-cr-at-eol` as the user's toggles. An untracked file is read and shown as all added |
+| File contents | the long-lived `cat-file` (below); the working tree copy through `Transport::read_file`. Over 16 MiB (`BLOB_CAP`) is refused with `tooLarge` |
+| A merge, rebase, cherry-pick or revert in progress | no Git process: `git/queries/in_progress.rs` reads `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`, `MERGE_MSG` and the `rebase-merge` or `rebase-apply` folder through the transport |
+| File history | `log --follow --cc --name-status -z`, read 500 commits at a time by asking again with a larger `--max-count` |
+| Blame | `blame --porcelain`, for the working tree version or a commit's |
+| One conflicted file | the three stages by their object ids from `ls-files -u`, and the working tree file with its conflict markers parsed in Rust (`conflict_file.rs`) |
 
-Pinned helpers log their spawn and exit as Internal; their per-request traffic is logged only when the `console.verbose_helpers` preference is on.
+**The long-lived `cat-file`** (`git/catfile.rs`): one `git cat-file --batch-command --buffer` per
+repository, so reading a blob does not start a process (or open an SSH channel, or start
+`wsl.exe`) each time. It asks `info` first, so a blob over the cap is refused without being read,
+then `contents`. It starts on the first read, restarts once if it has died, and stops after ten
+minutes unused or when the tab closes. The console shows it as one entry for its whole life, and
+each request as well with `console.verboseHelpers`. It keeps the index it first read, so the
+stages of a conflicted file are read by object id, not as `:1:<path>`.
 
-### Concurrency
+### Write operations (`git/ops/`, `ipc/ops.rs`)
 
-Tauri commands are `async fn` on Tauri's tokio runtime. Each `RepoHandle` is an `Arc`; different repos share no lock. Per repo, a write-preferring `tokio::sync::RwLock<()>`: reads (log, status, diff, blob, refs, polls) take the shared lock, short writes (stage, commit, checkout) take the exclusive lock, and a `Semaphore(4)` bounds concurrent read spawns. Every request carries a `CancellationToken` that is a child of the repo token; `close_repo` cancels it, kills children and remote pids, stops the watcher. Every write also holds a `write_gate` mutex for its whole run, so writes never overlap; network writes (pull, push, sync) hold only the gates, not the exclusive lock, so reads carry on during the transfer (as implemented 2026-10-01). A second mutex, `network_gate`, is held by every network operation and by the writes that delete or rename refs (branch delete and rename, tag delete), which lock `packed-refs` as a fetch's `--prune` can. A fetch holds only `network_gate`, so staging, committing and checking out go ahead during it (2026-10-23). `network_gate` is always taken before `write_gate`. `index.lock` present is classified `IndexLocked`, retried once after 250 ms for writes, then surfaced with a "remove stale lock" action.
+Every write runs as `Category::UserAction` and returns `OpResult` with Git's own stdout and
+stderr, then refreshes refs, status and the graph through `refresh_if_changed`, so the interface
+updates before the watcher notices. The watcher's refresh then finds nothing new and emits
+nothing. Each operation has an end-to-end test against a throwaway repository.
 
-### Error enum (`error.rs`, serialised as a tagged union so TypeScript can switch on `kind`)
+**Locks on `RepoHandle`:**
 
-`GitNotFound { searched }`, `GitVersionTooOld { found, required }`, `WslNotAvailable`, `WslDistroNotFound { distro, available }`, `SshConnectFailed { host, detail }`, `SshAuthFailed { host, methods_tried }`, `SshHostKeyUnknown { host, fingerprint }`, `SshHostKeyChanged { host, fingerprint }`, `SshKeyUnsupported { path, detected_header }` (only for formats the key manager does not read), `SshNeedsPassphrase { path }`, `SshWrongPassphrase { path }`, `KeyParseError { path, format, detail }`, `SshUnsupportedFeature { feature }` (routes to tier 2), `TransportDisconnected`, `NotARepository`, `RepoPathNotFound`, `UnsafeRepository`, `IndexLocked { lock_path }`, `InvalidPath`, `ObjectNotFound`, `TooLarge { bytes, limit }`, `CommandFailed { label, argv, exit_code, stderr }`, `ParseError`, `Timeout`, `Cancelled`, `Io`. `classify()` maps by stderr substring (`not a git repository`, `dubious ownership`, `index.lock': File exists`, `Permission denied (publickey`, `Host key verification failed`, wsl exit 255 with `no distribution`, ssh exit 255 otherwise).
+- `lock`, a write-preferring `RwLock<()>`: reads (log, status, diff, blob, refs, polls) share it,
+  and local writes take it exclusively. `read_slots`, a `Semaphore(4)`, bounds how many reads run
+  at once.
+- `write_gate`, a mutex every write holds for its whole run, so writes never overlap. Network
+  writes (pull, push, sync) hold the gates but not the exclusive lock, so reads carry on while they
+  transfer; a pull takes the exclusive lock only for its local step.
+- `network_gate`, held by every network operation and by the writes that delete or rename refs,
+  which lock `packed-refs` as a fetch's `--prune` can. A fetch holds only `network_gate`, so
+  staging, committing and checking out go ahead during it. `network_gate` is always taken before
+  `write_gate`.
+- `operations`, a registry of running operations by `opId` with a cancellation token each, for
+  `op_cancel`. An operation can mark itself as no longer cancellable once it reaches a step that
+  must not be stopped. Tokens are children of the repository's own, so closing a tab cancels too.
 
-### Type-safe IPC
+A held `index.lock` is recognised as `IndexLocked` and a held `config.lock` as `ConfigLocked`; the
+write waits 250 ms and tries once more, then the interface offers to remove the stale lock
+(`op_remove_stale_lock`).
 
-Use tauri-specta. Export under `#[cfg(debug_assertions)]` to `src/lib/bindings.ts` with `bigint(BigIntExportBehavior::Number)`, and commit the generated file. The frontend calls `commands.getStatus(repoId)` and `events.repoChanged.listen(...)`. Run `vue-tsc --noEmit` once after the first export to confirm TypeScript 6 accepts the output; if not, fall back to a hand-written `types.ts` and keep the `ipc/*.rs` boundary unchanged.
+**How the operations run:**
 
-## Part 2: Commit graph and repository cache
+- **Stage, unstage, discard:** paths go to Git on stdin (`--pathspec-from-file=- --pathspec-file-nul`)
+  with `--literal-pathspecs`, so a long selection never hits the Windows command-line limit and
+  names like `:x`, `*.txt` or `-f` mean exactly that file. Discard runs `restore`, then `clean -f`
+  for untracked files in chunks of about 16 KB, since `clean` has no stdin form.
+- **Lines and hunks** (`git/ops/lines.rs`): the frontend names the picked lines by number and
+  text; the backend recomputes the diff with fixed options, refuses a selection whose text no
+  longer matches, and builds a patch for `git apply` that always applies forwards to the version
+  it changes.
+- **Commit:** the message goes through `-F -` on stdin. With paths, they are staged and, when
+  other files are staged too, the commit adds `--only` so those stay staged and out of the commit.
+  Ticking exactly the staged files commits the index as it is. During a merge, cherry-pick or
+  revert, the whole index is committed with Git's prepared message.
+- **Pull** is two commands, so Stop only ever lands on the network transfer: `fetch --progress
+  <remote> <branch>`, which can be stopped, then a local step that cannot: `merge --no-edit
+  FETCH_HEAD`, `merge --ff-only FETCH_HEAD`, or `rebase --onto FETCH_HEAD <fork point>` with the
+  fork point from `merge-base --fork-point`, as `git pull --rebase` does. `get_pull_mode` reads
+  `branch.<name>.rebase`, `pull.rebase` and `pull.ff` in Git's order.
+- **Push** names full refs on both sides (`refs/heads/<branch>:refs/heads/<remote branch>`), so a
+  tag with the branch's name is never pushed instead. Without an explicit target it pushes where
+  `git push` would, following `push.default`, `branch.<name>.pushRemote` and `remote.pushDefault`;
+  when that would be refused, `PushDefaultDialog.vue` explains why and offers to set
+  `push.default`. Push To can force, after a check.
+- **Upstreams are set as a separate step.** Pushing and creating a branch from a remote branch
+  never touch `.git/config`; the upstream is set afterwards (`trackAfter` in `repoActions.ts`),
+  because with a `config.lock` in place `git push --set-upstream` pushes, fails to record the
+  upstream, and still exits 0.
+- **Sync** is pull, then push, as one operation under the write gate. Nothing is pushed when the
+  pull fails or stops on conflicts.
+- **Clone** (`repo/clone.rs`): a missing or empty folder gets a plain `git clone --progress`. A
+  folder with files in it is never moved or copied: `git init`, `git remote add origin`,
+  `git fetch`, then the default branch is made current with a mixed `git reset`, which leaves
+  every file alone, and `git checkout-index --stdin` writes only the files the folder lacks. On
+  failure or Stop, the `.git` folder it created is deleted.
+- **Conflicts:** `OperationBanner.vue` names the merge, rebase, cherry-pick or revert in progress
+  and offers Continue (run with `GIT_EDITOR=true`), Skip and Abort. A conflicted file can take one
+  side (`op_resolve_conflicts`), be marked resolved, or be opened in the merge editor.
+  `merge.autoResolve` decides whether conflicts whose two sides changed touching but separate
+  lines are resolved automatically, after a prompt, or left alone.
+- **Saving a file from the merge editor:** `write_worktree_file` saves under the write gate, and
+  refuses with `ChangedOnDisk` when the file's hash no longer matches the one read when the editor
+  opened. `op_restore_conflict` runs `git checkout --conflict=diff3 -- <path>` to start again from
+  Git's merge.
+- **`safe.directory`:** `repo_fix_safe_directory` runs `git config --global --add safe.directory`
+  through the library entry's own connection, with the path exactly as Git's message gave it.
 
-### Ordering and layout run in Rust; layout is never persisted
+### Watching for changes (`watch/`)
 
-- `git log` is streamed in its default order (no `--topo-order`, no `--skip`: both make Git walk the whole history before the first line, so paging would re-walk 100k commits per page). Rust parses the stream into a `CommitStore` (oid, parents, interned author, times, subject).
-- Rust computes the display order itself with the same algorithm Git uses for `--date-order`: Kahn's topological sort with a max-heap on committer date, deterministic tie-break on oid. About 10 to 20 ms for 100k commits. A "topo (grouped)" order is a different tie-break behind a setting, not a different Git call.
-- Consequence: the cached and the live load produce identical orderings, so the graph never reshuffles after the first paint. Incremental refresh is "add commits to the store, re-sort, re-sweep".
-- Lane layout is a serial sweep whose state at row N depends on every row above, so one new commit at the top can renumber every lane below. Recomputing 100k rows costs about 5 to 15 ms, so layout is recomputed on every snapshot and never written to disk.
-- Whole history is loaded in one streamed process, capped by `cache.maxCommitsPerRepo` (default 200 000). Past the cap the bottom rows show dangling stubs and a "Load N more" action raises the cap.
+- **Local repositories:** `notify` with a debouncer, watching the working tree, `.git` itself
+  (HEAD, index, packed-refs and the merge and rebase files) and `.git/refs`. Never
+  `.git/objects`; lock files are dropped. `Access` events are dropped, and so are paths Git
+  ignores, from `git ls-files --others --ignored --exclude-standard --directory`, refreshed every
+  minute.
+- **WSL from Windows, and SSH:** `inotifywait -m -r` runs on the system that holds the repository,
+  through the repository's own transport and in a session of its own. Its `--exclude` leaves out
+  Git's object store, logs, lock files and every folder Git ignores, so a `node_modules` neither
+  floods it nor uses up the limit on watched folders. A repository starts by polling and switches
+  to `inotifywait` once it is found. Over SSH it holds one of the connection's 8 channels.
+- **Polling**, where neither works: status every `polling.statusIntervalMs` for the focused tab,
+  `polling.statusBackgroundIntervalMs` for the others, four times that for a hidden window, and
+  refs every `polling.refsIntervalMs`. The frontend reports `Focused`, `Background` or `Hidden`
+  through `set_repo_activity`. Outputs are hashed, and only a change is reported.
+- **The coalescer** turns a burst into one refresh: 300 ms of quiet, or at most 2 s of continuous
+  activity. A working tree or index change refreshes status; a HEAD, ref or merge-state change
+  refreshes refs and history. `repoChanged` is emitted only when something did change.
+- `watcherState` reports the kind (`Native`, `RemoteInotify`, `Polling`, `Off`) and why, for
+  example "Install inotify-tools there…". The status bar shows it.
+- **Automatic fetch:** every half minute the frontend fetches each open repository whose last
+  fetch is older than `polling.autoFetchMinutes` (`autoFetchDue` in `lib/repoActions.ts`).
 
-### Core data (Rust, `src-tauri/src/graph/`)
+### Events
+
+| Event | Carries |
+|---|---|
+| `consoleEvent` | one per command start and finish (see "Running Git") |
+| `repoChanged` | whether status or refs changed, and the watcher kind |
+| `watcherState` | watcher kind and detail |
+| `transportState` | SSH connection state, detail, time to the next attempt |
+| `graphSnapshot` | a new graph version and its `GraphMeta` (head, working tree summary, ref colours, widest authors, open lanes) |
+| `graphProgress`, `graphLoadFailed` | commits loaded so far; a load that failed |
+| `operationProgress`, `cloneProgress` | one progress line of a running operation or clone, and whether it can still be stopped |
+| `settingsChanged`, `uiStateChanged` | the whole new document and its revision |
+| `appWarning` | a warning to show |
+| `menuAction` | the id of the clicked native menu item, such as `repo.create_branch` |
+
+### Errors (`error.rs`)
+
+`GitError` is serialised as a tagged union, so TypeScript can switch on `kind`: `GitNotFound`,
+`GitVersionTooOld`, `WslNotAvailable`, `WslDistroNotFound`, `SshConnectFailed`, `SshAuthFailed`
+(with the methods tried, and whether a password is allowed or was refused), `SshHostKeyUnknown`,
+`SshHostKeyChanged`, `SshKeyUnsupported`, `SshNeedsPassphrase`, `SshWrongPassphrase`,
+`KeyParseError`, `SshUnsupportedFeature`, `TransportDisconnected`, `NotARepository`,
+`RepoPathNotFound`, `UnsafeRepository`, `IndexLocked`, `ConfigLocked`, `InvalidPath`,
+`ObjectNotFound`, `TooLarge`, `ChangedOnDisk`, `HeadMoved`, `PushTargetRefused`, `CommandFailed`,
+`ParseError`, `Timeout`, `Cancelled`, `RepoNotOpen`, `StaleVersion`, `Io` and `Internal`.
+`classify()` maps Git's stderr and exit code to a kind, by substrings such as
+`not a git repository`, `dubious ownership` and `index.lock': File exists`. SSH failures do not
+go through it, because they come from `russh` directly.
+
+### Typed IPC
+
+`tauri-specta` exports every command, event and payload type to `src/lib/bindings.ts` in debug
+builds and in `cargo test export_bindings`; the file is committed. The frontend calls
+`commands.getRepoStatus(key)` and `events.repoChanged.listen(...)`. Merge-patch commands
+(`settings_update`, `ui_state_update`) take the patch as a JSON string, because the specta exporter
+overflows its stack on the recursive `serde_json::Value`. The repository library is stored flat
+(groups with `parentId`, repositories with `groupId`) for the same kind of reason: serde and the
+exporter both reject an internally tagged recursive enum.
+
+## Commit graph and cache (`graph/`)
+
+### Order and layout are computed in Rust and never stored
+
+- `git log` is streamed in its default order. `--topo-order` and `--skip` both make Git walk the
+  whole history before printing its first line.
+- Rust sorts the commits itself (`graph/order.rs`). Date order is Kahn's topological sort with a
+  max-heap on commit time, ties broken by the order Git printed them, which matches
+  `git log --date-order` and keeps HEAD above a sibling made in the same second. Topological order
+  (`GraphOrder::Topo`) matches `git log --topo-order`: a stack instead of the heap, so a merged
+  branch's commits sit together under the merge. Because Rust sorts, the cached and the live load
+  give the same order, and the graph never reshuffles after the first paint.
+- The lane sweep (`graph/lanes.rs`) runs down the sorted rows. Each row's lanes depend on every
+  row above, so one new commit at the top can renumber every lane below; the layout is therefore
+  recomputed for every snapshot (about 25 ms for 100k commits) and never written to disk.
+- The whole history loads in one streamed process, capped by `cache.maxCommitsPerRepo` (200,000).
+
+### Lane sweep rules
+
+- An edge runs from the centre of row i to the centre of row i+1 and is stored on row i. A row is
+  finished when the next one is pushed, so a lane that joins another can curve into the next dot.
+- Lane slots are never compacted; a freed slot is reused. Two lanes can wait for the same commit
+  and meet at its row.
+- The first parent continues in the commit's own lane. Each further parent joins a lane already
+  waiting for it (`MergeInto`) or starts a new lane (`Parent`). Octopus merges need no special
+  case.
+- Lane 0 is reserved for HEAD's first-parent line until HEAD is placed, and for the Working Tree
+  row, which is always shown (with "No changes" on a clean tree) directly above HEAD.
+- Lanes still waiting at the end are drawn as short fading stubs (`Dangling`).
+- The sweep records, for each row, the nearest branch tip above it on its lane
+  (`RowLayout::branch`).
+
+### Colours
+
+The palette has twelve distinct hues in both themes (violet, cyan, green, yellow, orange, magenta,
+amber, blue, lime, orchid, mint, rose), from the StashPanda Design System. Each hue has the hue itself, a strong tint,
+the chip fill, a subtle tint, and an ink for text on a solid pill (`index.css`, `lib/hues.ts`).
+
+- The first lane takes the repository's own colour (`RepoEntry.colour`), and later lanes go round
+  the palette from it; without one they start from cyan (`LaneSweep::with_first_colour`).
+- Several branch tips on one lane: the top-most keeps the lane's colour and each tip below gets
+  its own, picked to differ from the lane's and, while one is free, from every open lane's.
+  `appearance.commitLaneColours` decides whether only the pills change (`keepLane`, the default)
+  or the lane changes colour from that tip down (`changeAtEachTip`). Tags do not count as tips,
+  and nor does a remote branch that a shown local branch tracks: it wears that branch's colour.
+- Branches and tags can be given a colour from their right-click menu. It is saved per repository
+  in the UI state (`perRepo[key].refColours`), never in the repository, and sent to the backend
+  with `graph_set_ref_colours`. A chosen colour on the top-most tip colours the whole lane,
+  including the stretch above it, so the Working Tree row takes `main`'s colour.
+- While a repository's tab is active, its colour is the interface's accent: `App.vue` puts the
+  hue in `data-accent` on `<html>`, and `index.css` redefines `--primary`, `--ring`, the filled
+  buttons and `--row-selected` from it.
+
+### Hidden refs
+
+Each ref in the Branches panel has a show/hide tag. `GraphSnapshot::build` lays out only commits
+reachable from the refs still shown, and HEAD counts as a tip only when detached.
+`graph_set_hidden_refs` rebuilds from the commits already in memory, with no Git command. The
+hidden set is saved as `perRepo[key].hiddenRefs`. The store and the cache keep every commit.
+
+### Loading and refreshing
 
 ```
-oid.rs        Oid { len: u8, bytes: [u8; 32] } (SHA-1 and SHA-256), FxHashMap everywhere
-store.rs      CommitRecord { oid, parents: SmallVec<[Oid;2]>, author: u32, author_time, commit_time, subject }
-              CommitStore { commits, by_oid, authors } with insert() and retain_reachable_from(tips)
-refs.rs       RefEntry { full_name, short, target (peeled), kind: LocalBranch | RemoteBranch{remote} | Tag{annotated} | Stash, upstream }
-              RefSnapshot { refs, head, head_branch (None = detached), by_target }
-order.rs      order(store, DateOrder | TopoOrder) -> Vec<u32>
-lanes.rs      LaneSweep: push(oid, parents) -> RowLayout; finish() -> open lanes
-snapshot.rs   GraphSnapshot { version, order, layout, edges (flat arena), row_by_oid, store, refs, worktree, complete, truncated, max_lanes, open_lanes }
-commands.rs   graph_open, graph_rows, graph_find, graph_search, graph_refresh
+open tab   -> graph_open: more than 10,000 cached commits? paint the newest 500 rows first (2.6 ms on git.git)
+           -> the whole cache -> sort -> sweep -> snapshot (reason: cache)
+           -> refresh                         -> snapshot (reason: live)
+graph_snapshot event -> the frontend keeps the selected and first visible commits in view
+                        (or stays at the top when it was at the top), and refetches its pages
+graph_rows(version, start, count) -> a page of 200 rows; StaleVersion for an old version
 ```
 
-Lane sweep rules:
-- Edges span from the centre of row i to the centre of row i+1 and are stored on row i; the sweep finalises row i when row i+1 is pushed (one-row lookahead) so a converging lane can curve into the next dot.
-- Lane slots are never compacted; a freed slot is reused. Two lanes may wait for the same oid and converge at its row.
-- First parent continues in the commit's own lane. Each further parent either merges into a lane already waiting for it (`MergeInto` edge) or forks a new lane (`Parent` edge). Octopus merges fall out of that loop with no special case.
-- Lane 0 is reserved for HEAD's first-parent line until HEAD's commit is placed, which gives the "HEAD on the left" look. Smarter priority is a later refinement.
-- A synthetic **Working Tree** row is pushed first, with HEAD as its parent, when status is dirty; it lands in lane 0 directly above HEAD with a straight edge.
-- Lanes still waiting at the end become `Dangling` edges drawn as a short fading stub.
-- Edge kinds: `Pass`, `Parent`, `MergeInto`, `Dangling`. Colour is a palette index 0 to 11; an edge wears the colour of the slot at its `to_lane`.
-- Branch tips stacked on one lane (a branch started from the tip of another) are told apart by the `appearance.commitLaneColours` setting. The top-most local or remote branch tip on a lane shares the lane's colour; each tip below it gets a new one, picked so that its hue (`index % 6`, since the dark theme repeats lanes 0 to 5 as 6 to 11) differs from the lane's and, while a hue is free, from every open lane's. With `keepLane` (the default) only that row's pills and Branches panel tags take the new colour (`RowLayout::ref_colour`) and the lane is untouched. With `changeAtEachTip` the lane itself switches to the new colour from that tip's dot down. Tags do not count as tips, and neither does a remote branch that a shown local branch tracks: its pill and tag take the local branch's colour (`RefLabel::colour`), in both modes.
+For a repository with no cache, `log::stream_log` parses `git log` as it arrives and swaps in a
+`complete: false` snapshot at the first 2,000 commits and then every 500 ms, so the graph visibly
+grows; on git.git the first rows show 221 ms into a 1.7 s load. With a cache, only the final
+snapshot is swapped in, so nothing flickers.
 
-IPC payload per row (`GraphRow`, camelCase via serde, generated into TypeScript by specta): index, kind (`commit` | `workingTree`), oid, parents, lane, colour, refColour (the colour of the row's pills), maxLane, edges, author name and email, author and commit time, subject, `refs: RefLabel[]` (full name, short, kind, isCurrent, colour, upstreamAtSameCommit), isHead, optional worktree summary (staged, unstaged, untracked, conflicted counts).
+**Refresh** (`graph/loader.rs`): `refresh_if_changed` reads refs and status, and when neither
+changed does nothing at all. When only status changed, the snapshot is rebuilt with the new
+Working Tree row and nothing is persisted. Otherwise the incremental path runs
+(`incremental_store`): new tips are walked from with `git log --stdin`, tips the store already
+holds and old tips that `cat-file` still finds stop the walk, and `retain_reachable_from` drops
+commits that no tip reaches. It falls back to a full load for more than 20,000 new commits, any
+Git failure, an incomplete snapshot, or a result over the commit cap. The toolbar's Refresh
+always reads everything (`graph_refresh`, `force_full`).
 
-### Loading and reconciliation
+**Search:** `graph_search` finds the next or previous row whose subject, author or email contains
+the text, or whose id starts with it, wrapping at the ends; 3.5 to 4.7 ms on git.git. The search
+box is in the Commits panel's header (`GraphSearchField.vue`).
 
-```
-open tab  -> graph_open(repoId): first 500 rows from SQLite (ORDER BY seq DESC LIMIT 500), swept, returned in < 50 ms
-          -> background: rest of cache -> order -> sweep -> snapshot v1 (reason: cache)
-          -> background: refresh()   -> snapshot v2 (reason: live)
-graph_snapshot event -> frontend remembers the oid of the first visible row and the selection,
-          calls graph_find(version, oids) to map them to new indices, resets scrollTop so the same row stays put,
-          clears its page cache and refetches the visible pages with the new version
-graph_rows(repoId, version, start, count) -> page of 200 rows; Err(StaleVersion) for an old version
-```
-For a repo with no cache, partial snapshots (`complete: false`) are swapped in every 500 ms so the graph visibly grows behind a progress bar. With a cache, only the final snapshot is swapped, so nothing flickers.
-
-### Rendering (Vue, `src/components/graph/`)
-
-- **Virtualisation is hand-rolled**: fixed 22 px rows, so `start = floor(scrollTop / H) - 10`, `end = ceil((scrollTop + viewportH) / H) + 10`, a spacer of `total * H`, and one block translated by `start * H`. Composable `useVirtualRows` on top of `useScroll` and `useResizeObserver` from @vueuse/core, updated in requestAnimationFrame. No virtual-list library: they exist for dynamic row heights and they own the translated container that the SVG overlay needs to share.
-- **One SVG for the visible window**, absolutely positioned inside the same translated block as the row divs, so it scrolls on the compositor with them and the dot for row i is at exactly the same `y` as its text. Edges cross row boundaries, so one SVG draws each curve once. Vertical pass-through runs of the same lane and colour collapse into one `<path d="M x y V y2 ...">`, giving at most about 12 run paths, 12 curve paths and N circles per window. The SVG has `pointer-events: none`; the row `<div>` beneath handles click, double click, context menu and hover.
-- Curves are cubic Beziers between row centres; straight lines otherwise; stroke 2 px, round caps. Lane width 14 px; graph column width defaults to `clamp(maxLanes + 1, 3, 12) * 14px` and is user-resizable; lanes beyond the column are clipped.
-- Palette: 12 CSS variables `--graph-lane-0` to `--graph-lane-11` (starting values `#5b9cff #45d483 #ff9a4d #b48cff #ff7eb6 #f5d34a #3fd3e8 #ff6b6b #a6e34d #2fc4a8 #7f8cff #e0a94a`), checked for contrast against the real dark and light backgrounds during M1.
-- Row grid shared by header and rows: `var(--col-graph) minmax(0,1fr) var(--col-author) var(--col-date)`. Ref pills before the subject: local branch (bold and filled when current), remote as `origin`, a Lucide ChevronRight icon, then `dev`, tags with the lucide Tag icon, detached HEAD pill. A local branch and its upstream on the same commit collapse into one pill `origin | dev`, with a chevron seam after the remote so the two halves look interlocked; when they are on different commits the local pill has a chevron notch on its left and the remote pill a matching point on its right. More than three pills show three plus a `+N` popover. Author cell shows initials coloured by a hash of the email; Gravatar is an opt-in later. Date is relative or absolute by setting.
-- Selection is by oid (stable across versions), with Ctrl and Shift multi-select; keyboard Up, Down, PageUp, PageDown, Home, End, Enter, Ctrl+C copies the oid; `ensureVisible` scrolls minimally.
-
-Components: `CommitGraphView.vue` (owner: repo binding, selection, keyboard, context menu, column widths), `GraphHeader.vue` with `ColumnResizer.vue`, `VirtualRowList.vue`, `GraphLanesSvg.vue`, `CommitRow.vue` (v-memo on row, selected, widths), `WorkingTreeRow.vue`, `RowSkeleton.vue`, `RefLabels.vue`, `RefPill.vue`, `AuthorCell.vue`, `DateCell.vue`. Composables: `useVirtualRows.ts`, `useGraphPages.ts`, `useRowSelection.ts`. Pure helpers: `src/lib/graph/paths.ts`, `palette.ts`.
-
-### Persistent storage: a JSON file for settings, SQLite for the cache and the UI state
+## Storage
 
 | File | Location | Holds |
 |---|---|---|
-| `settings.json` | `app_config_dir()` | preferences and the repository library: things a person might hand-edit or copy to another machine |
-| `stashpanda.sqlite` | `app_data_dir()` | commit and ref cache, and the remembered UI state. `rusqlite` with `bundled`, WAL mode, `synchronous=NORMAL`, one connection behind a Mutex used through `spawn_blocking` |
+| `settings.json` | `app_config_dir()` | preferences and the repository library: things a person might edit by hand or copy to another machine |
+| `stashpanda.sqlite` | `app_data_dir()` | the commit and ref cache, and the remembered UI state. `rusqlite` with `bundled`, WAL mode, one connection behind a mutex, used only on blocking threads (`Db::run`) |
 
-The remembered UI state (`ui_state::UiState`) is what the window returns to, as opposed to settings:
-splitter sizes, graph column widths, open tabs and the active tab, the Console's Log, User and
-Internal buttons, the Files panel's grouping and sorting, the diff header's layout, context and
-whitespace choices and its side-by-side divider, the size of each dialog dragged bigger
-(`dialogSizes`), and for each repository the refs hidden from the
-graph and the last selected commit. It is stored one row per value (schema version 2,
-`storage/schema_v2.sql`): `ui_prefs(key, value)` for the app, with dotted keys such as
-`panels.leftWidth`, and `repo_ui_prefs(repo_key, key, value)` for each repository, keyed by
-`RepoEntry.key`. Values are JSON. `repo_ui_prefs` does not reference the `repos` cache table, whose
-rows are evicted. Window geometry stays with `tauri-plugin-window-state`. Until 2026-09-30 the UI
-state was `ui-state.json` in `app_config_dir()`, plus `localStorage` for the Console, Files panel
-and diff header; on first start `AppState::init` imports the file and renames it to
-`ui-state.json.imported`, and the frontend's `uiState.load()` moves the `localStorage` values across
-and deletes them. Removing a repository from the library deletes its rows.
+**Settings** (`settings.rs`): `git` (executables per platform, default WSL distro, automount
+root), `appearance` (theme, zoom, date format, graph order, lane colours, pill styles, which
+commit list columns and headings show, the graph drawn inside the message column, Markdown commit
+descriptions, avatar source), `console`, `polling`, `cache`, `commit` (`preselect`), `merge`
+(`autoResolve`), `diff` (font, size, line height, tab width, ligatures, word and syntax
+highlighting, syntax themes for each theme, font smoothing, and the added, removed and modified
+colours for each theme), `keys` (`extraDirs`), `toolbar` (the button layout, `null` while it is
+the default) and `library` (groups and `RepoEntry` items). Rust owns the document:
+`settings_update` applies an RFC 7396 merge patch, checks it by deserialising, bumps a revision and
+emits `settingsChanged`, and the frontend replaces its copy from the event. `migrate_settings`
+moves old field names (such as `appearance.diffLineHeight` to `diff.lineHeight`). A corrupt file
+is renamed to `*.broken-<timestamp>` and defaults are used.
 
-One persist task writes both: `settings.json` atomically (write `*.tmp`, rename) debounced 500 ms, the UI state rows in one transaction debounced 1 s, both flushed synchronously on `RunEvent::ExitRequested`. Rust is the single source of truth: `settings_update(patch)` applies an RFC 7396 merge patch, validates by deserialising, bumps a revision and emits `settings_changed` with the full object; the frontend store replaces its copy from the event. A corrupt file is renamed to `*.broken-<timestamp>` and defaults are used.
+**UI state** (`ui_state.rs`): panel sizes, commit list column widths (each `None` until dragged,
+meaning sized to its contents), open tabs and the active tab, the Console's buttons, the Files
+panel's grouping and sorting, the diff layout, context, whitespace choices and split position,
+each dialog's size and whether it is maximised (`dialogSizes`), and per repository
+(`perRepo[key]`) the last selected commit, hidden refs, ref colours and pull mode. It is stored one
+row per value: `ui_prefs(key, value)` with dotted keys such as `panels.leftWidth`, and
+`repo_ui_prefs(repo_key, key, value)` per repository (`storage/schema_v2.sql`). Values are JSON.
+`repo_ui_prefs` does not reference the cache's `repos` table, whose rows are evicted. Window
+position and size are kept by `tauri-plugin-window-state`. Removing a repository from the library
+deletes its rows.
 
-Schema (`storage/schema.sql`, versioned with `PRAGMA user_version`):
+The persist task writes `settings.json` atomically (a `*.tmp` file renamed over it) 500 ms after
+the last change, and the UI state rows in one transaction 1 s after the last change; both are
+written at once on exit.
+
+**Cache schema** (`storage/schema.sql`, versioned with `PRAGMA user_version`):
 
 ```sql
 CREATE TABLE repos   (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, oid_len INTEGER NOT NULL DEFAULT 20,
@@ -402,301 +676,262 @@ CREATE TABLE commits (repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CA
                       oid BLOB NOT NULL, parents BLOB NOT NULL,          -- raw oids concatenated, n * oid_len bytes
                       author_name TEXT NOT NULL, author_email TEXT NOT NULL,
                       author_time INTEGER NOT NULL, commit_time INTEGER NOT NULL, subject TEXT NOT NULL,
-                      seq INTEGER,                                        -- display position counted from the bottom; NULL = not laid out
+                      seq INTEGER,                                        -- display position counted from the root
                       PRIMARY KEY (repo_id, oid)) WITHOUT ROWID;
-CREATE INDEX commits_repo_seq ON commits(repo_id, seq DESC);              -- serves the first 500-row paint
+CREATE INDEX commits_repo_seq ON commits(repo_id, seq DESC);              -- serves the 500-row first paint
 CREATE TABLE refs    (repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
                       name TEXT NOT NULL, target BLOB NOT NULL, tag_oid BLOB, kind INTEGER NOT NULL,
                       upstream TEXT, symbolic_target TEXT, PRIMARY KEY (repo_id, name)) WITHOUT ROWID;
 CREATE INDEX refs_repo_target ON refs(repo_id, target);
 ```
-Parents are a raw byte blob rather than JSON or an edges table: half the bytes of hex, no parsing beyond chunking, and no join on the hot load path. The `refs` snapshot is the "cached tips" set and is replaced in the same transaction as the commits reachable from it. `seq` counts from the root so a normal "new commits on top" refresh changes zero existing rows.
 
-`RepoEntry.key` is `sha1(transport | transport key | canonical native path)` and joins `settings.json` to `repos.key`.
+Parents are a raw byte blob: half the size of hex, no parsing beyond chunking, and no join when
+loading. Refs are replaced in the same transaction as the commits, so the two always agree. `seq`
+counts from the root, so the usual refresh (new commits on top) changes no existing row. The cache
+never stores the Working Tree row. At start-up `repo_cache::evict` removes repositories no longer
+in the library and keeps at most `cache.maxCachedRepos`, by `last_opened_at`.
 
-### Refresh, invalidation, bounds
+## Frontend (`src/`)
 
-```
-refresh(repo, force_full):
-  new_refs = for-each-ref + HEAD
-  if refs and HEAD unchanged and not forced: status-only; rebuild the snapshot with or without the Working Tree row
-  if forced, no cache, or cache schema_version mismatch: full streamed `git log --branches --tags --remotes HEAD`
-  else incremental:
-      positives = new or moved refs (+ HEAD if moved)
-      negatives = unchanged refs + old oids of moved refs that still exist (checked with the pinned cat-file `info`)
-      `git log --stdin -z --format=...` fed positives, `--not`, negatives   (no argv length limit)
-      store.insert each; store.retain_reachable_from(new tips) prunes rebased-away commits
-      more than 20 000 new commits -> fall back to full
-  order -> sweep -> snapshot vN+1 -> swap (ArcSwap) -> emit graph_snapshot
-  persist in one transaction: INSERT OR IGNORE commits, DELETE pruned, replace refs, UPDATE seq where changed, UPDATE repos
-```
-Triggers: tab opened, window regains focus, `repo_changed` with `refs = true` from Part 1, after any Git operation the app itself runs. Any failure of the incremental path (for example `bad revision` after a gc) falls back to a full load.
+Vue 3.5, Vite 8, TypeScript 6, Tailwind 4, shadcn-vue components on reka-ui (`src/components/ui/`),
+Lucide icons, Pinia 4, CodeMirror 6 (merge editor only), Shiki (syntax colours), markdown-it
+(commit descriptions) and Vitest. The fonts (IBM Plex Sans, Outfit, JetBrains Mono, IBM Plex Mono)
+are bundled through `@fontsource`, so the app looks the same offline.
 
-Bounds: `cache.maxCommitsPerRepo` (200 000) enforced with `--max-count` and by truncating the sorted order from the bottom; `cache.maxCachedRepos` (20) evicts by `last_opened_at`, plus repos no longer in the library, at startup; `PRAGMA incremental_vacuum` after large deletes.
-
-### Settings model (Rust, mirrored in TypeScript by specta)
-
-`Settings { version, git: { executable per platform, wsl_default_distro }, appearance: { theme, date_format, graph_order, show_remote_branches, show_stashes_in_graph, avatar_source }, console: { verbose, verbose_helpers, hide_internal (later preference), max_lines }, polling: { status_interval_ms 3000, refs_interval_ms 10000, auto_fetch_minutes }, cache: { max_commits_per_repo, max_cached_repos }, library: { roots: LibraryNode[] } }` where `LibraryNode` is `Group { id, name, children, collapsed }` or `Repo(RepoEntry { key, path as entered, connection: Auto | Local | Wsl { distro } | Ssh { host, user, port, identity_file, remote_git }, resolved_transport (cached result of Auto), display_name, git_executable override, last_opened_at })`.
-
-`UiState { window, panels: { left_width, repos_height, bottom_height, files_width, console_height }, graph_columns: { graph, author, date }, session: { open_tabs, active_tab }, per_repo: { last_selected_oid } }`.
-
-### Frontend state: Pinia, one session per open repo
-
-Add `pinia` (4.x). Stores in `src/stores/`: `settings.ts` and `uiState.ts` (mirrors of the Rust structs, updated from events), `library.ts` (the Repositories tree, recents, add and group operations), `sessions.ts` holding `shallowReactive(new Map<RepoId, RepoSession>())` plus `activeId`. One session object per tab, created by a factory, holding `info`, `status`, `refs`, the graph page cache (`markRaw`, with a `pagesVersion` counter so 100k rows are never deeply reactive), the selection, the selected file and diff, the console ring buffer (capped at `console.max_lines`), and the saved scrollTop. `sessions.ts` installs each global event listener once and dispatches by `repoId`, so background tabs keep receiving status, console and snapshot updates with no component mounted. Not one Pinia store per repo: dynamic stores leak unless disposed and are awkward in devtools.
-
-## Part 3: Application shell
+### Window layout
 
 ```
-┌ Toolbar ──────────────────────────────────────────────────────────────────────────────────────┐
-│ Open repo · Refresh · [Pull · Sync · Push · Commit] · [Stage · Unstage · Discard] · [Stash…]   │  (bracketed groups render disabled in M1 with a "coming in M2" tooltip)
-├───────────────┬─ Tab strip: one tab per open repo ───────────────────────────────────────────┤
-│ Repositories  │ ┌ CommitGraphView ─────────────────────┬ FilesPanel ─────────────────────────┐ │
-│ (global tree, │ │ graph | refs + subject | author | date│ commit files OR working tree changes│ │
-│  groups,      │ │                                       │ (staged / unstaged / untracked)      │ │
-│  recents)     │ ├───────────────────────────────────────┴──────────────────────────────────────┤ │
-├───────────────┤ │ DiffViewer (spans both columns): unified or side by side, hunk navigation     │ │
+┌ AppToolbar (customisable) ─────────────────────────────────────────────────────────────────────┐
+├───────────────┬─ RepoTabStrip ──────────────────────────────────────────────────────────────────┤
+│ Repositories  │ OperationBanner (while a merge, rebase, cherry-pick or revert is open)          │
+│ Panel         │ ┌ CommitGraphView ──────────────────────┬ FilesPanel ──────────────────────────┐ │
+│ (library,     │ │ graph | message | author | date | ID  │ a commit's files, or the working tree │ │
+│  groups)      │ ├───────────────────────────────────────┴──────────────────────────────────────┤ │
+├───────────────┤ │ DiffViewer: unified or side by side                                          │ │
 │ Branches      │ └──────────────────────────────────────────────────────────────────────────────┘ │
-│ (repo:        ├─ ConsolePanel (repo-specific): every git command as executed, exit code, timing ─┤
-│  local,       │   expandable stdout / stderr; filter chips for UserAction / Internal              │
-│  remotes,     │                                                                                  │
-│  tags,        │                                                                                  │
-│  stashes)     │                                                                                  │
-└───────────────┴──────────────────────────────────────────────────────────────────────────────────┘
+│ Panel         ├─ ConsolePanel (the active repository's commands) ───────────────────────────────┤
+├───────────────┴─────────────────────────────────────────────────────────────────────────────────┤
+│ StatusBar: watcher, connection, running operation with Stop, success messages                  │
+└─────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-- `SettingsDialog.vue` with pages General, Git executables, Appearance, Console, **SSH Keys** (`KeyManagerPage.vue`, `KeyRow.vue`, `KeyImportDropzone.vue`, `PassphraseDialog.vue`, `HostKeyDialog.vue`), Cache.
-- `src/App.vue` becomes `AppShell.vue`: toolbar, left sidebar with a vertical splitter between `RepositoriesPanel.vue` (global) and `BranchesPanel.vue` (active repo), main area with `RepoTabStrip.vue` and one `RepoWorkspace.vue` per open tab kept alive with `v-show` so scroll positions and selections survive tab switches, and `ConsolePanel.vue` under the main area bound to the active repo.
-- `RepoWorkspace.vue`: top row is a horizontal splitter between `CommitGraphView.vue` and `FilesPanel.vue`; a vertical splitter separates that row from `DiffViewer.vue`. Selecting the Working Tree row switches the files panel to working tree mode; selecting a commit switches it to that commit's files. Selecting a file loads its diff.
-- shadcn-vue components to add with `npx shadcn-vue@latest add`: `resizable` (reka-ui Splitter, for every panel divider), `tabs`, `scroll-area`, `context-menu`, `dropdown-menu`, `tooltip`, `dialog`, `command`, `badge`, `separator`, `toggle`, `popover`, `collapsible`, `tree` if available (otherwise a small recursive `LibraryTree.vue`).
-- `DiffViewer.vue`: hunks parsed in TypeScript from the unified diff text returned by Part 1 (`src/lib/diff/parseUnified.ts`), rendered with the same hand-rolled virtualisation as the graph (fixed row height, `overscan`), unified and side-by-side modes (side by side shows each side's own lines, joined across a gap by curved SVG bands; `src/lib/diff/sideLayout.ts`), per-word intra-line highlighting with a small LCS on changed line pairs, whitespace and CRLF toggles mapped to `-w` and `--ignore-cr-at-eol`, binary and "too large" placeholders, `eol` badge. Syntax colours come from Shiki in a Web Worker (`src/lib/diff/syntax.worker.ts`, 62 chosen languages, each grammar loaded on first use).
-- `FilesPanel.vue`: flat list with path, status letter and colour, rename arrows, added and deleted counts from numstat; tree view toggle later.
-- `BranchesPanel.vue`: local branches (current in bold, ahead and behind badges), remotes grouped by remote, tags, stashes; clicking a ref selects its commit in the graph.
-- `ConsolePanel.vue`: rows from the session's console buffer, newest at the bottom, each with the display command line, duration and exit code, expandable output, a copy button, and filter chips wired to the `Category` enum. The later preference `console.hide_internal` defaults the Internal and Watcher chips off.
-- Theme: dark by default, `.dark` on `<html>` driven by the `appearance.theme` setting through `@vueuse/core` `usePreferredDark`.
-- Window state through `tauri-plugin-window-state`; folder picker through `tauri-plugin-dialog`; capabilities added to `src-tauri/capabilities/default.json`.
+Every divider is a reka-ui `Resizable` splitter, with its size kept in the UI state. Each open tab
+has its own `RepoWorkspace.vue`, kept alive with `v-show` so scroll positions and selections
+survive switching tabs; only the tab on screen loads at start-up. The native menu bar (File, Edit,
+View, Repository, Help, and Developer in debug builds) is built in `menu.rs`; right-click menus
+are in-app context menus, so they match the theme, show branch names and can grey an item out
+with the reason.
 
-## Build story for both platforms
+### Stores (`src/stores/`)
 
-- **Linux (today)**: `npm run tauri dev` inside WSL, window appears through WSLg. Debug build already exists, so the Tauri Linux prerequisites are installed.
-- **Windows**: there is no Rust on the Windows side yet, and no cross-compilation tooling (no `cargo-xwin`, `lld-link` or `makensis`) in WSL, so the Windows binary is built natively on Windows. One-time setup on Windows: `rustup` (MSVC toolchain), Visual Studio Build Tools with the C++ workload, WebView2 (already present on Windows 11). Use a separate checkout on the Windows filesystem (for example `C:\src\stashpanda`) rather than building through `\\wsl.localhost`, which is very slow for Cargo. Then `npm install` and `npm run tauri dev` from PowerShell.
-- Platform-specific code is confined to `transport/local.rs` (CREATE_NO_WINDOW, discovery paths), `transport/wsl.rs` (Windows only at runtime, compiled everywhere), `transport/paths.rs` and `transport/ssh_auth.rs` (agent socket versus named pipe, home directory for `.ssh`). Everything else, including the whole SSH client, is shared because `russh` is pure Rust.
-- **macOS (code ready, not built yet)**: needs a Mac or a macOS CI runner, since the app cannot be built for macOS from Linux or Windows, plus an Apple Developer ID certificate and notarization, without which Gatekeeper refuses the downloaded app. `--target universal-apple-darwin` makes one app for Apple Silicon and Intel. The macOS-only code (2026-10-16):
-  - `platform::adopt_login_shell_path` gives the app the login shell's `PATH` at startup, since an app started from Finder gets only `/usr/bin:/bin:/usr/sbin:/sbin`, which Git hooks and credential helpers need more than.
-  - `transport/discover.rs` tries Homebrew's Git (`/opt/homebrew/bin`, `/usr/local/bin`) before `PATH`, and takes Apple's `/usr/bin/git` only when `xcode-select -p` says the Command Line Tools are installed: without them that git opens an install dialog instead of running.
-  - `menu.rs` builds a Mac menu bar: a StashPanda application menu (About, Settings, Services, Hide, Quit with Cmd+Q) and a Window menu, with real Cmd key equivalents instead of the `\tCtrl+O` labels used elsewhere. Quit is StashPanda's own `file.exit`, which closes the window through the close guard.
-  - `RunEvent::ExitRequested` goes through `shutdown::defer_exit`, so quitting from the Dock or when logging out also waits for Git.
-  - Passphrases go to the macOS Keychain through `keyring`'s default features; nothing else is needed.
-  - It compiles for `aarch64-apple-darwin` (checked from Linux with a stand-in C compiler for `objc2-exception-helper`), but it has not run on a Mac. `tauri-driver` has no macOS support, so a Mac build is tested by hand.
-- CI: `.github/workflows/build.yml` tests on Ubuntu 22.04, then builds Linux (`.deb`, `.rpm`, AppImage) and Windows (NSIS only, through `src-tauri/tauri.windows.conf.json`). macOS is in its matrix, commented out.
+- `settings.ts` and `uiState.ts` mirror the Rust documents and are replaced from their events.
+  Components read and write UI state through `uiState.pref(...)`.
+- `library.ts`: the Repositories tree.
+- `sessions.ts`: a `shallowReactive` map of `RepoSession` objects, one per open tab, plus the
+  active id. A session holds the repository's info, status, refs, graph page cache (`markRaw`,
+  with a version counter, so 100k rows are never deeply reactive), selection, console buffer,
+  running operation and saved scroll position. The store installs each event listener once and
+  dispatches by repository, so background tabs keep receiving updates with no component mounted.
+  Pinia stores are not created per repository, because dynamic stores leak unless disposed.
+- `dialogs.ts`: which dialog is open. A confirmation asked for while another dialog is open shows
+  on top of it, and Add Repository does not open over another dialog.
+- `host.ts`: what the backend reports about the machine.
 
-## Milestones and implementation order
+Actions that need several steps or prompts live in `lib/repoActions.ts`: one checkout path
+(`requestCheckout`) for menus and double-clicks, `runOp` (with the stale lock and
+`safe.directory` prompts), and fetch, pull, push and sync through `runOperation`, which keeps the
+running operation on the session for the status bar and refuses a second one in the same
+repository. Errors go to a red strip under the toolbar (`notify`); success messages go to the
+status bar, and each clears the other.
 
-**M0 Foundations** (no Git yet beyond opening a repo)
-1. Cargo and npm dependencies (Part 1 crate table, `pinia`, shadcn components). Remove the `greet` demo.
-2. tauri-specta builder in `lib.rs`, one dummy command, confirm `src/lib/bindings.ts` exports and `vue-tsc --noEmit` passes under TypeScript 6.
-3. `error.rs`, `settings.rs`, `ui_state`, persist task, `storage/` (connection, WAL, schema, migrations), `AppState` managed in Tauri.
-4. `transport/paths.rs` with table-driven tests. `transport/mod.rs`, `local.rs`, `discover.rs`, `git/versions.rs`.
-5. `git/console.rs` and `GitClient::exec`: the single execution path with timing, truncation, classification and `console_event`.
-6. `repo/*`, `open_repo` and `close_repo` (local transport only), per-repo RwLock.
-7. App shell: toolbar, sidebar with the two panels, tab strip, three-pane workspace with splitters, console panel; Pinia stores; the "Add repository" dialog (folder picker or typed path, resolved transport shown, Advanced connection override); open a repo and see its probe commands in the console.
+### Commit graph (`components/graph/`)
 
-**M1 Read-only browse** (the first usable release)
-8. Queries with parser tests on captured bytes: `status`, `refs`, `log` (streaming), `commit_files`, `diff`. Branches panel and files panel wired.
-9. `graph/` crate-internal modules with unit tests (linear, fork and merge, octopus, two roots, worktree row, missing parent, HEAD pinning), `snapshot.rs`, `graph_open` / `graph_rows` / `graph_find`.
-10. Graph frontend: virtual list, rows, `GraphLanesSvg`, ref pills, working tree row, selection, keyboard, resizable columns. Validate scrolling on a 100k-commit clone.
-11. `git/catfile.rs` pinned helper, `blob.rs`, `Transport::read_file`; `DiffViewer` unified then side by side.
-12. Cache write-through and cache-first `graph_open`; incremental refresh; LRU eviction.
-13. `watch/native.rs` and `coalesce.rs`; confirm exactly one `repo_changed` per `touch`, `git commit`, `git checkout`.
-14. `transport/wsl.rs` (distro list, `-e` form, UTF-16 sniff, argument self-test, remote-pid kill), tested from the Windows build against `\\wsl.localhost\Ubuntu\home\me\code\...` and from the Linux build against `/mnt/c/...` with Windows `git.exe`.
-15. `watch/polling.rs`, `watch/remote.rs` (inotifywait), downgrade paths, `watcher_state` UI hint.
-15b. `keys/` module: detection, PPK v2 and v3 parser, legacy PEM decryption, conversion to `ssh_key::PrivateKey`, OpenSSH and PPK v3 writers, agent client, fixtures and round-trip tests; the Settings › SSH Keys screen and the identity picker. Done before the SSH transport so tier 1 is usable with every key Michael already has.
-16. `transport/ssh_pool.rs`, `ssh_auth.rs`, `ssh.rs` over `russh`: connect and keepalive, agent then key file then password auth, `known_hosts` check with the accept dialog, `SshChannelProcess`, pinned cat-file and inotifywait channels, reconnect with backoff. Tested against `sshd` on localhost from WSL first, then from the Windows build against the same WSL `sshd` and against a real Brave Digital host.
-17. `run_batch` for wsl (refs, status and stash list in one `wsl.exe` spawn per refresh); for SSH only if channel round trips prove to matter.
+- **Virtualisation is hand-written** (`composables/useVirtualRows.ts`): rows are a fixed 22 px
+  (`--row-h`, `ROW_HEIGHT` in `lib/graph/paths.ts`), so the visible range is plain arithmetic.
+  Virtual list libraries exist for rows of varying height, and they own the translated container
+  the SVG overlay must share. Pages more than five from the visible rows are dropped.
+- **One SVG for the visible rows** (`GraphLanesSvg.vue`), inside the same translated block as the
+  row elements, so the dot for row i sits at exactly the height of its text. Straight runs of one
+  lane collapse into one `<path>`. The SVG ignores the pointer; the rows beneath handle clicks.
+- Ref pills (`RefPill.vue`): local branches solid and remote branches outlined, or the other way
+  round with `appearance.solidRemotePills`. A local branch level with its upstream is two pills
+  joined at a chevron; when they are on different commits, the local pill has a notch on its left
+  and the remote pill a matching point. The checked-out branch's commit has a ringed dot.
+  Double-clicking a pill checks the branch out.
+- Columns: graph, commit message, author, date and ID, each of which can be hidden except the
+  message. Author, date and ID size themselves to their widest possible value, measured with the
+  real fonts (`lib/graph/columnWidths.ts`), until a divider is dragged. The graph column follows
+  the number of lanes until dragged, and again whenever the lane count changes. With
+  `appearance.graphInMessageColumn` the lanes are drawn at the start of the message column instead.
+- Selection is by commit id, so it survives new snapshots, with Ctrl and Shift for several.
 
-**M2 Local writes**: stage, unstage, discard, commit (with message editor and amend), stash save and apply, checkout, branch create and delete, `IndexLocked` retry and stale-lock removal, `fix_safe_directory`, enable the toolbar groups.
+### Files panel and diff viewer
 
-**M3 Remote and history operations**: fetch, pull, push with streamed progress via `operation_progress`, merge, rebase, conflict listing with `:1:`/`:2:`/`:3:` stages, SSH tier 2 (`ssh_exec.rs`) if any real host needs `ProxyJump`, GSSAPI or an algorithm `russh` lacks, console `hide_internal` preference, syntax highlighting in the diff, Gravatar opt-in, graph text filter.
+- **Files panel** (`components/files/FilesPanel.vue`): a commit's files or the working tree's,
+  grouped by status, folder or nothing, and sorted by name, status or date modified
+  (`lib/files.ts`). Multi-select with the mouse and keyboard (`composables/useListSelection.ts`,
+  shared with the Commit dialog). The first file is selected when a commit is. A merge that kept
+  one parent's files shows "Merged X into Y" and compares with the other parent; branch names are
+  read from merge messages in the forms of the common Git hosts (`lib/mergeParents.ts`).
+- **Diff viewer** (`components/diff/DiffViewer.vue`): the unified diff text is parsed in
+  TypeScript (`lib/diff/parseUnified.ts`) and drawn with the same virtualisation as the graph.
+  Changed words are highlighted from a small LCS on paired lines. Side by side shows each side's
+  own lines only, joined across a gap by curved SVG bands (`lib/diff/sideLayout.ts`); an added or
+  deleted file is always unified. Stage, Unstage and Discard act on a hunk from its header, or on
+  lines picked by clicking their numbers.
+- **Syntax colours:** Shiki in a Web Worker (`lib/diff/syntax.worker.ts`) with its JavaScript
+  regex engine, so no WebAssembly. 62 chosen languages, each grammar loaded the first time it is
+  needed. Each hunk's old and new side go to the worker as whole runs, so a comment spanning lines
+  colours correctly. Diffs over 20,000 lines stay plain.
+- **Find** (`composables/useFind.ts`, `FindBox.vue`, `lib/diff/find.ts`): Ctrl+F in a diff, the
+  File History dialog or Blame. Past 10,000 matches the rest are neither drawn nor counted.
 
-## Verification
+### Merge editor (`components/merge/MergeEditorDialog.vue`, `lib/merge/`)
 
-- **Rust unit tests** (`cd src-tauri && cargo test`): path mapper table (plus the ignored `wslpath` cross-check when `wslpath` exists), every parser on captured Git output, ordering and lane sweep fixtures, error classification.
-- **Type check and build**: `npm run build` (runs `vue-tsc --noEmit` then Vite) and `cargo clippy --all-targets` must be clean. Confirm the specta-generated `bindings.ts` compiles under TypeScript 6 at step 2, before anything depends on it.
-- **Linux manual run** (`npm run tauri dev` in WSL): open `/home/me/code/stashpanda` and a large repo; confirm first paint from cache under 50 ms on reopen, smooth scrolling on 100k rows, the console shows every command with its full argv, and one `repo_changed` per burst when running `touch`, `git commit` and `git checkout` in a terminal.
-- **Cross-side manual runs**: from Linux open a `/mnt/c/...` repo with `/mnt/c/Program Files/Git/bin/git.exe` and check the console shows `C:\...` paths; from the Windows build open `\\wsl.localhost\Ubuntu\home\me\code\stashpanda` and check the console shows `wsl.exe -d Ubuntu -e ... git -C /home/me/code/stashpanda`.
-- **SSH**: with `sshd` running in WSL and `ssh localhost` working, add `brave@localhost:/home/me/code/stashpanda` as an SSH repo; confirm one connection is authenticated (agent first, then key file), each query is one channel with its own exit code and stderr in the console, blob reads come through the pinned cat-file channel, restarting `sshd` produces `transport_state: Disconnected` then a reconnect, an unknown host raises the fingerprint dialog, and pointing a repo at a `.ppk` identity, an encrypted PEM and an OpenSSH key each authenticates after at most one passphrase prompt.
-- **Key manager**: the SSH Keys screen lists every file in the Windows and WSL `.ssh` folders with the right format badge; converting a PPK v2, a PPK v3 and an encrypted PEM to OpenSSH produces files that `ssh-keygen -y -f <file>` accepts and whose public key matches the original; Add to agent makes the key appear in `ssh-add -l`; Generate produces an ed25519 key that `sshd` on localhost accepts.
-- **Watcher fallbacks**: with `inotifywait` absent the console and `watcher_state` should say polling is in use; installing `inotify-tools` and reopening should switch to `RemoteInotify`.
-- **Persistence**: close and reopen the app; tabs, active tab, panel sizes, column widths and window geometry return; `settings.json` stays diff-friendly while the UI state rows in the database churn.
+Three CodeMirror 6 panes, loaded with a dynamic `import()` so the main bundle does not grow: the
+branch being built on (read-only), the result (editable, saved to the working tree), and the
+incoming version (read-only). CodeMirror's own two-pane merge view is not used; only `Chunk` from
+`@codemirror/merge` is. Each side is named after its branch or commit (`operationNames` in
+`lib/conflicts.ts`); the words "ours" and "theirs" never appear.
 
-## Implementation notes (2026-09-18, after the first build)
+- The editor starts from the working tree file with its conflict markers parsed into blocks, not
+  from a fresh three-way merge, so it keeps changes Git already merged, a merge driver's output,
+  `rerere`'s resolutions and hand edits. All three marker styles (`merge`, `diff3`, `zdiff3`) and
+  the file's `conflict-marker-size` are read.
+- Curved SVG bands join each difference across the gaps, and arrows take one side's lines for a
+  block; "×" dismisses a side's difference. Every action is one undoable transaction.
+- The panes scroll together, kept level at the middle of the pane being scrolled
+  (`lib/merge/` and `mapLine`). Unchanged runs fold into one row in all three panes. Each pane has
+  marks beside its scroll bar.
+- Saving keeps the file's line endings, byte order mark and final newline. A block still
+  unresolved is written back with conflict markers of the file's own length, so a conflict is
+  never dropped silently.
+- Keys: F7 and Shift+F7 move between conflicts; Alt+Shift+Left and Right take a side; Ctrl+S
+  saves.
 
-What changed from the plan above while building it, and why. The plan text is left as written; this
-section is the delta.
+### Other interface
 
-- **Merge-patch commands take a JSON string, not a JSON value.** `settings_update` and
-  `ui_state_update` accept `patch: String`. The specta TypeScript exporter (2.0.0-rc.25) overflows
-  its stack on `serde_json::Value` because that type is recursive; the frontend calls
-  `JSON.stringify(patch)`.
-- **The repository library is stored flat.** `RepoLibrary { groups: LibraryGroup[], repos: RepoEntry[] }`
-  with `parentId` on groups and `groupId` on repositories, instead of a recursive `LibraryNode` enum.
-  Easier to edit from the UI, and an internally tagged recursive enum with a newtype variant is
-  something both serde and the exporter reject.
-- **Display order ties are broken by insertion order, not object id.** Commits made within the
-  same second share a commit time; Git breaks that tie by the order it emitted them, so the sort
-  key is `(commit_time, store index)`. This is what keeps HEAD's tip above a sibling tip created in
-  the same second.
-- **Lane 0 is granted to the Working Tree row as well as to HEAD.** The row's only parent is HEAD,
-  so it must sit directly above it; the first version reserved lane 0 for HEAD alone and pushed the
-  working tree row into lane 1.
-- **`git rev-parse --verify` accepts one revision only.** The HEAD query is
-  `rev-parse HEAD --symbolic-full-name HEAD` (no `--verify`), with `symbolic-ref -q HEAD` as the
-  fallback for an unborn branch.
-- **No hand-written PPK parser was needed.** The `ssh-key` crate that `russh` depends on parses PPK
-  version 2 and version 3, encrypted or not (`PrivateKey::from_ppk`), and its `DotSsh` type scans a
-  `.ssh` folder. Verified against real keys: each PPK produced the
-  same SHA-256 fingerprint as its PEM or OpenSSH twin. `russh::keys::decode_secret_key` covers
-  OpenSSH, PKCS#1 RSA, SEC1 and PKCS#8. The only code StashPanda adds is `keys/pem_legacy.rs` for
-  OpenSSL-encrypted PEM with a DEK-Info cipher other than AES-128-CBC (for example
-  DES-EDE3-CBC). PPK export (writing PPK) is not implemented.
-- **`russh` is built with the `ring` backend**, not the default `aws-lc-rs`, so the Windows build
-  does not need CMake or NASM.
-- **`russh-config` does not expose `IdentitiesOnly`.** An explicit identity file, from the repo
-  settings or from `~/.ssh/config`, implies it; otherwise the agent is tried first.
-- **Host key prompts are not modal.** An unknown host fails the open with `sshHostKeyUnknown` plus
-  the fingerprint, the offered key is kept in memory, and the `ssh_trust_host` command records it
-  in `known_hosts`; the next open succeeds. A changed key is `sshHostKeyChanged` with no override.
-- **Passwords and passphrases** are supplied through `ssh_set_password` and `keys_unlock` and held
-  in memory for the session only. No keychain integration yet.
-- **`GraphSnapshotEvent` carries the whole `GraphMeta`** (head, head ref, working tree summary,
-  open lanes) so the frontend needs no follow-up `graph_meta` call.
-- **The status-only refresh does not persist**, only full refreshes write the cache; the cache
-  never stores the Working Tree row.
-- **The native watcher drops `Access` events and Git-ignored paths.** On Linux `notify` reports
-  reads: `git status` opening every directory and `for-each-ref` reading the refs folders showed
-  up as changes, so each refresh triggered the next one (347 full refreshes in two minutes with
-  nothing changing on disk). Access events are now skipped, and paths listed by
-  `git ls-files --others --ignored --exclude-standard --directory` (refreshed every minute) are
-  filtered out so build output and caches inside the worktree do not count either. After the fix
-  a two-minute run with one touched file and one `git add` produced exactly those two events.
-- **Type scale is rem-based** (2026-09-22; the root became 14 px with the design system in
-  `27897ec`). `html { font-size: 14px }` in `index.css`; UI text uses `text-base`, headers
-  `text-xs`, pills `text-[0.7rem]`; `--pill-h` is 1.2rem. Row heights are whole pixels, because the
-  virtual lists and the graph SVG position rows by pixel counts: `ROW_HEIGHT` in
-  `src/lib/graph/paths.ts` is 1.6rem rounded (22 px), and `main.ts` sets `--row-h` to it at startup
-  (2026-09-30; with the unrounded 22.4 px the rows drifted 0.4 px a row away from the graph dots).
-  Diff rows are sized from a setting, see the 2026-09-30 notes below. Changing the root size still
-  rescales everything consistently. Branch and tag pills use the flat `pill-*`
-  utilities (solid fill, hairline border, no shadow); the selected row is the single solid colour
-  `--row-selected`, a step lighter than the well and darker than the header chrome.
-- **The graph column sizes itself to the snapshot's lane count.** `GraphColumns.graph` is
-  `Option<u32>`: None (the default) means auto, `autoGraphColumnWidth(maxLanes)` with no upper
-  bound; dragging the header handle pins a width and double-clicking it returns to auto. The lane
-  sweep itself has never had a cap.
-- **Menus** (2026-09-22). The menu bar is native, built in Rust in `src-tauri/src/menu.rs` with
-  Tauri's `MenuBuilder` (File, Edit, View, Repository, Help). Every click is forwarded to the
-  frontend as a `menu_action` event carrying a dotted id such as `repo.create_branch`, and the
-  frontend owns the behaviour so it can reuse its dialogs and stores. The window theme is pinned to
-  `Dark` in `tauri.conf.json`, which is what makes `muda` draw the Windows menu bar dark. Right-click
-  menus on commits, ref pills and branches are in-app shadcn `ContextMenu`s, not native popups: they
-  match the theme, show branch and tag names inline and can grey items out with a reason.
-- **First write operations** live in `src-tauri/src/git/ops/mod.rs` (checkout, branch create and
-  delete, merge and merge abort, tag create and delete) and `ipc/ops.rs`. Each command takes the
-  repository's exclusive lock, runs with `Category::UserAction`, returns Git's own stdout and stderr
-  in an `OpResult` with a `conflicts` flag for merges that stop on conflicts, and then runs a full
-  graph refresh so the UI updates before the watcher fires. Names being created are validated as
-  Git reference names; revisions the user selected only reject a leading `-` and control
-  characters, because `HEAD~1` and `origin/dev` are legitimate targets.
-- **Cache-first paint loads the whole cached store**, not a 500-row first page. For 100k commits
-  that is a few hundred milliseconds from SQLite and one sort and sweep; the 500-row fast path in
-  the plan is deferred until a repository shows it is needed.
+- **Dialogs** (`components/ui/dialog/`): every dialog can be resized from its edges and corners and
+  stays centred; the size is remembered per dialog (`size-key`), and the extra height goes to parts
+  marked `data-dialog-grow`. A maximise button fills the window. Never override the shared dialog
+  padding, header, footer or button sizes in a single dialog.
+- **Settings dialog** (`components/settings/`): pages on the left, defined as data in
+  `sections.ts`. Save Changes sends a merge patch of the changed fields only, so a setting changed
+  elsewhere meanwhile is kept. The Toolbar page arranges the toolbar (`lib/toolbarItems.ts`).
+- **Console** (`ConsolePanel.vue`): newest first. Log mode (the default) shows only the user's own
+  commands, each expanded with its output; the User, Internal and Watcher buttons show those
+  categories instead.
+- **Browser behaviour off** (`lib/browserDefaults.ts`, `src-tauri/src/webview.rs`): no web view
+  right-click menu outside text fields, and on Windows WebView2's own shortcuts (Ctrl+F, F5,
+  Ctrl+R, Ctrl+P, F12) are switched off at start-up. Text cannot be selected except commit ids,
+  the commit message, the repository path and diff code.
+- **Type scale:** the root font size is 14 px, and everything is sized in `rem`, except row
+  heights, which are whole pixels because the virtual lists and the graph SVG place rows by pixel
+  counts.
 
-## Implementation notes (2026-09-30, the commit dialog and a round of interface work)
+## Pitfalls
 
-What changed from the plan in this round. [next-steps.md](next-steps.md) lists each change with its
-files; this is what a reader of the plan above needs to know.
+Things that were found the hard way, each with where it matters.
 
-- **The Windows build runs from a mirror, not a separate checkout** (2026-09-21).
-  `scripts/windows.sh` copies `/home/me/code/stashpanda` to `C:\src\stashpanda` with `rsync` and runs
-  the Windows toolchain there through WSL interop (`npm run win:ux`, `win:dev`, `win:build`,
-  `win:sync`), instead of the separate `C:\src\stashpanda` checkout in "Build story". Its check
-  for a leftover process on port 1420 must ignore `powershell.exe`'s exit code: `Get-NetTCPConnection`
-  on a free port exits 1 even with `-ErrorAction SilentlyContinue`, which `set -euo pipefail`
-  turned into a silent exit of the whole script.
-- **Committing takes paths.** `op_commit(message, paths, amend, sign_off)`: with `paths`, they are
-  staged (`add -A`) and, when other files are staged too, the commit adds `--only` so those stay
-  staged and out of it. The paths go on the command line (at most 24 KB), because the message
-  already uses stdin. An empty `paths` with `amend` runs `--amend --only`, which changes only the
-  message.
-- **The plan's commit message editor is a Commit dialog** (`dialogs/CommitDialog.vue`, from the
-  toolbar's Commit button). It lists every outstanding file with a checkbox; the Files panel
-  selection starts ticked, otherwise the new `commit.preselect` setting (`all` or `staged`).
-  Ticking exactly the staged files commits the index as it is (no paths), so a partly staged file
-  keeps its unstaged part out; any other set is committed as it is on disk.
-- **List selection is hand-written** (`composables/useListSelection.ts`, shared by the Files panel
-  and the Commit dialog), after reka-ui's `Listbox` turned out to ignore Shift and Ctrl on mouse
-  clicks. Ctrl+A outside a text field never selects page text (`App.vue`); it selects every file.
-- **Refs can be hidden in the graph**, which the plan does not have. `GraphSnapshot::build` takes
-  the hidden set (`RepoHandle::hidden`, loaded by `repo_open` from `perRepo[key].hiddenRefs` in
-  the UI state) and lays out only commits reachable from the refs still shown; HEAD is a tip of
-  its own only when detached. `graph_set_hidden_refs` rebuilds from the store already in memory,
-  with no `git log`. The store stays whole, and the snapshot keeps the unfiltered order in
-  `full_order` so the cache's `seq` still covers every commit.
-- **`GraphMeta` carries two more fields:** `refColours` (each shown ref's pill colour, the same as `RefLabel::colour`, for
-  the Branches panel's show and hide tags) and `widestAuthors` (the 24 longest distinct author
-  names, for sizing the Author column).
-- **The row grid has an ID column:** `var(--col-graph) minmax(0, 1fr) var(--col-author)
-  var(--col-date) var(--col-id)`. Author, Date and ID size themselves to their widest possible
-  value (`lib/graph/columnWidths.ts`, measured with the real fonts) until a divider is dragged;
-  `GraphColumns.author`, `date` and `id` are optional, and the old always-saved defaults 140, 150
-  and 76 are read as automatic. Header and rows reserve the same scrollbar space.
-- **A snapshot swap keeps the list at the top** when it is at the top, instead of keeping the old
-  first row in place, so rows that appear above it (the Working Tree row after the cached paint,
-  new commits) are in view.
-- **The side-by-side diff is two panes in one vertical scroll.** The split starts at 50% and has a
-  draggable divider; each side clips its text and scrolls sideways on its own scrollbar, and
-  moving one moves the other to the same fraction of its range. Diff rows are `diff.lineHeight`
-  (default 1.2) times `diff.fontSize`, in whole pixels, and the virtual list uses the same number;
-  `useVirtualRows` accepts the row height as a getter. The font, size, tab width and ligatures
-  come from the `diff` section of settings through `src/lib/diff/font.ts`.
-- **The Transport trait gains `modified_times`** (filesystem for Local and WSL, one remote `stat`
-  loop that works with GNU and BSD `stat` for SSH), behind the `get_modified_times` command, for
-  sorting the Files panel by date modified. The Files panel also groups by status, folder or
-  nothing, and sorts by name, Git status or date.
-- **Fonts are bundled.** IBM Plex Sans, Outfit and JetBrains Mono come from their `@fontsource`
-  packages, imported in `main.ts`, instead of a Google Fonts `@import`, so the app looks the same
-  offline.
-- **The native Theme menu follows the setting:** `menu.rs` keeps the three check items and
-  `sync_theme` ticks one, at startup, after a click and in `settings_update`.
-- **Settings and UI state gained** `commit.preselect`, `appearance.diffLineHeight` (now
-  `diff.lineHeight`), `GraphColumns.id` and `perRepo[key].hiddenRefs`. Settings are edited in the
-  Settings dialog (File > Settings) or by hand in `settings.json`.
+### Git
 
-### Status against the milestones
+- `git log --follow` prints nothing at all when given `--skip`, so file history is paged by asking
+  again with a larger `--max-count`.
+- `--follow` without `--cc` leaves out every merge, even one that resolved a conflict in the file;
+  and `--follow` turns off the simplification that drops irrelevant merges, so merges with no
+  file list must be filtered out (`parse_file_history`).
+- `git rev-parse --verify` accepts one revision only.
+- `git push --set-upstream` with a `config.lock` present pushes, fails to record the upstream, and
+  exits 0; `git checkout -b x --track origin/x` creates `x` but neither checks it out nor tracks.
+  Hence the separate upstream step.
+- `git apply` accepts a patch that puts a line after one with no final newline, and joins the two
+  lines into one. Line staging refuses such a selection.
+- The long-lived `cat-file` keeps the index it first read; read conflict stages by object id.
+- `--no-optional-locks` is needed, or `git status` rewrites `.git/index` and wakes the watcher.
+- On Linux `notify` reports reads as events: `git status` and `for-each-ref` reading the
+  repository caused 347 full refreshes in two minutes with nothing changing on disk, until
+  `Access` events and ignored paths were dropped.
 
-Done: M0 and M1 entirely, since 2026-10-14, apart from PPK export (left until a tool needs it) and
-the checks that need a real SSH host and the Windows window; M2 entirely, since 2026-10-14. M3 so
-far: pull, fetch, push, sync, clone, merge, rebase, cherry-pick and revert with conflict
-resolution, file history and blame, automatic fetch, SSH reconnect with backoff and a
-`transport_state` event, and syntax colours in the diff viewer. See `next-steps.md` for each item.
+### Windows and WSL
 
-The three-pane merge editor is built (CodeMirror 6 panes, loaded when it first opens); a few
-smaller parts of it are left, listed in `next-steps.md`.
+- `powershell.exe` exits with 1 when `Get-NetTCPConnection` finds no connection, even with
+  `-ErrorAction SilentlyContinue`, which `set -euo pipefail` in `scripts/windows.sh` turned into a
+  silent exit. The port check judges by the output instead.
+- The Rust test binaries on Windows exited with `STATUS_ENTRYPOINT_NOT_FOUND` before any test ran:
+  they import `TaskDialogIndirect`, which only version 6 of `comctl32.dll` exports, and Windows
+  loads version 6 only for a program whose manifest asks for it. `src-tauri/build.rs` passes
+  `src-tauri/windows-app-manifest.xml` to the linker for every binary, test binaries included.
+  Run the Windows tests from WSL with
+  `cmd.exe /c "cd /d <STASHPANDA_WIN_DIR>\src-tauri && cargo test"` after `npm run win:sync`.
+- Windows does not allow `:` or `*` in file names, so tests that use such names need another name
+  there.
+- Killing `wsl.exe` ends the Linux processes it started directly, but abruptly, and not ones in a
+  session of their own.
+- Without the Windows 11 SDK, Rust cannot find the MSVC linker and falls back to Git's `link.exe`.
+- WebView2 shares its runtime between apps but gives each app its own profile folder,
+  `%LOCALAPPDATA%\<identifier>\EBWebView`. Development grew it to 480 MB: 7,203 cached entries
+  from the Vite dev server and their compiled code, and none from the installed app, whose files
+  come through Tauri's own protocol. Debug builds therefore clear it at start-up
+  (`webview::clear_dev_browsing_data`). `additionalBrowserArgs` in `tauri.conf.json` adds
+  `--disable-component-update` to stop the Edge components (Widevine and others, 44 MB)
+  downloading; whether WebView2 honours it is unconfirmed. Setting `additionalBrowserArgs`
+  replaces wry's default `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`, so
+  that switch is repeated there.
 
-Not done yet: in M3, the SSH tier 2 fallback and `ProxyJump`, both only if a real host needs them.
+### Text rendering on Windows (WebView2)
 
-### Tests
+Chromium draws ClearType text only on an opaque compositor layer. Anything that gives text a
+layer of its own turns it grayscale and soft:
 
-`cd src-tauri && cargo test` runs 116 tests, on Linux and Windows: path mapper table, every parser on
-captured bytes, ordering (date and topological) and lane sweep fixtures, snapshot and cache round
-trips, the incremental refresh against a full load, the graph search, end-to-end runs of every query
-and every write operation against throwaway repositories (including line staging, reset,
-cherry-pick, revert, conflicts with Continue, Skip and Abort, and `safe.directory`), file history
-and blame, pull, fetch, push, sync and clone against throwaway
-remotes, stopping commands on each transport, the WSL batch and the long-lived `cat-file` through
-`wsl.exe`, `inotifywait` through the local and WSL transports, opening a WSL repository from the
-Windows build and a Windows folder with Windows Git from WSL, the keychain against an in-memory
-store, the TypeScript bindings export, and the SSH transport against a private `sshd` (host keys,
-passphrases, refused passwords, reconnecting with backoff). Tests that need WSL interop or `inotifywait` skip themselves
-elsewhere. Three ignored tests need this machine or a large repository:
-`cargo test -- --ignored agrees_with_wslpath`, `cargo test -- --ignored probe_real_keys --nocapture`,
-and `STASHPANDA_TIMING_REPO=<path> cargo test --lib time_large_repository -- --ignored --nocapture`.
+- `will-change: transform` on a virtual list's row container (removed from the diff and the
+  graph; the diff's Grayscale font smoothing setting uses it on purpose).
+- `backdrop-filter` blur on the dialog backdrop, `position: fixed` on the backdrop, the dialog and
+  menu wrappers, and a box-shadow `ring` on the dialog. Dialogs and their backdrop are `absolute`
+  and centred with `inset-0 m-auto h-fit` (a -50% translate put odd-sized dialogs on half
+  pixels); the menu, popover and tooltip wrappers default `positionStrategy` to `absolute`; and
+  `index.css` overrides the `will-change: transform` Floating UI adds at 150% scaling or more.
+- A canvas: the curves in the diff and merge editor are inline SVG for this reason.
+- `-webkit-font-smoothing` is ignored outside macOS. The diff's None setting uses the
+  `#diff-aliased-text` SVG filter in `index.html` on the text-only `diff-glyphs` spans instead.
+- Still unsolved: Add Repository's Cancel and Add buttons, which Chromium puts in a separate
+  squashing layer. To inspect the real window, start it with
+  `WEBVIEW_DEBUG_PORT=9222 npm run win:ux` and use DevTools protocol scripts, which are kept
+  outside the repository.
+
+### Linux (WebKitGTK)
+
+- WebKit ignores `h-fit` on an absolutely placed `display: grid` box and stretches it to full
+  height; `DialogContent.vue` is a flex column for this reason.
+- WebKitGTK draws `<select>` boxes as white GTK controls unless the page declares a colour scheme;
+  `index.css` sets `color-scheme` on `:root` and `.dark`.
+
+### Build
+
+- Importing Shiki's full language list put all 346 grammars into the build, about 10 MB more in
+  the program, because Tauri builds every asset into the binary. Only 62 are imported.
+- The window theme is pinned to `Dark` in `tauri.conf.json`, which is what makes `muda` draw the
+  Windows menu bar dark.
+- The dev server must not watch `.claude/` (`vite.config.ts`), or an agent's Git worktree there
+  reloads the app.
+
+## Tests
+
+- **Rust:** `cd src-tauri && cargo test` runs 182 tests on Linux and Windows: path translation,
+  every parser on captured Git output, ordering and lane sweep fixtures, snapshot and cache round
+  trips, the incremental refresh against a full load, end-to-end runs of every query and write
+  operation against throwaway repositories and remotes, stopping commands on each transport, the
+  WSL batch and `cat-file` through `wsl.exe`, `inotifywait`, opening across the Windows and WSL
+  boundary, the keychain against an in-memory store, the bindings export, and the SSH transport
+  against a private `sshd` (host keys, passphrases, refused passwords, reconnecting). Tests that
+  need WSL interop or `inotifywait` skip themselves elsewhere. Three ignored tests need this
+  machine or a large repository: `cargo test -- --ignored agrees_with_wslpath`,
+  `cargo test -- --ignored probe_real_keys --nocapture`, and
+  `STASHPANDA_TIMING_REPO=<path> cargo test --lib time_large_repository -- --ignored --nocapture`.
+- **Frontend:** `npm test` runs Vitest (pinned at 5.0.3) on the pure functions in `src/lib/`: 150
+  tests covering the diff, merge, find, column width, branch tree, file grouping, toolbar and
+  repository action logic. There is no DOM testing library.
+- **Checks:** `npm run build` (`vue-tsc --noEmit`, then Vite) and `cargo clippy --all-targets`
+  must be clean.
+- **In the running app:** the Linux build can be driven invisibly through WebDriver
+  (`tauri-driver` with WebKitWebDriver on an Xvfb display, with its own config folder); the
+  Windows window through WebView2's DevTools protocol, as above.

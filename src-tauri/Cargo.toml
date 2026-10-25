@@ -1,8 +1,9 @@
 [package]
 name = "stashpanda"
 version = "0.6.0"
-description = "StashPanda"
-authors = ["Brave Digital"]
+description = "A standalone desktop Git GUI that works with your own installed Git"
+authors = ["Michael Pote"]
+license = "MIT"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
