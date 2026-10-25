@@ -342,6 +342,14 @@ export async function openPullDialog(session: RepoSession | null, preferSource: 
   });
 }
 
+/**
+ * Git's message when putting autostashed changes back conflicted, which it reports with exit code
+ * 0 while keeping the changes as a stash. Git 2.47 and older print "Applying autostash resulted
+ * in conflicts."; newer versions print "Your local changes are stashed, however applying them
+ * resulted in conflicts." across two lines.
+ */
+const AUTOSTASH_CONFLICT = /Applying autostash resulted in conflicts|local changes are stashed, however applying them\s+resulted in conflicts/i;
+
 /** How the uncommitted-changes question words each action that can stash them first. */
 const AUTOSTASH_WORDS = {
   Pull: { doing: "Pulling", does: "pulls" },
@@ -403,7 +411,7 @@ export function pullOutcome(result: OpResult, from: string, into: string, mode: 
       failed: false,
     };
   }
-  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+  if (result.ok && AUTOSTASH_CONFLICT.test(output)) {
     return {
       message: `Pulled ${from} into ${into}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
       kind: "error",
@@ -953,7 +961,7 @@ export async function mergeInto(key: string, target: string, label: string = tar
 /** What to report after a merge of `label` into `into` ran; `failed` is a plain failure, with nothing left open. */
 export function mergeOutcome(result: OpResult, label: string, into: string, stashed = false): { message: string; kind: "success" | "error"; failed: boolean } {
   const output = `${result.stdout}\n${result.stderr}`;
-  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+  if (result.ok && AUTOSTASH_CONFLICT.test(output)) {
     return {
       message: `Merged ${label} into ${into}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
       kind: "error",
@@ -1169,7 +1177,7 @@ export function continueOutcome(result: OpResult, op: InProgress, names: Operati
           : `Reverted ${op.commit === null ? "the commit" : shortSha(op.commit)} with a new commit on ${names.ours}`;
   // A pull with --autostash: Git finishes, then putting the uncommitted changes back conflicts.
   // It still exits 0, and keeps the changes as stash@{0}.
-  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+  if (result.ok && AUTOSTASH_CONFLICT.test(output)) {
     return {
       message: `${done}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
       kind: "error",
@@ -1428,7 +1436,7 @@ export function rebaseOutcome(
   stashed = false,
 ): { message: string; kind: "success" | "error"; failed: boolean } {
   const output = `${result.stdout}\n${result.stderr}`;
-  if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+  if (result.ok && AUTOSTASH_CONFLICT.test(output)) {
     return {
       message: `Rebased ${branch} onto ${onto}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
       kind: "error",
@@ -1797,7 +1805,7 @@ export async function fastForwardToUpstream(key: string, branch: string, upstrea
   try {
     const result = await runOp(key, () => commands.opBranchFastForwardToUpstream(key, branch, autostash));
     const output = `${result.stdout}\n${result.stderr}`;
-    if (result.ok && /Applying autostash resulted in conflicts/i.test(output)) {
+    if (result.ok && AUTOSTASH_CONFLICT.test(output)) {
       sessions.notify(
         `Fast-forwarded ${branch} to ${upstream}, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.`,
       );

@@ -710,8 +710,8 @@ pub async fn get_commits_dropped(state: State<'_, AppState>, key: String, source
 
 /// Fast-forward local branch `branch` to its upstream as last fetched, without fetching: the
 /// checked-out branch with `git merge --ff-only`, stashing uncommitted changes first and putting
-/// them back afterwards when `autostash` (a conflict putting them back leaves `ok` with "Applying
-/// autostash resulted in conflicts" in the output, and the changes kept as `stash@{0}`); any other
+/// them back afterwards when `autostash` (a conflict putting them back leaves `ok` with Git's
+/// autostash conflict message in the output, and the changes kept as `stash@{0}`); any other
 /// branch with `git fetch . <upstream>:<branch>`, which touches no files. Not a fast-forward:
 /// `ok: false`. A branch another worktree, a rebase or a bisect is using: `ok: false` with
 /// "refusing to move" in stderr. No upstream, or one never fetched: `invalidPath`.

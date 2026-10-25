@@ -210,8 +210,9 @@ pub async fn pull_fetch(
 ///   `FETCH_HEAD` itself.
 ///
 /// `autostash` stashes uncommitted changes first and reapplies them afterwards: when reapplying
-/// conflicts, Git still exits 0, prints "Applying autostash resulted in conflicts" and keeps the
-/// changes as `stash@{0}`. Not cancellable. Timeout 10 minutes, for slow hooks.
+/// conflicts, Git still exits 0, prints "Applying autostash resulted in conflicts" (Git 2.47 and
+/// older) or "Your local changes are stashed, however applying them resulted in conflicts" (newer),
+/// and keeps the changes as `stash@{0}`. Not cancellable. Timeout 10 minutes, for slow hooks.
 pub async fn pull_integrate(client: &GitClient, remote: &str, branch: &str, mode: PullMode, autostash: bool) -> Result<OpResult> {
     valid_remote(remote)?;
     valid_ref_name(branch)?;
@@ -2024,6 +2025,14 @@ mod e2e {
     use crate::transport::paths::{IdentityMapper, NativePath};
     use crate::transport::SharedTransport;
 
+    /// Whether Git's output says putting autostashed changes back conflicted. Git 2.47 and older
+    /// print "Applying autostash resulted in conflicts"; newer versions print "Your local changes
+    /// are stashed, however applying them\nresulted in conflicts".
+    fn autostash_conflicted(output: &str) -> bool {
+        output.contains("Applying autostash resulted in conflicts")
+            || output.contains("Your local changes are stashed, however applying them\nresulted in conflicts")
+    }
+
     fn git(dir: &Path, args: &[&str]) {
         let st = Command::new("git").arg("-C").arg(dir)
             .args(["-c", "user.email=t@t", "-c", "user.name=T", "-c", "commit.gpgsign=false"]).args(args).status().unwrap();
@@ -2809,8 +2818,13 @@ mod e2e {
         std::fs::write(&global, "").unwrap();
         let client = client_for(&dir);
         // Git's own test switch makes it treat the folder as owned by someone else, and the
-        // scratch global config keeps the real one untouched.
-        let as_other = |req: GitReq| req.env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1").env("GIT_CONFIG_GLOBAL", &global.to_string_lossy());
+        // scratch global config keeps the real one untouched. The system config is left out too:
+        // GitHub's runners trust every folder there (`safe.directory = *`), so Git never refused.
+        let as_other = |req: GitReq| {
+            req.env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+                .env("GIT_CONFIG_GLOBAL", &global.to_string_lossy())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+        };
         let refused = client.exec(as_other(GitReq::new("rev-parse", ["rev-parse", "--git-dir"]))).await;
         let Err(GitError::UnsafeRepository { path }) = refused else { panic!("{refused:?}") };
         assert!(path.ends_with(&*dir.file_name().unwrap().to_string_lossy()), "{path}");
@@ -3475,7 +3489,7 @@ mod e2e {
         std::fs::write(local.join("a.txt"), "dirty\n").unwrap();
         let stashed = pull("origin", "main", PullMode::Merge, true).await.unwrap();
         assert!(stashed.ok && !stashed.conflicts, "{stashed:?}");
-        assert!(format!("{}{}", stashed.stdout, stashed.stderr).contains("Applying autostash resulted in conflicts"), "{stashed:?}");
+        assert!(autostash_conflicted(&format!("{}{}", stashed.stdout, stashed.stderr)), "{stashed:?}");
         assert_eq!(crate::git::queries::log::get_stashes(&client).await.unwrap().len(), 1);
 
         // `pull.ff=false` makes a merge commit even where a fast-forward would do, as `git pull`.
@@ -3888,7 +3902,7 @@ mod e2e {
         git(&local, &["fetch", "-q"]);
         std::fs::write(local.join("a.txt"), "mine\n").unwrap();
         let clashed = fast_forward_to_upstream(&client, "main", true).await.unwrap();
-        assert!(clashed.ok && format!("{}{}", clashed.stdout, clashed.stderr).contains("Applying autostash resulted in conflicts"), "{clashed:?}");
+        assert!(clashed.ok && autostash_conflicted(&format!("{}{}", clashed.stdout, clashed.stderr)), "{clashed:?}");
         assert_eq!(rev("main"), rev("origin/main"));
         assert_eq!(crate::git::queries::log::get_stashes(&client).await.unwrap().len(), 1);
         git(&local, &["reset", "-q", "--hard"]);

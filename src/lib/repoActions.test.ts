@@ -120,6 +120,16 @@ describe("continuing an operation", () => {
       "Finished rebasing onto up, but putting your uncommitted changes back caused conflicts. Resolve them in the working tree; your changes are also kept as stash@{0}.",
     );
   });
+
+  it("recognises the wording newer Git versions use for the same conflict", () => {
+    // As printed after a fast-forward with --autostash by a Git newer than 2.47.
+    const stderr =
+      "Your local changes are stashed, however applying them\nresulted in conflicts.  You can either resolve the conflicts\n" +
+      'and then discard the stash with "git stash drop", or, if you\ndo not want to resolve them now, run "git reset --hard" and\n' +
+      'apply the local changes later by running "git stash pop".';
+    const done = continueOutcome(result(true, "[detached HEAD aaaef85] M\n 1 file changed", stderr), rebasing, names);
+    expect(done.kind).toBe("error");
+  });
 });
 
 describe("a rebase that stops", () => {
