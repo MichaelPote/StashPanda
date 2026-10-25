@@ -4,11 +4,13 @@
 
 A lightweight but fully featured standalone desktop Git GUI. It does not bundle a Git install, it works with your existing installed Git and its configuration.
 
-> StashPanda is still in development. While it has been thoroughly tested on Windows and WSL, please take care when using it on your repositories.
+> [!IMPORTANT]
+> StashPanda is still in early development. While it has been thoroughly tested on Windows and WSL, please take care when using it on your repositories.
 
-![StashPanda showing a commit graph with branches, the changed files and a side-by-side diff](docs/screenshots/main.jpg)
 
 ## Features
+
+![StashPanda showing a commit graph with branches, the changed files and a side-by-side diff](docs/screenshots/main.jpg)
 
 - **Visual commit graph**: with customisable branch colours.
 - **First class support for repositories over SSH and inside WSL**: every Git command for that
