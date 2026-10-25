@@ -37,9 +37,18 @@ async fn after_write(app: &AppHandle, state: &AppState, key: &str) {
 /// Git process is usually just finishing); if it is still there, return
 /// `IndexLocked` or `ConfigLocked` so the UI can offer `op_remove_stale_lock`.
 macro_rules! write_op {
-    ($app:expr, $state:expr, $key:expr, |$client:ident| $body:expr) => {{
+    ($app:expr, $state:expr, $key:expr, |$client:ident| $body:expr) => {
+        write_op!(@run $app, $state, $key, false, |$client| $body)
+    };
+    // A write that deletes or renames refs, and so locks `packed-refs` as a fetch's `--prune` can:
+    // it waits for a running fetch too.
+    (refs $app:expr, $state:expr, $key:expr, |$client:ident| $body:expr) => {
+        write_op!(@run $app, $state, $key, true, |$client| $body)
+    };
+    (@run $app:expr, $state:expr, $key:expr, $refs:expr, |$client:ident| $body:expr) => {{
         let h = repo(&$state, &$key).await?;
         let out = {
+            let _network = if $refs { Some(h.network_gate.lock().await) } else { None };
             let _gate = h.write_gate.lock().await;
             let _exclusive = h.lock.write().await;
             let $client = &h.client;
@@ -165,7 +174,7 @@ pub async fn op_branch_create(app: AppHandle, state: State<'_, AppState>, key: S
 #[tauri::command]
 #[specta::specta]
 pub async fn op_branch_delete(app: AppHandle, state: State<'_, AppState>, key: String, name: String, force: bool) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::branch_delete(c, &name, force).await)
+    write_op!(refs app, state, key, |c| ops::branch_delete(c, &name, force).await)
 }
 
 /// Merge `target` into the current branch, which must still be `into` (null: a detached HEAD);
@@ -274,7 +283,7 @@ pub async fn write_worktree_file(app: AppHandle, state: State<'_, AppState>, key
 /// step has begun, which always runs to the end. `autostash` stashes uncommitted changes first
 /// and reapplies them afterwards.
 ///
-/// Holds the write gate throughout, so no other write overlaps, but takes the exclusive lock only
+/// Holds the network and write gates throughout, so no other fetch, push or write overlaps, but takes the exclusive lock only
 /// for the local step: reads (status, graph pages, diffs) carry on during the network transfer.
 #[tauri::command]
 #[specta::specta]
@@ -440,17 +449,25 @@ fn progress_emitter<'a>(app: &'a AppHandle, key: &'a str, op_id: &'a str) -> imp
     }
 }
 
-/// Wait for the write gate. Cancelling while another write still holds it stops the wait.
-async fn gate_or_cancel<'a>(h: &'a RepoHandle, token: &CancellationToken) -> Result<tokio::sync::MutexGuard<'a, ()>> {
+/// Wait for `gate`. Cancelling while another operation still holds it stops the wait.
+async fn lock_or_cancel<'a>(gate: &'a tokio::sync::Mutex<()>, token: &CancellationToken) -> Result<tokio::sync::MutexGuard<'a, ()>> {
     tokio::select! {
         biased;
         _ = token.cancelled() => Err(GitError::Cancelled),
-        g = h.write_gate.lock() => Ok(g),
+        g = gate.lock() => Ok(g),
     }
 }
 
-/// Run a network operation that is cancellable from start to end (fetch, push): registered
-/// under `op_id`, under the write gate but not the exclusive lock, with progress as
+/// Wait for the network gate and then the write gate, as a pull, push or sync does: no other
+/// network operation and no other write overlaps it.
+async fn gate_or_cancel<'a>(h: &'a RepoHandle, token: &CancellationToken) -> Result<(tokio::sync::MutexGuard<'a, ()>, tokio::sync::MutexGuard<'a, ()>)> {
+    let network = lock_or_cancel(&h.network_gate, token).await?;
+    let write = lock_or_cancel(&h.write_gate, token).await?;
+    Ok((network, write))
+}
+
+/// Run a network operation that is cancellable from start to end (push, deleting a remote
+/// branch): registered under `op_id`, under the network and write gates but not the exclusive lock, with progress as
 /// `operationProgress` events and a refresh afterwards. A macro rather than a function taking an
 /// async closure, which Tauri's `Send` bound on commands cannot see through.
 macro_rules! network_op {
@@ -475,7 +492,18 @@ macro_rules! network_op {
 #[tauri::command]
 #[specta::specta]
 pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String) -> Result<OpResult> {
-    network_op!(app, state, key, op_id, |h, progress, cancel| ops::fetch_all(&h.client, &progress, cancel).await)
+    // Only the network gate: a fetch changes remote-tracking branches, `FETCH_HEAD` and the object
+    // store, none of which staging, committing or checking out writes, so those go ahead meanwhile.
+    let h = repo(&state, &key).await?;
+    let emit = progress_emitter(&app, &key, &op_id);
+    let out = {
+        let op = h.start_operation(&op_id)?;
+        let _network = lock_or_cancel(&h.network_gate, &op.token).await?;
+        let progress = |line: String| emit(line, true);
+        ops::fetch_all(&h.client, &progress, &op.token).await
+    };
+    after_write(&app, &state, &key).await;
+    out
 }
 
 /// Push local `branch`. With no `target`, where plain `git push` would push it (failing with
@@ -746,7 +774,7 @@ pub async fn op_push_to(
 #[tauri::command]
 #[specta::specta]
 pub async fn op_branch_rename(app: AppHandle, state: State<'_, AppState>, key: String, old_name: String, new_name: String) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::branch_rename(c, &old_name, &new_name).await)
+    write_op!(refs app, state, key, |c| ops::branch_rename(c, &old_name, &new_name).await)
 }
 
 /// Move the current branch to `target`. `hard` also throws away every uncommitted change, so the
@@ -802,7 +830,7 @@ pub async fn op_revert_abort(app: AppHandle, state: State<'_, AppState>, key: St
 #[tauri::command]
 #[specta::specta]
 pub async fn op_tag_delete(app: AppHandle, state: State<'_, AppState>, key: String, name: String) -> Result<OpResult> {
-    write_op!(app, state, key, |c| ops::tag_delete(c, &name).await)
+    write_op!(refs app, state, key, |c| ops::tag_delete(c, &name).await)
 }
 
 /// The sync sequence against throwaway repositories, through a real `RepoHandle` opened the way

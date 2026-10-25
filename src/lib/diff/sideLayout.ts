@@ -7,6 +7,9 @@
  * the shorter side moves more slowly, so the two sides line up again once it is past.
  */
 
+/** Width of the gap between the two sides, where the curves are drawn. */
+export const GAP_PX = 36;
+
 /** One stretch of the diff, in the shared rows and in each side's own lines. */
 export interface Band {
   /** First row of the stretch, and how many rows it takes. */
@@ -114,4 +117,23 @@ export function bandPath(width: number, lt: number, lb: number, rt: number, rb: 
 export function bandEdges(width: number, lt: number, lb: number, rt: number, rb: number): string {
   const c = width / 2;
   return `M0 ${lt}C${c} ${lt} ${c} ${rt} ${width} ${rt}M0 ${lb}C${c} ${lb} ${c} ${rb} ${width} ${rb}`;
+}
+
+/**
+ * The top and bottom of a band's outline on one side. They sit on the half pixel, so each 1px
+ * edge fills one row of pixels instead of two half rows. A side with no lines comes to a point
+ * on the half pixel too, where the line marking the insertion is drawn, so the two meet exactly.
+ */
+export function sideEdges(y: number, height: number): [number, number] {
+  return height === 0 ? [y + 0.5, y + 0.5] : [y + 0.5, y + height - 0.5];
+}
+
+/**
+ * The top and bottom of a band's fill on one side: exactly its lines, so neighbouring bands of
+ * one block meet with no gap between them. An outlined band's point sits on the half pixel, on
+ * the line marking where its lines would go.
+ */
+export function sideFill(y: number, height: number, outline: boolean): [number, number] {
+  if (height === 0) return outline ? [y + 0.5, y + 0.5] : [y, y];
+  return [y, y + height];
 }

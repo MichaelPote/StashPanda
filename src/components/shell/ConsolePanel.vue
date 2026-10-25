@@ -10,12 +10,16 @@ import {
   XIcon,
 } from "@lucide/vue";
 import type { Category } from "@/lib/bindings";
+import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatClockTime, formatDurationMs } from "@/lib/format";
 import { GitErrorMessage } from "@/lib/ipc";
+import { copyText } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import type { ConsoleEntry, RepoSession } from "@/stores/sessions";
 import { vPixelSnap } from "@/lib/pixelSnap";
+import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
 const props = defineProps<{
@@ -25,27 +29,30 @@ const props = defineProps<{
 
 const uiState = useUiStateStore();
 
+const settings = useSettingsStore();
+/** `console.logInternal`: off, the app's own commands are not logged, so their button is hidden. */
+const logInternal = computed(() => settings.settings?.console?.logInternal ?? false);
+
 /** The filter buttons; `help` is each one's tooltip. */
-const CATEGORIES: { id: Category; label: string; help: string }[] = [
+const ALL_CATEGORIES: { id: Category; label: string; help: string }[] = [
   { id: "userAction", label: "User", help: "Commands from your own actions: commits, checkouts, fetches and the rest." },
-  { id: "internal", label: "Internal", help: "Commands the app runs to read the repository: its history, branches and status." },
-  { id: "watcher", label: "Watcher", help: "Commands run when the app notices files change in the repository." },
+  { id: "internal", label: "Internal", help: "Commands the app runs by itself: reading the repository's history, branches and status, and watching it for changes." },
 ];
+const CATEGORIES = computed(() => ALL_CATEGORIES.filter((c) => c.id !== "internal" || logInternal.value));
 
 type ConsoleButtons = Record<Category, boolean> & { log: boolean };
 
-/** The Log, User, Internal and Watcher buttons, remembered in the UI state. Log mode is the default. */
+/** The Log, User and Internal buttons, remembered in the UI state. Log mode is the default. */
 const filters = uiState.pref<ConsoleButtons>(
   (s) =>
     s.console
       ? {
           userAction: s.console.userAction ?? false,
           internal: s.console.internal ?? false,
-          watcher: s.console.watcher ?? false,
           log: s.console.log ?? true,
         }
       : null,
-  { userAction: false, internal: false, watcher: false, log: true },
+  { userAction: false, internal: false, log: true },
   (value) => ({ console: value }),
 );
 
@@ -58,11 +65,9 @@ function toggleFilter(id: Category): void {
   filters.value = { ...f, log: false, [id]: f.log ? true : !f[id] };
 }
 
-/** Log switches the other three off; switching Log off turns all three back on. */
+/** Log switches the others off; switching Log off turns them all back on. */
 function toggleLog(): void {
-  filters.value = filters.value.log
-    ? { userAction: true, internal: true, watcher: true, log: false }
-    : { userAction: false, internal: false, watcher: false, log: true };
+  filters.value = filters.value.log ? { userAction: true, internal: true, log: false } : { userAction: false, internal: false, log: true };
 }
 
 /** Newest first. */
@@ -70,7 +75,7 @@ const entries = computed<ConsoleEntry[]>(() => {
   const all = props.session?.consoleEntries ?? [];
   const shown = logMode.value
     ? all.filter((e) => e.category === "userAction")
-    : all.filter((e) => filters.value[e.category] !== false);
+    : all.filter((e) => filters.value[e.category] !== false && (e.category !== "internal" || logInternal.value));
   return shown.slice().reverse();
 });
 
@@ -147,14 +152,35 @@ function resultTitle(entry: ConsoleEntry): string {
   return `Took ${formatDurationMs(entry.durationMs)}; exit code ${entry.exitCode ?? "none"}`;
 }
 
+/** What the command printed, for Copy Output: standard output, then standard error. */
+function outputText(entry: ConsoleEntry): string {
+  return [entry.stdout, entry.stderr]
+    .filter((t) => t.length > 0)
+    .map((t) => t.replace(/\n+$/, ""))
+    .join("\n");
+}
+
+/** The whole entry, for Copy: the command line as run, what it printed, and the error that stopped it. */
+function entryText(entry: ConsoleEntry): string {
+  const parts = [`$ ${entry.display}`, outputText(entry)];
+  if (entry.error) parts.push(GitErrorMessage(entry.error));
+  return parts.filter((p) => p.length > 0).join("\n");
+}
+
+/** Why Copy Output has nothing to copy, or null when it has. */
+function noOutputReason(entry: ConsoleEntry): string | null {
+  if (entry.stdout.length > 0 || entry.stderr.length > 0) return null;
+  if (entry.running) return "The command has not printed anything yet.";
+  if (entry.outputOmitted) return "Successful internal and watcher commands keep only the size of their output.";
+  return "The command printed nothing.";
+}
+
 function categoryClass(category: Category): string {
   switch (category) {
     case "userAction":
       return "bg-violet/28 text-primary-tint";
     case "internal":
       return "bg-muted text-muted-foreground";
-    case "watcher":
-      return "bg-cyan/15 text-cyan";
   }
 }
 
@@ -164,8 +190,6 @@ function categoryShort(category: Category): string {
       return "user";
     case "internal":
       return "internal";
-    case "watcher":
-      return "watcher";
   }
 }
 </script>
@@ -262,6 +286,8 @@ function categoryShort(category: Category): string {
         <!-- Rows are as wide as the longest command line, so the list scrolls sideways instead of cutting it off. -->
         <div class="w-max min-w-full">
         <div v-for="entry in entries" :key="entry.seq" class="border-b border-border/60">
+          <ContextMenu>
+          <ContextMenuTrigger as-child>
           <button
             type="button"
             class="flex h-(--row-h) w-full items-center gap-2 px-2 text-left whitespace-pre hover:bg-row-hover"
@@ -312,13 +338,19 @@ function categoryShort(category: Category): string {
               <span class="shrink-0 pr-2">{{ entry.display }}</span>
             </template>
           </button>
+          </ContextMenuTrigger>
+          <ContextMenuContent class="min-w-44">
+            <ActionMenuItem @select="copyText(entryText(entry), 'the command')">Copy</ActionMenuItem>
+            <ActionMenuItem :reason="noOutputReason(entry)" @select="copyText(outputText(entry), 'the output')">Copy Output</ActionMenuItem>
+          </ContextMenuContent>
+          </ContextMenu>
 
           <!-- Log mode: what the command printed, as plain text, pinned to the visible part of the
                list. Standard output, then standard error, which is where Git reports on a push,
                fetch, pull or checkout; red only when the command failed. -->
           <div
             v-if="logMode && isExpanded(entry) && hasLogOutput(entry)"
-            class="sticky left-0 overflow-x-auto px-7 pb-1.5 scrollbar-thin"
+            class="sticky left-0 overflow-x-auto px-7 pb-1.5 select-text scrollbar-thin"
             :style="viewWidth > 0 ? { width: `${viewWidth}px` } : undefined"
           >
             <pre v-if="entry.stdout.length > 0" class="whitespace-pre text-text-2">{{ entry.stdout }}</pre>
@@ -329,7 +361,7 @@ function categoryShort(category: Category): string {
           <!-- Pinned to the visible part of the list, with its own scrollbars for long output. -->
           <div
             v-else-if="!logMode && isExpanded(entry)"
-            class="sticky left-0 space-y-1.5 bg-muted/20 px-7 py-1.5"
+            class="sticky left-0 space-y-1.5 bg-muted/20 px-7 py-1.5 select-text"
             :style="viewWidth > 0 ? { width: `${viewWidth}px` } : undefined"
           >
             <p class="font-sans text-[0.7rem] text-muted-foreground">

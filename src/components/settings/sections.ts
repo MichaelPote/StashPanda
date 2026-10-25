@@ -4,20 +4,21 @@
  * renders one field.
  *
  * Settings that only show or hide something are left out when the window already has a control
- * for it: `appearance.showRemoteBranches` (each branch's show/hide tag in the Branches panel),
- * `console.showInternal` (the Console header's Internal button) and
+ * for it: `appearance.showRemoteBranches` (each branch's show/hide tag in the Branches panel) and
  * `appearance.showStashesInGraph` (belongs on the Branches panel's Stashes heading). The diff
  * viewer's header controls (layout, context lines, whitespace) are left out for the same reason.
  */
 import type { Component } from "vue";
-import { CpuIcon, DatabaseIcon, FileDiffIcon, GitCommitHorizontalIcon, KeyRoundIcon, PanelTopIcon, SlidersHorizontalIcon, TerminalIcon, TimerIcon } from "@lucide/vue";
+import { CpuIcon, FileDiffIcon, GitCommitHorizontalIcon, GitMergeIcon, KeyRoundIcon, PanelTopIcon, SlidersHorizontalIcon, WrenchIcon } from "@lucide/vue";
 import type { Settings } from "@/lib/bindings";
+import { DIFF_COLORS, diffColorSetting, parseColor, toHex8 } from "@/lib/diff/colors";
+import { DARK_SYNTAX_THEMES, LIGHT_SYNTAX_THEMES } from "@/lib/diff/syntaxThemes";
 import DiffPreview from "./DiffPreview.vue";
 import KeyManagerPage from "./KeyManagerPage.vue";
 import ToolbarPage from "./ToolbarPage.vue";
 
 /** The sections of `settings.json` the dialog edits. `version` and `library` are left out. */
-export type SettingsGroup = "git" | "appearance" | "console" | "polling" | "cache" | "commit" | "diff";
+export type SettingsGroup = "git" | "appearance" | "console" | "polling" | "cache" | "commit" | "merge" | "diff";
 
 /** What a field holds while the dialog is open: the text in its box, or a toggle's state. */
 export type FormValue = string | boolean;
@@ -26,6 +27,8 @@ interface FieldBase {
   /** Where the value lives: `settings[group][key]`. */
   group: SettingsGroup;
   key: string;
+  /** A heading drawn above this field, starting a group of the fields after it on the page. */
+  heading?: { title: string; description?: string };
   label: string;
   help?: string;
   /**
@@ -79,7 +82,39 @@ export interface TextField extends FieldBase {
   optional?: boolean;
 }
 
-export type SettingsFieldDef = SelectField | ToggleField | NumberField | TextField | FontField;
+/**
+ * A colour, with its opacity: a swatch, an opacity slider and a `#rrggbbaa` box. Empty uses the
+ * theme's own colour, which the field shows. Like toggles, neighbouring colours with the same
+ * `list` are drawn as one group under that heading.
+ */
+export interface ColorField extends FieldBase {
+  kind: "color";
+  /** The theme the colour belongs to: the page shows only the current theme's colours. */
+  dark: boolean;
+  /** The custom property it sets, whose theme value is the default. */
+  cssVar: string;
+  list?: string;
+  listHelp?: string;
+}
+
+export type SettingsFieldDef = SelectField | ToggleField | NumberField | TextField | FontField | ColorField;
+
+/** The Diff page's colour fields for one theme. */
+function diffColorFields(dark: boolean): ColorField[] {
+  return DIFF_COLORS.map(({ key, cssVar, label }, i) => ({
+    kind: "color",
+    group: "diff",
+    key: diffColorSetting(key, dark),
+    label,
+    dark,
+    cssVar,
+    list: dark ? "Colours for the dark theme" : "Colours for the light theme",
+    listHelp:
+      i === 0
+        ? `The ${dark ? "light" : "dark"} theme keeps colours of its own; choose it under Theme on the Appearance page to change those, without saving first. Modified lines are, side by side, lines that replace lines on the other side: matched lines, or a stretch with lines on both sides. The marks colour the changed words at half strength, the edges of an insertion's or a deletion's band, and, for removed words, the cursor where they were. Reset goes back to the theme's own colour.`
+        : undefined,
+  }));
+}
 
 export interface SettingsSection {
   id: string;
@@ -201,6 +236,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       {
         kind: "toggle",
         group: "appearance",
+        key: "markdownDescriptions",
+        label: "Commit descriptions as Markdown",
+        help: "Draw the description under a commit's subject in the Files panel with its headings, lists, code and links. Off shows the text exactly as it was written.",
+      },
+      {
+        kind: "toggle",
+        group: "appearance",
         key: "showGraphColumn",
         label: "Graph",
         list: "Commit columns",
@@ -235,6 +277,26 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         options: [
           { value: "all", label: "Every changed file" },
           { value: "staged", label: "Only staged files" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "merge",
+    label: "Merge",
+    icon: GitMergeIcon,
+    description: "How conflicts are handled after a merge, rebase, cherry-pick or stash.",
+    fields: [
+      {
+        kind: "select",
+        group: "merge",
+        key: "autoResolve",
+        label: "Resolve simple conflicts",
+        help: "Git reports a conflict when both sides changed lines next to each other, even when neither change overlaps the other. These can be merged by keeping both changes. Files with only such conflicts are saved and marked resolved, and the merge editor resolves those blocks when it opens a file.",
+        options: [
+          { value: "prompt", label: "Ask first" },
+          { value: "automatic", label: "Automatically" },
+          { value: "off", label: "Off" },
         ],
       },
     ],
@@ -319,12 +381,37 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         help: "Colour keywords, strings and comments by the file's language, chosen from its extension. Files without a known extension stay plain.",
       },
       {
+        kind: "select",
+        group: "diff",
+        key: "syntaxThemeDark",
+        label: "Syntax colours, dark theme",
+        help: "The colours for keywords, strings and comments while the app uses its dark theme, in the diff, Blame and the Merge editor. The background and the added and removed lines keep the app's own colours.",
+        options: DARK_SYNTAX_THEMES.map((t) => ({ value: t.id, label: t.label })),
+      },
+      {
+        kind: "select",
+        group: "diff",
+        key: "syntaxThemeLight",
+        label: "Syntax colours, light theme",
+        help: "The same for the light theme. The preview below shows the current theme; choose the other under Theme on the Appearance page to see its colours, without saving first.",
+        options: LIGHT_SYNTAX_THEMES.map((t) => ({ value: t.id, label: t.label })),
+      },
+      {
         kind: "toggle",
         group: "diff",
         key: "matchSimilarLines",
         label: "Match similar lines",
         help: "In a block of changed lines, compare each removed line with the added line most like it, not the one in the same position. Side by side, each matched pair gets a curve of its own. Off pairs the lines in the order Git lists them.",
       },
+      {
+        kind: "toggle",
+        group: "diff",
+        key: "modLeftAsRemoved",
+        label: "Draw the removed side of modified lines in the removed colour",
+        help: "Side by side, the left-hand modified lines take the Removed lines colour instead of the Modified lines colour, and the band between the sides fades from one to the other.",
+      },
+      ...diffColorFields(true),
+      ...diffColorFields(false),
     ],
   },
   {
@@ -393,17 +480,25 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     page: KeyManagerPage,
   },
   {
-    id: "console",
-    label: "Console",
-    icon: TerminalIcon,
-    description: "What the console panel records.",
+    id: "advanced",
+    label: "Advanced",
+    icon: WrenchIcon,
+    description: "What the Console records, how much history is kept on disk, and how often repositories are checked for changes.",
     fields: [
+      {
+        kind: "toggle",
+        group: "console",
+        key: "logInternal",
+        heading: { title: "Console", description: "What the Console panel records." },
+        label: "Log internal commands",
+        help: "The commands StashPanda runs by itself, to read the repository and to watch it for changes, successful or not. Off, the Console records only your own commands, and its Internal button is hidden.",
+      },
       {
         kind: "toggle",
         group: "console",
         key: "verboseHelpers",
         label: "Log requests to helper processes",
-        help: "Each request sent to the long-running git cat-file and inotifywait processes.",
+        help: "Each request sent to the long-running git cat-file and inotifywait processes. Only while internal commands are logged.",
         applies: "reopen",
       },
       {
@@ -428,16 +523,31 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         max: 16_384,
         applies: "reopen",
       },
-    ],
-  },
-  {
-    id: "polling",
-    label: "Polling",
-    icon: TimerIcon,
-    description: "How often StashPanda checks repositories for changes made outside it.",
-    fields: [
       {
         kind: "number",
+        heading: { title: "Cache", description: "How much history StashPanda keeps on disk between runs." },
+        group: "cache",
+        key: "maxCommitsPerRepo",
+        label: "Commits loaded per repository",
+        help: "Older history is not shown in the graph.",
+        unit: "commits",
+        min: 1000,
+        max: 10_000_000,
+        step: 1000,
+      },
+      {
+        kind: "number",
+        group: "cache",
+        key: "maxCachedRepos",
+        label: "Repositories kept in the cache",
+        help: "Checked when StashPanda starts: the repositories opened least recently beyond this number lose their cached history and load it from Git again next time.",
+        unit: "repositories",
+        min: 1,
+        max: 1000,
+      },
+      {
+        kind: "number",
+        heading: { title: "Polling", description: "How often StashPanda checks repositories for changes made outside it." },
         group: "polling",
         key: "statusIntervalMs",
         label: "Working tree, active tab",
@@ -487,35 +597,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
       },
     ],
   },
-  {
-    id: "cache",
-    label: "Cache",
-    icon: DatabaseIcon,
-    description: "How much history StashPanda keeps on disk between runs.",
-    fields: [
-      {
-        kind: "number",
-        group: "cache",
-        key: "maxCommitsPerRepo",
-        label: "Commits loaded per repository",
-        help: "Older history is not shown in the graph.",
-        unit: "commits",
-        min: 1000,
-        max: 10_000_000,
-        step: 1000,
-      },
-      {
-        kind: "number",
-        group: "cache",
-        key: "maxCachedRepos",
-        label: "Repositories kept in the cache",
-        help: "Checked when StashPanda starts: the repositories opened least recently beyond this number lose their cached history and load it from Git again next time.",
-        unit: "repositories",
-        min: 1,
-        max: 1000,
-      },
-    ],
-  },
 ];
 
 /** The key a field's form value is kept under: `appearance.theme`. */
@@ -537,6 +618,7 @@ export function toFormValue(field: SettingsFieldDef, stored: unknown): FormValue
     case "font":
       return String(stored ?? "");
     case "text":
+    case "color":
       return typeof stored === "string" ? stored : "";
     case "number": {
       if (typeof stored !== "number") return "";
@@ -561,6 +643,12 @@ export function fromFormValue(field: SettingsFieldDef, value: FormValue): { valu
       const text = String(value).trim();
       if (text.length > 0) return { value: text };
       return field.optional ? { value: null } : { error: "This cannot be empty." };
+    }
+    case "color": {
+      const text = String(value).trim();
+      if (text.length === 0) return { value: null };
+      const color = parseColor(text);
+      return color ? { value: toHex8(color) } : { error: "Enter a colour as #rrggbb or #rrggbbaa." };
     }
     case "number": {
       const text = String(value).trim();

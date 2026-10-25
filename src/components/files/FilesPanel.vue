@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useEventListener, useResizeObserver } from "@vueuse/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { GitBranchIcon, GitForkIcon, LoaderCircleIcon } from "@lucide/vue";
 import { commands, type DiffTarget, type FileChange, type MergeInfo, type ResolveSide } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import MessageToggle from "@/components/files/MessageToggle.vue";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
-import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import {
   copyFullPath,
@@ -21,11 +22,12 @@ import {
   selectedConflictItems,
   selectedWorktreePaths,
   stageSelected,
+  takeAllConflicts,
   takeVersion,
   unstageSelected,
 } from "@/lib/repoActions";
 import { fileViewReason, fileViewRev, mergeEditorReason, openBlame, openFileHistory, openMergeEditor } from "@/lib/fileViews";
-import { conflictStages, operationNames } from "@/lib/conflicts";
+import { conflictStages, operationNames, takeAllChoices } from "@/lib/conflicts";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import {
@@ -43,10 +45,12 @@ import {
   type SortBy,
 } from "@/lib/files";
 import { fontsVersion, rowTextWidth } from "@/lib/graph/columnWidths";
-import { remToPx } from "@/lib/graph/paths";
+import { remToPx, ROW_HEIGHT } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
+import { descriptionHtml, descriptionLink } from "@/lib/commitMarkdown";
 import { mergeParentLabels, mergeParentNames, mergeSummary, type RepoNames } from "@/lib/mergeParents";
 import { useListSelection } from "@/composables/useListSelection";
+import { useVirtualRows } from "@/composables/useVirtualRows";
 import { useDialogsStore } from "@/stores/dialogs";
 import { emptyFileSelection, useSessionsStore, type RepoSession, type SelectedFile } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
@@ -202,6 +206,17 @@ const messageBody = computed(() => {
   return split < 0 ? "" : normalised.slice(split + 2);
 });
 
+/** `appearance.markdownDescriptions`: the body drawn as Markdown, or null to show it as written. */
+const messageBodyHtml = computed(() => (settings.settings?.appearance?.markdownDescriptions ?? true ? descriptionHtml(messageBody.value) : null));
+
+/** Links in the rendered body open in the system browser, never in the app's own window. */
+function onMessageBodyClick(event: MouseEvent): void {
+  if (!(event.target instanceof Element) || !event.target.closest("a")) return;
+  event.preventDefault();
+  const href = descriptionLink(event.target);
+  if (href) void openUrl(href);
+}
+
 async function toggleMessage(): Promise<void> {
   messageExpanded.value = !messageExpanded.value;
   const row = selectedRow.value;
@@ -317,6 +332,25 @@ function isStagedRow(item: FileItem): boolean {
 
 const flat = computed<FileItem[]>(() => sections.value.flatMap((s) => s.items));
 
+/**
+ * What the list draws, top to bottom: each section's heading (unless the files are not grouped)
+ * and then its files. Every row is `--row-h` tall, so only the rows in view are drawn; a list of
+ * tens of thousands of files (an unignored build folder) stays as quick as a short one.
+ */
+type ListRow = { kind: "heading"; key: string; section: FileSection } | { kind: "file"; key: string; item: FileItem };
+const rows = computed<ListRow[]>(() => {
+  const out: ListRow[] = [];
+  for (const section of sections.value) {
+    if (section.items.length === 0) continue;
+    if (groupBy.value !== "none") out.push({ kind: "heading", key: `heading:${section.key}`, section });
+    for (const item of section.items) out.push({ kind: "file", key: item.id, item });
+  }
+  return out;
+});
+/** Each file's row number in `rows`, for scrolling the keyboard cursor into view. */
+const rowIndex = computed(() => new Map(rows.value.flatMap((r, i) => (r.kind === "file" ? [[r.item.id, i] as const] : []))));
+const headingRows = computed(() => rows.value.flatMap((r, i) => (r.kind === "heading" ? [i] : [])));
+
 /** The row whose diff is shown: the last one clicked, whatever else is selected. */
 function isFocus(item: FileItem): boolean {
   const sel = props.session.selectedFile;
@@ -346,8 +380,8 @@ const list = useListSelection({
     if (item) showDiff(item);
   },
   reveal: (id) => {
-    const item = byId.value.get(id);
-    if (item) document.getElementById(rowId(item))?.scrollIntoView({ block: "nearest" });
+    const index = rowIndex.value.get(id);
+    if (index !== undefined) virtual.ensureVisible(index);
   },
   initialCursor: () => flat.value.find((i) => isFocus(i))?.id ?? null,
 });
@@ -398,17 +432,19 @@ function onKeydown(event: KeyboardEvent): void {
   list.onKeydown(event);
 }
 
-// Ctrl+A selects every file in the active tab's list. App.vue stops the browser from selecting
-// the page text; this listener only does the selecting. Text fields keep their own Ctrl+A.
+// Ctrl+A selects every file in the active tab's list, while the focus is in this panel or nowhere
+// in particular. Focus in the diff, the Console or the commit list leaves the files alone. App.vue
+// stops the browser from selecting the page text; this listener only does the selecting. Text
+// fields keep their own Ctrl+A.
+const panelEl = ref<HTMLElement | null>(null);
 useEventListener(window, "keydown", (event: KeyboardEvent) => {
   if (!isSelectAllKey(event) || isEditableTarget(event.target)) return;
+  const focused = document.activeElement;
+  if (focused && focused !== document.body && !panelEl.value?.contains(focused)) return;
   if (sessions.activeKey !== props.session.key || dialogs.active !== null || dialogs.addRepoOpen) return;
   list.selectAll();
 });
 
-function rowId(item: FileItem): string {
-  return `file-${props.session.key.slice(0, 8)}-${item.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-}
 
 const totalCount = computed(() => flat.value.length);
 
@@ -450,6 +486,10 @@ function onRowDoubleClick(item: FileItem): void {
   if (mode.value === "worktree" && item.state === "conflict" && mergeEditorReason(item.letter) === null) openMergeEditor(props.session.key, item.path);
 }
 const sideNames = computed(() => operationNames(props.session.status, props.session.refs, props.session.stashConflict));
+/** The "Conflict" tag after a conflicted file's name, in the conflict badge's colours. */
+const CONFLICT_TAG_CLASS = "badge-conflict shrink-0 rounded-sm px-1 text-[0.65rem] leading-4 font-semibold";
+/** Why the selected conflicts cannot all be resolved block by block, or null when they can. */
+const takeAllReason = computed(() => menuConflicts.value.map((i) => mergeEditorReason(i.letter)).find((r) => r !== null) ?? null);
 /** "Take the Version from main", noting when every selected file was deleted on that side. */
 function takeLabel(side: ResolveSide): string {
   const name = side === "ours" ? sideNames.value.ours : sideNames.value.theirs;
@@ -477,6 +517,37 @@ const fileViewMenuReason = computed(() => (menuItem.value ? fileViewReason(menuI
 
 const tabular = computed(() => groupBy.value !== "folder");
 const listEl = ref<HTMLElement | null>(null);
+const virtual = useVirtualRows(listEl, { rowHeight: ROW_HEIGHT, total: () => rows.value.length });
+const visibleRows = computed(() => rows.value.slice(virtual.start.value, virtual.end.value));
+
+/**
+ * The heading of the section at the top of the list, held there while its files scroll under it.
+ * The headings in the list scroll away with their rows, so this one stands in for the one that has
+ * gone, and the next heading pushes it up and out as it arrives.
+ */
+const stickyHeading = computed<{ section: FileSection; offset: number } | null>(() => {
+  const headings = headingRows.value;
+  if (headings.length === 0) return null;
+  const top = virtual.scrollTop.value;
+  const first = Math.floor(top / ROW_HEIGHT);
+  let at = -1;
+  for (let i = 0; i < headings.length && (headings[i] as number) <= first; i += 1) at = i;
+  if (at < 0) return null;
+  const row = rows.value[headings[at] as number];
+  if (row?.kind !== "heading") return null;
+  const next = headings[at + 1];
+  const offset = next === undefined ? 0 : Math.min(0, next * ROW_HEIGHT - top - ROW_HEIGHT);
+  return { section: row.section, offset };
+});
+
+/** A section heading's look, for the headings in the list and the one held at the top. */
+const headingClass = computed(() =>
+  cn(
+    "flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 select-none",
+    // Folder names keep their case; only the fixed status headings use small capitals.
+    groupBy.value === "folder" ? "font-mono text-xs text-muted-foreground" : "smallcaps",
+  ),
+);
 const listWidth = ref(0);
 useResizeObserver(listEl, () => {
   listWidth.value = listEl.value?.clientWidth ?? 0;
@@ -498,7 +569,7 @@ function pathText(item: FileItem): string {
 </script>
 
 <template>
-  <section class="area flex h-full min-h-0 flex-col outline-none" tabindex="0" @keydown="onKeydown">
+  <section ref="panelEl" class="area flex h-full min-h-0 flex-col outline-none" tabindex="0" @keydown="onKeydown">
     <PanelHeader title="Files">
       <span v-if="mode === 'worktree'" class="truncate text-xs text-muted-foreground">Working tree</span>
       <span v-else-if="mode === 'commit' && selectedRow" class="truncate font-mono text-xs text-muted-foreground select-text">
@@ -556,6 +627,12 @@ function pathText(item: FileItem): string {
         <div v-if="messageExpanded" class="relative pt-1">
           <p v-if="messageLoading" :class="cn('text-xs text-muted-foreground', !isMerge && 'pb-[18px]')">Loading message…</p>
           <p v-else-if="messageError" :class="cn('text-xs text-destructive', !isMerge && 'pb-[18px]')">{{ messageError }}</p>
+          <div
+            v-else-if="messageBody.length > 0 && messageBodyHtml !== null"
+            :class="cn('commit-markdown max-h-40 overflow-auto text-xs text-muted-foreground select-text scrollbar-thin', !isMerge && 'pb-[18px]')"
+            @click="onMessageBodyClick"
+            v-html="messageBodyHtml"
+          />
           <pre
             v-else-if="messageBody.length > 0"
             :class="cn('max-h-40 overflow-auto font-sans text-xs whitespace-pre-wrap text-muted-foreground select-text scrollbar-thin', !isMerge && 'pb-[18px]')"
@@ -599,75 +676,81 @@ function pathText(item: FileItem): string {
             <EmptyState v-else-if="flat.length === 0 && mode === 'worktree'" message="The working tree is clean. Nothing to commit." />
             <p v-else-if="flat.length === 0" class="px-2 py-2 text-base text-muted-foreground italic">No files changed.</p>
 
-            <template v-for="section in sections" :key="section.key">
-              <template v-if="section.items.length > 0">
-                <div
-                  v-if="groupBy !== 'none'"
-                  :class="
-                    cn(
-                      'sticky top-0 z-10 flex h-(--row-h) items-center gap-1.5 border-y border-border-soft bg-table-head px-2 select-none',
-                      // Folder names keep their case; only the fixed status headings use small capitals.
-                      groupBy === 'folder' ? 'font-mono text-xs text-muted-foreground' : 'smallcaps',
-                    )
-                  "
-                >
-                  {{ section.title }}
-                  <span class="tabular-nums">({{ section.items.length }})</span>
-                </div>
-                <!-- The row's tooltip has the whole path; the modified time inside has its own. -->
-                <Tip v-for="item in section.items" :key="item.id" :content="item.oldPath ? `${item.oldPath} → ${item.path}` : item.path" side="right">
-                  <button
-                    :id="rowId(item)"
-                    type="button"
-                    :class="
-                      cn(
-                        'flex h-(--row-h) w-full items-center gap-1.5 px-2 text-left text-base outline-none',
-                        isSelected(item) ? STATE_CLASSES[item.state].band : 'hover:bg-row-hover',
-                        multiple && isFocus(item) && 'shadow-[inset_2px_0_0_var(--ring)]',
-                      )
-                    "
-                    :aria-selected="isSelected(item)"
-                    data-file-row
-                    @mousedown="list.onMousedown"
-                    @click="list.onClick(item.id, $event)"
-                    @contextmenu="onRowContextMenu(item)"
-                    @dblclick="onRowDoubleClick(item)"
-                  >
-                    <span
-                      :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[item.state].badge)"
-                    >
-                      {{ item.letter }}
-                    </span>
-                    <template v-if="tabular">
-                      <span class="shrink-0 truncate" :style="{ width: `${nameColumnPx}px` }">{{ splitPath(item.path).name }}</span>
-                      <!-- Truncates from the start, so the end of the path, nearest the file, stays visible. -->
-                      <span :class="cn('files-path min-w-0 flex-1 truncate text-[0.85em]', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">
-                        <span dir="ltr">{{ pathText(item) }}</span>
-                      </span>
-                    </template>
-                    <span v-else class="min-w-0 flex-1 truncate">
-                      <template v-if="item.oldPath && item.oldPath !== item.path">
-                        <span :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ item.oldPath }}</span>
-                        <span :class="cn('mx-1', isSelected(item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
-                      </template>
-                      <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
-                      <span v-if="item.oldPath" :class="isSelected(item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(item.path).dir }}</span><span>{{ splitPath(item.path).name }}</span>
-                    </span>
-                    <span v-if="isStagedRow(item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
-                    <!-- Stops the pointer reaching the row's tooltip, which would otherwise open last and close this one. -->
-                    <Tip v-if="sortingByDate && modifiedText(item)" :content="modifiedTitle(item)">
-                      <span class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" @pointermove.stop>
-                        {{ modifiedText(item) }}
-                      </span>
+            <template v-else>
+              <div v-if="stickyHeading" :class="cn(headingClass, 'sticky top-0 z-10 -mb-(--row-h)')" :style="{ transform: `translateY(${stickyHeading.offset}px)` }">
+                {{ stickyHeading.section.title }}
+                <span class="tabular-nums">({{ stickyHeading.section.items.length }})</span>
+              </div>
+              <div class="relative w-full" :style="{ height: `${rows.length * ROW_HEIGHT}px` }">
+                <!-- No will-change-transform: see VirtualRowList.vue. -->
+                <div class="absolute inset-x-0 top-0" :style="{ transform: `translateY(${virtual.start.value * ROW_HEIGHT}px)` }">
+                  <template v-for="row in visibleRows" :key="row.key">
+                    <div v-if="row.kind === 'heading'" :class="headingClass">
+                      {{ row.section.title }}
+                      <span class="tabular-nums">({{ row.section.items.length }})</span>
+                    </div>
+                    <!-- The row's tooltip has the whole path; the modified time inside has its own. -->
+                    <Tip v-else :content="row.item.oldPath ? `${row.item.oldPath} → ${row.item.path}` : row.item.path" side="right">
+                      <button
+                        type="button"
+                        :class="
+                          cn(
+                            'flex h-(--row-h) w-full items-center gap-1.5 px-2 text-left text-base outline-none',
+                            isSelected(row.item) ? STATE_CLASSES[row.item.state].band : 'hover:bg-row-hover',
+                            multiple && isFocus(row.item) && 'shadow-[inset_2px_0_0_var(--ring)]',
+                          )
+                        "
+                        :aria-selected="isSelected(row.item)"
+                        data-file-row
+                        @mousedown="list.onMousedown"
+                        @click="list.onClick(row.item.id, $event)"
+                        @contextmenu="onRowContextMenu(row.item)"
+                        @dblclick="onRowDoubleClick(row.item)"
+                      >
+                        <span
+                          :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[row.item.state].badge)"
+                        >
+                          <!-- A conflict shows "!" rather than Git's two letters (UU, AA…), which say little. -->
+                          {{ row.item.state === "conflict" ? "!" : row.item.letter }}
+                        </span>
+                        <template v-if="tabular">
+                          <span class="flex shrink-0 items-center gap-1.5" :style="{ width: `${nameColumnPx}px` }">
+                            <span class="min-w-0 truncate">{{ splitPath(row.item.path).name }}</span>
+                            <span v-if="row.item.state === 'conflict'" :class="CONFLICT_TAG_CLASS">Conflict</span>
+                          </span>
+                          <!-- Truncates from the start, so the end of the path, nearest the file, stays visible. -->
+                          <span :class="cn('files-path min-w-0 flex-1 truncate text-[0.85em]', isSelected(row.item) ? 'text-band-dir' : 'text-muted-foreground')">
+                            <span dir="ltr">{{ pathText(row.item) }}</span>
+                          </span>
+                        </template>
+                        <span v-else class="flex min-w-0 flex-1 items-center gap-1.5">
+                          <span class="min-w-0 truncate">
+                            <template v-if="row.item.oldPath && row.item.oldPath !== row.item.path">
+                              <span :class="isSelected(row.item) ? 'text-band-dir' : 'text-muted-foreground'">{{ row.item.oldPath }}</span>
+                              <span :class="cn('mx-1', isSelected(row.item) ? 'text-band-dir' : 'text-muted-foreground')">→</span>
+                            </template>
+                            <!-- Grouped by folder, the folder is in the section heading, so the row shows only the name. -->
+                            <span v-if="row.item.oldPath" :class="isSelected(row.item) ? 'text-band-dir' : 'text-muted-foreground'">{{ splitPath(row.item.path).dir }}</span><span>{{ splitPath(row.item.path).name }}</span>
+                          </span>
+                          <span v-if="row.item.state === 'conflict'" :class="CONFLICT_TAG_CLASS">Conflict</span>
+                        </span>
+                        <span v-if="isStagedRow(row.item)" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
+                        <!-- Stops the pointer reaching the row's tooltip, which would otherwise open last and close this one. -->
+                        <Tip v-if="sortingByDate && modifiedText(row.item)" :content="modifiedTitle(row.item)">
+                          <span class="shrink-0 text-[0.7rem] text-muted-foreground tabular-nums" @pointermove.stop>
+                            {{ modifiedText(row.item) }}
+                          </span>
+                        </Tip>
+                        <span v-if="row.item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
+                        <span v-else-if="row.item.added !== null || row.item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">
+                          <span class="text-diff-add-fg">+{{ row.item.added ?? 0 }}</span>
+                          <span class="ml-1 text-diff-del-fg">−{{ row.item.deleted ?? 0 }}</span>
+                        </span>
+                      </button>
                     </Tip>
-                    <span v-if="item.binary" class="shrink-0 text-[0.7rem] text-muted-foreground">binary</span>
-                    <span v-else-if="item.added !== null || item.deleted !== null" class="shrink-0 font-mono text-[0.7rem] tabular-nums">
-                      <span class="text-diff-add-fg">+{{ item.added ?? 0 }}</span>
-                      <span class="ml-1 text-diff-del-fg">−{{ item.deleted ?? 0 }}</span>
-                    </span>
-                  </button>
-                </Tip>
-              </template>
+                  </template>
+                </div>
+              </div>
             </template>
           </div>
         </ContextMenuTrigger>
@@ -676,6 +759,25 @@ function pathText(item: FileItem): string {
             <ActionMenuItem :reason="mergeMenuReason" data-resolve="editor" @select="openMergeEditor(session.key, menuConflicts[0]!.path)">Resolve in Merge Editor…</ActionMenuItem>
             <ActionMenuItem :reason="null" data-resolve="ours" @select="takeVersion(session, menuConflicts, 'ours')">{{ takeLabel("ours") }}</ActionMenuItem>
             <ActionMenuItem :reason="null" data-resolve="theirs" @select="takeVersion(session, menuConflicts, 'theirs')">{{ takeLabel("theirs") }}</ActionMenuItem>
+            <!-- Every conflict block with one side's lines or both, keeping what Git merged cleanly around them. -->
+            <ContextMenuSub>
+              <Tip :content="takeAllReason" side="right">
+                <ContextMenuSubTrigger :class="cn('text-base', takeAllReason && 'data-disabled:pointer-events-auto')" :disabled="takeAllReason !== null">
+                  Resolve All Conflicts With
+                </ContextMenuSubTrigger>
+              </Tip>
+              <ContextMenuSubContent>
+                <ActionMenuItem
+                  v-for="c in takeAllChoices(sideNames)"
+                  :key="c.value"
+                  :reason="null"
+                  :data-resolve-all="c.value"
+                  @select="takeAllConflicts(session, menuConflicts, c.value)"
+                >
+                  {{ c.label }}
+                </ActionMenuItem>
+              </ContextMenuSubContent>
+            </ContextMenuSub>
             <ActionMenuItem :reason="null" data-resolve="mark" @select="markResolved(session, menuConflicts)">
               Mark as Resolved{{ countLabel(menuConflicts.map((i) => i.path)) }}
             </ActionMenuItem>

@@ -37,21 +37,20 @@ pub struct DialogSize {
     pub maximised: bool,
 }
 
-/// The Console header's Log button, which switches the other three off and shows the standard
-/// output of the user's own commands as plain text, and its User, Internal and Watcher buttons
-/// (which kinds of command are listed). Log mode is the default.
+/// The Console header's Log button, which switches the other two off and shows the standard
+/// output of the user's own commands as plain text, and its User and Internal buttons (which
+/// kinds of command are listed). Log mode is the default.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ConsoleView {
     pub user_action: bool,
     pub internal: bool,
-    pub watcher: bool,
     pub log: bool,
 }
 
 impl Default for ConsoleView {
     fn default() -> Self {
-        Self { user_action: false, internal: false, watcher: false, log: true }
+        Self { user_action: false, internal: false, log: true }
     }
 }
 

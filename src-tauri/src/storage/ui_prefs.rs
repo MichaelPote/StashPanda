@@ -131,7 +131,7 @@ mod tests {
         state.graph_columns.author = Some(180);
         state.session.open_tabs = vec!["a".into(), "b".into()];
         state.console.log = false;
-        state.console.watcher = true;
+        state.console.internal = true;
         state.files.group_by = FilesGroupBy::Flat;
         state.diff.layout = DiffLayout::Side;
         state.diff.split = 0.62;
@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(back.graph_columns.author, Some(180));
         assert_eq!(back.graph_columns.date, None);
         assert_eq!(back.session.open_tabs, vec!["a", "b"]);
-        assert!(!back.console.log && back.console.watcher && !back.console.internal);
+        assert!(!back.console.log && back.console.internal && !back.console.user_action);
         assert_eq!(back.files.group_by, FilesGroupBy::Flat);
         assert_eq!(back.diff.layout, DiffLayout::Side);
         assert_eq!(back.diff.split, 0.62);
@@ -175,7 +175,6 @@ mod tests {
                 ("console.internal".into(), "false".into()),
                 ("console.log".into(), "true".into()),
                 ("console.userAction".into(), "false".into()),
-                ("console.watcher".into(), "false".into()),
             ]
         );
         let repo_rows: Vec<(String, String, String)> = db

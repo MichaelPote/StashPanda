@@ -1,6 +1,6 @@
 //! Records every command as a pair of console events for one repository.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,14 @@ use tauri_specta::Event;
 
 use crate::error::GitError;
 use crate::transport::{display_command, Category, Cmd, Output};
+
+/// `console.logInternal`, for every repository at once: whether the commands the app runs by
+/// itself are logged. Set from the settings when they load and each time they are saved.
+static LOG_INTERNAL: AtomicBool = AtomicBool::new(false);
+
+pub fn set_log_internal(on: bool) {
+    LOG_INTERNAL.store(on, Ordering::Relaxed);
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -60,6 +68,9 @@ pub struct ConsoleRecorder {
 }
 
 pub struct ConsoleTicket {
+    /// False for an internal command while `console.logInternal` is off: neither of its events is
+    /// sent. Decided when it starts, so a command is never left half logged.
+    logged: bool,
     seq: u64,
     started: Instant,
     started_at_ms: u64,
@@ -107,7 +118,9 @@ fn kept_output(
 }
 
 /// `arg` with the password of every URL in it (`https://alice:secret@host/…`) replaced by `***`,
-/// as Git leaves it out of its own messages. The rest, the user name included, stays as it is.
+/// as Git leaves it out of its own messages. An `http` or `https` URL with a user name and no
+/// password (`https://ghp_token@host/…`) is how an access token is usually given, so that user
+/// name is hidden too. The rest, an SSH user name such as `git@` included, stays as it is.
 pub(crate) fn hide_passwords(arg: &str) -> String {
     let mut out = String::with_capacity(arg.len());
     let mut rest = arg;
@@ -121,12 +134,27 @@ pub(crate) fn hide_passwords(arg: &str) -> String {
                 out.push_str("***");
                 out.push_str(&authority[at..]);
             }
-            None => out.push_str(authority),
+            None => match authority.rfind('@') {
+                Some(at) if is_http(head) => {
+                    out.push_str("***");
+                    out.push_str(&authority[at..]);
+                }
+                _ => out.push_str(authority),
+            },
         }
         rest = &tail[authority.len()..];
     }
     out.push_str(rest);
     out
+}
+
+/// Whether the URL whose `scheme://` ends `head` is `http` or `https`.
+fn is_http(head: &str) -> bool {
+    let lower = head.to_ascii_lowercase();
+    // `git+http://` or `xhttp://` is another scheme that happens to end in http.
+    ["http://", "https://"].iter().any(|scheme| {
+        lower.ends_with(scheme) && !lower[..lower.len() - scheme.len()].ends_with(|c: char| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    })
 }
 
 fn now_ms() -> u64 {
@@ -155,6 +183,7 @@ impl ConsoleRecorder {
         let command = display_command(&summary);
         let title = command_title(&summary);
         let ticket = ConsoleTicket {
+            logged: cmd.category == Category::UserAction || LOG_INTERNAL.load(Ordering::Relaxed),
             seq,
             started: Instant::now(),
             started_at_ms: now_ms(),
@@ -165,6 +194,9 @@ impl ConsoleRecorder {
             command,
             title,
         };
+        if !ticket.logged {
+            return ticket;
+        }
         let ev = ConsoleEvent {
             repo_id: self.repo_id.clone(),
             seq,
@@ -205,6 +237,9 @@ impl ConsoleRecorder {
     }
 
     fn finish_counted(&self, ticket: ConsoleTicket, output: Option<&Output>, streamed_bytes: Option<u64>, error: Option<&GitError>) {
+        if !ticket.logged {
+            return;
+        }
         let (stdout, stdout_truncated, stderr, stderr_truncated, mut output_omitted) =
             kept_output(ticket.category, output, error.is_some(), self.cap);
         let stdout_bytes = streamed_bytes.unwrap_or_else(|| output.map(|o| o.stdout.len() as u64).unwrap_or(0));
@@ -391,8 +426,11 @@ mod tests {
     fn passwords_in_urls_are_hidden() {
         assert_eq!(hide_passwords("https://alice:s3cret@example.com/r.git"), "https://alice:***@example.com/r.git");
         assert_eq!(hide_passwords("remote.origin.url=http://a:b@h:8080/x?y=1"), "remote.origin.url=http://a:***@h:8080/x?y=1");
-        // No password, a user name only, a port, or no URL at all: left as it is.
-        for same in ["ssh://git@example.com:2222/r.git", "https://example.com:8443/a@b", "git@example.com:r.git", "/srv/r.git", ""] {
+        // A user name with no password in an http(s) URL is usually an access token.
+        assert_eq!(hide_passwords("https://ghp_abc123@github.com/o/r.git"), "https://***@github.com/o/r.git");
+        assert_eq!(hide_passwords("url=HTTP://tok@h/x"), "url=HTTP://***@h/x");
+        // An SSH user name, a port, an @ in the path, or no URL at all: left as it is.
+        for same in ["ssh://git@example.com:2222/r.git", "git+ssh://u@h/r", "xhttp://u@h/r", "https://example.com:8443/a@b", "git@example.com:r.git", "/srv/r.git", ""] {
             assert_eq!(hide_passwords(same), same);
         }
         // What the console shows of a clone with a password in its URL.
@@ -411,11 +449,21 @@ mod tests {
     }
 
     #[test]
-    fn successful_internal_and_watcher_output_is_left_out() {
-        for category in [Category::Internal, Category::Watcher] {
-            let (stdout, _, stderr, _, omitted) = kept_output(category, Some(&out(0, "abc", "warn")), false, 100);
-            assert_eq!((stdout.as_str(), stderr.as_str(), omitted), ("", "", true));
-        }
+    fn internal_commands_are_logged_only_when_switched_on() {
+        let recorder = ConsoleRecorder::new(None, "t".into(), 100);
+        let internal = Cmd::git("status", vec!["status".into()]);
+        let user = Cmd::git("commit", vec!["commit".into()]).category(Category::UserAction);
+        assert!(!recorder.start(&internal, internal.args.clone()).logged);
+        assert!(recorder.start(&user, user.args.clone()).logged);
+        set_log_internal(true);
+        assert!(recorder.start(&internal, internal.args.clone()).logged);
+        set_log_internal(false);
+    }
+
+    #[test]
+    fn successful_internal_output_is_left_out() {
+        let (stdout, _, stderr, _, omitted) = kept_output(Category::Internal, Some(&out(0, "abc", "warn")), false, 100);
+        assert_eq!((stdout.as_str(), stderr.as_str(), omitted), ("", "", true));
         // Nothing written, so nothing was left out.
         assert!(!kept_output(Category::Internal, Some(&out(0, "", "")), false, 100).4);
     }
@@ -427,7 +475,7 @@ mod tests {
         let (_, _, stderr, _, omitted) = kept_output(Category::Internal, Some(&out(128, "", "fatal: x")), false, 100);
         assert_eq!((stderr.as_str(), omitted), ("fatal: x", false));
         // Exit code 0 but classified as an error by the caller.
-        let (stdout, _, _, _, omitted) = kept_output(Category::Watcher, Some(&out(0, "abc", "")), true, 100);
+        let (stdout, _, _, _, omitted) = kept_output(Category::Internal, Some(&out(0, "abc", "")), true, 100);
         assert_eq!((stdout.as_str(), omitted), ("abc", false));
     }
 }

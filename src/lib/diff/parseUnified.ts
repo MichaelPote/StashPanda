@@ -190,23 +190,39 @@ export interface Segment {
   changed: boolean;
 }
 
-const TOKEN_CAP = 200;
+const TOKEN_CAP = 500;
 
-/** Splits a line into word and whitespace tokens, keeping the separators so they can be re-joined. */
+/**
+ * Splits a line into tokens that re-join to the line: runs of letters, digits and underscores,
+ * and every other character on its own. Splitting off punctuation and single spaces lets
+ * `false})` and `false })` match on `false` and `})`, so only the added space is marked.
+ */
 function tokenise(text: string): string[] {
-  return text.split(/(\s+)/).filter((t) => t.length > 0);
+  return text.match(/[\p{L}\p{N}_]+|[^]/gu) ?? [];
+}
+
+/** A changed pair's two lines, cut into changed and unchanged text. */
+export interface HighlightedPair {
+  old: Segment[];
+  new: Segment[];
+  /**
+   * Where words of the old line were removed with nothing put in their place: offsets into the
+   * new line's text, in order. Side by side draws a cursor there on the new side.
+   */
+  removedAt: number[];
 }
 
 /**
  * Marks the tokens that differ between an old and a new line using a longest common
- * subsequence over whitespace-separated tokens. Lines with more than 200 tokens are returned
- * unmarked, so a pathological line cannot stall rendering.
+ * subsequence over their tokens. Lines with more than 500 tokens are returned unmarked, so a
+ * pathological line cannot stall rendering. With `ignoreWhitespace`, as the diff's Ignore
+ * whitespace button sets, spaces added or removed between unchanged words are left unmarked.
  */
-export function highlightPair(oldText: string, newText: string): { old: Segment[]; new: Segment[] } {
+export function highlightPair(oldText: string, newText: string, ignoreWhitespace = false): HighlightedPair {
   const a = tokenise(oldText);
   const b = tokenise(newText);
   if (a.length > TOKEN_CAP || b.length > TOKEN_CAP) {
-    return { old: [{ text: oldText, changed: false }], new: [{ text: newText, changed: false }] };
+    return { old: [{ text: oldText, changed: false }], new: [{ text: newText, changed: false }], removedAt: [] };
   }
   const n = a.length;
   const m = b.length;
@@ -222,37 +238,80 @@ export function highlightPair(oldText: string, newText: string): { old: Segment[
   }
   const oldSeg: Segment[] = [];
   const newSeg: Segment[] = [];
+  const removedAt: number[] = [];
   const push = (list: Segment[], text: string, changed: boolean): void => {
     const last = list[list.length - 1];
     if (last && last.changed === changed) last.text += text;
     else list.push({ text, changed });
   };
+  // Between two matched tokens: where in the new line the first removed word came, and whether
+  // any word was added there. When whitespace is ignored, whitespace on its own counts as neither.
+  const counts = (token: string): boolean => !ignoreWhitespace || token.trim().length > 0;
+  let newOffset = 0;
+  let removedFrom: number | null = null;
+  let added = false;
+  const takeOld = (token: string): void => {
+    push(oldSeg, token, true);
+    if (removedFrom === null && counts(token)) removedFrom = newOffset;
+  };
+  const takeNew = (token: string, changed: boolean): void => {
+    push(newSeg, token, changed);
+    newOffset += token.length;
+    if (changed && counts(token)) added = true;
+  };
+  const settle = (): void => {
+    if (removedFrom !== null && !added) removedAt.push(removedFrom);
+    removedFrom = null;
+    added = false;
+  };
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
     if (a[i] === b[j]) {
+      settle();
       push(oldSeg, a[i] as string, false);
-      push(newSeg, b[j] as string, false);
+      takeNew(b[j] as string, false);
       i += 1;
       j += 1;
     } else if (((dp[i + 1] as Uint16Array)[j] as number) >= ((dp[i] as Uint16Array)[j + 1] as number)) {
-      push(oldSeg, a[i] as string, true);
+      takeOld(a[i] as string);
       i += 1;
     } else {
-      push(newSeg, b[j] as string, true);
+      takeNew(b[j] as string, true);
       j += 1;
     }
   }
   while (i < n) {
-    push(oldSeg, a[i] as string, true);
+    takeOld(a[i] as string);
     i += 1;
   }
   while (j < m) {
-    push(newSeg, b[j] as string, true);
+    takeNew(b[j] as string, true);
     j += 1;
   }
-  // Whitespace-only changes between unchanged words read better unmarked.
-  const soften = (list: Segment[]): Segment[] =>
-    list.map((s) => (s.changed && s.text.trim().length === 0 ? { text: s.text, changed: false } : s));
-  return { old: soften(oldSeg), new: soften(newSeg) };
+  settle();
+  // Whitespace at either end of a changed run reads better unmarked, and so, when whitespace is
+  // ignored, does a whitespace-only change between unchanged words. Otherwise that change is
+  // marked: it is the whole difference. Unchanged whitespace between two changed runs is marked
+  // with them, so the run reads as one block.
+  const tidy = (list: Segment[]): Segment[] => {
+    const softened = list.flatMap((s): Segment[] => {
+      if (!s.changed || (!ignoreWhitespace && s.text.trim().length === 0)) return [s];
+      const [, lead = "", core = "", trail = ""] = /^(\s*)(.*?)(\s*)$/s.exec(s.text) ?? [];
+      return [
+        { text: lead, changed: false },
+        { text: core, changed: true },
+        { text: trail, changed: false },
+      ].filter((p) => p.text.length > 0);
+    });
+    const out: Segment[] = [];
+    softened.forEach((s, k) => {
+      const prev = out[out.length - 1];
+      const bridges = !s.changed && s.text.trim().length === 0 && prev?.changed === true && softened[k + 1]?.changed === true;
+      if (prev && (bridges || prev.changed === s.changed)) prev.text += s.text;
+      else out.push({ ...s });
+    });
+    return out;
+  };
+  return { old: tidy(oldSeg), new: tidy(newSeg), removedAt };
 }

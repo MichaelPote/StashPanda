@@ -166,3 +166,34 @@ export function conflictComparisons(names: OperationNames): (ConflictComparison 
 export function hasConflictMarkers(text: string): boolean {
   return /^(<{7}|>{7})( |$)/m.test(text);
 }
+
+/**
+ * How every conflict block of a file can be resolved at once: with one side's lines, or both
+ * sides' lines one after the other. The lines Git merged cleanly around the blocks stay as they are.
+ */
+export type TakeAll = "ours" | "theirs" | "oursThenTheirs" | "theirsThenOurs";
+
+/** The four ways to resolve every block, labelled with the sides' names. */
+export function takeAllChoices(names: OperationNames): { value: TakeAll; label: string }[] {
+  const { ours, theirs } = names;
+  return [
+    { value: "ours", label: `${ours}'s lines` },
+    { value: "theirs", label: `${theirs}'s lines` },
+    { value: "oursThenTheirs", label: `${ours}'s lines, then ${theirs}'s` },
+    { value: "theirsThenOurs", label: `${theirs}'s lines, then ${ours}'s` },
+  ];
+}
+
+/** A block's text when resolved by `how`, from its two sides' lines. */
+export function takeAllText(block: { ours: string; theirs: string }, how: TakeAll): string {
+  switch (how) {
+    case "ours":
+      return block.ours;
+    case "theirs":
+      return block.theirs;
+    case "oursThenTheirs":
+      return block.ours + block.theirs;
+    case "theirsThenOurs":
+      return block.theirs + block.ours;
+  }
+}

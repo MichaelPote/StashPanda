@@ -35,7 +35,7 @@ export const useSettingsStore = defineStore("settings", () => {
     settings.value = await unwrap(commands.settingsUpdate(JSON.stringify(patch)));
   }
 
-  const consoleMaxLines = computed(() => settings.value?.console?.maxLines ?? 2000);
+  const consoleMaxLines = computed(() => settings.value?.console?.maxLines ?? 100);
   const theme = computed(() => settings.value?.appearance?.theme ?? "dark");
 
   return { settings, toolbarDraft, load, refresh, update, consoleMaxLines, theme };

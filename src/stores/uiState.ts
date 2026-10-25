@@ -29,7 +29,7 @@ const LEGACY_LOCAL_STORAGE: [string, (raw: string) => JsonObject | null][] = [
     (raw) => {
       const v = JSON.parse(raw) as Record<string, unknown>;
       const out: JsonObject = {};
-      for (const k of ["userAction", "internal", "watcher"]) if (typeof v[k] === "boolean") out[k] = v[k];
+      for (const k of ["userAction", "internal"]) if (typeof v[k] === "boolean") out[k] = v[k];
       return { console: out };
     },
   ],

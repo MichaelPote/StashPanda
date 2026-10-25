@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, toRaw, watch } from "vue";
 import { CircleAlertIcon, LoaderCircleIcon } from "@lucide/vue";
+import { usePreferredDark } from "@vueuse/core";
 import type { Settings } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -59,16 +60,28 @@ watch(request, (r) => {
 
 const section = computed<SettingsSection>(() => SETTINGS_SECTIONS.find((s) => s.id === sectionId.value) ?? SETTINGS_SECTIONS[0]!);
 
-/** The page's fields in the order drawn: one at a time, or toggles next to each other with the same `list` together. */
+const preferredDark = usePreferredDark();
+/** The theme chosen in the form, saved or not: the Diff page edits and previews its colours. */
+const dark = computed(() => {
+  const theme = values["appearance.theme"] ?? settingsStore.theme;
+  return theme === "dark" || (theme === "system" && preferredDark.value);
+});
+
+/**
+ * The page's fields in the order drawn: one at a time, or toggles or colours next to each other
+ * with the same `list` together. Only the current theme's colours are drawn.
+ */
 const blocks = computed(() => {
-  const out: { key: string; list: string | null; help: string | null; fields: SettingsFieldDef[] }[] = [];
+  const out: { key: string; heading: SettingsFieldDef["heading"] | null; list: string | null; help: string | null; fields: SettingsFieldDef[] }[] = [];
   for (const field of section.value.fields) {
-    const list = field.kind === "toggle" ? (field.list ?? null) : null;
+    if (field.kind === "color" && field.dark !== dark.value) continue;
+    const grouped = field.kind === "toggle" || field.kind === "color";
+    const list = grouped ? (field.list ?? null) : null;
     const last = out[out.length - 1];
-    if (list !== null && last?.list === list) {
+    if (list !== null && last?.list === list && !field.heading) {
       last.fields.push(field);
     } else {
-      out.push({ key: fieldId(field), list, help: field.kind === "toggle" ? (field.listHelp ?? null) : null, fields: [field] });
+      out.push({ key: fieldId(field), heading: field.heading ?? null, list, help: grouped ? (field.listHelp ?? null) : null, fields: [field] });
     }
   }
   return out;
@@ -219,7 +232,12 @@ async function save(): Promise<void> {
           </div>
           <div :class="cn('min-h-0 flex-1 overflow-y-auto px-6 pb-4 scrollbar-thin', section.preview && 'border-t border-border pt-4')">
             <div class="grid gap-4">
-              <template v-for="block in blocks" :key="block.key">
+              <template v-for="(block, i) in blocks" :key="block.key">
+                <!-- A heading starts a group of fields within the page (Advanced: Console, Cache, Polling). -->
+                <div v-if="block.heading" :class="cn('grid gap-0.5', i > 0 && 'mt-2 border-t border-border pt-4')">
+                  <h4 class="text-base font-semibold">{{ block.heading.title }}</h4>
+                  <p v-if="block.heading.description" class="text-xs text-muted-foreground">{{ block.heading.description }}</p>
+                </div>
                 <fieldset v-if="block.list" class="grid gap-1.5">
                   <legend class="mb-1.5 text-base">{{ block.list }}</legend>
                   <SettingsField

@@ -115,6 +115,7 @@
     --color-diff-add-fg: var(--diff-add-fg);
     --color-diff-del: var(--diff-del-bg);
     --color-diff-del-mark: var(--diff-del-mark);
+    --color-diff-mod: var(--diff-mod-bg);
     --color-diff-del-fg: var(--diff-del-fg);
     --color-diff-hunk: var(--diff-hunk-bg);
     --color-diff-hunk-fg: var(--diff-hunk-fg);
@@ -131,8 +132,10 @@
 /* Light theme: the design canvas only specifies the dark look, so the surfaces are a "bone"
    derivative of the earlier palette. The lane hues and the teal action colour come from the
    design system's light palette. It defines every variable the dark theme does, so the utilities
-   below work in both. */
-:root {
+   below work in both. Also on `.light`, so one part of a dark window (the Diff settings preview)
+   can be drawn in the light theme. */
+:root,
+.light {
     /* Tells the web view which theme native controls (`<select>`, scrollbars) are drawn in.
        Without it WebKitGTK draws a `<select>` as a white GTK box in the dark theme too, with the
        light text the field sets on top, so its value cannot be read. */
@@ -237,11 +240,13 @@
     --band-untracked: #e4e1da;
     --band-dir: rgba(0, 0, 0, 0.5);
 
-    --diff-add-bg: rgba(71, 169, 76, 0.19);
+    --diff-add-bg: rgba(71, 169, 76, 0.11);
     --diff-add-mark: rgba(71, 169, 76, 0.38);
     --diff-add-fg: #0f7f21;
-    --diff-del-bg: rgba(201, 67, 47, 0.16);
+    --diff-del-bg: rgba(201, 67, 47, 0.1);
     --diff-del-mark: rgba(201, 67, 47, 0.34);
+    /* Side by side, a block with both removed and added lines: --state-modified's orange. */
+    --diff-mod-bg: rgba(217, 111, 18, 0.12);
     --diff-del-fg: #b03a27;
     --diff-hunk-bg: rgba(138, 99, 214, 0.1);
     --diff-hunk-fg: #6f4bc0;
@@ -431,11 +436,13 @@
     --band-untracked: #2f3237;
     --band-dir: rgba(255, 255, 255, 0.55);
 
-    --diff-add-bg: rgba(122, 231, 126, 0.18);
-    --diff-add-mark: rgba(94, 196, 98, 0.36);
+    --diff-add-bg: rgba(122, 231, 126, 0.1);
+    --diff-add-mark: rgba(78, 207, 42, 0.6);
     --diff-add-fg: #7ae77e;
-    --diff-del-bg: rgba(204, 71, 82, 0.18);
-    --diff-del-mark: rgba(204, 71, 82, 0.4);
+    --diff-del-bg: rgba(204, 71, 82, 0.1);
+    --diff-del-mark: rgba(204, 71, 82, 0.6);
+    /* Side by side, a block with both removed and added lines: amber. */
+    --diff-mod-bg: rgba(255, 180, 51, 0.1);
     --diff-del-fg: #e8788a;
     --diff-hunk-bg: rgba(125, 122, 255, 0.12);
     --diff-hunk-fg: #a9a7ff;
@@ -956,4 +963,73 @@ svg.lucide.size-3\.5 {
    Inline, so it takes !important. */
 [data-reka-popper-content-wrapper] {
   will-change: auto !important;
+}
+
+/* A commit description drawn as Markdown in the Files panel (lib/commitMarkdown.ts). Compact, in
+   the panel's own small text: block spacing is half a line, headings are only bold, and code
+   sits on a faint tint of the text colour so it reads on the header's muted background. */
+.commit-markdown > :first-child {
+  margin-top: 0;
+}
+.commit-markdown :is(p, ul, ol, pre, blockquote, h1, h2, h3, h4, h5, h6, hr) {
+  margin: 0.5em 0 0;
+}
+.commit-markdown :is(h1, h2, h3, h4, h5, h6) {
+  font-size: inherit;
+  font-weight: 600;
+  color: var(--foreground);
+}
+.commit-markdown :is(ul, ol) {
+  padding-left: 1.25em;
+}
+.commit-markdown ul {
+  list-style: disc;
+}
+.commit-markdown ol {
+  list-style: decimal;
+}
+.commit-markdown li + li,
+.commit-markdown li > :is(ul, ol) {
+  margin-top: 0.15em;
+}
+.commit-markdown :is(strong, b) {
+  font-weight: 600;
+  color: var(--foreground);
+}
+.commit-markdown em {
+  font-style: italic;
+}
+.commit-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  border-radius: 3px;
+  padding: 0 3px;
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+.commit-markdown pre {
+  overflow-x: auto;
+  border-radius: 4px;
+  padding: 4px 6px;
+  background: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+.commit-markdown pre code {
+  padding: 0;
+  background: none;
+}
+.commit-markdown blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.6em;
+}
+.commit-markdown hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+.commit-markdown a {
+  color: var(--primary-tint);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.commit-markdown .md-trailers {
+  color: var(--faint);
 }

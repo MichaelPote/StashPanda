@@ -13,6 +13,8 @@ import { opFailureText, pushCurrentBranch, runOp } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useEventListener } from "@vueuse/core";
 import { useListSelection, type ListSelectionState } from "@/composables/useListSelection";
+import { useVirtualRows } from "@/composables/useVirtualRows";
+import { ROW_HEIGHT } from "@/lib/graph/paths";
 import { isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { useDialogsStore } from "@/stores/dialogs";
 import { emptyFileSelection, useSessionsStore } from "@/stores/sessions";
@@ -126,10 +128,10 @@ function toggleFile(path: string): void {
 /** Highlighted rows in the list. Space flips the ticks of these. */
 const rows = ref<ListSelectionState>({ ids: new Set(), anchorId: null });
 const listEl = ref<HTMLElement | null>(null);
-
-function rowId(path: string): string {
-  return `commit-file-${encodeURIComponent(path).replace(/[^a-zA-Z0-9_-]/g, "_")}`;
-}
+/** Only the rows in view are drawn, so a commit of tens of thousands of files opens quickly. */
+const virtual = useVirtualRows(listEl, { rowHeight: ROW_HEIGHT, total: () => files.value.length });
+const visibleFiles = computed(() => files.value.slice(virtual.start.value, virtual.end.value));
+const fileIndex = computed(() => new Map(files.value.map((f, i) => [f.path, i])));
 
 const list = useListSelection({
   order: () => files.value.map((f) => f.path),
@@ -137,7 +139,10 @@ const list = useListSelection({
   set: (next) => {
     rows.value = next;
   },
-  reveal: (path) => document.getElementById(rowId(path))?.scrollIntoView({ block: "nearest" }),
+  reveal: (path) => {
+    const index = fileIndex.value.get(path);
+    if (index !== undefined) virtual.ensureVisible(index);
+  },
 });
 
 /**
@@ -317,48 +322,52 @@ async function submit(push = false): Promise<void> {
             <li v-if="files.length === 0" class="flex h-(--row-h) items-center px-2 text-base text-muted-foreground italic">
               {{ amend ? "No files; only the message changes." : "Nothing to commit." }}
             </li>
-            <Tip v-for="file in files" :key="file.path" :content="file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path">
-              <li
-                :id="rowId(file.path)"
-                role="option"
-                :aria-selected="list.isSelected(file.path)"
-                :class="
-                  cn(
-                    'flex h-(--row-h) min-w-0 cursor-default items-center gap-1.5 px-2 text-base select-none',
-                    list.isSelected(file.path) ? 'row-selected' : 'hover:bg-row-hover',
-                    list.isCursor(file.path) && 'shadow-[inset_2px_0_0_var(--ring)]',
-                  )
-                "
-                @mousedown="list.onMousedown"
-                @click="list.onClick(file.path, $event)"
-              >
-                <!-- The checkbox flips only its own file; tabindex -1 keeps Tab moving past the list. -->
-                <input
-                  type="checkbox"
-                  tabindex="-1"
-                  class="size-3.5 shrink-0 accent-primary"
-                  :checked="ticked.has(file.path)"
-                  :disabled="!!request.finishing"
-                  :aria-label="`Include ${file.path}`"
-                  @click.stop
-                  @change="toggleFile(file.path)"
-                />
-                <span
-                  :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[file.state].badge)"
-                >
-                  {{ file.letter }}
-                </span>
-                <span :class="cn('min-w-0 flex-1 truncate', !ticked.has(file.path) && 'opacity-55')">
-                  <template v-if="file.oldPath && file.oldPath !== file.path">
-                    <span class="text-muted-foreground">{{ file.oldPath }}</span>
-                    <span class="mx-1 text-muted-foreground">→</span>
-                  </template>
-                  <span class="text-muted-foreground">{{ splitPath(file.path).dir }}</span><span>{{ splitPath(file.path).name }}</span>
-                </span>
-                <span v-if="file.staged && file.unstaged" class="shrink-0 text-[0.7rem] text-muted-foreground">partly staged</span>
-                <span v-else-if="file.staged" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
-              </li>
-            </Tip>
+            <li v-else role="none" class="relative" :style="{ height: `${files.length * ROW_HEIGHT}px` }">
+              <!-- No will-change-transform: see VirtualRowList.vue. -->
+              <ul role="group" class="absolute inset-x-0 top-0" :style="{ transform: `translateY(${virtual.start.value * ROW_HEIGHT}px)` }">
+                <Tip v-for="file in visibleFiles" :key="file.path" :content="file.oldPath && file.oldPath !== file.path ? `${file.oldPath} → ${file.path}` : file.path">
+                  <li
+                    role="option"
+                    :aria-selected="list.isSelected(file.path)"
+                    :class="
+                      cn(
+                        'flex h-(--row-h) min-w-0 cursor-default items-center gap-1.5 px-2 text-base select-none',
+                        list.isSelected(file.path) ? 'row-selected' : 'hover:bg-row-hover',
+                        list.isCursor(file.path) && 'shadow-[inset_2px_0_0_var(--ring)]',
+                      )
+                    "
+                    @mousedown="list.onMousedown"
+                    @click="list.onClick(file.path, $event)"
+                  >
+                    <!-- The checkbox flips only its own file; tabindex -1 keeps Tab moving past the list. -->
+                    <input
+                      type="checkbox"
+                      tabindex="-1"
+                      class="size-3.5 shrink-0 accent-primary"
+                      :checked="ticked.has(file.path)"
+                      :disabled="!!request.finishing"
+                      :aria-label="`Include ${file.path}`"
+                      @click.stop
+                      @change="toggleFile(file.path)"
+                    />
+                    <span
+                      :class="cn('inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-sm px-0.5 font-mono text-[0.7rem] leading-none font-semibold', STATE_CLASSES[file.state].badge)"
+                    >
+                      {{ file.letter }}
+                    </span>
+                    <span :class="cn('min-w-0 flex-1 truncate', !ticked.has(file.path) && 'opacity-55')">
+                      <template v-if="file.oldPath && file.oldPath !== file.path">
+                        <span class="text-muted-foreground">{{ file.oldPath }}</span>
+                        <span class="mx-1 text-muted-foreground">→</span>
+                      </template>
+                      <span class="text-muted-foreground">{{ splitPath(file.path).dir }}</span><span>{{ splitPath(file.path).name }}</span>
+                    </span>
+                    <span v-if="file.staged && file.unstaged" class="shrink-0 text-[0.7rem] text-muted-foreground">partly staged</span>
+                    <span v-else-if="file.staged" class="shrink-0 text-[0.7rem] text-muted-foreground">staged</span>
+                  </li>
+                </Tip>
+              </ul>
+            </li>
           </ul>
           <p v-if="partlyStaged.length > 0" class="flex items-start gap-1.5 text-xs text-modified-fg">
             <TriangleAlertIcon class="mt-px size-3.5 shrink-0" />

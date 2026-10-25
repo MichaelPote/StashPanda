@@ -8,6 +8,7 @@ const commands = vi.hoisted(() => ({
   getPullMode: vi.fn(),
   opPush: vi.fn(),
   opPushTo: vi.fn(),
+  opDeleteRemoteBranch: vi.fn(),
   opMerge: vi.fn(),
   opBranchFastForwardToUpstream: vi.fn(),
   opSync: vi.fn(),
@@ -45,6 +46,8 @@ import {
   pushBranch,
   pushBranchTo,
   pushCurrentBranch,
+  renameBranch,
+  renameOnRemote,
   syncCurrentBranch,
   syncOutcome,
   updateRefsLeftBehind,
@@ -344,6 +347,7 @@ describe("Push To", () => {
       server: 1,
       target: "topic",
       force: false,
+      upstream: null,
     });
     expect(commands.opPushTo).not.toHaveBeenCalled();
   });
@@ -375,11 +379,102 @@ describe("Push To", () => {
     expect(notices[notices.length - 1]!.message).toMatch(/^topic has moved since the list of dropped commits was made, so nothing was pushed/);
   });
 
+  it("pushes to a new branch on a remote, with nothing to force and no lease", async () => {
+    withBranches();
+    dialogs.open.mockResolvedValue({ remote: "origin", target: "topic", force: false, expected: null, source: "local-topic", track: false });
+    commands.opPushTo.mockReturnValueOnce(ok(pushed));
+    await pushBranchTo("repo", "topic");
+    expect(commands.opPushTo).toHaveBeenCalledWith("repo", expect.any(String), "topic", "origin", "topic", false, null, "local-topic");
+    expect(commands.opBranchSetUpstream).not.toHaveBeenCalled();
+    expect(notices[notices.length - 1]!.message).toBe("Pushed topic to origin/topic.");
+  });
+
+  it("makes the branch track where it was pushed, after the push, when asked", async () => {
+    withBranches();
+    dialogs.open.mockResolvedValue({ remote: "origin", target: "topic", force: false, expected: null, source: "local-topic", track: true });
+    commands.opPushTo.mockReturnValueOnce(ok(pushed));
+    await pushBranchTo("repo", "topic");
+    expect(commands.opBranchSetUpstream).toHaveBeenCalledWith("repo", "topic", "refs/remotes/origin/topic");
+    expect(commands.opPushTo.mock.invocationCallOrder[0]).toBeLessThan(commands.opBranchSetUpstream.mock.invocationCallOrder[0]!);
+    expect(notices.map((n) => n.message)).toEqual(["Pushed topic to origin/topic. topic now tracks origin/topic."]);
+  });
+
+  it("tracks nothing when the push fails", async () => {
+    withBranches();
+    dialogs.open.mockResolvedValue({ remote: "origin", target: "release", force: false, expected: "shown-release", source: "local-topic", track: true });
+    commands.opPushTo.mockReturnValueOnce(ok({ ok: false, exitCode: 1, stdout: "", stderr: "fatal: unable to access", conflicts: false }));
+    await pushBranchTo("repo", "topic");
+    expect(commands.opBranchSetUpstream).not.toHaveBeenCalled();
+  });
+
   it("starts with Force push ticked when a notice asked for it", async () => {
     withBranches();
     dialogs.open.mockResolvedValue(null);
     await pushBranchTo("repo", "topic", { remote: "origin", target: "release", force: true });
     expect(dialogs.open).toHaveBeenCalledWith("pushTo", expect.objectContaining({ server: 1, target: "release", force: true }));
+  });
+});
+
+describe("renaming a branch on its remote too", () => {
+  const failed = (stderr: string) => ok({ ok: false, exitCode: 1, stdout: "", stderr, conflicts: false });
+  beforeEach(() => {
+    session();
+    commands.opDeleteRemoteBranch.mockReturnValue(ok(pushed));
+  });
+
+  it("is offered only for a branch that tracks a remote branch of its own name", async () => {
+    const s = session() as unknown as { refs: { refs: { kind: { type: string }; short: string; upstream: string | null; upstreamGone?: boolean }[] } };
+    s.refs.refs.push(
+      { kind: { type: "localBranch" }, short: "main", upstream: "refs/remotes/origin/main" },
+      { kind: { type: "localBranch" }, short: "old", upstream: "refs/remotes/origin/old", upstreamGone: true },
+    );
+    dialogs.open.mockResolvedValue(null);
+    await renameBranch("repo", "main");
+    expect(dialogs.open).toHaveBeenLastCalledWith("renameBranch", { key: "repo", name: "main", remoteCopy: { remote: "origin", branch: "main" } });
+    // feature tracks origin/main, a branch of another name.
+    await renameBranch("repo", "feature");
+    expect(dialogs.open).toHaveBeenLastCalledWith("renameBranch", { key: "repo", name: "feature", remoteCopy: null });
+    await renameBranch("repo", "old");
+    expect(dialogs.open).toHaveBeenLastCalledWith("renameBranch", { key: "repo", name: "old", remoteCopy: null });
+    expect(commands.opPush).not.toHaveBeenCalled();
+  });
+
+  it("pushes the new name, tracks it, then deletes the old name, in that order", async () => {
+    await renameOnRemote("repo", "main", "dev", "origin");
+    expect(commands.opPush).toHaveBeenCalledWith("repo", expect.any(String), "dev", { remote: "origin", branch: "dev" });
+    expect(commands.opBranchSetUpstream).toHaveBeenCalledWith("repo", "dev", "refs/remotes/origin/dev");
+    expect(commands.opDeleteRemoteBranch).toHaveBeenCalledWith("repo", expect.any(String), "origin", "main");
+    const order = [commands.opPush, commands.opBranchSetUpstream, commands.opDeleteRemoteBranch].map((f) => f.mock.invocationCallOrder[0]!);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(notices.map((n) => n.message)).toEqual(["Renamed branch main to dev, here and on origin. dev now tracks origin/dev."]);
+  });
+
+  it("deletes nothing when the push fails", async () => {
+    commands.opPush.mockReturnValueOnce(failed(" ! [rejected]        dev -> dev (fetch first)"));
+    await renameOnRemote("repo", "main", "dev", "origin");
+    expect(commands.opBranchSetUpstream).not.toHaveBeenCalled();
+    expect(commands.opDeleteRemoteBranch).not.toHaveBeenCalled();
+    expect(notices[0]!.message).toBe(
+      "Renamed branch main to dev. origin already has a branch dev with commits that dev does not have, so the push was refused. origin/main is unchanged, and dev still tracks it.",
+    );
+  });
+
+  it("deletes nothing when the branch cannot be made to track the new name", async () => {
+    commands.opBranchSetUpstream.mockReturnValueOnce(failed("fatal: could not lock config file"));
+    await renameOnRemote("repo", "main", "dev", "origin");
+    expect(commands.opDeleteRemoteBranch).not.toHaveBeenCalled();
+    expect(notices[0]!.message).toMatch(/^Renamed branch main to dev\. Pushed it to origin\/dev, but it still tracks origin\/main, so main was not deleted on origin\./);
+    expect(notices[0]!.action?.label).toBe("Track Remote Branch…");
+  });
+
+  it("says to change the default branch on the server when the remote will not delete it", async () => {
+    commands.opDeleteRemoteBranch.mockReturnValueOnce(failed(" ! [remote rejected] main (refusing to delete the current branch: refs/heads/main)"));
+    await renameOnRemote("repo", "main", "dev", "origin");
+    expect(notices[0]!.message).toBe(
+      "Renamed branch main to dev. Pushed it to origin/dev, and it now tracks that, but origin/main is still there. " +
+        "origin will not delete main because it is the remote's default branch. Make dev the default branch in the repository's settings on the server, then delete origin/main.",
+    );
+    expect(notices[0]!.action?.label).toBe("Delete Remote Branch…");
   });
 });
 

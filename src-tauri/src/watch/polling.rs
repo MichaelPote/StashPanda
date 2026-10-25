@@ -79,7 +79,7 @@ pub fn start(
             }
             let status = client
                 .exec_allow_failure(
-                    GitReq::new("status", ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"]).watcher(),
+                    GitReq::new("status", ["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all"]),
                 )
                 .await;
             if let Ok(out) = status {
@@ -100,7 +100,7 @@ pub fn start(
                         "for-each-ref",
                         ["for-each-ref".to_string(), format!("--format={FOR_EACH_REF_FORMAT}"), "refs/heads".into(), "refs/remotes".into(), "refs/tags".into()],
                     )
-                    .watcher(),
+                    ,
                 )
                 .await;
             if let Ok(out) = refs {

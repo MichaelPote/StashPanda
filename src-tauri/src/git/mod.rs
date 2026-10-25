@@ -59,10 +59,6 @@ impl GitReq {
         self.category = Category::UserAction;
         self
     }
-    pub fn watcher(mut self) -> GitReq {
-        self.category = Category::Watcher;
-        self
-    }
     pub fn stdin(mut self, bytes: Vec<u8>) -> GitReq {
         self.stdin = Some(bytes);
         self

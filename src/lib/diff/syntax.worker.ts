@@ -10,8 +10,9 @@
 import { createHighlighterCore, type HighlighterCore, type LanguageInput, type ThemeInput } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-/** The themes the viewer uses, one for each app theme. */
-export type SyntaxTheme = "github-dark-default" | "github-light-default";
+import type { SyntaxTheme } from "@/lib/diff/syntaxThemes";
+
+export type { SyntaxTheme };
 
 export interface SyntaxRequest {
   id: number;
@@ -91,9 +92,32 @@ const LANGUAGES: Record<string, () => Promise<{ default: LanguageInput }>> = {
   latex: () => import("@shikijs/langs/latex"),
 };
 
+/** Every theme in `syntaxThemes.ts`. Each is loaded the first time it is asked for. */
 const THEMES: Record<SyntaxTheme, () => Promise<{ default: ThemeInput }>> = {
   "github-dark-default": () => import("@shikijs/themes/github-dark-default"),
+  "dark-plus": () => import("@shikijs/themes/dark-plus"),
+  "dracula": () => import("@shikijs/themes/dracula"),
+  "monokai": () => import("@shikijs/themes/monokai"),
+  "one-dark-pro": () => import("@shikijs/themes/one-dark-pro"),
+  "nord": () => import("@shikijs/themes/nord"),
+  "solarized-dark": () => import("@shikijs/themes/solarized-dark"),
+  "night-owl": () => import("@shikijs/themes/night-owl"),
+  "tokyo-night": () => import("@shikijs/themes/tokyo-night"),
+  "catppuccin-mocha": () => import("@shikijs/themes/catppuccin-mocha"),
+  "gruvbox-dark-medium": () => import("@shikijs/themes/gruvbox-dark-medium"),
+  "material-theme-darker": () => import("@shikijs/themes/material-theme-darker"),
+  "ayu-dark": () => import("@shikijs/themes/ayu-dark"),
+  "rose-pine": () => import("@shikijs/themes/rose-pine"),
   "github-light-default": () => import("@shikijs/themes/github-light-default"),
+  "light-plus": () => import("@shikijs/themes/light-plus"),
+  "solarized-light": () => import("@shikijs/themes/solarized-light"),
+  "one-light": () => import("@shikijs/themes/one-light"),
+  "catppuccin-latte": () => import("@shikijs/themes/catppuccin-latte"),
+  "gruvbox-light-medium": () => import("@shikijs/themes/gruvbox-light-medium"),
+  "material-theme-lighter": () => import("@shikijs/themes/material-theme-lighter"),
+  "ayu-light": () => import("@shikijs/themes/ayu-light"),
+  "night-owl-light": () => import("@shikijs/themes/night-owl-light"),
+  "rose-pine-dawn": () => import("@shikijs/themes/rose-pine-dawn"),
 };
 
 /** File extensions and whole file names (lower case) to the language above. */

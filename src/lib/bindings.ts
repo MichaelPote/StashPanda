@@ -416,7 +416,7 @@ export const commands = {
 	 *  step has begun, which always runs to the end. `autostash` stashes uncommitted changes first
 	 *  and reapplies them afterwards.
 	 * 
-	 *  Holds the write gate throughout, so no other write overlaps, but takes the exclusive lock only
+	 *  Holds the network and write gates throughout, so no other fetch, push or write overlaps, but takes the exclusive lock only
 	 *  for the local step: reads (status, graph pages, diffs) carry on during the network transfer.
 	 */
 	opPull: (key: string, opId: string, remote: string, branch: string, into: string, mode: PullMode, autostash: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_pull", { key, opId, remote, branch, into, mode, autostash })),
@@ -591,6 +591,12 @@ export type Appearance = {
 	 */
 	authorAvatarOnly?: boolean,
 	/**
+	 *  Draw the commit description (the message after its subject) in the Files panel as
+	 *  Markdown: headings, lists, code, quotes and links. Off shows the text exactly as written.
+	 *  On by default.
+	 */
+	markdownDescriptions?: boolean,
+	/**
 	 *  Which of the commit list's columns show; the commit message always does, and takes the
 	 *  room the others leave. All on by default.
 	 */
@@ -602,6 +608,21 @@ export type Appearance = {
 	showStashesInGraph?: boolean,
 	avatarSource?: AvatarSource,
 };
+
+/**
+ *  What to do with conflicts whose two sides changed different lines that only touch, which Git
+ *  reports as a conflict although neither side's change overlaps the other's.
+ */
+export type AutoResolve = 
+/**  Leave every conflict for the user. */
+"off" | 
+/**
+ *  Resolve them without asking: whole files are saved and marked resolved, and the merge
+ *  editor opens with those blocks already resolved.
+ */
+"automatic" | 
+/**  Ask first, in both places. */
+"prompt";
 
 export type AvatarSource = "initials" | "gravatar";
 
@@ -688,8 +709,11 @@ export type CacheSettings = {
 	maxCachedRepos?: number,
 };
 
-/**  Who asked for a command. The console can hide `Internal` and `Watcher`. */
-export type Category = "userAction" | "internal" | "watcher";
+/**
+ *  Who asked for a command: the user, or the app itself (reading the repository, or watching it
+ *  for changes). `Internal` commands are logged only while `console.logInternal` is on.
+ */
+export type Category = "userAction" | "internal";
 
 export type ChangeKind = "add" | "del";
 
@@ -941,8 +965,12 @@ export type ConsoleEvent = {
 export type ConsolePhase = "started" | "finished";
 
 export type ConsoleSettings = {
-	/**  Show every command, including internal queries and watcher polls. */
-	showInternal?: boolean,
+	/**
+	 *  Log the commands the app runs by itself (reading the repository, watching it for changes),
+	 *  successful or not, as well as the user's own. Off, only the user's commands are logged.
+	 *  Off by default.
+	 */
+	logInternal?: boolean,
 	/**  Log each request sent to pinned helpers (cat-file, inotifywait). */
 	verboseHelpers?: boolean,
 	/**  Ring buffer size per repository in the UI. */
@@ -952,14 +980,13 @@ export type ConsoleSettings = {
 };
 
 /**
- *  The Console header's Log button, which switches the other three off and shows the standard
- *  output of the user's own commands as plain text, and its User, Internal and Watcher buttons
- *  (which kinds of command are listed). Log mode is the default.
+ *  The Console header's Log button, which switches the other two off and shows the standard
+ *  output of the user's own commands as plain text, and its User and Internal buttons (which
+ *  kinds of command are listed). Log mode is the default.
  */
 export type ConsoleView = {
 	userAction?: boolean,
 	internal?: boolean,
-	watcher?: boolean,
 	log?: boolean,
 };
 
@@ -1025,6 +1052,13 @@ export type DiffSettings = {
 	/**  Colour the code by its language, chosen from the file's extension. */
 	syntaxHighlight?: boolean,
 	/**
+	 *  The Shiki theme that colours code while the app uses its dark theme, by its id
+	 *  (`dracula`). One the frontend does not offer (`src/lib/diff/syntaxThemes.ts`) uses the default.
+	 */
+	syntaxThemeDark?: string,
+	/**  The Shiki theme that colours code while the app uses its light theme, as for `syntax_theme_dark`. */
+	syntaxThemeLight?: string,
+	/**
 	 *  Inside a block of changed lines, pair each removed line with the added line most like it,
 	 *  rather than with the one in the same position.
 	 */
@@ -1034,6 +1068,31 @@ export type DiffSettings = {
 	 *  interface keeps the system's own rendering.
 	 */
 	fontSmoothing?: FontSmoothing,
+	/**
+	 *  Side by side, draw the removed lines of a block with both removed and added lines in the
+	 *  removed lines' colour, with the band between the sides fading from it to the modified colour.
+	 */
+	modLeftAsRemoved?: boolean,
+	/**  The dark theme's added lines' background, as `#rrggbbaa`. None uses the theme's own colour. */
+	addBgDark?: string | null,
+	/**  The dark theme's removed lines' background, as `#rrggbbaa`. None uses the theme's own colour. */
+	delBgDark?: string | null,
+	/**  The dark theme's background of a block with both removed and added lines, side by side, as `#rrggbbaa`. None uses the theme's own colour. */
+	modBgDark?: string | null,
+	/**  The dark theme's added lines' mark colour (changed words at half strength, band edges), as `#rrggbbaa`. None uses the theme's own colour. */
+	addMarkDark?: string | null,
+	/**  The dark theme's removed lines' mark colour (changed words at half strength, band edges, the deletion cursor), as `#rrggbbaa`. None uses the theme's own colour. */
+	delMarkDark?: string | null,
+	/**  The light theme's added lines' background, as `#rrggbbaa`. None uses the theme's own colour. */
+	addBgLight?: string | null,
+	/**  The light theme's removed lines' background, as `#rrggbbaa`. None uses the theme's own colour. */
+	delBgLight?: string | null,
+	/**  The light theme's background of a block with both removed and added lines, side by side, as `#rrggbbaa`. None uses the theme's own colour. */
+	modBgLight?: string | null,
+	/**  The light theme's added lines' mark colour (changed words at half strength, band edges), as `#rrggbbaa`. None uses the theme's own colour. */
+	addMarkLight?: string | null,
+	/**  The light theme's removed lines' mark colour (changed words at half strength, band edges, the deletion cursor), as `#rrggbbaa`. None uses the theme's own colour. */
+	delMarkLight?: string | null,
 };
 
 /**  Which two versions of `path` to compare. */
@@ -1473,6 +1532,10 @@ export type MergeParent = {
 	branch: string | null,
 };
 
+export type MergeSettings = {
+	autoResolve?: AutoResolve,
+};
+
 export type OpResult = {
 	ok: boolean,
 	exitCode: number | null,
@@ -1740,6 +1803,7 @@ export type Settings = {
 	polling?: Polling,
 	cache?: CacheSettings,
 	commit?: CommitSettings,
+	merge?: MergeSettings,
 	diff?: DiffSettings,
 	keys?: KeySettings,
 	library?: RepoLibrary,

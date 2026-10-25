@@ -1,24 +1,40 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { usePreferredDark } from "@vueuse/core";
-import { ChevronDownIcon, ChevronUpIcon, LoaderCircleIcon, RotateCcwIcon } from "@lucide/vue";
+import {
+  ArrowLeftFromLineIcon,
+  ArrowRightFromLineIcon,
+  BetweenHorizontalEndIcon,
+  BetweenHorizontalStartIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  LoaderCircleIcon,
+  Redo2Icon,
+  RotateCcwIcon,
+  SaveIcon,
+  Undo2Icon,
+} from "@lucide/vue";
 import { EditorState, Text, type Extension } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, type ViewUpdate } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, redo, redoDepth, undo, undoDepth } from "@codemirror/commands";
 import type { Chunk } from "@codemirror/merge";
 import { commands, type ConflictFile } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Separator } from "@/components/ui/separator";
 import EmptyState from "@/components/shell/EmptyState.vue";
+import ToolbarButton from "@/components/shell/ToolbarButton.vue";
 import FindBox from "@/components/diff/FindBox.vue";
 import { useFind, type FindHit } from "@/composables/useFind";
 import { findInText } from "@/lib/diff/find";
-import { operationNames } from "@/lib/conflicts";
+import { operationNames, takeAllChoices, takeAllText, type TakeAll } from "@/lib/conflicts";
 import { diffRowPx, diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { bandPath } from "@/lib/diff/sideLayout";
 import { themeFor } from "@/lib/diff/syntax";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
+import { resolveSimpleBlocks } from "@/lib/merge/autoResolve";
 import { blocksField, dismissedChunks, initialBlocks, placeholders, saveText, setChunkDismissed, setDismissed, setTaken, type MergeBlock } from "@/lib/merge/blocks";
 import { buildChunks, chunkLines, mapLine, updateChunks, type LineChunk } from "@/lib/merge/chunks";
 import { folds, foldsEffect, lineAbove, lineAtHeight, lineTop, type FoldRange } from "@/lib/merge/folds";
@@ -99,6 +115,12 @@ const foldUnchanged = ref(true);
 const shownFolds = ref(new Set<string>());
 
 const unresolved = computed(() => blocks.value.filter((b) => !b.resolved));
+/** Whether the result has edits to undo or redo, for the toolbar. */
+const canUndo = ref(false);
+const canRedo = ref(false);
+/** The conflict block the cursor is in, resolved or not: the toolbar's Take buttons replace its lines. */
+const cursorBlockId = ref<number | null>(null);
+const cursorBlock = computed(() => blocks.value.find((b) => b.id === cursorBlockId.value) ?? null);
 
 const preferredDark = usePreferredDark();
 const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
@@ -108,6 +130,10 @@ const syntaxOn = computed(() => settings.settings?.diff?.syntaxHighlight !== fal
 
 /** Width of each gap between two panes, where the curves and arrows are. */
 const GAP_PX = 40;
+/** Space between a difference's arrow and its "×" below it, so that one is not clicked for the other. */
+const DISMISS_GAP_PX = 8;
+/** How far the arrow keeps from the top of the gap while its difference is scrolled partly out of view. */
+const ARROW_INSET_PX = 2;
 
 // ---- Loading -------------------------------------------------------------------------------
 
@@ -191,7 +217,7 @@ function paneExtensions(readOnly: boolean): Extension[] {
     paneTheme(),
     EditorState.tabSize.of(font.value.tabWidth),
     EditorState.readOnly.of(readOnly),
-    syntaxOn.value ? syntaxColours(p, themeFor(dark.value)) : [],
+    syntaxOn.value ? syntaxColours(p, themeFor(dark.value, settings.settings?.diff)) : [],
     lineMarks(),
     folds(),
     findMarks(),
@@ -229,8 +255,42 @@ function createPanes(f: ConflictFile): void {
   resizeObserver = new ResizeObserver(() => scheduleDraw());
   resizeObserver.observe(middle.dom);
   scheduleDraw();
-  // Start at the first conflict, with the keyboard in the result.
-  if (unresolved.value.length > 0) void nextTick(() => goToConflict(1));
+  void nextTick(async () => {
+    await resolveSimple(f);
+    // Start at the first conflict, with the keyboard in the result.
+    if (panes && unresolved.value.length > 0) goToConflict(1);
+  });
+}
+
+/**
+ * Resolves the simple blocks of the file just opened, the ones where the two sides changed lines
+ * next to each other (see `merge/autoResolve.ts`), as the `merge.autoResolve` setting says:
+ * not at all, after asking, or straight away. Undo puts them back.
+ */
+async function resolveSimple(f: ConflictFile): Promise<void> {
+  const mode = settings.settings?.merge?.autoResolve ?? "prompt";
+  if (mode === "off" || !panes) return;
+  const view = panes.middle;
+  const texts = resolveSimpleBlocks(f);
+  const simple = blocks.value.filter((b) => !b.resolved && typeof texts[b.id] === "string");
+  if (simple.length === 0) return;
+  const total = blocks.value.length;
+  if (mode === "prompt") {
+    const ok = await dialogs.open("confirm", {
+      title: "Resolve simple conflicts?",
+      message: `${simple.length === total ? (total === 1 ? "The conflict" : `All ${total} conflicts`) : `${simple.length} of the ${total} conflicts`} in ${f.path} ${simple.length === 1 ? "is" : "are"} where both sides changed lines next to each other, without changing the same lines. Keep both sides' changes there? Undo puts the conflicts back.`,
+      confirmLabel: "Resolve",
+    });
+    if (!ok || !panes || panes.middle !== view) return;
+  }
+  // The blocks may have moved while the question was open; their ids have not.
+  const now = view.state.field(panes.blocks).filter((b) => !b.resolved && simple.some((s) => s.id === b.id));
+  view.dispatch({
+    changes: now.map((b) => ({ from: b.from, to: b.to, insert: texts[b.id] as string })),
+    effects: now.map((b) => setTaken.of({ id: b.id, taken: true })),
+    userEvent: "input.take",
+  });
+  if (mode === "automatic") sessions.notifySuccess(`Resolved ${now.length} simple ${now.length === 1 ? "conflict" : "conflicts"} in ${f.path}. Undo puts them back.`);
 }
 
 function destroyPanes(): void {
@@ -246,6 +306,9 @@ function destroyPanes(): void {
   rightChunks.value = [];
   leftLines.value = [];
   rightLines.value = [];
+  canUndo.value = false;
+  canRedo.value = false;
+  cursorBlockId.value = null;
   // Both are keyed by line numbers, which mean nothing in the next file.
   dismissed.value = new Set();
   shownFolds.value = new Set();
@@ -261,6 +324,10 @@ function onMiddleUpdate(update: ViewUpdate): void {
     leftChunks.value = updateChunks(leftChunks.value, panes.left.state.doc, update.state.doc, update.changes);
     rightChunks.value = updateChunks(rightChunks.value, panes.right.state.doc, update.state.doc, update.changes);
   }
+  canUndo.value = undoDepth(update.state) > 0;
+  canRedo.value = redoDepth(update.state) > 0;
+  const head = update.state.selection.main.head;
+  cursorBlockId.value = update.state.field(panes.blocks).find((b) => b.from <= head && head <= b.to)?.id ?? null;
   const next = update.state.field(panes.blocks);
   const nextDismissed = update.state.field(dismissedChunks);
   if (next !== blocks.value || nextDismissed !== dismissed.value || update.docChanged) {
@@ -402,7 +469,7 @@ interface GapShape {
   kind: LineMark["kind"];
   /** Dismissed with "×": drawn faded, with no arrow. */
   dismissed: boolean;
-  /** Where the arrow sits, from the top of the gap, and which difference it takes. */
+  /** Where the arrow sits, from the top of the gap, and which difference it takes; "×" sits below it. */
   arrowY: number;
   index: number;
 }
@@ -500,6 +567,8 @@ function draw(): void {
   const lg = leftGap.value.getBoundingClientRect();
   const rg = rightGap.value.getBoundingClientRect();
   gapHeight.value = lg.height;
+  // The arrow and the "×" under it, one row each with the gap between.
+  const controls = 2 * diffRowPx(font.value) + DISMISS_GAP_PX;
   const shapes = (lines: LineChunk[], side: EditorView, sideOnLeft: boolean, gapTop: number, height: number): GapShape[] => {
     const sideName: Side = sideOnLeft ? "left" : "right";
     const out: GapShape[] = [];
@@ -509,7 +578,14 @@ function draw(): void {
       if (Math.max(sb, mb) < -40 || Math.min(st, mt) > height + 40) return;
       const kind: LineMark["kind"] = isConflict(c) ? "conflict" : "change";
       const d = sideOnLeft ? bandPath(GAP_PX, st, sb, mt, mb) : bandPath(GAP_PX, mt, mb, st, sb);
-      out.push({ key: `${index}`, d, kind, dismissed: dismissed.value.has(chunkKey(sideName, c)), arrowY: st, index });
+      // Level with the difference's lines in the result, and kept in view while any of its band
+      // is: an unresolved conflict can be one placeholder row in the result and many lines on
+      // the side, so the band, not the result's lines, sets how far the controls follow.
+      const top = Math.min(st, mt);
+      const bottom = Math.max(sb, mb);
+      let arrowY = Math.max(mt, Math.min(ARROW_INSET_PX, bottom - controls));
+      arrowY = Math.min(arrowY, Math.max(height - controls - ARROW_INSET_PX, top));
+      out.push({ key: `${index}`, d, kind, dismissed: dismissed.value.has(chunkKey(sideName, c)), arrowY, index });
     });
     return out;
   };
@@ -554,17 +630,48 @@ function dismiss(side: Side, index: number): void {
   panes.middle.focus();
 }
 
-/** Resolves every unresolved block with one side's version. */
-function takeAll(side: Side): void {
+/** Resolves every unresolved block with one side's lines, or both. */
+function takeAll(how: TakeAll): void {
   if (!panes) return;
   const list = unresolved.value;
   if (list.length === 0) return;
   panes.middle.dispatch({
-    changes: list.map((b) => ({ from: b.from, to: b.to, insert: side === "left" ? b.source.ours : b.source.theirs })),
+    changes: list.map((b) => ({ from: b.from, to: b.to, insert: takeAllText(b.source, how) })),
     effects: list.map((b) => setTaken.of({ id: b.id, taken: true })),
     userEvent: "input.take",
   });
+  panes.middle.focus();
 }
+
+/** Replaces the lines of the block the cursor is in with one side's lines, or both, and counts it resolved. */
+function takeBlock(how: TakeAll): void {
+  const b = cursorBlock.value;
+  if (!panes || !b) return;
+  panes.middle.dispatch({
+    changes: { from: b.from, to: b.to, insert: takeAllText(b.source, how) },
+    effects: setTaken.of({ id: b.id, taken: true }),
+    userEvent: "input.take",
+  });
+  panes.middle.focus();
+}
+
+function undoEdit(): void {
+  if (!panes) return;
+  undo(panes.middle);
+  panes.middle.focus();
+}
+
+function redoEdit(): void {
+  if (!panes) return;
+  redo(panes.middle);
+  panes.middle.focus();
+}
+
+/** Why the Take buttons cannot be used: the cursor is not in a conflict block. */
+const takeReason = computed(() => {
+  if (blocks.value.length === 0) return "This file has no conflict blocks.";
+  return cursorBlock.value ? null : "Put the cursor in a conflict in the result first: Next Conflict (F7) moves it to one.";
+});
 
 /** The difference of one side that holds the result line the cursor is on. */
 function chunkAtCursor(side: Side): number {
@@ -798,16 +905,49 @@ function close(): void {
   dialogs.resolve("mergeEditor", null);
 }
 
+/** True while the file is still conflicted in the index, so closing can offer to mark it resolved. */
+function stillConflicted(p: string): boolean {
+  return (session.value?.status?.entries ?? []).some((e) => e.conflicted && e.path === p);
+}
+
+/**
+ * Closing asks what to do with the result: once every conflict is resolved, whether to save it
+ * and mark the file resolved; before then, whether to save the edits (unresolved conflicts keep
+ * their markers) or throw them away.
+ */
 async function onOpenChange(open: boolean): Promise<void> {
-  if (open) return;
-  if (dirty.value) {
-    const discard = await dialogs.open("confirm", {
-      title: "Discard the edits?",
-      message: `The result for ${path.value ?? "this file"} has changes that are not saved.`,
-      confirmLabel: "Discard",
-      destructive: true,
+  if (open || saving.value) return;
+  const p = path.value ?? "this file";
+  const usable = file.value !== null && file.value.refused === null && panes !== null;
+  if (usable && blocks.value.length > 0 && unresolved.value.length === 0 && (dirty.value || stillConflicted(p))) {
+    const choice = await dialogs.open("choice", {
+      title: "Every conflict is resolved",
+      message: dirty.value ? `Save ${p} and mark it as resolved?` : `Mark ${p} as resolved?`,
+      choices: [
+        { value: "close", label: dirty.value ? "Close Without Saving" : "Close" },
+        { value: "resolve", label: dirty.value ? "Save and Mark Resolved" : "Mark Resolved" },
+      ],
     });
-    if (!discard) return;
+    if (choice === "resolve") await save(true);
+    else if (choice === "close") close();
+    return;
+  }
+  if (usable && dirty.value) {
+    const left = unresolved.value.length;
+    const choice = await dialogs.open("choice", {
+      title: "Save the edits?",
+      message: `The result for ${p} has changes that are not saved.${left > 0 ? ` ${left} ${left === 1 ? "conflict is" : "conflicts are"} still unresolved, and saving writes ${left === 1 ? "it" : "them"} back with Git's conflict markers.` : ""}`,
+      choices: [
+        { value: "discard", label: "Discard", destructive: true },
+        { value: "save", label: "Save" },
+      ],
+    });
+    if (choice === "discard") close();
+    else if (choice === "save") {
+      await save(false);
+      if (!dirty.value) close();
+    }
+    return;
   }
   close();
 }
@@ -818,6 +958,9 @@ const conflictCount = computed(() => {
   if (total === 0) return "No conflict blocks";
   return n === 0 ? `All ${total} resolved` : `${n} of ${total} ${total === 1 ? "conflict" : "conflicts"} left`;
 });
+
+/** The toolbar's dividers, as the window's toolbar draws them. */
+const SEPARATOR_CLASS = "mx-[5px] h-[32px] bg-(--key) data-[orientation=vertical]:self-center";
 
 const resolveBlocked = computed(() => {
   if (!file.value || file.value.refused !== null) return "There is no result to save.";
@@ -843,27 +986,91 @@ const resolveBlocked = computed(() => {
         </EmptyState>
 
         <section v-else-if="file" class="area flex min-h-0 flex-1 flex-col" :style="textStyle" data-merge-editor @keydown="onEditorKeydown">
-          <!-- Toolbar -->
+          <!-- Toolbar, drawn like the window's own. -->
+          <div class="flex h-[52px] shrink-0 items-center border-b border-border bg-bar px-[6px] font-sans select-none" data-merge-toolbar>
+            <ToolbarButton :icon="SaveIcon" caption="Save File" title="Save File (Ctrl+S)" description="Write the result to the working tree. Unresolved conflicts are written with Git's conflict markers." @click="save(false)" />
+            <ToolbarButton :icon="Undo2Icon" caption="Undo" title="Undo (Ctrl+Z)" description="Undo the last edit to the result." :reason="canUndo ? null : 'Nothing to undo.'" @click="undoEdit" />
+            <ToolbarButton :icon="Redo2Icon" caption="Redo" title="Redo (Ctrl+Y)" description="Redo the last edit undone." :reason="canRedo ? null : 'Nothing to redo.'" @click="redoEdit" />
+            <ToolbarButton
+              :icon="RotateCcwIcon"
+              caption="Start Again"
+              title="Start Again from Git's Merge"
+              description="Write Git's merge of this file again, with its conflict markers, throwing away every change made to it since."
+              @click="restoreGitMerge"
+            />
+            <Separator orientation="vertical" :class="SEPARATOR_CLASS" />
+            <ToolbarButton
+              :icon="ChevronUpIcon"
+              caption="Previous"
+              title="Previous Conflict (Shift+F7)"
+              description="Move the cursor into the unresolved conflict above it."
+              :reason="unresolved.length === 0 ? 'No conflicts are left.' : null"
+              @click="goToConflict(-1)"
+            />
+            <ToolbarButton
+              :icon="ChevronDownIcon"
+              caption="Next"
+              title="Next Conflict (F7)"
+              description="Move the cursor into the unresolved conflict below it."
+              :reason="unresolved.length === 0 ? 'No conflicts are left.' : null"
+              @click="goToConflict(1)"
+            />
+            <Separator orientation="vertical" :class="SEPARATOR_CLASS" />
+            <ToolbarButton
+              :icon="ArrowRightFromLineIcon"
+              caption="Take Left"
+              title="Take Left"
+              :description="`Replace the conflict the cursor is in with ${names.ours}'s lines.`"
+              :reason="takeReason"
+              data-merge-take-block="ours"
+              @click="takeBlock('ours')"
+            />
+            <ToolbarButton
+              :icon="BetweenHorizontalStartIcon"
+              caption="Take Left, Right"
+              title="Take Left, Right"
+              :description="`Replace the conflict the cursor is in with ${names.ours}'s lines, then ${names.theirs}'s.`"
+              :reason="takeReason"
+              data-merge-take-block="oursThenTheirs"
+              @click="takeBlock('oursThenTheirs')"
+            />
+            <ToolbarButton
+              :icon="BetweenHorizontalEndIcon"
+              caption="Take Right, Left"
+              title="Take Right, Left"
+              :description="`Replace the conflict the cursor is in with ${names.theirs}'s lines, then ${names.ours}'s.`"
+              :reason="takeReason"
+              data-merge-take-block="theirsThenOurs"
+              @click="takeBlock('theirsThenOurs')"
+            />
+            <ToolbarButton
+              :icon="ArrowLeftFromLineIcon"
+              caption="Take Right"
+              title="Take Right"
+              :description="`Replace the conflict the cursor is in with ${names.theirs}'s lines.`"
+              :reason="takeReason"
+              data-merge-take-block="theirs"
+              @click="takeBlock('theirs')"
+            />
+          </div>
+
+          <!-- Second row: every conflict at once, the count, and the view options. -->
           <div class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border-soft px-2 py-1 font-sans text-[0.7rem]">
-            <!-- A disabled button lets no pointer events through, so the spans carry the tooltips. -->
-            <Tip content="Previous conflict (Shift+F7)">
-              <span class="inline-flex shrink-0">
-                <button type="button" class="diff-action" aria-label="Previous conflict" :disabled="unresolved.length === 0" @click="goToConflict(-1)">
-                  <ChevronUpIcon class="size-3" />
-                </button>
-              </span>
-            </Tip>
-            <Tip content="Next conflict (F7)">
-              <span class="inline-flex shrink-0">
-                <button type="button" class="diff-action" aria-label="Next conflict" :disabled="unresolved.length === 0" @click="goToConflict(1)">
-                  <ChevronDownIcon class="size-3" />
-                </button>
-              </span>
-            </Tip>
             <span :class="cn('tabular-nums', unresolved.length > 0 ? 'text-foreground' : 'text-muted-foreground')" data-merge-count>{{ conflictCount }}</span>
             <span class="mx-1 h-3 w-px bg-border-soft" aria-hidden="true" />
-            <button type="button" class="diff-action" :disabled="unresolved.length === 0" @click="takeAll('left')">Take {{ names.ours }} for All Conflicts</button>
-            <button type="button" class="diff-action" :disabled="unresolved.length === 0" @click="takeAll('right')">Take {{ names.theirs }} for All Conflicts</button>
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <button type="button" class="diff-action gap-1" :disabled="unresolved.length === 0" data-merge-take-all>
+                  Resolve All Conflicts With
+                  <ChevronDownIcon class="size-3" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" class="min-w-56">
+                <DropdownMenuItem v-for="c in takeAllChoices(names)" :key="c.value" class="text-base" :data-merge-take-all="c.value" @select="takeAll(c.value)">
+                  {{ c.label }}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <span class="ml-auto flex items-center gap-1.5">
               <label class="inline-flex items-center gap-1 text-muted-foreground">
                 <input v-model="foldUnchanged" type="checkbox" class="size-3 accent-primary" data-merge-fold-toggle />
@@ -873,12 +1080,6 @@ const resolveBlocked = computed(() => {
                 <input v-model="syncScroll" type="checkbox" class="size-3 accent-primary" />
                 Scroll together
               </label>
-              <Tip content="Write Git's merge of this file again, with its conflict markers">
-                <button type="button" class="diff-action" @click="restoreGitMerge">
-                  <RotateCcwIcon class="mr-1 size-3" />
-                  Start Again from Git's Merge
-                </button>
-              </Tip>
             </span>
           </div>
 
@@ -933,7 +1134,7 @@ const resolveBlocked = computed(() => {
                   <Tip :content="`Copy these lines from ${names.ours} into the result (Ctrl+click to add them below)`">
                     <button
                       type="button"
-                      class="merge-arrow left-0.5"
+                      class="merge-arrow right-0.5"
                       :style="{ top: `${s.arrowY}px` }"
                       data-merge-take="left"
                       @click="take('left', s.index, $event.ctrlKey || $event.metaKey)"
@@ -944,8 +1145,8 @@ const resolveBlocked = computed(() => {
                   <Tip :content="`Leave these lines from ${names.ours} out (undo brings them back)`">
                     <button
                       type="button"
-                      class="merge-arrow merge-dismiss left-5"
-                      :style="{ top: `${s.arrowY}px` }"
+                      class="merge-arrow merge-dismiss right-0.5"
+                      :style="{ top: `${s.arrowY + diffRowPx(font) + DISMISS_GAP_PX}px` }"
                       data-merge-dismiss="left"
                       @click="dismiss('left', s.index)"
                     >
@@ -976,26 +1177,26 @@ const resolveBlocked = computed(() => {
               </svg>
               <template v-for="s in rightShapes" :key="`a${s.key}`">
                 <template v-if="!s.dismissed">
-                  <Tip :content="`Leave these lines from ${names.theirs} out (undo brings them back)`">
-                    <button
-                      type="button"
-                      class="merge-arrow merge-dismiss right-5"
-                      :style="{ top: `${s.arrowY}px` }"
-                      data-merge-dismiss="right"
-                      @click="dismiss('right', s.index)"
-                    >
-                      ×
-                    </button>
-                  </Tip>
                   <Tip :content="`Copy these lines from ${names.theirs} into the result (Ctrl+click to add them below)`">
                     <button
                       type="button"
-                      class="merge-arrow right-0.5"
+                      class="merge-arrow left-0.5"
                       :style="{ top: `${s.arrowY}px` }"
                       data-merge-take="right"
                       @click="take('right', s.index, $event.ctrlKey || $event.metaKey)"
                     >
                       «
+                    </button>
+                  </Tip>
+                  <Tip :content="`Leave these lines from ${names.theirs} out (undo brings them back)`">
+                    <button
+                      type="button"
+                      class="merge-arrow merge-dismiss left-0.5"
+                      :style="{ top: `${s.arrowY + diffRowPx(font) + DISMISS_GAP_PX}px` }"
+                      data-merge-dismiss="right"
+                      @click="dismiss('right', s.index)"
+                    >
+                      ×
                     </button>
                   </Tip>
                 </template>

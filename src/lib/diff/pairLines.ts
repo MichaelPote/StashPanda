@@ -12,6 +12,12 @@ export type LinePair = [oldIndex: number, newIndex: number];
 const MIN_SIMILARITY = 0.4;
 /** Blocks larger than this many removed × added lines fall back to pairing by position. */
 const MAX_CELLS = 40_000;
+/**
+ * Blocks whose comparisons would take more than this many lookups fall back too. Comparing two
+ * lines looks up each distinct piece of the shorter one, so a few hundred long minified lines stay
+ * under `MAX_CELLS` and would still keep the window busy for seconds.
+ */
+const MAX_LOOKUPS = 2_000_000;
 
 /** Pairs the first removed line with the first added line, and so on: what Git's order gives. */
 export function pairByPosition(oldCount: number, newCount: number): LinePair[] {
@@ -55,6 +61,9 @@ export function pairBySimilarity(oldLines: string[], newLines: string[]): LinePa
 
   const oldGrams = oldLines.map(bigrams);
   const newGrams = newLines.map(bigrams);
+  let lookups = 0;
+  for (const a of oldGrams) for (const b of newGrams) lookups += Math.min(a.size, b.size);
+  if (lookups > MAX_LOOKUPS) return pairByPosition(n, m);
   const sizeOf = (g: Map<string, number>): number => {
     let total = 0;
     for (const count of g.values()) total += count;

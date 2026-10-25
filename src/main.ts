@@ -27,6 +27,7 @@ import "@/assets/index.css";
 import App from "./App.vue";
 import { useSettingsStore } from "@/stores/settings";
 import { disableBrowserContextMenu } from "@/lib/browserDefaults";
+import { DIFF_COLORS, diffColorVars } from "@/lib/diff/colors";
 
 // Dark is the default, so paint dark before settings arrive to avoid a light flash.
 document.documentElement.classList.add("dark");
@@ -56,6 +57,20 @@ watchEffect(() => {
   const percent = settings.settings?.appearance?.zoom ?? 100;
   const factor = Math.min(200, Math.max(50, percent)) / 100;
   void getCurrentWebview().setZoom(factor).catch(() => {});
+});
+
+// `diff.addBgDark` and the other diff colours: the current theme's saved colours, set on <body>
+// over the theme's own on <html>.
+watchEffect(() => {
+  const theme = settings.theme;
+  const dark = theme === "dark" || (theme === "system" && preferredDark.value);
+  const diff = settings.settings?.diff;
+  const vars = diffColorVars((setting) => diff?.[setting], dark);
+  for (const { cssVar } of DIFF_COLORS) {
+    const value = vars[cssVar];
+    if (value) document.body.style.setProperty(cssVar, value);
+    else document.body.style.removeProperty(cssVar);
+  }
 });
 
 disableBrowserContextMenu();

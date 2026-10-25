@@ -77,6 +77,7 @@ impl AppState {
         warnings.extend(w);
         let db = Db::open(&paths.cache_db)?;
         evict_cache(&db, &settings);
+        crate::git::console::set_log_internal(settings.console.log_internal);
         let ui_state = load_ui_state(&db, &paths.ui_state_file, &mut warnings);
 
         let inner = Arc::new(Inner {
@@ -125,6 +126,7 @@ impl AppState {
 
     /// Replace settings, bump the revision, queue a save. Returns the revision.
     pub fn set_settings(&self, new: Settings) -> Result<u64> {
+        crate::git::console::set_log_internal(new.console.log_internal);
         *self
             .inner
             .settings

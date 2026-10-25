@@ -15,6 +15,31 @@ function onAuxClick(event: MouseEvent, key: string): void {
     void sessions.closeTab(key);
   }
 }
+
+/**
+ * Keyboard use, as in any tab list: Tab reaches only the active tab; the Left and Right arrows,
+ * Home and End move between tabs; Enter or Space switches to the focused one, and Delete closes it.
+ * Moving does not switch by itself, since switching loads a repository.
+ */
+function onKeydown(event: KeyboardEvent, key: string): void {
+  const tabs = [...((event.currentTarget as HTMLElement).parentElement?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])];
+  const at = tabs.indexOf(event.currentTarget as HTMLElement);
+  const moveTo = (index: number): void => {
+    event.preventDefault();
+    tabs[(index + tabs.length) % tabs.length]?.focus();
+  };
+  if (event.key === "ArrowRight") moveTo(at + 1);
+  else if (event.key === "ArrowLeft") moveTo(at - 1);
+  else if (event.key === "Home") moveTo(0);
+  else if (event.key === "End") moveTo(tabs.length - 1);
+  else if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    sessions.setActive(key);
+  } else if (event.key === "Delete") {
+    event.preventDefault();
+    void sessions.closeTab(key);
+  }
+}
 </script>
 
 <template>
@@ -26,7 +51,7 @@ function onAuxClick(event: MouseEvent, key: string): void {
       v-for="session in sessions.list"
       :key="session.key"
       role="tab"
-      tabindex="0"
+      :tabindex="session.key === sessions.activeKey ? 0 : -1"
       :aria-selected="session.key === sessions.activeKey"
       :class="
         cn(
@@ -41,7 +66,7 @@ function onAuxClick(event: MouseEvent, key: string): void {
       @click="sessions.setActive(session.key)"
       @auxclick="onAuxClick($event, session.key)"
       @mousedown.middle.prevent
-      @keydown.enter="sessions.setActive(session.key)"
+      @keydown="onKeydown($event, session.key)"
     >
       <!-- The active tab's icon is the accent, which is its repository's colour when it has one.
            Snapped to whole pixels: each tab starts wherever the text of the one before it ends. -->
@@ -57,9 +82,10 @@ function onAuxClick(event: MouseEvent, key: string): void {
         :class="
           cn(
             'ml-1 inline-flex size-4 shrink-0 items-center justify-center rounded-sm hover:bg-ghost-hover',
-            session.key === sessions.activeKey ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+            session.key === sessions.activeKey ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100',
           )
         "
+        tabindex="-1"
         :aria-label="`Close ${session.info.displayName}`"
         @click.stop="sessions.closeTab(session.key)"
       >

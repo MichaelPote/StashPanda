@@ -37,7 +37,9 @@ impl SshTransport {
 
     /// The remote command line: shlex-quoted because `exec` runs through the
     /// login shell. `$$` echo lets us kill the real process later.
-    fn remote_command(&self, cmd: &Cmd) -> String {
+    /// The command line the remote login shell runs, every word quoted. Fails rather than send
+    /// an unquoted line when a word cannot be quoted, which happens only for a NUL character.
+    fn remote_command(&self, cmd: &Cmd) -> Result<String> {
         let mut words: Vec<String> = Vec::new();
         if !cmd.env.is_empty() {
             words.push("env".into());
@@ -50,7 +52,8 @@ impl SshTransport {
             Program::Other(p) => p.clone(),
         });
         words.extend(cmd.args.iter().cloned());
-        shlex::try_join(words.iter().map(String::as_str)).unwrap_or_else(|_| words.join(" "))
+        shlex::try_join(words.iter().map(String::as_str))
+            .map_err(|_| GitError::Internal { detail: "A command argument contains a NUL character, which cannot be sent over SSH.".into() })
     }
 }
 
@@ -146,14 +149,15 @@ impl Transport for SshTransport {
         }
         v.push(format!("{}@{}", self.target.user, self.target.host));
         v.push("--".into());
-        v.push(self.remote_command(cmd));
+        // Only shown, never run, so a line that cannot be quoted just says so.
+        v.push(self.remote_command(cmd).unwrap_or_else(|_| "<an argument contains a NUL character>".into()));
         v
     }
     async fn spawn(&self, cmd: Cmd) -> Result<Box<dyn Process>> {
+        let command = self.remote_command(&cmd)?;
         let conn = self.ctx.pool.get_or_connect(&self.target, &self.ctx).await?;
         let permit = conn.slots.clone().acquire_owned().await.map_err(|_| GitError::Cancelled)?;
         let channel = conn.open_session().await?;
-        let command = self.remote_command(&cmd);
         channel.exec(true, command.as_bytes().to_vec()).await.map_err(|e| GitError::TransportDisconnected { detail: e.to_string() })?;
 
         let writer = channel.make_writer();

@@ -9,6 +9,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import AboutDialog from "@/components/dialogs/AboutDialog.vue";
 import ApplyStashDialog from "@/components/dialogs/ApplyStashDialog.vue";
 import BlameDialog from "@/components/dialogs/BlameDialog.vue";
+import ChoiceDialog from "@/components/dialogs/ChoiceDialog.vue";
 import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
@@ -36,6 +37,7 @@ import RepositoriesPanel from "@/components/shell/RepositoriesPanel.vue";
 import RepoTabStrip from "@/components/shell/RepoTabStrip.vue";
 import RepoWorkspace from "@/components/shell/RepoWorkspace.vue";
 import StatusBar from "@/components/shell/StatusBar.vue";
+import { watchForConflicts } from "@/lib/autoResolveFiles";
 import { isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
@@ -62,6 +64,7 @@ watchEffect(() => {
   else delete root.dataset.accent;
 });
 const dialogs = useDialogsStore();
+watchForConflicts();
 /** Loaded the first time it opens, with CodeMirror, so the editor adds nothing to starting up. */
 const MergeEditorDialog = defineAsyncComponent(() => import("@/components/merge/MergeEditorDialog.vue"));
 
@@ -101,6 +104,13 @@ const leftWidth = computed(() => uiState.panelSize("leftWidth"));
 const reposHeight = computed(() => uiState.panelSize("reposHeight"));
 const consoleHeight = computed(() => uiState.panelSize("consoleHeight"));
 const consoleCollapsed = computed(() => uiState.consoleCollapsed);
+/**
+ * How far past the Diff and Console divider a press still grabs it. reka-ui's default (5px)
+ * reaches into the diff and takes its horizontal scrollbar. One object for the life of the app:
+ * a new one on every render makes reka-ui register the handle again, which drops a drag in
+ * progress and leaves every panel ignoring the mouse.
+ */
+const CONSOLE_HANDLE_MARGINS = { coarse: 2, fine: 2 };
 const sidebarCollapsed = computed(() => uiState.sidebarCollapsed);
 
 function onBodyLayout(sizes: number[]): void {
@@ -246,7 +256,7 @@ function dismissRepoWarning(warning: string): void {
                 </div>
               </ResizablePanel>
               <template v-if="!consoleCollapsed">
-                <ResizableHandle />
+                <ResizableHandle :hit-area-margins="CONSOLE_HANDLE_MARGINS" />
                 <ResizablePanel :order="2" :default-size="consoleHeight" :min-size="8">
                   <ConsolePanel :session="sessions.active" :collapsed="false" />
                 </ResizablePanel>
@@ -280,6 +290,7 @@ function dismissRepoWarning(warning: string): void {
     <RebaseDialog />
     <TrackRemoteBranchDialog />
     <ConfirmDialog />
+    <ChoiceDialog />
     <SettingsDialog />
     <PassphraseDialog />
     <HostKeyDialog />

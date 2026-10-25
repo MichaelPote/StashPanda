@@ -198,7 +198,9 @@ async function reveal(entry: RefEntry): Promise<void> {
 
     <ScrollArea v-else class="min-h-0 flex-1">
       <!-- Whole pixels throughout the headings (py-1 and mt-1 are 3.5px, gap-1.5 is 5.25px), so
-           their 12px icons start on whole pixels; see svg.lucide.size-3.5 in index.css. -->
+           their 12px icons start on whole pixels; see svg.lucide.size-3.5 in index.css. Each
+           heading after the first has a muted line in the 5px above it, 2px from either side,
+           drawn outside the row so the row keeps its height. -->
       <div class="py-[4px] text-base select-none">
         <!-- Local branches, in folders by the parts of their names. -->
         <AddBranchMenu :session-key="activeKey">
@@ -299,7 +301,7 @@ async function reveal(entry: RefEntry): Promise<void> {
 
         <!-- Remotes, each with its branches in folders by the parts of their names. -->
         <AddBranchMenu :session-key="activeKey">
-          <button type="button" class="mt-[4px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'remotes')">
+          <button type="button" class="relative mt-[5px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps before:pointer-events-none before:absolute before:inset-x-0 before:-top-[3px] before:h-px before:bg-border-soft hover:text-foreground" @click="onHeadingClick($event, 'remotes')">
             <component :is="isOpen('remotes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
             <CloudIcon class="size-3.5" />
             Remotes
@@ -375,7 +377,7 @@ async function reveal(entry: RefEntry): Promise<void> {
 
         <!-- Tags -->
         <AddBranchMenu :session-key="activeKey">
-          <button type="button" class="mt-[4px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'tags')">
+          <button type="button" class="relative mt-[5px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps before:pointer-events-none before:absolute before:inset-x-0 before:-top-[3px] before:h-px before:bg-border-soft hover:text-foreground" @click="onHeadingClick($event, 'tags')">
             <component :is="isOpen('tags') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
             <TagIcon class="size-3.5" />
             Tags
@@ -419,7 +421,7 @@ async function reveal(entry: RefEntry): Promise<void> {
 
         <!-- Stashes -->
         <AddBranchMenu :session-key="activeKey">
-          <button type="button" class="mt-[4px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'stashes')">
+          <button type="button" class="relative mt-[5px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps before:pointer-events-none before:absolute before:inset-x-0 before:-top-[3px] before:h-px before:bg-border-soft hover:text-foreground" @click="onHeadingClick($event, 'stashes')">
             <component :is="isOpen('stashes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
             <ArchiveIcon class="size-3.5" />
             Stashes

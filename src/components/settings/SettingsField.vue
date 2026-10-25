@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { Input } from "@/components/ui/input";
+import { parseColor, themeColor, toHex6, toHex8, type Rgba } from "@/lib/diff/colors";
 import { BUNDLED_DIFF_FONTS, cssFontFamily } from "@/lib/diff/font";
 import { installedMonospaceFonts } from "@/lib/fonts";
 import { errorMessage } from "@/lib/ipc";
@@ -54,6 +55,26 @@ const extraFont = computed<{ name: string; label: string } | null>(() => {
   return installed.value.includes(name) ? null : { name, label: `${name} (not installed)` };
 });
 
+// ---- Colours ---------------------------------------------------------------------------------
+//
+// The swatch, the opacity slider and the text box all show the one value in the box; an empty box
+// shows the theme's own colour, which the page's colour fields belong to.
+
+/** The theme's own colour, read once: the page draws only the current theme's colour fields. */
+const themeDefault = computed<Rgba | null>(() => (props.field.kind === "color" ? themeColor(props.field.cssVar) : null));
+/** The colour the box holds, or the theme's while it is empty or not yet a colour. */
+const shownColor = computed<Rgba>(() => parseColor(text.value) ?? themeDefault.value ?? { r: 0, g: 0, b: 0, a: 1 });
+const opacityPercent = computed(() => Math.round(shownColor.value.a * 100));
+
+function onPickColor(event: Event): void {
+  const picked = parseColor((event.target as HTMLInputElement).value);
+  if (picked) model.value = toHex8({ ...picked, a: shownColor.value.a });
+}
+
+function onPickOpacity(event: Event): void {
+  model.value = toHex8({ ...shownColor.value, a: Number((event.target as HTMLInputElement).value) / 100 });
+}
+
 const APPLIES_TEXT = {
   unused: "Not used yet",
   reopen: "Applies when a repository is opened",
@@ -68,6 +89,41 @@ const APPLIES_TEXT = {
       <span :class="cn(changed && 'font-medium')">{{ field.label }}</span>
       <span v-if="field.applies" class="text-xs text-muted-foreground">({{ APPLIES_TEXT[field.applies] }})</span>
     </label>
+
+    <!-- A colour is one row: its label, then the swatch, the opacity and the text box. -->
+    <div v-else-if="field.kind === 'color'" class="flex flex-wrap items-center gap-2">
+      <label :for="id" :class="cn('w-56 text-base select-none', changed && 'font-medium')">{{ field.label }}</label>
+      <input
+        type="color"
+        class="h-7 w-10 shrink-0 cursor-pointer rounded-md border border-border bg-transparent p-0.5"
+        :value="toHex6(shownColor)"
+        :aria-label="`${field.label}: colour`"
+        @input="onPickColor"
+      />
+      <input
+        type="range"
+        min="0"
+        max="100"
+        class="w-28 accent-primary"
+        :value="opacityPercent"
+        :aria-label="`${field.label}: opacity`"
+        @input="onPickOpacity"
+      />
+      <span class="w-10 text-right text-base text-muted-foreground tabular-nums">{{ opacityPercent }}%</span>
+      <Input
+        :id="id"
+        v-model="text"
+        class="w-28 font-mono text-base"
+        :placeholder="themeDefault ? toHex8(themeDefault) : undefined"
+        autocomplete="off"
+        spellcheck="false"
+        :aria-invalid="error !== null || undefined"
+        :aria-describedby="field.help ? helpId : undefined"
+      />
+      <button v-if="text.length > 0" type="button" class="text-base text-muted-foreground underline-offset-2 hover:text-foreground hover:underline" @click="model = ''">
+        Reset
+      </button>
+    </div>
 
     <template v-else>
       <label :for="id" class="flex items-baseline gap-2 text-base select-none">

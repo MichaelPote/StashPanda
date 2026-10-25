@@ -34,6 +34,8 @@
     "@vueuse/core": "^15.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dompurify": "^3.4.17",
+    "markdown-it": "^15.0.3",
     "pinia": "^4.0.3",
     "reka-ui": "^2.10.4",
     "shadcn-vue": "^2.8.2",
@@ -45,6 +47,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^26.6.1",
     "@vitejs/plugin-vue": "^6.0.7",
     "tailwindcss": "^4.3.3",

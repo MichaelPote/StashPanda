@@ -161,6 +161,7 @@ pub async fn open_repo(
         native_path: res.native_path,
         lock: RwLock::new(()),
         write_gate: tokio::sync::Mutex::new(()),
+        network_gate: tokio::sync::Mutex::new(()),
         operations: std::sync::Mutex::new(Default::default()),
         read_slots: Semaphore::new(4),
         cancel: CancellationToken::new(),

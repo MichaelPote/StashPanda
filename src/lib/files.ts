@@ -94,7 +94,7 @@ function worktreeItem(
 }
 
 /**
- * The Staged, Unstaged, Untracked and Conflicted sections for a status snapshot. A file with
+ * The Conflicted, Staged, Unstaged and Untracked sections for a status snapshot. A file with
  * both staged and unstaged changes appears in both of the first two sections.
  */
 export function worktreeSections(status: StatusSnapshot | null): FileSection[] {
@@ -120,11 +120,12 @@ export function worktreeSections(status: StatusSnapshot | null): FileSection[] {
     if (e.staged || e.x !== ".") staged.push(worktreeItem(e.path, from(e.x), "staged", e.x, { type: "staged" }));
     if (e.unstaged || (e.y !== "." && e.y !== "?")) unstaged.push(worktreeItem(e.path, from(e.y), "unstaged", e.y, { type: "unstaged" }));
   }
+  // Conflicted first: they block the merge, rebase or other operation until they are resolved.
   return [
+    { key: "conflicted", title: "Conflicted", items: conflicted },
     { key: "staged", title: "Staged", items: staged },
     { key: "unstaged", title: "Unstaged", items: unstaged },
     { key: "untracked", title: "Untracked", items: untracked },
-    { key: "conflicted", title: "Conflicted", items: conflicted },
   ];
 }
 
@@ -228,7 +229,7 @@ export function isSelectAllKey(event: KeyboardEvent): boolean {
 
 // ---- Grouping and sorting for display ------------------------------------------------------
 
-/** How the Files panel groups its list. `status` is Staged, Unstaged, Untracked and Conflicted. */
+/** How the Files panel groups its list. `status` is Conflicted, Staged, Unstaged and Untracked. */
 export type GroupBy = "status" | "folder" | "none";
 /**
  * `name` is by path; `status` is by kind of change (see `STATUS_RANK`), then path; `modified` is
@@ -236,14 +237,14 @@ export type GroupBy = "status" | "folder" | "none";
  */
 export type SortBy = "name" | "status" | "modified";
 
-/** Order of the kinds of change when sorting by Git status. */
+/** Order of the kinds of change when sorting by Git status: conflicts first, as they need resolving. */
 const STATUS_RANK: Record<FileState, number> = {
-  added: 0,
-  modified: 1,
-  renamed: 2,
-  deleted: 3,
-  untracked: 4,
-  conflict: 5,
+  conflict: 0,
+  added: 1,
+  modified: 2,
+  renamed: 3,
+  deleted: 4,
+  untracked: 5,
   neutral: 6,
 };
 

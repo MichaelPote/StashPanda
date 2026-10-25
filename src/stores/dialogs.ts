@@ -17,6 +17,17 @@ export interface RenameBranchPayload {
   key: string;
   /** The local branch to rename. */
   name: string;
+  /**
+   * The remote branch of the same name that the branch tracks, which the dialog offers to rename
+   * as well; null when it tracks nothing, a branch of another name, or one that has gone.
+   */
+  remoteCopy: PushTarget | null;
+}
+
+/** The name the Rename Branch dialog gave the branch, and whether its remote copy is to be renamed too. */
+export interface RenameBranchResult {
+  name: string;
+  renameRemote: boolean;
 }
 
 export interface CreateTagPayload {
@@ -176,6 +187,8 @@ export interface PushToPayload {
   target: string | null;
   /** Whether "Force push" starts ticked. */
   force: boolean;
+  /** What `branch` tracks now, by its full name (`refs/remotes/origin/main`), or null. */
+  upstream: string | null;
 }
 
 /** Where the Push To dialog chose to push `branch`, and whether to force it. */
@@ -185,11 +198,13 @@ export interface PushToChoice {
   force: boolean;
   /**
    * The commit the dialog showed for the target, whose dropped commits it listed: a force push
-   * expects the target to be exactly there.
+   * expects the target to be exactly there. Null for a new branch, which is never forced.
    */
-  expected: string;
+  expected: string | null;
   /** The commit the list was made against (`sourceOid`): a force push sends exactly this one. */
   source: string;
+  /** Make `branch` track the remote branch pushed to, once the push has worked. */
+  track: boolean;
 }
 
 /** Where the Push dialog chose to push, and whether the branch should track it from now on. */
@@ -236,6 +251,14 @@ export interface ConfirmPayload {
   message: string;
   confirmLabel?: string;
   destructive?: boolean;
+}
+
+/** A question with more answers than yes and no. Resolves with the chosen `value`, or null when cancelled. */
+export interface ChoicePayload {
+  title: string;
+  message: string;
+  /** Left to right; the last one is the default and has the keyboard focus. Cancel is always added before them. */
+  choices: { value: string; label: string; destructive?: boolean }[];
 }
 
 export interface PassphrasePayload {
@@ -313,7 +336,7 @@ export type AddRepoTab = "existing" | "clone";
 export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
-  renameBranch: { payload: RenameBranchPayload; result: OpResult | null };
+  renameBranch: { payload: RenameBranchPayload; result: RenameBranchResult | null };
   commit: { payload: CommitPayload; result: OpResult | null };
   stashPush: { payload: StashPushPayload; result: OpResult | null };
   stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
@@ -326,6 +349,7 @@ export interface DialogSpecs {
   /** Resolves with the command's result, or null when nothing ran (cancelled, or nothing changed). */
   trackRemoteBranch: { payload: TrackRemoteBranchPayload; result: OpResult | null };
   confirm: { payload: ConfirmPayload; result: boolean };
+  choice: { payload: ChoicePayload; result: string | null };
   fileHistory: { payload: FileHistoryPayload; result: null };
   blame: { payload: BlamePayload; result: null };
   mergeEditor: { payload: MergeEditorPayload; result: null };
@@ -357,6 +381,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   pushDefault: null,
   trackRemoteBranch: null,
   confirm: false,
+  choice: null,
   fileHistory: null,
   blame: null,
   mergeEditor: null,
@@ -371,7 +396,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
  * Dialogs that open on top of another open dialog rather than replacing it: a confirmation, and
  * the SSH prompts, which the SSH Keys page in Settings and an open started from a dialog need.
  */
-const STACKED: ReadonlySet<DialogKind> = new Set<DialogKind>(["confirm", "passphrase", "sshHostKey", "sshPassword"]);
+const STACKED: ReadonlySet<DialogKind> = new Set<DialogKind>(["confirm", "choice", "passphrase", "sshHostKey", "sshPassword"]);
 
 interface ActiveDialog<K extends DialogKind = DialogKind> {
   kind: K;

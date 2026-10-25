@@ -31,6 +31,10 @@
   .diff-line-del {
     @apply bg-diff-del;
   }
+  /* Side by side, a line of a block with both removed and added lines, on either side. */
+  .diff-line-mod {
+    @apply bg-diff-mod;
+  }
   /* A removed line's text in the unified layout, slightly faded so it reads as gone at a glance.
      The syntax colours stay; only the text span fades, so the line numbers and the row's red
      background keep their full strength. The changed-word highlights inside it fade with it. */
@@ -99,16 +103,29 @@
   /* The changed words inside a changed line. The highlight reaches 1px past the text on every
      side; the negative margin takes the sideways padding back, so the text after it does not
      move and monospaced columns stay lined up. Vertical padding on an inline element does not
-     change the row's height. */
+     change the row's height. The highlight is the stronger colour at half its strength: it sits
+     on the line's own background, so this lands halfway between the line and the full colour,
+     which the band edges and the error banner's border still use. */
   .diff-word-add,
   .diff-word-del {
     @apply -mx-px rounded-sm p-px text-inherit;
   }
   .diff-word-add {
-    @apply bg-diff-add-mark;
+    background-color: color-mix(in srgb, var(--diff-add-mark) 50%, transparent);
   }
   .diff-word-del {
-    @apply bg-diff-del-mark;
+    background-color: color-mix(in srgb, var(--diff-del-mark) 50%, transparent);
+  }
+
+  /* Side by side, on the new side of a changed line: where words were removed with nothing put
+     in their place. It takes no width, so the text around it does not move; the bar is drawn
+     over the edge of the characters either side. */
+  .diff-gap-del {
+    @apply relative inline-block h-(--diff-row-h) w-0 align-top;
+  }
+  .diff-gap-del::before {
+    content: "";
+    @apply absolute inset-y-0 -left-px w-0.5 bg-diff-del-mark;
   }
 
   /* A Find match (Ctrl+F in a diff view), in purple, a stronger magenta than the hunk headers'
@@ -123,24 +140,27 @@
   }
 
   /* Side by side: the band in the gap joining a change's old lines to its new lines. It has the
-     changed lines' own background, so each band reads as those lines carried across the gap;
-     a change with lines on both sides fades from the deleted colour to the added one. */
+     changed lines' own background, so each band reads as those lines carried across the gap:
+     red for a deletion, green for an insertion, and orange for a block with both. */
   .diff-curve-del {
     fill: var(--diff-del-bg);
   }
   .diff-curve-add {
     fill: var(--diff-add-bg);
   }
-  .diff-curve-hunk {
-    fill: var(--color-diff-hunk);
+  .diff-curve-mod {
+    fill: var(--diff-mod-bg);
   }
-  /* A change with lines on both sides fades from the deleted lines' background to the added
-     lines' background, matching each at its end. */
+  /* With "Draw the removed side of modified lines in the removed colour" on, a modified block's
+     band fades from the removed lines' background to the modified one, matching each end. */
   .diff-curve-stop-del {
     stop-color: var(--diff-del-bg);
   }
-  .diff-curve-stop-add {
-    stop-color: var(--diff-add-bg);
+  .diff-curve-stop-mod {
+    stop-color: var(--diff-mod-bg);
+  }
+  .diff-curve-hunk {
+    fill: var(--color-diff-hunk);
   }
   /* The top and bottom edges of an insertion's or a deletion's band, in the changed words'
      stronger colour. Each edge is solid where it meets the line marking where the lines would

@@ -23,6 +23,7 @@ pub struct Settings {
     pub polling: Polling,
     pub cache: CacheSettings,
     pub commit: CommitSettings,
+    pub merge: MergeSettings,
     pub diff: DiffSettings,
     pub keys: KeySettings,
     pub library: RepoLibrary,
@@ -43,6 +44,7 @@ impl Default for Settings {
             polling: Polling::default(),
             cache: CacheSettings::default(),
             commit: CommitSettings::default(),
+            merge: MergeSettings::default(),
             diff: DiffSettings::default(),
             keys: KeySettings::default(),
             library: RepoLibrary::default(),
@@ -161,6 +163,27 @@ pub struct CommitSettings {
     pub preselect: CommitPreselect,
 }
 
+/// What to do with conflicts whose two sides changed different lines that only touch, which Git
+/// reports as a conflict although neither side's change overlaps the other's.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum AutoResolve {
+    /// Leave every conflict for the user.
+    Off,
+    /// Resolve them without asking: whole files are saved and marked resolved, and the merge
+    /// editor opens with those blocks already resolved.
+    Automatic,
+    /// Ask first, in both places.
+    #[default]
+    Prompt,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct MergeSettings {
+    pub auto_resolve: AutoResolve,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Appearance {
@@ -184,6 +207,10 @@ pub struct Appearance {
     /// Show only each author's picture (or initials) in the commit list, without the name; the
     /// picture's tooltip has the name and email address. Off by default.
     pub author_avatar_only: bool,
+    /// Draw the commit description (the message after its subject) in the Files panel as
+    /// Markdown: headings, lists, code, quotes and links. Off shows the text exactly as written.
+    /// On by default.
+    pub markdown_descriptions: bool,
     /// Which of the commit list's columns show; the commit message always does, and takes the
     /// room the others leave. All on by default.
     pub show_graph_column: bool,
@@ -207,6 +234,7 @@ impl Default for Appearance {
             graph_in_message_column: false,
             show_column_headings: true,
             author_avatar_only: false,
+            markdown_descriptions: true,
             show_graph_column: true,
             show_author_column: true,
             show_date_column: true,
@@ -244,12 +272,40 @@ pub struct DiffSettings {
     pub word_highlight: bool,
     /// Colour the code by its language, chosen from the file's extension.
     pub syntax_highlight: bool,
+    /// The Shiki theme that colours code while the app uses its dark theme, by its id
+    /// (`dracula`). One the frontend does not offer (`src/lib/diff/syntaxThemes.ts`) uses the default.
+    pub syntax_theme_dark: String,
+    /// The Shiki theme that colours code while the app uses its light theme, as for `syntax_theme_dark`.
+    pub syntax_theme_light: String,
     /// Inside a block of changed lines, pair each removed line with the added line most like it,
     /// rather than with the one in the same position.
     pub match_similar_lines: bool,
     /// How the diff font's edges are smoothed. Only the diff text follows this; the rest of the
     /// interface keeps the system's own rendering.
     pub font_smoothing: FontSmoothing,
+    /// Side by side, draw the removed lines of a block with both removed and added lines in the
+    /// removed lines' colour, with the band between the sides fading from it to the modified colour.
+    pub mod_left_as_removed: bool,
+    /// The dark theme's added lines' background, as `#rrggbbaa`. None uses the theme's own colour.
+    pub add_bg_dark: Option<String>,
+    /// The dark theme's removed lines' background, as `#rrggbbaa`. None uses the theme's own colour.
+    pub del_bg_dark: Option<String>,
+    /// The dark theme's background of a block with both removed and added lines, side by side, as `#rrggbbaa`. None uses the theme's own colour.
+    pub mod_bg_dark: Option<String>,
+    /// The dark theme's added lines' mark colour (changed words at half strength, band edges), as `#rrggbbaa`. None uses the theme's own colour.
+    pub add_mark_dark: Option<String>,
+    /// The dark theme's removed lines' mark colour (changed words at half strength, band edges, the deletion cursor), as `#rrggbbaa`. None uses the theme's own colour.
+    pub del_mark_dark: Option<String>,
+    /// The light theme's added lines' background, as `#rrggbbaa`. None uses the theme's own colour.
+    pub add_bg_light: Option<String>,
+    /// The light theme's removed lines' background, as `#rrggbbaa`. None uses the theme's own colour.
+    pub del_bg_light: Option<String>,
+    /// The light theme's background of a block with both removed and added lines, side by side, as `#rrggbbaa`. None uses the theme's own colour.
+    pub mod_bg_light: Option<String>,
+    /// The light theme's added lines' mark colour (changed words at half strength, band edges), as `#rrggbbaa`. None uses the theme's own colour.
+    pub add_mark_light: Option<String>,
+    /// The light theme's removed lines' mark colour (changed words at half strength, band edges, the deletion cursor), as `#rrggbbaa`. None uses the theme's own colour.
+    pub del_mark_light: Option<String>,
 }
 
 /// How the diff text is antialiased (see `src/lib/diff/font.ts` for how each is achieved).
@@ -275,8 +331,21 @@ impl Default for DiffSettings {
             ligatures: true,
             word_highlight: true,
             syntax_highlight: true,
+            syntax_theme_dark: "github-dark-default".into(),
+            syntax_theme_light: "github-light-default".into(),
             match_similar_lines: true,
             font_smoothing: FontSmoothing::ClearType,
+            mod_left_as_removed: false,
+            add_bg_dark: None,
+            del_bg_dark: None,
+            mod_bg_dark: None,
+            add_mark_dark: None,
+            del_mark_dark: None,
+            add_bg_light: None,
+            del_bg_light: None,
+            mod_bg_light: None,
+            add_mark_light: None,
+            del_mark_light: None,
         }
     }
 }
@@ -284,8 +353,10 @@ impl Default for DiffSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ConsoleSettings {
-    /// Show every command, including internal queries and watcher polls.
-    pub show_internal: bool,
+    /// Log the commands the app runs by itself (reading the repository, watching it for changes),
+    /// successful or not, as well as the user's own. Off, only the user's commands are logged.
+    /// Off by default.
+    pub log_internal: bool,
     /// Log each request sent to pinned helpers (cat-file, inotifywait).
     pub verbose_helpers: bool,
     /// Ring buffer size per repository in the UI.
@@ -297,9 +368,9 @@ pub struct ConsoleSettings {
 impl Default for ConsoleSettings {
     fn default() -> Self {
         Self {
-            show_internal: true,
+            log_internal: false,
             verbose_helpers: false,
-            max_lines: 2000,
+            max_lines: 100,
             output_cap_bytes: 64 * 1024,
         }
     }

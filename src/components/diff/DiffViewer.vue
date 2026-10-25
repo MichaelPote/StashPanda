@@ -4,6 +4,7 @@ import { useDebounceFn, usePreferredDark, useResizeObserver } from "@vueuse/core
 import { ChevronDownIcon, ChevronUpIcon, HistoryIcon, LoaderCircleIcon, ScanTextIcon } from "@lucide/vue";
 import { commands, type DiffText, type Eol, type LineAction, type ResolveSide, type SelectedLine } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { fileViewReason, fileViewRev, mergeEditorReason, openBlame, openFileHistory, openMergeEditor } from "@/lib/fileViews";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
@@ -12,11 +13,11 @@ import EmptyState from "@/components/shell/EmptyState.vue";
 import { useFind, type FindHit } from "@/composables/useFind";
 import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
-import { highlightPair, noDiffMessage, parseUnified, type DiffLine, type Segment } from "@/lib/diff/parseUnified";
+import { highlightPair, noDiffMessage, parseUnified, type DiffLine, type HighlightedPair, type Segment } from "@/lib/diff/parseUnified";
 import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
 import { pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
-import { BandBuilder, bandEdges, bandPath, sideOffsets, type Band } from "@/lib/diff/sideLayout";
-import { highlightRuns, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
+import { BandBuilder, bandEdges, bandPath, GAP_PX, sideEdges, sideFill, sideOffsets, type Band } from "@/lib/diff/sideLayout";
+import { highlightRuns, insertGaps, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { conflictComparisons, conflictStages, conflictSummary, missingVersionNote, operationNames, type ConflictComparison } from "@/lib/conflicts";
@@ -86,7 +87,11 @@ const loading = ref(false);
 const error = ref<string | null>(null);
 let request = 0;
 
-async function load(): Promise<void> {
+/**
+ * Loads the selected file's diff. `refresh` reloads the same file after its status changed: no
+ * spinner, the scroll position stays, and an unchanged diff is left alone.
+ */
+async function load(refresh = false): Promise<void> {
   const file = selected.value;
   const id = (request += 1);
   if (!file) {
@@ -96,8 +101,10 @@ async function load(): Promise<void> {
     loading.value = false;
     return;
   }
-  loading.value = true;
-  error.value = null;
+  if (!refresh) {
+    loading.value = true;
+    error.value = null;
+  }
   try {
     const result = await unwrap(
       commands.getFileDiff(props.session.key, file.target, file.path, file.oldPath ?? null, {
@@ -107,10 +114,15 @@ async function load(): Promise<void> {
       }),
     );
     if (id !== request) return;
+    if (refresh && diffPath.value === file.path && diff.value?.text === result.text && diff.value.isBinary === result.isBinary) return;
+    const sameFile = refresh && diffPath.value === file.path;
     diff.value = result;
     diffPath.value = file.path;
-    scroller.value?.scrollTo({ top: 0 });
-    resetSideScroll();
+    error.value = null;
+    if (!sameFile) {
+      scroller.value?.scrollTo({ top: 0 });
+      resetSideScroll();
+    }
   } catch (e) {
     if (id !== request) return;
     diff.value = null;
@@ -129,6 +141,15 @@ watch(
     void loadDebounced();
   },
   { immediate: true },
+);
+
+// A file in the working tree or the index can change under the open diff: edited in another
+// program, or staged from the toolbar. Each status refresh reloads it; a commit's diff never changes.
+watch(
+  () => props.session.status,
+  () => {
+    if (selected.value && selected.value.target.type !== "commit") void load(true);
+  },
 );
 
 // ---- Parsing and pairing -------------------------------------------------------------------
@@ -157,6 +178,11 @@ interface SideItem {
   line?: DiffLine;
   pair?: number;
   text?: string;
+  /**
+   * A changed line drawn in the modified colour: one of a run of matched lines, or of a stretch
+   * with lines on both sides. Lines removed or added with nothing opposite them keep their own.
+   */
+  modified?: boolean;
 }
 
 interface Built {
@@ -223,26 +249,23 @@ const built = computed<Built>(() => {
       dels.forEach((d, i) => unified.push({ kind: "line", hunk: h, line: d, pair: delPair[i] }));
       adds.forEach((a, j) => unified.push({ kind: "line", hunk: h, line: a, pair: addPair[j] }));
       for (const m of metas) unified.push({ kind: "line", hunk: h, line: m });
-      dels.forEach((d, i) => left.push({ kind: "line", hunk: h, line: d, pair: delPair[i] }));
-      adds.forEach((a, j) => right.push({ kind: "line", hunk: h, line: a, pair: addPair[j] }));
-      left.push(...leftMetas);
-      right.push(...rightMetas);
       // Side by side, one band per stretch: lines removed and added between two matched pairs,
       // then each run of matched pairs, so the curves join each line to its match. Without matching (or with nothing
-      // matched) that is the whole block as one band. The notes about a missing final newline
-      // go with the last stretch.
-      const stretches: [number, number][] = [];
+      // matched) that is the whole block as one band. A stretch is modified when it has lines on
+      // both sides; one with lines on only one side is a plain removal or addition. The notes
+      // about a missing final newline go with the last stretch.
+      const stretches: [number, number, boolean][] = [];
       let di = 0;
       let ai = 0;
       const unmatched = (toD: number, toA: number): void => {
-        if (toD > di || toA > ai) stretches.push([toD - di, toA - ai]);
+        if (toD > di || toA > ai) stretches.push([toD - di, toA - ai, toD > di && toA > ai]);
         di = toD;
         ai = toA;
       };
       if (matchSimilar) {
         let run = 0;
         const endRun = (): void => {
-          if (run > 0) stretches.push([run, run]);
+          if (run > 0) stretches.push([run, run, true]);
           run = 0;
         };
         for (const [i, j] of matched) {
@@ -257,13 +280,20 @@ const built = computed<Built>(() => {
         endRun();
       }
       unmatched(dels.length, adds.length);
+      let li = 0;
+      let ri = 0;
+      for (const [lh, rh, modified] of stretches) {
+        for (const end = li + lh; li < end; li += 1) left.push({ kind: "line", hunk: h, line: dels[li] as DiffLine, pair: delPair[li], modified });
+        for (const end = ri + rh; ri < end; ri += 1) right.push({ kind: "line", hunk: h, line: adds[ri] as DiffLine, pair: addPair[ri], modified });
+      }
+      left.push(...leftMetas);
+      right.push(...rightMetas);
       const last = stretches[stretches.length - 1];
       if (last) {
         last[0] += leftMetas.length;
         last[1] += rightMetas.length;
-      } else stretches.push([leftMetas.length, rightMetas.length]);
-      const pure = dels.length === 0 || adds.length === 0;
-      for (const [lh, rh] of stretches) bands.add("change", lh, rh, pure);
+      } else stretches.push([leftMetas.length, rightMetas.length, false]);
+      for (const [lh, rh, modified] of stretches) bands.add("change", lh, rh, !modified);
       dels = [];
       adds = [];
       metas = [];
@@ -319,18 +349,25 @@ const mode = computed<Mode>(() => (oneSided.value ? "unified" : chosenLayout.val
 
 const rowCount = computed(() => (mode.value === "unified" ? built.value.unified.length : built.value.sideRows));
 
-const segmentCache = new Map<number, { old: Segment[]; new: Segment[] }>();
-watch(built, () => segmentCache.clear());
+const segmentCache = new Map<number, HighlightedPair>();
+watch([built, ignoreWhitespace], () => segmentCache.clear());
 
-function segments(pair: number | undefined, sideOf: "old" | "new", fallback: string): Segment[] {
-  if (pair === undefined || !wordHighlight.value) return [{ text: fallback, changed: false }];
+/** A changed pair's highlights, or undefined when the line has no pair or highlighting is off. */
+function highlighted(pair: number | undefined): HighlightedPair | undefined {
+  if (pair === undefined || !wordHighlight.value) return undefined;
   let entry = segmentCache.get(pair);
   if (!entry) {
     const p = built.value.pairs[pair];
-    if (!p) return [{ text: fallback, changed: false }];
-    entry = highlightPair(p.old, p.new);
+    if (!p) return undefined;
+    entry = highlightPair(p.old, p.new, ignoreWhitespace.value);
     segmentCache.set(pair, entry);
   }
+  return entry;
+}
+
+function segments(pair: number | undefined, sideOf: "old" | "new", fallback: string): Segment[] {
+  const entry = highlighted(pair);
+  if (!entry) return [{ text: fallback, changed: false }];
   return sideOf === "old" ? entry.old : entry.new;
 }
 
@@ -342,6 +379,7 @@ function segments(pair: number | undefined, sideOf: "old" | "new", fallback: str
 
 const preferredDark = usePreferredDark();
 const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
+const syntaxTheme = computed(() => themeFor(dark.value, settings.settings?.diff));
 /** The path whose language colours the diff, or null when colouring is switched off. */
 const syntaxPath = computed(() => (settings.settings?.diff?.syntaxHighlight === false ? null : diffPath.value));
 /** Past this many lines a diff stays plain: colouring it would take longer than it is worth. */
@@ -351,7 +389,7 @@ const lineTokens = shallowRef(new WeakMap<DiffLine, RawToken[]>());
 let syntaxRequest = 0;
 
 watch(
-  [file, syntaxPath, dark],
+  [file, syntaxPath, syntaxTheme],
   async () => {
     const id = (syntaxRequest += 1);
     lineTokens.value = new WeakMap();
@@ -373,7 +411,7 @@ watch(
     }
     if (total === 0 || total > MAX_SYNTAX_LINES) return;
     try {
-      const tokens = await highlightRuns(path, themeFor(dark.value), runs);
+      const tokens = await highlightRuns(path, syntaxTheme.value, runs);
       if (id !== syntaxRequest || tokens === null) return;
       const map = new WeakMap<DiffLine, RawToken[]>();
       tokens.forEach((run, r) =>
@@ -394,11 +432,13 @@ watch(
 /**
  * A line's text as the rows draw it: syntax colours, Find matches, and each run of changed words
  * marked once. `key` names the row for Find: `u` and the row's index in the unified layout, or
- * `l` or `r` and the item's index on that side of the side-by-side layout.
+ * `l` or `r` and the item's index on that side of the side-by-side layout. `gaps` adds a cursor
+ * where words were removed, for the new side of the side-by-side layout.
  */
-function runs(key: string, line: DiffLine | undefined, pair: number | undefined, sideOf: "old" | "new", fallback: string): SpanRun[] {
+function runs(key: string, line: DiffLine | undefined, pair: number | undefined, sideOf: "old" | "new", fallback: string, gaps = false): SpanRun[] {
   const spans = mergeSpans(line ? lineTokens.value.get(line) : undefined, segments(pair, sideOf, fallback));
-  return spanRuns(markFound(spans, find.ranges.value.get(key) ?? [], find.current.value));
+  const found = markFound(spans, find.ranges.value.get(key) ?? [], find.current.value);
+  return spanRuns(gaps ? insertGaps(found, highlighted(pair)?.removedAt ?? []) : found);
 }
 
 // ---- Find (Ctrl+F) -------------------------------------------------------------------------
@@ -514,8 +554,6 @@ const virtual = useVirtualRows(scroller, { rowHeight: () => rowPx.value, total: 
 const visibleUnified = computed(() => built.value.unified.slice(virtual.start.value, virtual.end.value));
 // ---- Side by side: each side's own lines, and the curves between them -----------------------
 
-/** Width of the gap between the two sides, where the curves are drawn. */
-const GAP_PX = 36;
 /** How far the divider's drag area reaches to each side of the new side's left border. */
 const DIVIDER_REACH = 20;
 const OVERSCAN = 10;
@@ -548,28 +586,9 @@ interface Curve {
   /** The filled band, and its top and bottom edges. */
   d: string;
   edges: string;
-  kind: "del" | "add" | "both" | "hunk";
+  kind: "del" | "add" | "mod" | "hunk";
   /** Draw its top and bottom edges: only a whole insertion or deletion has them. */
   outline: boolean;
-}
-
-/**
- * The top and bottom of a band's outline on one side. They sit on the half pixel, so each 1px
- * edge fills one row of pixels instead of two half rows. A side with no lines comes to a point
- * on the half pixel too, where the line marking the insertion is drawn, so the two meet exactly.
- */
-function sideEdges(y: number, height: number): [number, number] {
-  return height === 0 ? [y + 0.5, y + 0.5] : [y + 0.5, y + height - 0.5];
-}
-
-/**
- * The top and bottom of a band's fill on one side: exactly its lines, so neighbouring bands of
- * one block meet with no gap between them. An outlined band's point sits on the half pixel, on
- * the line marking where its lines would go.
- */
-function sideFill(y: number, height: number, outline: boolean): [number, number] {
-  if (height === 0) return outline ? [y + 0.5, y + 0.5] : [y, y];
-  return [y, y + height];
 }
 
 /** The bands to draw in the gap, in the gap's own coordinates (0 is the top of the view). */
@@ -587,7 +606,7 @@ const curves = computed<Curve[]>(() => {
     const [lt, lb] = sideFill(ly, b.lh * px, outline);
     const [rt, rb] = sideFill(ry, b.rh * px, outline);
     if (Math.max(lb, rb) < 0 || Math.min(lt, rt) > view) return;
-    const kind = b.kind === "hunk" ? "hunk" : b.lh === 0 ? "add" : b.rh === 0 ? "del" : "both";
+    const kind = b.kind === "hunk" ? "hunk" : !outline ? "mod" : b.lh === 0 ? "add" : b.rh === 0 ? "del" : "mod";
     const [elt, elb] = sideEdges(ly, b.lh * px);
     const [ert, erb] = sideEdges(ry, b.rh * px);
     out.push({ key: i, d: bandPath(GAP_PX, lt, lb, rt, rb), edges: bandEdges(GAP_PX, elt, elb, ert, erb), kind, outline });
@@ -633,6 +652,8 @@ const sideColumns = computed(() => [
 
 /** Unique per viewer, since the File History dialog shows a second one. */
 const gradientId = `diff-curve-${useId()}`;
+/** Side by side, a modified block's left-hand lines take the removed colour, and its band fades from it. */
+const modLeftAsRemoved = computed(() => settings.settings?.diff?.modLeftAsRemoved === true);
 
 /**
  * Where a change has no lines on one side, a line across that side marks where they would go,
@@ -1009,6 +1030,8 @@ const sideNames = computed(() => operationNames(props.session.status, props.sess
 const comparisons = computed(() => conflictComparisons(sideNames.value));
 const openReason = computed(() => openFileReason(props.session));
 
+/** The comparison the diff shows now, if it is one of `comparisons`. */
+const currentComparison = computed(() => comparisons.value.find((c) => isComparing(c)) ?? null);
 function isComparing(c: ConflictComparison): boolean {
   const t = selected.value?.target;
   return t?.type === "conflict" && t.from === c.from && t.to === c.to;
@@ -1160,19 +1183,29 @@ function toggleContext(value: string): void {
     <div v-if="conflictFile" class="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-border-soft band-conflict px-2 py-1 text-[0.7rem]" data-conflict-strip>
       <span class="text-foreground">{{ conflictSummary(conflictFile.letters, sideNames) }}</span>
       <span class="ml-1 text-muted-foreground">Compare</span>
-      <div class="inline-flex overflow-hidden rounded-md border border-border-soft">
-        <Tip v-for="(c, i) in comparisons" :key="`${c.from}-${c.to}`" :content="comparisonNote(c) ? `${c.title}. ${comparisonNote(c)}` : c.title">
-          <button
-            type="button"
-            :aria-pressed="isComparing(c)"
-            :class="cn('toggle h-[18px] rounded-none border-0 px-2 leading-none font-medium', i > 0 && 'border-l border-l-border-soft')"
-            :data-compare="`${c.from}-${c.to}`"
-            @click="compare(c)"
-          >
-            {{ c.label }}
+      <DropdownMenu>
+        <DropdownMenuTrigger as-child>
+          <button type="button" class="diff-action max-w-80 gap-1" data-compare-menu>
+            <span class="truncate">{{ currentComparison?.label ?? "Choose two versions" }}</span>
+            <ChevronDownIcon class="size-3 shrink-0" />
           </button>
-        </Tip>
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" class="max-w-96 min-w-64">
+          <DropdownMenuRadioGroup :model-value="currentComparison ? `${currentComparison.from}-${currentComparison.to}` : ''">
+            <DropdownMenuRadioItem
+              v-for="c in comparisons"
+              :key="`${c.from}-${c.to}`"
+              :value="`${c.from}-${c.to}`"
+              class="flex-col items-start gap-0.5 text-base"
+              :data-compare="`${c.from}-${c.to}`"
+              @select="compare(c)"
+            >
+              <span class="font-medium">{{ c.label }}</span>
+              <span class="text-[0.85em] text-muted-foreground">{{ c.title }}.{{ comparisonNote(c) ? ` ${comparisonNote(c)}` : "" }}</span>
+            </DropdownMenuRadioItem>
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <span class="ml-auto flex flex-wrap items-center gap-1">
         <Tip :content="mergeEditorReason(conflictFile.letters) ?? 'Resolve this file block by block in the three-pane merge editor'">
           <button
@@ -1328,7 +1361,7 @@ function toggleContext(value: string): void {
                 </div>
                 <div
                   v-else-if="item.line"
-                  :class="['diff-line min-w-0 overflow-hidden', lineClass(item.line.kind === 'context' ? 'context' : col.change), item.line.kind !== 'context' && isPicked(item.line) && 'diff-line-picked']"
+                  :class="['diff-line min-w-0 overflow-hidden', item.line.kind !== 'context' && item.modified && !(col.side === 'left' && modLeftAsRemoved) ? 'diff-line-mod' : lineClass(item.line.kind === 'context' ? 'context' : col.change), item.line.kind !== 'context' && isPicked(item.line) && 'diff-line-picked']"
                 >
                   <span
                     :class="['diff-num', item.line.kind !== 'context' && canPick(item.line) && 'diff-num-pick']"
@@ -1336,7 +1369,7 @@ function toggleContext(value: string): void {
                   ><span class="diff-glyphs">{{ (col.side === 'left' ? item.line.oldNo : item.line.newNo) ?? "" }}</span></span>
                   <span class="diff-sign">{{ marker(item.line.kind === 'context' ? 'context' : col.change) }}</span>
                   <span :class="['diff-side-code', col.side === 'left' ? 'diff-text-left' : 'diff-text-right']"><span>
-                    <template v-for="(run, i) in runs(`${col.side === 'left' ? 'l' : 'r'}${col.view.start + k}`, item.line, item.pair, col.side === 'left' ? 'old' : 'new', item.line.text)" :key="i">
+                    <template v-for="(run, i) in runs(`${col.side === 'left' ? 'l' : 'r'}${col.view.start + k}`, item.line, item.pair, col.side === 'left' ? 'old' : 'new', item.line.text, col.side === 'right')" :key="i">
                       <mark v-if="run.changed" :class="col.side === 'left' ? 'diff-word-del' : 'diff-word-add'"><span v-for="(seg, j) in run.spans" :key="j" :class="glyphClass(seg)" :style="spanStyle(seg)" :data-find-current="seg.found === 2 ? '' : undefined">{{ seg.text }}</span></mark>
                       <template v-else><span v-for="(seg, j) in run.spans" :key="j" :class="glyphClass(seg)" :style="spanStyle(seg)" :data-find-current="seg.found === 2 ? '' : undefined">{{ seg.text }}</span></template>
                     </template>
@@ -1363,11 +1396,11 @@ function toggleContext(value: string): void {
         <defs>
           <!-- In the gap's own units: the default units follow each shape's box, which has no
                height for a level edge, and the gradient would then not draw it at all. -->
-          <!-- From the deleted lines' background to the added lines', so the band joins each end's
-               lines without a seam. -->
-          <linearGradient :id="gradientId" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
+          <!-- From the removed lines' background to the modified one, for "Draw the removed side
+               of modified lines in the removed colour". -->
+          <linearGradient :id="`${gradientId}-mod`" gradientUnits="userSpaceOnUse" x1="0" :x2="GAP_PX" y1="0" y2="0">
             <stop offset="0" class="diff-curve-stop-del" />
-            <stop offset="1" class="diff-curve-stop-add" />
+            <stop offset="1" class="diff-curve-stop-mod" />
           </linearGradient>
           <!-- A band's edges are solid where they meet the line marking an insertion or deletion,
                and fade out towards the block of lines at the other end, which needs no outline. -->
@@ -1391,7 +1424,7 @@ function toggleContext(value: string): void {
         />
         <g :transform="`translate(${leftTextPx} 0)`">
           <template v-for="c in curves" :key="c.key">
-            <path :d="c.d" :class="`diff-curve-${c.kind}`" :style="c.kind === 'both' ? { fill: `url(#${gradientId})` } : undefined" />
+            <path :d="c.d" :class="`diff-curve-${c.kind}`" :style="c.kind === 'mod' && modLeftAsRemoved ? { fill: `url(#${gradientId}-mod)` } : undefined" />
             <path
               v-if="c.outline && (c.kind === 'add' || c.kind === 'del')"
               :d="c.edges"

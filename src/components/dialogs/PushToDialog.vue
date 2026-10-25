@@ -5,27 +5,49 @@ import { formatRelativeTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { validateRefName } from "@/lib/refNames";
 import { useDialogsStore } from "@/stores/dialogs";
 
 /**
  * Push To: push a local branch to a branch of the user's choosing, on one of the remotes or in
- * this repository itself. Only a fast-forward goes through unless Force push is ticked. The caller
- * runs the push.
+ * this repository itself, or to a new branch on a remote, named in a field of its own. Only a
+ * fast-forward goes through unless Force push is ticked; a new branch is never forced. A push to
+ * a remote can also make the branch track where it went. The caller runs the push.
  */
 const dialogs = useDialogsStore();
 
 const request = computed(() => dialogs.current("pushTo"));
 
+/** The Branch list's entry for a new branch: a ":" can never be in a branch name. */
+const NEW_BRANCH = ":new";
+
 const serverIndex = ref(0);
+/** The branch picked in the Branch list, or `NEW_BRANCH`. */
 const target = ref("");
+/** The new branch's name, as typed. */
+const newName = ref("");
 const force = ref(false);
+const track = ref(false);
 
 const server = computed(() => request.value?.servers[serverIndex.value] ?? null);
 const branches = computed(() => server.value?.branches ?? []);
 const names = computed(() => branches.value.map((b) => b.name));
+/** Only a remote gets a new branch here; in this repository, Create Branch Here… does that. */
+const canCreate = computed(() => server.value?.remote != null);
+const typing = computed(() => canCreate.value && target.value === NEW_BRANCH);
+/** The name of the branch pushed to, picked or typed. */
+const targetName = computed(() => (typing.value ? newName.value.trim() : target.value));
 /** The commit shown for the chosen branch: what the dropped list is worked out from, and what a force push's lease expects. */
-const tip = computed(() => branches.value.find((b) => b.name === target.value)?.oid ?? null);
+const tip = computed(() => branches.value.find((b) => b.name === targetName.value)?.oid ?? null);
+/** A name typed that the remote has no branch of, as last fetched: the push creates it. */
+const creating = computed(() => typing.value && tip.value === null);
+const nameProblem = computed(() => (typing.value ? validateRefName(targetName.value, "branch") : null));
+/** Tracking is offered for a remote branch, unless the branch tracks it already. */
+const canTrack = computed(
+  () => server.value?.remote != null && targetName.value !== "" && request.value?.upstream !== `refs/remotes/${server.value.remote}/${targetName.value}`,
+);
 
 /**
  * With Force push ticked, the commits it would drop from the chosen branch, listed before the user
@@ -49,23 +71,47 @@ watch(
   },
 );
 
+/**
+ * Picks branch `name` when the server has it; on a remote that does not, the new branch, named
+ * `name`; in this repository, its first branch.
+ */
+function pick(name: string): void {
+  if (names.value.includes(name)) target.value = name;
+  else if (canCreate.value) {
+    target.value = NEW_BRANCH;
+    newName.value = name;
+  } else target.value = names.value[0] ?? "";
+}
+
 watch(request, (r) => {
   if (!r) return;
   serverIndex.value = r.server;
-  const offered = (r.servers[r.server]?.branches ?? []).map((b) => b.name);
-  target.value = r.target !== null && offered.includes(r.target) ? r.target : (offered[0] ?? "");
+  newName.value = r.branch;
+  pick(r.target ?? r.branch);
   force.value = r.force;
+  track.value = creating.value;
 });
 
-/** Another server lists other branches: keep the same name when it has one, else take its first. */
-watch(serverIndex, () => {
-  if (!names.value.includes(target.value)) target.value = names.value[0] ?? "";
+/** Another server lists other branches: keep the same name there. */
+watch(serverIndex, () => pick(targetName.value || (request.value?.branch ?? "")));
+
+/**
+ * A new branch has nothing to drop, so there is nothing to force; and it is usually where the
+ * branch is to be pushed from now on, so it is tracked unless the box is cleared.
+ */
+watch(creating, (c) => {
+  if (c) force.value = false;
+  track.value = c;
 });
 
 /** Where it goes, as the text says it: `origin/dev`, or just `dev` in this repository. */
-const destination = computed(() => (server.value?.remote ? `${server.value.remote}/${target.value}` : target.value));
+const destination = computed(() => (server.value?.remote ? `${server.value.remote}/${targetName.value}` : targetName.value));
 /** A force push waits for the list of what it drops, so nothing is dropped unseen. */
-const canSubmit = computed(() => request.value !== null && server.value !== null && tip.value !== null && (!force.value || dropped.value !== null));
+const canSubmit = computed(() => {
+  if (request.value === null || server.value === null) return false;
+  if (creating.value) return nameProblem.value === null;
+  return tip.value !== null && (!force.value || dropped.value !== null);
+});
 
 const selectClass =
   "well h-8 w-full rounded-lg border px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
@@ -75,8 +121,15 @@ function onOpenChange(open: boolean): void {
 }
 
 function submit(): void {
-  if (!canSubmit.value || !server.value || tip.value === null) return;
-  dialogs.resolve("pushTo", { remote: server.value.remote, target: target.value, force: force.value, expected: tip.value, source: request.value!.sourceOid });
+  if (!canSubmit.value || !server.value) return;
+  dialogs.resolve("pushTo", {
+    remote: server.value.remote,
+    target: targetName.value,
+    force: force.value && !creating.value,
+    expected: tip.value,
+    source: request.value!.sourceOid,
+    track: track.value && canTrack.value,
+  });
 }
 </script>
 
@@ -86,8 +139,8 @@ function submit(): void {
       <DialogHeader>
         <DialogTitle>Push {{ request.branch }} To</DialogTitle>
         <DialogDescription>
-          Moves the chosen branch to <span class="font-mono">{{ request.branch }}</span>'s latest commit. Nothing is checked out, so your
-          files stay as they are.
+          {{ creating ? "Creates the new branch at" : "Moves the chosen branch to" }} <span class="font-mono">{{ request.branch }}</span>'s
+          latest commit. Nothing is checked out, so your files stay as they are.
         </DialogDescription>
       </DialogHeader>
 
@@ -100,22 +153,51 @@ function submit(): void {
         </div>
         <div class="grid gap-1.5">
           <Label for="push-to-branch" class="text-base">Branch</Label>
-          <select id="push-to-branch" v-model="target" :class="selectClass" class="font-mono" :disabled="branches.length === 0">
-            <option v-for="b in names" :key="b" :value="b">{{ b }}</option>
+          <select id="push-to-branch" v-model="target" :class="[selectClass, !typing && 'font-mono']" :disabled="branches.length === 0 && !canCreate">
+            <option v-for="b in names" :key="b" :value="b" class="font-mono">{{ b }}</option>
+            <option v-if="canCreate" :value="NEW_BRANCH" class="font-sans">New branch…</option>
           </select>
-          <p v-if="branches.length === 0" class="text-xs text-modified-fg">
-            {{ server?.remote ? `No branches of ${server.remote} have been fetched. Fetch first.` : "There is no other branch here to push to." }}
-          </p>
+          <template v-if="typing">
+            <Label for="push-to-new-branch" class="mt-1.5 text-base">Name of the new branch on {{ server?.remote }}</Label>
+            <Input
+              id="push-to-new-branch"
+              v-model="newName"
+              class="font-mono text-base"
+              autocomplete="off"
+              spellcheck="false"
+              :aria-invalid="nameProblem !== null || undefined"
+              data-push-to-new-name
+            />
+            <p v-if="nameProblem" class="text-xs text-destructive">{{ nameProblem }}</p>
+            <p v-else-if="!creating" class="text-xs text-modified-fg">
+              {{ server?.remote }} already has a branch {{ targetName }}, so this pushes onto it rather than creating one.
+            </p>
+            <p v-else class="text-xs text-muted-foreground">
+              {{ server?.remote }} has no branch {{ targetName }} as last fetched, so the push creates it.
+            </p>
+          </template>
+          <p v-else-if="branches.length === 0 && !canCreate" class="text-xs text-modified-fg">There is no other branch here to push to.</p>
           <p v-else-if="server && server.remote === null" class="text-xs text-muted-foreground">
             The checked-out branch is not listed: Git cannot move it without changing your files. Use Merge or Pull for it.
           </p>
         </div>
+        <div v-if="canTrack" class="grid gap-1">
+          <label class="flex items-center gap-2 text-base select-none">
+            <input v-model="track" type="checkbox" class="size-3.5 accent-primary" data-push-to-track />
+            Track it from now on
+          </label>
+          <p class="text-xs text-muted-foreground">
+            Sets <span class="font-mono">{{ destination }}</span> as the upstream of <span class="font-mono">{{ request.branch }}</span> once
+            the push has worked, so Pull and Push use it without asking.
+          </p>
+        </div>
         <div class="grid gap-1">
           <label class="flex items-center gap-2 text-base select-none">
-            <input v-model="force" type="checkbox" class="size-3.5 accent-destructive" data-push-to-force />
+            <input v-model="force" type="checkbox" class="size-3.5 accent-destructive" :disabled="creating" data-push-to-force />
             Force push
           </label>
-          <template v-if="force">
+          <p v-if="creating" class="text-xs text-muted-foreground">A new branch has no commits to drop, so it needs no force.</p>
+          <template v-else-if="force">
             <p v-if="droppedError" class="text-xs text-destructive">Could not list what the force push would drop: {{ droppedError }}</p>
             <p v-else-if="dropped === null" class="text-xs text-muted-foreground">Listing what the force push would drop…</p>
             <p v-else-if="dropped.total === 0" class="text-xs text-muted-foreground">

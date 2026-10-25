@@ -69,6 +69,7 @@ export function markFound(spans: Span[], ranges: FindRange[], current: number): 
 
 /** The classes for one piece of a line's text: the find colour on a match, outlined on the current one. */
 export function glyphClass(span: Span): string {
+  if (span.gap) return "diff-gap-del";
   return span.found === 2 ? "diff-glyphs diff-find diff-find-current" : span.found === 1 ? "diff-glyphs diff-find" : "diff-glyphs";
 }
 

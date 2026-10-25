@@ -31,13 +31,13 @@ pub enum TransportKind {
     Ssh { host: String },
 }
 
-/// Who asked for a command. The console can hide `Internal` and `Watcher`.
+/// Who asked for a command: the user, or the app itself (reading the repository, or watching it
+/// for changes). `Internal` commands are logged only while `console.logInternal` is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub enum Category {
     UserAction,
     Internal,
-    Watcher,
 }
 
 #[derive(Debug, Clone)]

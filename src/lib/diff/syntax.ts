@@ -3,10 +3,18 @@
  * also works out the file's language), and how its tokens combine with the changed-word segments.
  */
 import type { Segment } from "@/lib/diff/parseUnified";
-import type { RawToken, SyntaxRequest, SyntaxResponse, SyntaxTheme } from "@/lib/diff/syntax.worker";
+import type { RawToken, SyntaxRequest, SyntaxResponse } from "@/lib/diff/syntax.worker";
+import { DARK_SYNTAX_THEMES, LIGHT_SYNTAX_THEMES, type SyntaxTheme } from "@/lib/diff/syntaxThemes";
 
-export function themeFor(dark: boolean): SyntaxTheme {
-  return dark ? "github-dark-default" : "github-light-default";
+/**
+ * The syntax colour theme for the app's dark or light theme: the one chosen on the Diff page of
+ * Settings (`diff.syntaxThemeDark` or `diff.syntaxThemeLight`), or GitHub's when that names no
+ * theme on offer.
+ */
+export function themeFor(dark: boolean, chosen?: { syntaxThemeDark?: string; syntaxThemeLight?: string } | null): SyntaxTheme {
+  const list = dark ? DARK_SYNTAX_THEMES : LIGHT_SYNTAX_THEMES;
+  const id = dark ? chosen?.syntaxThemeDark : chosen?.syntaxThemeLight;
+  return list.find((t) => t.id === id)?.id ?? list[0].id;
 }
 
 let worker: Worker | null = null;
@@ -48,6 +56,8 @@ export interface Span {
   bold: boolean;
   /** Part of a Find match: 1 for a match, 2 for the current one (see `lib/diff/find.ts`). */
   found?: 1 | 2;
+  /** An empty span marking where words were removed, drawn as a thin cursor (`.diff-gap-del`). */
+  gap?: true;
 }
 
 /** A run of neighbouring spans that are all changed words, or all not: one mark is drawn per changed run. */
@@ -69,6 +79,37 @@ export function spanRuns(spans: Span[]): SpanRun[] {
     else runs.push({ changed: span.changed, spans: [span] });
   }
   return runs;
+}
+
+/**
+ * Puts an empty `gap` span at each of `offsets` (into the line's text, in order), cutting the span
+ * there in two if it falls inside one. A gap inside a changed run stays part of it, so its mark
+ * is not split.
+ */
+export function insertGaps(spans: Span[], offsets: number[]): Span[] {
+  if (offsets.length === 0) return spans;
+  const out: Span[] = [];
+  const gap = (changed: boolean): Span => ({ text: "", changed, color: null, italic: false, bold: false, gap: true });
+  let pos = 0;
+  let k = 0;
+  for (const span of spans) {
+    let rest = span;
+    while (k < offsets.length && (offsets[k] as number) < pos + rest.text.length) {
+      const cut = (offsets[k] as number) - pos;
+      if (cut > 0) {
+        out.push({ ...rest, text: rest.text.slice(0, cut) });
+        rest = { ...rest, text: rest.text.slice(cut) };
+        pos += cut;
+      }
+      out.push(gap(rest.changed && out[out.length - 1]?.changed === true));
+      k += 1;
+    }
+    out.push(rest);
+    pos += rest.text.length;
+  }
+  // Removed from the end of the line.
+  for (; k < offsets.length; k += 1) out.push(gap(false));
+  return out;
 }
 
 /** The inline style that draws a span's colour and font style, or nothing for plain text. */

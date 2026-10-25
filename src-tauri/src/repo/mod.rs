@@ -59,7 +59,12 @@ pub struct RepoHandle {
     pub lock: RwLock<()>,
     /// Held by every write for its whole run, so writes never overlap. A pull holds only this
     /// one: holding `lock` for a network transfer would stall every read until it finished.
+    /// A fetch does not hold it, since it writes only what local writes leave alone.
     pub write_gate: Mutex<()>,
+    /// Held by every network operation (fetch, pull, push, sync), so they never overlap, and by
+    /// the writes that delete or rename refs, which lock `packed-refs` as a fetch's `--prune`
+    /// can. Always taken before `write_gate`, never after it, so the two cannot deadlock.
+    pub network_gate: Mutex<()>,
     /// The running long operations (fetch, pull, push, sync), by the id the frontend gave.
     pub operations: OperationRegistry,
     /// Bounds concurrent read spawns for one repository.

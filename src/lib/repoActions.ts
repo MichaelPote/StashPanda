@@ -18,11 +18,13 @@ import {
   type StashEntry,
   type SyncResult,
 } from "@/lib/bindings";
-import { hasConflictMarkers, OPERATION_VERBS, operationNames, type OperationNames } from "@/lib/conflicts";
+import { hasConflictMarkers, OPERATION_VERBS, operationNames, takeAllChoices, takeAllText, type OperationNames, type TakeAll } from "@/lib/conflicts";
 import { pathBasename } from "@/lib/format";
+import { mergeEditorReason } from "@/lib/fileViews";
 import { commitFiles, selectedConflicts, worktreeActionPaths, type FileItem, type WorktreeActionPaths } from "@/lib/files";
 import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
+import { resolvedFileText } from "@/lib/merge/autoResolve";
 import { shortSha } from "@/lib/refNames";
 import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice, type PushToServer } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
@@ -37,8 +39,19 @@ import { useUiStateStore } from "@/stores/uiState";
  * removes it and runs the command once more. Otherwise the `indexLocked` or `configLocked` error
  * is thrown as it came.
  */
-export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResult<T>>): Promise<T> {
+export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResult<T>>, ownOpId: string | null = null): Promise<T> {
   const sessions = useSessionsStore();
+  // A write waits for a running pull, push or sync; if it is still waiting after a moment, the
+  // notice says what for and offers to stop it. Not for a fetch: most writes go ahead beside one,
+  // and the few that wait for it (deleting or renaming a branch or tag) would be told wrongly
+  // that every slow write was waiting too.
+  let waiting: string | null = null;
+  const waitTimer = setTimeout(() => {
+    const running = sessions.sessions.get(key)?.operation;
+    if (!running || running.opId === ownOpId || running.command === "fetch") return;
+    waiting = `Waiting for “${running.title}” to finish first.`;
+    sessions.notify(waiting, running.cancellable ? { label: "Stop", run: () => stopOperation(key) } : null);
+  }, 700);
   try {
     try {
       return await unwrap(op());
@@ -50,6 +63,8 @@ export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResu
       return await unwrap(op());
     }
   } finally {
+    clearTimeout(waitTimer);
+    if (waiting !== null && sessions.notice === waiting) sessions.dismissNotice();
     void sessions.refetchRefsAndStatus(key);
   }
 }
@@ -469,7 +484,7 @@ export async function runOperation<T = OpResult>(
   const opId = crypto.randomUUID();
   if (session) session.operation = { opId, title, line: "", cancellable: true, stopping: false, command };
   try {
-    return await runOp(key, () => start(opId));
+    return await runOp(key, () => start(opId), opId);
   } finally {
     if (session && session.operation?.opId === opId) session.operation = null;
   }
@@ -526,6 +541,9 @@ export async function fetchAll(session: RepoSession | null): Promise<void> {
   }
 }
 
+/** How long an automatic fetch may go without a progress line before it is stopped. */
+const AUTO_FETCH_STALL_MS = 60_000;
+
 /**
  * Fetches every open repository whose last fetch is `polling.autoFetchMinutes` old or more (the
  * time a tab opened counts as a fetch), one after another. Called every half minute by `App.vue`.
@@ -533,6 +551,8 @@ export async function fetchAll(session: RepoSession | null): Promise<void> {
  * since new commits show in the graph by themselves. A failure is reported once per repository,
  * until a fetch there works again, so a server that is down does not post a notice every few
  * minutes. Skips repositories with no remotes, still loading, or running a fetch, pull or push.
+ * A fetch that reports no progress for `AUTO_FETCH_STALL_MS` is stopped, as a hung SSH remote
+ * would otherwise keep it running, and the status bar busy, indefinitely.
  */
 export async function autoFetchDue(): Promise<void> {
   const minutes = useSettingsStore().settings?.polling?.autoFetchMinutes ?? null;
@@ -543,6 +563,19 @@ export async function autoFetchDue(): Promise<void> {
     const key = session.key;
     const remotes = session.refs.remotes.map((r) => r.name);
     const from = remotes.length === 1 ? remotes[0] : `${remotes.length} remotes`;
+    let lastLine: string | null = null;
+    let lastChange = Date.now();
+    let stalled = false;
+    const watchdog = setInterval(() => {
+      const line = session.operation?.command === "fetch" ? session.operation.line : null;
+      if (line !== lastLine) {
+        lastLine = line;
+        lastChange = Date.now();
+      } else if (Date.now() - lastChange >= AUTO_FETCH_STALL_MS && !stalled) {
+        stalled = true;
+        void stopOperation(key);
+      }
+    }, 5_000);
     try {
       const result = await runOperation(key, `Fetching from ${from} (automatic)`, (opId) => commands.opFetch(key, opId), "fetch");
       session.lastFetchAt = Date.now();
@@ -554,10 +587,15 @@ export async function autoFetchDue(): Promise<void> {
       }
     } catch (e) {
       session.lastFetchAt = Date.now();
-      if (!isCancelled(e) && !session.autoFetchFailed) {
+      if (stalled && !session.autoFetchFailed) {
+        session.autoFetchFailed = true;
+        sessions.notify(`Fetching ${session.info.displayName} automatically was stopped after a minute with no progress. Automatic fetches carry on; this is not reported again until one works.`);
+      } else if (!stalled && !isCancelled(e) && !session.autoFetchFailed) {
         session.autoFetchFailed = true;
         sessions.notify(`Fetching ${session.info.displayName} automatically failed: ${errorMessage(e)}`);
       }
+    } finally {
+      clearInterval(watchdog);
     }
   }
 }
@@ -1235,6 +1273,44 @@ export async function takeVersion(session: RepoSession | null, items: FileItem[]
 }
 
 /**
+ * Resolves every conflict block of `items` with one side's lines or both (`how`), keeping what Git
+ * merged cleanly around the blocks, then marks the files resolved. Unlike `takeVersion`, which
+ * replaces the whole file with one side's version, the other side's changes elsewhere stay.
+ */
+export async function takeAllConflicts(session: RepoSession | null, items: FileItem[], how: TakeAll): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = resolveReason(session, items) ?? items.map((i) => mergeEditorReason(i.letter)).find((r) => r !== null) ?? null;
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const key = session.key;
+  const written: string[] = [];
+  for (const item of items) {
+    try {
+      const file = await unwrap(commands.getConflictFile(key, item.path));
+      if (file.refused !== null) {
+        sessions.notify(`${item.path} cannot be resolved block by block: take one side's version of it instead.`);
+        continue;
+      }
+      await unwrap(commands.writeWorktreeFile(key, item.path, resolvedFileText(file, file.blocks.map((b) => takeAllText(b, how))), file.hash));
+      written.push(item.path);
+    } catch (e) {
+      sessions.notify(`${item.path}: ${errorMessage(e)}`);
+    }
+  }
+  if (written.length === 0) return;
+  const choice = takeAllChoices(operationNames(session.status, session.refs, session.stashConflict)).find((c) => c.value === how);
+  try {
+    const result = await runOp(key, () => commands.opStage(key, written));
+    if (result.ok) sessions.notifySuccess(`Resolved the conflicts in ${filesLabel(written)} with ${choice?.label ?? "the chosen lines"}.`);
+    else sessions.notify(opFailureText(result, `Marking ${filesLabel(written)} resolved`));
+  } catch (e) {
+    sessions.notify(errorMessage(e));
+  }
+}
+
+/**
  * Marks `items` as resolved as they are on disk (`git add`), after the user has edited them. When
  * a file still has Git's conflict markers, asks first.
  */
@@ -1374,9 +1450,83 @@ export function rebaseOutcome(
   return { message: opFailureText(result, `Rebasing ${branch} onto ${onto}`), kind: "error", failed: true };
 }
 
-/** Opens the Rename Branch dialog for local branch `name`. The dialog runs the command itself. */
+/**
+ * Opens the Rename Branch dialog for local branch `name`. The dialog renames it itself. When the
+ * branch tracks a remote branch of the same name, the dialog offers to rename that too, which
+ * `renameOnRemote` then does.
+ */
 export async function renameBranch(key: string, name: string): Promise<void> {
-  await useDialogsStore().open("renameBranch", { key, name });
+  const session = useSessionsStore().sessions.get(key);
+  const ref = session?.refs?.refs.find((r) => r.kind.type === "localBranch" && r.short === name);
+  const remote = ref?.upstream && !ref.upstreamGone ? session?.refs?.remotes.find((r) => ref.upstream === `refs/remotes/${r.name}/${name}`) : undefined;
+  const remoteCopy = remote ? { remote: remote.name, branch: name } : null;
+  const choice = await useDialogsStore().open("renameBranch", { key, name, remoteCopy });
+  if (choice?.renameRemote && remoteCopy) await renameOnRemote(key, name, choice.name, remoteCopy.remote);
+}
+
+/**
+ * The remote half of a rename, once local branch `old` is `renamed` and still tracks
+ * `<remote>/<old>`: pushes it to a new branch `renamed` on `remote`, makes it track that, then
+ * deletes `old` there (with the same lease as Delete Remote Branch…). Each step runs only when
+ * the one before it worked, so `old` is never deleted before its commits are on `renamed`; the
+ * notice says how far it got and offers the step that is left.
+ */
+export async function renameOnRemote(key: string, old: string, renamed: string, remote: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const done = `Renamed branch ${old} to ${renamed}.`;
+  const from = `${remote}/${old}`;
+  const to = `${remote}/${renamed}`;
+  const kept = `${from} is unchanged, and ${renamed} still tracks it.`;
+  const pushing = `Pushing ${renamed} to ${to}`;
+  try {
+    const result = await runOperation(key, pushing, (opId) => commands.opPush(key, opId, renamed, { remote, branch: renamed }), "push");
+    if (!result.ok) {
+      const reason = result.stderr.includes("[rejected]")
+        ? `${remote} already has a branch ${renamed} with commits that ${renamed} does not have, so the push was refused.`
+        : networkFailureText(result, pushing);
+      sessions.notify(`${done} ${reason} ${kept}`);
+      return;
+    }
+  } catch (e) {
+    sessions.notify(`${done} ${isCancelled(e) ? `The push to ${to} was stopped; the next fetch shows whether it arrived.` : errorMessage(e)} ${kept}`);
+    return;
+  }
+
+  let trackFailure: string | null = null;
+  try {
+    const result = await runOp(key, () => commands.opBranchSetUpstream(key, renamed, `refs/remotes/${to}`));
+    if (!result.ok) trackFailure = opFailureText(result, `Making ${renamed} track ${to}`);
+  } catch (e) {
+    trackFailure = errorMessage(e);
+  }
+  if (trackFailure !== null) {
+    sessions.notify(`${done} Pushed it to ${to}, but it still tracks ${from}, so ${old} was not deleted on ${remote}. ${trackFailure}`, {
+      label: "Track Remote Branch…",
+      run: () => trackRemoteBranch(key, renamed),
+    });
+    return;
+  }
+
+  const deleting = `Deleting ${old} on ${remote}`;
+  const left = `${done} Pushed it to ${to}, and it now tracks that, but ${from} is still there.`;
+  const deleteAgain = { label: "Delete Remote Branch…", run: () => deleteRemoteBranch(key, from, remote) };
+  try {
+    const result = await runOperation(key, deleting, (opId) => commands.opDeleteRemoteBranch(key, opId, remote, old));
+    if (result.ok || REMOTE_BRANCH_MISSING.test(`${result.stdout}\n${result.stderr}`)) {
+      sessions.notifySuccess(`Renamed branch ${old} to ${renamed}, here and on ${remote}. ${renamed} now tracks ${to}.`);
+    } else if (/refusing to delete the current branch/i.test(result.stderr)) {
+      sessions.notify(
+        `${left} ${remote} will not delete ${old} because it is the remote's default branch. Make ${renamed} the default branch in the repository's settings on the server, then delete ${from}.`,
+        deleteAgain,
+      );
+    } else if (result.stderr.includes("(stale info)")) {
+      sessions.notify(`${left} ${old} on ${remote} has commits that this repository has not fetched, so it was not deleted. Fetch and look at them first.`, deleteAgain);
+    } else {
+      sessions.notify(`${left} ${networkFailureText(result, deleting)}`, deleteAgain);
+    }
+  } catch (e) {
+    sessions.notify(`${left} ${isCancelled(e) ? `The deletion was stopped; the next fetch shows whether ${remote} deleted it.` : errorMessage(e)}`, deleteAgain);
+  }
 }
 
 /** Opens the Create Branch dialog starting at `startPoint`. The dialog runs the command itself. */
@@ -1674,11 +1824,14 @@ export interface PushToPreset {
 
 /**
  * Opens the Push To dialog for local branch `branch`: choose a server (this repository, or one of
- * its remotes) and one of the branches there, and whether to force. Then pushes: to a remote with
+ * its remotes) and one of the branches there, or name a new branch on a remote, and whether to
+ * force. Then pushes: to a remote with
  * `git push` (forced with `--force-with-lease`, against the commit last fetched), or into a local
  * branch with `git fetch . <branch>:<target>`, which checks nothing out. Without Force push only a
  * fast-forward goes through. `preset` picks the server, branch and Force push the dialog starts
- * with; otherwise it starts on the branch's upstream, else the same name on origin.
+ * with; otherwise it starts on the branch's upstream, else the same name on origin. When the
+ * dialog asks for it, a push to a remote then makes the branch track where it went, as a step of
+ * its own (`trackAfter`).
  */
 export async function pushBranchTo(key: string, branch: string, preset: PushToPreset | null = null): Promise<void> {
   const sessions = useSessionsStore();
@@ -1720,7 +1873,7 @@ export async function pushBranchTo(key: string, branch: string, preset: PushToPr
     sessions.notify(`${branch} is not a branch here any more.`);
     return;
   }
-  const choice = await useDialogsStore().open("pushTo", { key, branch, sourceOid, servers, server, target: start.target, force: start.force });
+  const choice = await useDialogsStore().open("pushTo", { key, branch, sourceOid, servers, server, target: start.target, force: start.force, upstream });
   if (!choice) return;
   const to = choice.remote === null ? choice.target : `${choice.remote}/${choice.target}`;
   const what = `${choice.force ? "Force-pushing" : "Pushing"} ${branch} to ${to}`;
@@ -1733,7 +1886,9 @@ export async function pushBranchTo(key: string, branch: string, preset: PushToPr
       (opId) => commands.opPushTo(key, opId, branch, choice.remote, choice.target, choice.force, choice.expected, choice.source),
       "push",
     );
-    if (result.ok) {
+    if (result.ok && choice.remote !== null && choice.track) {
+      await trackAfter(key, branch, `refs/remotes/${to}`, `${choice.force ? "Force-pushed" : "Pushed"} ${branch} to ${to}.`);
+    } else if (result.ok) {
       sessions.notifySuccess(choice.remote === null ? `${choice.target} now points at ${branch}'s commit.` : `${choice.force ? "Force-pushed" : "Pushed"} ${branch} to ${to}.`);
     } else if (result.stderr.includes("(source moved)")) {
       sessions.notify(`${branch} has moved since the list of dropped commits was made, so nothing was pushed. Open Push To again to see what would be dropped now.`);
@@ -2056,7 +2211,7 @@ export function selectedWorktreePaths(session: RepoSession | null | undefined): 
 }
 
 /** "notes.txt" for one file, "3 files" for more. */
-function filesLabel(paths: string[]): string {
+export function filesLabel(paths: string[]): string {
   return paths.length === 1 ? (paths[0] ?? "1 file") : `${paths.length} files`;
 }
 
@@ -2142,6 +2297,12 @@ export async function discardSelected(session: RepoSession | null): Promise<void
   });
   if (!confirmed) return;
   const what = `Discarding changes to ${filesLabel(p.discardFiles)}`;
+  // The staged files go in a first step of their own. When the second step fails, they are gone
+  // already, and the notice says so rather than reporting the whole discard as failed.
+  let headDone = false;
+  const staged = p.discardToHead.length === 1 ? `${p.discardToHead[0]}, which was staged,` : `the ${p.discardToHead.length} staged files`;
+  const partly = (failure: string): string =>
+    headDone ? `${failure} The changes to ${staged} had already been discarded; the other files were left as they were.` : failure;
   try {
     if (p.discardToHead.length > 0) {
       const r = await runOp(key, () => commands.opDiscard(key, p.discardToHead, [], true));
@@ -2149,17 +2310,18 @@ export async function discardSelected(session: RepoSession | null): Promise<void
         sessions.notify(opFailureText(r, what));
         return;
       }
+      headDone = true;
     }
     if (p.discardToIndex.length > 0 || p.discardUntracked.length > 0) {
       const r = await runOp(key, () => commands.opDiscard(key, p.discardToIndex, p.discardUntracked, false));
       if (!r.ok) {
-        sessions.notify(opFailureText(r, what));
+        sessions.notify(partly(opFailureText(r, what)));
         return;
       }
     }
     sessions.notifySuccess(`Discarded the changes to ${filesLabel(p.discardFiles)}.`);
   } catch (e) {
-    sessions.notify(errorMessage(e));
+    sessions.notify(partly(errorMessage(e)));
   }
 }
 

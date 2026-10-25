@@ -81,8 +81,9 @@ pub fn classify_git_dir_path(rel: &str) -> Option<GitDirChange> {
     }
     let first = rel.split('/').next().unwrap_or("");
     match first {
-        "objects" | "lfs" | "logs" | "hooks" | "info" | "modules" | "worktrees" | "sourcetreeconfig" | "index.lock" => return None,
-        "refs" => return Some(GitDirChange::Refs),
+        "objects" | "lfs" | "logs" | "hooks" | "info" | "modules" | "worktrees" | "index.lock" => return None,
+        // Upstreams and remotes live in config, and the Branches panel shows both.
+        "refs" | "config" => return Some(GitDirChange::Refs),
         "packed-refs" => return Some(GitDirChange::PackedRefs),
         "index" => return Some(GitDirChange::Index),
         "HEAD" | "ORIG_HEAD" | "FETCH_HEAD" => return Some(GitDirChange::Head),
@@ -90,7 +91,7 @@ pub fn classify_git_dir_path(rel: &str) -> Option<GitDirChange> {
         | "rebase-apply" | "BISECT_LOG" | "AUTO_MERGE" | "SQUASH_MSG" => return Some(GitDirChange::MergeState),
         _ => {}
     }
-    // Anything else at the top level of .git (config, description, COMMIT_EDITMSG...) is noise.
+    // Anything else at the top level of .git (description, COMMIT_EDITMSG...) is noise.
     None
 }
 
@@ -108,6 +109,7 @@ mod tests {
         assert_eq!(classify_git_dir_path("index.lock"), None);
         assert_eq!(classify_git_dir_path("rebase-merge/done"), Some(GitDirChange::MergeState));
         assert_eq!(classify_git_dir_path("COMMIT_EDITMSG"), None);
+        assert_eq!(classify_git_dir_path("config"), Some(GitDirChange::Refs));
         assert_eq!(classify_git_dir_path("logs/HEAD"), None);
         assert_eq!(classify_git_dir_path("packed-refs"), Some(GitDirChange::PackedRefs));
     }

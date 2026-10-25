@@ -137,7 +137,7 @@ async fn ignored_dirs(handle: &RepoHandle) -> Vec<String> {
     if handle.info.is_bare {
         return Vec::new();
     }
-    let req = GitReq::new("ls-files", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]).watcher();
+    let req = GitReq::new("ls-files", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]);
     match handle.client.exec_allow_failure(req).await {
         Ok(out) if out.success() => crate::git::parse::split_nul(&out.stdout)
             .into_iter()
@@ -237,7 +237,7 @@ fn spawn_ignore_refresher(handle: Arc<RepoHandle>, ignored: IgnoredPaths) {
                 let out = handle
                     .client
                     .exec_allow_failure(
-                        GitReq::new("ls-files", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]).watcher(),
+                        GitReq::new("ls-files", ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]),
                     )
                     .await;
                 if let Ok(out) = out {

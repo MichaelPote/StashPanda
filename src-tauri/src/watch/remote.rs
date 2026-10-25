@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{classify_git_dir_path, WatchEvent, WatcherHandle, WatcherKind};
 use crate::error::Result;
-use crate::transport::{Category, Cmd, Program, SharedTransport};
+use crate::transport::{Cmd, Program, SharedTransport};
 
 pub struct RemoteWatcher {
     cancel: CancellationToken,
@@ -36,7 +36,6 @@ const EVENTS: &str = "modify,close_write,create,delete,move,attrib";
 pub async fn available(transport: &SharedTransport) -> crate::error::Result<bool> {
     let mut cmd = Cmd::git("probe", vec!["-c".into(), "command -v inotifywait".into()]);
     cmd.program = Program::Other("sh".into());
-    cmd.category = Category::Watcher;
     let out = transport.run(cmd).await?;
     Ok(out.success() && !out.stdout.trim_ascii().is_empty())
 }
@@ -121,7 +120,6 @@ pub async fn start(
     }
     let mut cmd = Cmd::git("inotifywait", args);
     cmd.program = Program::Other("inotifywait".into());
-    cmd.category = Category::Watcher;
     cmd.timeout = None;
     // In a session of its own, so stopping the watcher ends it on the remote system too.
     cmd.own_session = true;

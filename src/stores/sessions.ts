@@ -267,9 +267,12 @@ export const useSessionsStore = defineStore("sessions", () => {
 
   function onConsoleEvent(ev: ConsoleEvent): void {
     const buffer = consoleBuffer(ev.repoId);
-    // The matching `started` entry is almost always near the end.
+    // The matching `started` entry is almost always near the end. A command that finishes has
+    // one somewhere, however long it ran (the `cat-file` helper, a slow fetch), so it searches
+    // the whole buffer; a command that starts has none, so a short look is enough.
     let idx = -1;
-    for (let i = buffer.length - 1; i >= 0 && i >= buffer.length - 256; i -= 1) {
+    const stop = ev.phase === "started" ? buffer.length - 256 : 0;
+    for (let i = buffer.length - 1; i >= 0 && i >= stop; i -= 1) {
       if (buffer[i]?.seq === ev.seq) {
         idx = i;
         break;
@@ -323,6 +326,9 @@ export const useSessionsStore = defineStore("sessions", () => {
   ): Promise<void> {
     const oids = anchorOid !== null ? [anchorOid, ...selected] : [...selected];
     if (oids.length === 0) return;
+    // Every change to the selection replaces the object, so a different one after the await means
+    // the user clicked meanwhile; their click wins over the selection captured before it.
+    const selectionBefore = session.selection;
     let found: (number | null)[];
     try {
       found = await unwrap(commands.graphFind(session.key, version, oids));
@@ -338,6 +344,7 @@ export const useSessionsStore = defineStore("sessions", () => {
       k += 1;
       if (idx !== null && idx !== undefined) session.scrollTop = idx * ROW_HEIGHT + offset;
     }
+    if (session.selection !== selectionBefore) return;
     const keep = new Set<string>();
     for (const oid of selected) {
       const idx = found[k];
@@ -508,8 +515,24 @@ export const useSessionsStore = defineStore("sessions", () => {
   window.addEventListener("blur", reportActivity);
   document.addEventListener("visibilitychange", reportActivity);
 
+  /**
+   * Status, refs and stashes are each asked for from several places at once (watcher events, the
+   * refresh after an operation, the toolbar's Refresh), and the backend answers them in parallel,
+   * so an older request can finish last. Each load takes a number; only the latest one applies.
+   */
+  const latestLoad = new Map<string, number>();
+  function startLoad(kind: "status" | "refs" | "stashes", session: RepoSession): () => boolean {
+    const id = `${kind}:${session.key}`;
+    const n = (latestLoad.get(id) ?? 0) + 1;
+    latestLoad.set(id, n);
+    return () => latestLoad.get(id) === n;
+  }
+
   async function loadStatus(session: RepoSession): Promise<void> {
-    session.status = await unwrap(commands.getRepoStatus(session.key));
+    const isLatest = startLoad("status", session);
+    const status = await unwrap(commands.getRepoStatus(session.key));
+    if (!isLatest()) return;
+    session.status = status;
     if (session.status.conflictedCount === 0) session.stashConflict = null;
     // A stash push or pop changes the count in status; a watcher event may not report it as a
     // refs change, so a count that no longer matches the list reloads the list too.
@@ -519,13 +542,19 @@ export const useSessionsStore = defineStore("sessions", () => {
   /** Refs and the stash list load together: every stash is an entry in the `refs/stash` reflog. */
   async function loadRefs(session: RepoSession): Promise<void> {
     await Promise.all([
-      unwrap(commands.getRepoRefs(session.key)).then((refs) => (session.refs = refs)),
+      (async () => {
+        const isLatest = startLoad("refs", session);
+        const refs = await unwrap(commands.getRepoRefs(session.key));
+        if (isLatest()) session.refs = refs;
+      })(),
       loadStashes(session),
     ]);
   }
 
   async function loadStashes(session: RepoSession): Promise<void> {
-    session.stashes = await unwrap(commands.getRepoStashes(session.key));
+    const isLatest = startLoad("stashes", session);
+    const stashes = await unwrap(commands.getRepoStashes(session.key));
+    if (isLatest()) session.stashes = stashes;
   }
 
   function onRepoChanged(ev: RepoChangedEvent): void {

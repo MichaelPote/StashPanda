@@ -140,7 +140,7 @@ ipc/{mod,repos,query,ops,events}.rs                       thin #[tauri::command]
 
 ```rust
 pub enum TransportKind { Local, Wsl { distro: String }, Ssh { host: String } }
-pub enum Category { UserAction, Internal, Watcher }   // console filter preference later hides Internal and Watcher
+pub enum Category { UserAction, Internal }   // Internal (reads and watcher polls) logged only while console.logInternal is on
 
 pub struct Cmd { program: Program, args: Vec<String>, env: Vec<(String,String)>, stdin: StdinMode,
                  category: Category, timeout: Option<Duration>, label: &'static str }
@@ -280,7 +280,7 @@ Algorithms: RSA, ed25519, ECDSA P-256/384/521, DSA (read and convert only; shown
 
 - `choose_watcher`: Local repos use `notify` 8 with a 250 ms debouncer, watching the worktree recursively, `.git` non-recursively (HEAD, index, packed-refs, ORIG_HEAD, MERGE_HEAD, rebase dirs) and `.git/refs` recursively, plus the common dir for linked worktrees. Never `.git/objects`; drop `*.lock`. Overflow or `ENOSPC` downgrades to polling and emits `WatcherStateEvent`.
 - WSL-from-Windows and SSH repos use `inotifywait -m -r -q -e modify,close_write,create,delete,move,attrib --exclude '(/\.git/(objects|lfs|logs)/|\.lock$)' --format '%w%f|%e' <worktree> <gitdir>` streamed through the transport if `command -v inotifywait` succeeds; otherwise polling.
-- Polling: every 3 s when focused, 15 s in the background, paused when hidden. Runs status and for-each-ref as `Category::Watcher` (one spawn via `run_batch` on wsl/ssh), hashes the outputs, emits only on change.
+- Polling: every 3 s when focused, 15 s in the background, paused when hidden. Runs status and for-each-ref as `Category::Internal` (one spawn via `run_batch` on wsl/ssh), hashes the outputs, emits only on change.
 - `RefreshCoalescer` per repo: worktree or index events arm a 300 ms trailing debounce (2 s maximum hold under bursts like `npm install`) and set `status = true`; HEAD, refs, packed-refs and merge-state events set `refs = true`. One `RepoChangedEvent { status, refs }` per burst; the frontend then calls `get_status`, or `get_refs` and `get_log`.
 
 ### Events (all carry `repo_id`)
@@ -297,7 +297,7 @@ Pinned helpers log their spawn and exit as Internal; their per-request traffic i
 
 ### Concurrency
 
-Tauri commands are `async fn` on Tauri's tokio runtime. Each `RepoHandle` is an `Arc`; different repos share no lock. Per repo, a write-preferring `tokio::sync::RwLock<()>`: reads (log, status, diff, blob, refs, polls) take the shared lock, short writes (stage, commit, checkout) take the exclusive lock, and a `Semaphore(4)` bounds concurrent read spawns. Every request carries a `CancellationToken` that is a child of the repo token; `close_repo` cancels it, kills children and remote pids, stops the watcher. Every write also holds a `write_gate` mutex for its whole run, so writes never overlap; network writes (pull, and later fetch and push) hold only the gate, so reads carry on during the transfer (as implemented 2026-10-01). `index.lock` present is classified `IndexLocked`, retried once after 250 ms for writes, then surfaced with a "remove stale lock" action.
+Tauri commands are `async fn` on Tauri's tokio runtime. Each `RepoHandle` is an `Arc`; different repos share no lock. Per repo, a write-preferring `tokio::sync::RwLock<()>`: reads (log, status, diff, blob, refs, polls) take the shared lock, short writes (stage, commit, checkout) take the exclusive lock, and a `Semaphore(4)` bounds concurrent read spawns. Every request carries a `CancellationToken` that is a child of the repo token; `close_repo` cancels it, kills children and remote pids, stops the watcher. Every write also holds a `write_gate` mutex for its whole run, so writes never overlap; network writes (pull, push, sync) hold only the gates, not the exclusive lock, so reads carry on during the transfer (as implemented 2026-10-01). A second mutex, `network_gate`, is held by every network operation and by the writes that delete or rename refs (branch delete and rename, tag delete), which lock `packed-refs` as a fetch's `--prune` can. A fetch holds only `network_gate`, so staging, committing and checking out go ahead during it (2026-10-23). `network_gate` is always taken before `write_gate`. `index.lock` present is classified `IndexLocked`, retried once after 250 ms for writes, then surfaced with a "remove stale lock" action.
 
 ### Error enum (`error.rs`, serialised as a tagged union so TypeScript can switch on `kind`)
 
@@ -375,8 +375,8 @@ Components: `CommitGraphView.vue` (owner: repo binding, selection, keyboard, con
 | `stashpanda.sqlite` | `app_data_dir()` | commit and ref cache, and the remembered UI state. `rusqlite` with `bundled`, WAL mode, `synchronous=NORMAL`, one connection behind a Mutex used through `spawn_blocking` |
 
 The remembered UI state (`ui_state::UiState`) is what the window returns to, as opposed to settings:
-splitter sizes, graph column widths, open tabs and the active tab, the Console's User, Internal and
-Watcher buttons, the Files panel's grouping and sorting, the diff header's layout, context and
+splitter sizes, graph column widths, open tabs and the active tab, the Console's Log, User and
+Internal buttons, the Files panel's grouping and sorting, the diff header's layout, context and
 whitespace choices and its side-by-side divider, the size of each dialog dragged bigger
 (`dialogSizes`), and for each repository the refs hidden from the
 graph and the last selected commit. It is stored one row per value (schema version 2,
@@ -457,7 +457,7 @@ Add `pinia` (4.x). Stores in `src/stores/`: `settings.ts` and `uiState.ts` (mirr
 ├───────────────┤ │ DiffViewer (spans both columns): unified or side by side, hunk navigation     │ │
 │ Branches      │ └──────────────────────────────────────────────────────────────────────────────┘ │
 │ (repo:        ├─ ConsolePanel (repo-specific): every git command as executed, exit code, timing ─┤
-│  local,       │   expandable stdout / stderr; filter chips for UserAction / Internal / Watcher   │
+│  local,       │   expandable stdout / stderr; filter chips for UserAction / Internal              │
 │  remotes,     │                                                                                  │
 │  tags,        │                                                                                  │
 │  stashes)     │                                                                                  │

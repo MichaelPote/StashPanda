@@ -24,7 +24,7 @@ describe("renamed and copied files", () => {
   const copied = snapshot(entry("copy.txt", "C", ".", "src.txt"), entry("src.txt", "M", "M"));
 
   it("gives the original path only to the row whose change is the rename", () => {
-    const [staged, unstaged] = worktreeSections(renamedThenEdited);
+    const [, staged, unstaged] = worktreeSections(renamedThenEdited);
     expect(staged.items.map((i) => [i.path, i.oldPath])).toEqual([["new.txt", "old.txt"]]);
     expect(unstaged.items.map((i) => [i.path, i.oldPath])).toEqual([["new.txt", null]]);
   });
@@ -39,7 +39,7 @@ describe("renamed and copied files", () => {
   });
 
   it("keeps a copy's source out of anything done to the copy", () => {
-    const [staged] = worktreeSections(copied);
+    const [, staged] = worktreeSections(copied);
     expect(staged.items.find((i) => i.path === "copy.txt")?.oldPath).toBe("src.txt");
     const p = worktreeActionPaths(copied, new Set(["staged:copy.txt"]));
     expect(p.unstage).toEqual(["copy.txt"]);

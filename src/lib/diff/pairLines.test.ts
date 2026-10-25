@@ -31,4 +31,15 @@ describe("pairBySimilarity", () => {
     const many = Array.from({ length: 300 }, (_, i) => `line ${i}`);
     expect(pairBySimilarity(many, many)).toEqual(pairByPosition(300, 300));
   });
+
+  it("falls back to pairing by position for a few very long lines", () => {
+    // 100 × 100 lines is well under the cell limit, but each random line has thousands of distinct
+    // pieces. Reversed, pairing by similarity could keep only one pair in order; by position, all 100.
+    let state = 1;
+    const random = () => (state = (state * 48271) % 2147483647);
+    const long = () => Array.from({ length: 3000 }, () => String.fromCharCode(0x4e00 + (random() % 2000))).join("");
+    const removed = Array.from({ length: 100 }, long);
+    const added = [...removed].reverse();
+    expect(pairBySimilarity(removed, added)).toEqual(pairByPosition(100, 100));
+  });
 });

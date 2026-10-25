@@ -322,7 +322,9 @@ async fn fast_forwards(client: &GitClient) -> Result<bool> {
 /// deleted on the server goes from the list here too, and a local branch that tracked it shows
 /// its upstream as gone. Tags are left alone. Stopping it is safe, as for `pull_fetch`.
 pub async fn fetch_all(client: &GitClient, progress: &(dyn Fn(String) + Send + Sync), cancel: &tokio_util::sync::CancellationToken) -> Result<OpResult> {
-    let req = GitReq::new("fetch", ["fetch", "--all", "--prune", "--progress"]).user().timeout(None).own_session();
+    // No automatic maintenance afterwards: a repack or garbage collection started by the fetch
+    // would run beside the commits and checkouts that no longer wait for a fetch.
+    let req = GitReq::new("fetch", ["fetch", "--all", "--prune", "--progress", "--no-auto-maintenance"]).user().timeout(None).own_session();
     let out = client.exec_streaming(req, progress, cancel).await?;
     Ok(result(out))
 }
