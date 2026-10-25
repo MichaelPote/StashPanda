@@ -212,6 +212,8 @@ pub fn run() {
             app.manage(state);
             menu::install(app.handle())?;
             webview::disable_browser_shortcuts(app.handle());
+            #[cfg(debug_assertions)]
+            webview::clear_dev_browsing_data(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

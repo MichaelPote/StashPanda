@@ -38,6 +38,21 @@ pub fn disable_browser_shortcuts(app: &AppHandle) {
     let _ = app;
 }
 
+/// Empties the main window's browser caches at start-up. Debug builds only: they load the page
+/// from the Vite dev server as hundreds of separate modules, and every hot reload caches new
+/// copies of them and their compiled code, which grew WebView2's profile to 480 MB. A release
+/// build loads its files through Tauri's own protocol, which the HTTP cache does not keep.
+/// Nothing the app needs lives there: its state is in settings.json and the SQLite database.
+#[cfg(debug_assertions)]
+pub fn clear_dev_browsing_data(app: &AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.clear_all_browsing_data() {
+            tracing::warn!("could not clear the web view's browsing data: {e}");
+        }
+    }
+}
+
 /// Opens the web inspector of the main window. Debug builds only; View > Open Dev Inspector.
 #[cfg(debug_assertions)]
 pub fn open_inspector(app: &AppHandle) {

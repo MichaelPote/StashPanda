@@ -18,7 +18,8 @@
         "theme": "Dark",
         "backgroundColor": "#191b1e",
         "minWidth": 900,
-        "minHeight": 600
+        "minHeight": 600,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-component-update"
       }
     ],
     "security": {
