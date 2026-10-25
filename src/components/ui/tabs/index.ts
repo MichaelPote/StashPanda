@@ -11,7 +11,8 @@ export const tabsListVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-muted',
+        // Separate bordered tabs, the selected one filled with the accent (see TabsTrigger.vue).
+        default: 'gap-2 p-0 group-data-horizontal/tabs:h-auto',
         line: 'gap-1 bg-transparent',
       },
     },

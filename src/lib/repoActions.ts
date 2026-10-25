@@ -2070,7 +2070,7 @@ export async function removeFromLibrary(key: string): Promise<boolean> {
   const name = entry ? repoDisplayName(entry) : "this repository";
   const confirmed = await dialogs.open("confirm", {
     title: `Remove ${name} from the library?`,
-    message: "Its tab closes and it leaves the Repositories list. The files on disk are not touched.",
+    message: "Are you sure you want to remove this repository from the list? The files on disk are not touched.",
     confirmLabel: "Remove",
     destructive: true,
   });
@@ -2171,8 +2171,8 @@ export async function applyStash(key: string, stash: StashEntry): Promise<void> 
     key,
     () => commands.opStashApply(key, stash.index, stash.oid),
     `Applying ${name}`,
-    `Applied ${name}. The stash is kept.`,
-    `Applied ${name} with conflicts. Resolve them in the working tree; the stash is kept.`,
+    `Applied ${name}. The stash is still kept.`,
+    `Applied ${name} with conflicts. Resolve them in the working tree, the stash is still kept.`,
     name,
   );
 }
@@ -2196,7 +2196,7 @@ export async function dropStash(key: string, stash: StashEntry, label: string): 
   const name = stash.selector;
   const confirmed = await dialogs.open("confirm", {
     title: `Drop ${name}?`,
-    message: `${label}\n\nThe stash is deleted without being applied, and its changes are lost.`,
+    message: `${label}\n\nAre you sure you want to drop it? It will be deleted without being applied, and its changes will be lost.`,
     confirmLabel: "Drop stash",
     destructive: true,
   });
@@ -2218,8 +2218,8 @@ export function filesLabel(paths: string[]): string {
 /** Why the selected files cannot be staged, unstaged or discarded, or null when they can. */
 export function fileActionReason(session: RepoSession | null | undefined, action: "stage" | "unstage" | "discard"): string | null {
   if (!session) return "Open a repository first.";
-  if (session.info.isBare) return "A bare repository has no working tree.";
-  if (session.selectedRow?.kind !== "workingTree") return "Select the Working Tree row, then the files.";
+  if (session.info.isBare) return "A bare repository has no working tree to work on.";
+  if (session.selectedRow?.kind !== "workingTree") return `Select the Working Tree at the top of the list first, then select which files you'd like to ${action}.`;
   const p = selectedWorktreePaths(session);
   const files = action === "stage" ? p.stageFiles : action === "unstage" ? p.unstageFiles : p.discardFiles;
   if (files.length > 0) return null;
@@ -2236,7 +2236,7 @@ export async function stageSelected(session: RepoSession | null): Promise<void> 
   const sessions = useSessionsStore();
   const reason = fileActionReason(session, "stage");
   if (reason || !session) {
-    sessions.notify(reason ?? "Open a repository first.");
+    sessions.notify(reason ?? "Please open a repository first.");
     return;
   }
   const p = selectedWorktreePaths(session);
@@ -2255,7 +2255,7 @@ export async function unstageSelected(session: RepoSession | null): Promise<void
   const sessions = useSessionsStore();
   const reason = fileActionReason(session, "unstage");
   if (reason || !session) {
-    sessions.notify(reason ?? "Open a repository first.");
+    sessions.notify(reason ?? "Please open a repository first.");
     return;
   }
   const p = selectedWorktreePaths(session);

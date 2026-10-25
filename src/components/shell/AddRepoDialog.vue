@@ -519,7 +519,7 @@ const selectClass =
         <DialogTitle>{{ editingKey ? "Edit repository" : "Add repository" }}</DialogTitle>
         <DialogDescription v-if="isClone">
           Clone a remote repository into a Windows, UNC, Linux or <span class="font-mono">user@host:/path</span> folder.
-          The folder can already have files in it: they are kept.
+          The folder can already have files in it, they are kept.
         </DialogDescription>
         <DialogDescription v-else>
           Enter a Windows, UNC, Linux or <span class="font-mono">user@host:/path</span> location.
@@ -541,7 +541,7 @@ const selectClass =
               id="add-repo-url"
               v-model="url"
               class="font-mono text-base"
-              placeholder="git@github.com:django/django.git"
+              placeholder="git@github.com:organisation/repo.git"
               autocomplete="off"
               spellcheck="false"
             />
@@ -554,7 +554,7 @@ const selectClass =
                 id="add-repo-path"
                 v-model="path"
                 class="font-mono text-base"
-                :placeholder="isClone ? 'Local, WSL or SSH folder; it is created if it does not exist' : 'Local, WSL or SSH path'"
+                :placeholder="isClone ? 'Local, WSL or SSH folder (will be created if it does not exist)' : 'Local, WSL or SSH path'"
                 autocomplete="off"
                 spellcheck="false"
               />
@@ -611,8 +611,8 @@ const selectClass =
                   <TriangleAlertIcon class="mt-px size-3.5 shrink-0" />
                   <span>
                     This folder has {{ cloneTarget.folder.count }} {{ cloneTarget.folder.count === 1 ? "item" : "items" }} in it
-                    already. They are kept: the repository's files are added around them, and where a file of the folder's
-                    differs from the repository's it shows as a change.
+                    already. They will be kept and the repository's files will be added around them. Where a file of the folder's
+                    differs from the repository's it will be shown as a change.
                   </span>
                 </p>
                 <p v-else class="flex items-start gap-1.5 text-destructive">
@@ -785,7 +785,7 @@ const selectClass =
         </Tip>
         <Tip
           v-if="cloneRunning"
-          :content="progress?.cancellable ? 'Stop the clone. The folder is left as it was before.' : 'The files are being written out; this step runs to the end.'"
+          :content="progress?.cancellable ? 'Stop the clone. The folder is left as it was before.' : 'The files are being written out; this step has to run to the end.'"
           side="top"
         >
           <span class="inline-flex shrink-0">
