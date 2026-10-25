@@ -44,7 +44,7 @@ tauri-plugin-window-state = "2"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
 specta-typescript = "=0.0.12"
-russh = { version = "0.63.3", default-features = false, features = ["ring", "rsa"] }
+russh = { version = "0.64.1", default-features = false, features = ["ring", "rsa"] }
 russh-config = "0.58.0"
 ssh-key = { version = "=0.7.0-rc.11", features = ["ppk", "ed25519", "rsa", "ecdsa", "dsa", "encryption", "std", "alloc", "getrandom"] }
 rsa = "=0.10.0-rc.18"
