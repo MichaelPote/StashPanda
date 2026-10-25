@@ -1,3 +1,4 @@
+
 # StashPanda: architecture
 
 How StashPanda works as of 2026-10-25 (version 0.6.0). [next-steps.md](next-steps.md) lists what is

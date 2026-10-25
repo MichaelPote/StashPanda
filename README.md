@@ -139,6 +139,10 @@ Windows 10/11 SDK component
 Without the SDK component, Rust cannot find
 the MSVC linker and falls back to Git's `link.exe`, which fails with `link: extra operand`.
 
+## AI Disclosure
+
+See [AI_DISCLOSURE.md](/AI_DISCLOSURE.md)
+
 ## Licence
 
 StashPanda is released under the [MIT License](LICENSE). Copyright (c) 2026 Michael Pote.
