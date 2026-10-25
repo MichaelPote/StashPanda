@@ -2545,9 +2545,11 @@ mod e2e {
             let out = Command::new("git").arg("-C").arg(&local).args(["config", "--get", key]).output().unwrap();
             out.status.success().then(|| String::from_utf8(out.stdout).unwrap().trim().to_string())
         };
+        // Leaves out `<remote>/HEAD`, which Git 2.48 and newer create at each fetch (the remote's
+        // default branch) and older versions do not.
         let refs_under = |prefix: &str| {
             let out = Command::new("git").arg("-C").arg(&local).args(["for-each-ref", "--format=%(refname)", prefix]).output().unwrap();
-            String::from_utf8(out.stdout).unwrap().lines().map(str::to_string).collect::<Vec<_>>()
+            String::from_utf8(out.stdout).unwrap().lines().filter(|r| !r.ends_with("/HEAD")).map(str::to_string).collect::<Vec<_>>()
         };
         let url = origin.to_string_lossy().to_string();
 
