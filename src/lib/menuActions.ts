@@ -15,6 +15,7 @@ import {
   openMergeDialog,
   openPullDialog,
   openRebaseDialog,
+  openRemoteDialog,
   openStashDialog,
   pushCurrentBranch,
   removeFromLibrary,
@@ -139,6 +140,18 @@ export async function dispatch(id: string): Promise<void> {
       return;
     case "repo.sync":
       await syncCurrentBranch(sessions.active);
+      return;
+    case "repo.remote_add":
+      await openRemoteDialog(sessions.active, "add");
+      return;
+    case "repo.remote_edit":
+      await openRemoteDialog(sessions.active, "edit");
+      return;
+    case "repo.remote_rename":
+      await openRemoteDialog(sessions.active, "rename");
+      return;
+    case "repo.remote_remove":
+      await openRemoteDialog(sessions.active, "remove");
       return;
     case "repo.remove": {
       // The same removal as the Repositories context menu and the Edit Repository dialog.

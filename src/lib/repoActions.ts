@@ -27,7 +27,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { resolvedFileText } from "@/lib/merge/autoResolve";
 import { shortSha } from "@/lib/refNames";
-import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice, type PushToServer } from "@/stores/dialogs";
+import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice, type PushToServer, type RemoteDialogMode } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
@@ -1620,6 +1620,37 @@ export async function removeTag(key: string, name: string): Promise<void> {
     else sessions.notify(opFailureText(result, `Removing tag ${name}`));
   } catch (e) {
     sessions.notify(errorMessage(e));
+  }
+}
+
+/**
+ * Why the remotes cannot be changed right now, or null when they can: `add` needs only a loaded
+ * repository, editing, renaming or removing one needs a remote to act on.
+ */
+export function remoteReason(session: RepoSession | null | undefined, mode: RemoteDialogMode): string | null {
+  if (!session) return "Open a repository first.";
+  if (!session.refs) return "The repository is still loading.";
+  if (mode !== "add" && session.refs.remotes.length === 0) return "This repository has no remotes.";
+  return busyReason(session);
+}
+
+/**
+ * Opens the Remote dialog to add a remote, or to edit, rename or remove remote `name` (null: picked
+ * in the dialog, as from the menu bar). The dialog runs the command; after adding with "Fetch it
+ * now" ticked, this fetches, with progress and Stop in the status bar.
+ */
+export async function openRemoteDialog(session: RepoSession | null | undefined, mode: RemoteDialogMode, name: string | null = null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = remoteReason(session, mode);
+  if (reason || !session?.refs) {
+    sessions.notify(reason ?? "The repository is still loading.");
+    return;
+  }
+  const result = await useDialogsStore().open("remote", { key: session.key, mode, remotes: session.refs.remotes, name });
+  if (result?.fetch) {
+    await fetchAll(session);
+    // fetchAll reports a failure itself; on success, say what happened as a whole.
+    if (sessions.successMessage?.startsWith("Fetched")) sessions.notifySuccess(`Added remote ${result.name}, and fetched it.`);
   }
 }
 

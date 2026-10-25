@@ -27,7 +27,7 @@ import RefToggleTag from "@/components/shell/RefToggleTag.vue";
 import BranchName from "@/components/shell/BranchName.vue";
 import { branchTreeRows } from "@/lib/branchTree";
 import { formatRelativeTime } from "@/lib/format";
-import { applyStash, dropStash, popStash, pushTags, pushTagsReason, requestCheckout } from "@/lib/repoActions";
+import { applyStash, dropStash, openRemoteDialog, popStash, pushTags, pushTagsReason, remoteReason, requestCheckout } from "@/lib/repoActions";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { stashParts, stashTitle } from "@/lib/stash";
 import { laneColour } from "@/lib/graph/paths";
@@ -312,6 +312,10 @@ async function reveal(entry: RefEntry): Promise<void> {
             Remotes
             <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ remoteGroups.length }}</span>
           </button>
+          <template #items>
+            <ContextMenuSeparator />
+            <ActionMenuItem :reason="remoteReason(active, 'add')" data-add-remote @select="openRemoteDialog(active, 'add')">Add Remote…</ActionMenuItem>
+          </template>
         </AddBranchMenu>
         <template v-if="isOpen('remotes')">
           <p v-if="remoteGroups.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No remotes</p>
@@ -322,6 +326,14 @@ async function reveal(entry: RefEntry): Promise<void> {
                 <span class="truncate font-medium">{{ group.name }}</span>
                 <span class="ml-auto text-[0.7rem] text-muted-foreground tabular-nums">{{ group.branches.length }}</span>
               </button>
+              <template #items>
+                <ContextMenuSeparator />
+                <ActionMenuItem :reason="remoteReason(active, 'edit')" @select="openRemoteDialog(active, 'edit', group.name)">Edit Remote URL…</ActionMenuItem>
+                <ActionMenuItem :reason="remoteReason(active, 'rename')" @select="openRemoteDialog(active, 'rename', group.name)">Rename Remote…</ActionMenuItem>
+                <ActionMenuItem destructive :reason="remoteReason(active, 'remove')" @select="openRemoteDialog(active, 'remove', group.name)">
+                  Remove Remote…
+                </ActionMenuItem>
+              </template>
             </AddBranchMenu>
             <template v-if="isOpen(`remote:${group.name}`)">
               <template v-for="row in group.rows" :key="row.key">

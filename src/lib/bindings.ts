@@ -482,6 +482,27 @@ export const commands = {
 	 */
 	opPushTags: (key: string, opId: string, remote: string, tags: TagsToPush) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push_tags", { key, opId, remote, tags })),
 	/**
+	 *  Add remote `name` at `url`, without fetching it (call `opFetch` for that). Git refuses a name
+	 *  that is already a remote, with `ok: false`.
+	 */
+	opRemoteAdd: (key: string, name: string, url: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_remote_add", { key, name, url })),
+	/**
+	 *  Set remote `name`'s URL, and its separate push URL, or with a null `pushUrl` remove any so
+	 *  pushes go to `url` as well.
+	 */
+	opRemoteSetUrl: (key: string, name: string, url: string, pushUrl: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_remote_set_url", { key, name, url, pushUrl })),
+	/**
+	 *  Rename remote `oldName` to `newName`, with its remote-tracking branches and the upstreams of
+	 *  the branches that track it. Waits for a running fetch, since it rewrites refs.
+	 */
+	opRemoteRename: (key: string, oldName: string, newName: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_remote_rename", { key, oldName, newName })),
+	/**
+	 *  Remove remote `name` from this repository: its remote-tracking branches are deleted and the
+	 *  branches that tracked it track nothing. The remote itself is untouched. Confirm with the user
+	 *  first. Waits for a running fetch, since it deletes refs.
+	 */
+	opRemoteRemove: (key: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_remote_remove", { key, name })),
+	/**
 	 *  Pull local `branch`'s upstream into it, then push it back there: one operation under the write
 	 *  gate, so no other write runs in between. The pull works as for `opPull`. The push runs only
 	 *  when the pull succeeded (an autostash that conflicted on the way back still counts, since the

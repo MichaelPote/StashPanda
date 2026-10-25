@@ -1,9 +1,10 @@
 /**
- * Client-side check of a branch or tag name before it reaches `git branch` or `git tag`.
+ * Client-side check of a branch, tag or remote name before it reaches `git branch`, `git tag` or
+ * `git remote`; a remote's name must work as part of a ref name too (`refs/remotes/<name>/…`).
  * Returns a plain-English problem, or null when the name looks acceptable. Git itself is the
  * final judge (see `git check-ref-format`); this only catches the common mistakes early.
  */
-export function validateRefName(name: string, what: "branch" | "tag"): string | null {
+export function validateRefName(name: string, what: "branch" | "tag" | "remote"): string | null {
   if (name.length === 0) return `Enter a ${what} name.`;
   if (/\s/.test(name)) return `A ${what} name cannot contain spaces.`;
   if (name.startsWith("-")) return `A ${what} name cannot start with "-".`;

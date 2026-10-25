@@ -873,6 +873,68 @@ pub async fn branch_rename(client: &GitClient, old: &str, new: &str) -> Result<O
     Ok(result(out))
 }
 
+/// A remote URL: anything Git accepts (`git@host:path`, `https://…`, `ssh://…`, a local path), as
+/// long as it is not empty, cannot be read as an option, and holds no control characters.
+fn valid_remote_url(url: &str) -> Result<()> {
+    if url.trim().is_empty() || url.starts_with('-') || url.chars().any(|c| c.is_control()) {
+        return Err(GitError::InvalidPath { path: url.to_string(), reason: "not a valid remote URL".into() });
+    }
+    Ok(())
+}
+
+/// `git remote add -- <name> <url>`, without fetching. The name must also work as part of a ref
+/// name (`refs/remotes/<name>/…`); Git refuses a name that is already a remote.
+pub async fn remote_add(client: &GitClient, name: &str, url: &str) -> Result<OpResult> {
+    valid_ref_name(name)?;
+    valid_remote_url(url)?;
+    let out = client.exec_allow_failure(GitReq::new("remote", ["remote", "add", "--", name, url]).user()).await?;
+    Ok(result(out))
+}
+
+/// Set remote `name`'s URL, and its separate push URL: `push_url` None removes any push URL, so
+/// pushes go to `url` too.
+pub async fn remote_set_url(client: &GitClient, name: &str, url: &str, push_url: Option<&str>) -> Result<OpResult> {
+    valid_remote(name)?;
+    valid_remote_url(url)?;
+    if let Some(p) = push_url {
+        valid_remote_url(p)?;
+    }
+    let out = result(client.exec_allow_failure(GitReq::new("remote", ["remote", "set-url", "--", name, url]).user()).await?);
+    if !out.ok {
+        return Ok(out);
+    }
+    let key = format!("remote.{name}.pushurl");
+    let push = match push_url {
+        Some(p) => client.exec_allow_failure(GitReq::new("config", ["config", "--replace-all", key.as_str(), p]).user()).await?,
+        None => {
+            let unset = client.exec_allow_failure(GitReq::new("config", ["config", "--unset-all", key.as_str()]).user()).await?;
+            // Exit 5: there was no push URL to remove.
+            if unset.exit_code == Some(5) {
+                return Ok(out);
+            }
+            unset
+        }
+    };
+    Ok(result(push))
+}
+
+/// `git remote rename -- <old> <new>`, which also renames the remote-tracking branches and moves
+/// the upstream of every branch that tracked `old` to `new`.
+pub async fn remote_rename(client: &GitClient, old: &str, new: &str) -> Result<OpResult> {
+    valid_remote(old)?;
+    valid_ref_name(new)?;
+    let out = client.exec_allow_failure(GitReq::new("remote", ["remote", "rename", "--", old, new]).user().timeout(None)).await?;
+    Ok(result(out))
+}
+
+/// `git remote remove -- <name>`, which also deletes its remote-tracking branches and clears the
+/// upstream of every local branch that tracked it. The branches on the remote itself are untouched.
+pub async fn remote_remove(client: &GitClient, name: &str) -> Result<OpResult> {
+    valid_remote(name)?;
+    let out = client.exec_allow_failure(GitReq::new("remote", ["remote", "remove", "--", name]).user().timeout(None)).await?;
+    Ok(result(out))
+}
+
 /// `-M` for a rename that only changes letter case, unless a branch named exactly `new` exists:
 /// where branch names are case-insensitive (Windows, macOS) Git finds `old` under `new` and
 /// refuses `-m` with "a branch named 'New' already exists". Otherwise `-m`, so that an existing
@@ -2460,6 +2522,70 @@ mod e2e {
         let refs = get_refs(&client).await.unwrap();
         let tagged = refs.refs.iter().find(|r| r.full_name == "refs/tags/v3").unwrap();
         assert!(tagged.committer_time > 0, "an annotated tag carries the date it was tagged");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn adds_edits_renames_and_removes_a_remote() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-remotes-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local) = (root.join("origin.git"), root.join("local"));
+        std::fs::create_dir_all(&local).unwrap();
+        assert!(Command::new("git").args(["init", "-q", "--bare", "-b", "main"]).arg(&origin).status().unwrap().success());
+        git(&local, &["init", "-q", "-b", "main"]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&local, &["config", k, v]);
+        }
+        std::fs::write(local.join("a.txt"), "1\n").unwrap();
+        git(&local, &["add", "-A"]);
+        git(&local, &["commit", "-qm", "one"]);
+        let client = client_for(&local);
+        let config = |key: &str| {
+            let out = Command::new("git").arg("-C").arg(&local).args(["config", "--get", key]).output().unwrap();
+            out.status.success().then(|| String::from_utf8(out.stdout).unwrap().trim().to_string())
+        };
+        let refs_under = |prefix: &str| {
+            let out = Command::new("git").arg("-C").arg(&local).args(["for-each-ref", "--format=%(refname)", prefix]).output().unwrap();
+            String::from_utf8(out.stdout).unwrap().lines().map(str::to_string).collect::<Vec<_>>()
+        };
+        let url = origin.to_string_lossy().to_string();
+
+        // Add, then fetch and track it the way the app does after adding.
+        assert!(remote_add(&client, "origin", &url).await.unwrap().ok);
+        let twice = remote_add(&client, "origin", &url).await.unwrap();
+        assert!(!twice.ok && twice.stderr.contains("already exists"), "{twice:?}");
+        assert!(remote_add(&client, "bad name", &url).await.is_err(), "a name that cannot be part of a ref name");
+        assert!(remote_add(&client, "other", "--upload-pack=x").await.is_err(), "a URL that reads as an option");
+        git(&local, &["push", "-q", "origin", "main"]);
+        git(&local, &["fetch", "-q", "origin"]);
+        git(&local, &["branch", "-q", "--set-upstream-to=origin/main", "main"]);
+        let refs = get_refs(&client).await.unwrap();
+        assert_eq!(refs.remotes.iter().map(|r| (r.name.as_str(), r.url.as_deref())).collect::<Vec<_>>(), [("origin", Some(url.as_str()))]);
+
+        // A new URL, a separate push URL, then the push URL removed again (and removing none is fine).
+        let moved = root.join("moved.git").to_string_lossy().to_string();
+        assert!(remote_set_url(&client, "origin", &moved, Some("git@example.com:push.git")).await.unwrap().ok);
+        assert_eq!(config("remote.origin.url").as_deref(), Some(moved.as_str()));
+        assert_eq!(config("remote.origin.pushurl").as_deref(), Some("git@example.com:push.git"));
+        assert!(remote_set_url(&client, "origin", &url, None).await.unwrap().ok);
+        assert_eq!(config("remote.origin.pushurl"), None);
+        assert!(remote_set_url(&client, "origin", &url, None).await.unwrap().ok);
+        assert!(!remote_set_url(&client, "missing", &url, None).await.unwrap().ok);
+
+        // Rename: the remote-tracking branches and main's upstream move with it.
+        assert!(remote_rename(&client, "origin", "upstream").await.unwrap().ok);
+        assert_eq!(refs_under("refs/remotes/upstream"), ["refs/remotes/upstream/main"]);
+        assert!(refs_under("refs/remotes/origin").is_empty());
+        assert_eq!(config("branch.main.remote").as_deref(), Some("upstream"));
+
+        // Remove: its remote-tracking branches go, main tracks nothing, the remote keeps its branch.
+        assert!(remote_remove(&client, "upstream").await.unwrap().ok);
+        assert!(refs_under("refs/remotes").is_empty());
+        assert_eq!(config("branch.main.remote"), None);
+        assert!(get_refs(&client).await.unwrap().remotes.is_empty());
+        let kept = Command::new("git").arg("-C").arg(&origin).args(["rev-parse", "--verify", "-q", "main"]).status().unwrap();
+        assert!(kept.success(), "removing the remote here leaves the remote repository alone");
 
         let _ = std::fs::remove_dir_all(&root);
     }

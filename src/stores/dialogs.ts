@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, StashEntry } from "@/lib/bindings";
+import type { OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, Remote, StashEntry } from "@/lib/bindings";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -22,6 +22,24 @@ export interface RenameBranchPayload {
    * as well; null when it tracks nothing, a branch of another name, or one that has gone.
    */
   remoteCopy: PushTarget | null;
+}
+
+/** What the Remote dialog does: add a remote, change its URLs, rename it, or remove it. */
+export type RemoteDialogMode = "add" | "edit" | "rename" | "remove";
+
+export interface RemotePayload {
+  key: string;
+  mode: RemoteDialogMode;
+  /** The repository's remotes as last loaded, for the list to pick from and the name checks. */
+  remotes: Remote[];
+  /** The remote to edit, rename or remove; null to pick it in the dialog (from the menu bar). */
+  name: string | null;
+}
+
+/** The remote the Remote dialog changed, under its name afterwards, and whether to fetch it now (adding only). */
+export interface RemoteResult {
+  name: string;
+  fetch: boolean;
 }
 
 /** The name the Rename Branch dialog gave the branch, and whether its remote copy is to be renamed too. */
@@ -339,6 +357,8 @@ export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
   renameBranch: { payload: RenameBranchPayload; result: RenameBranchResult | null };
+  /** Resolves once the dialog has made its change; null when nothing changed. */
+  remote: { payload: RemotePayload; result: RemoteResult | null };
   commit: { payload: CommitPayload; result: OpResult | null };
   stashPush: { payload: StashPushPayload; result: OpResult | null };
   stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
@@ -372,6 +392,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createBranch: null,
   createTag: null,
   renameBranch: null,
+  remote: null,
   commit: null,
   stashPush: null,
   stashApply: null,

@@ -463,6 +463,13 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   (`refs/tags/<name>`), never forced: a tag the remote has on another commit is refused and left
   as it is there. Tag annotations are loaded one tag at a time when a pill is first hovered
   (`get_tag_annotation`), so the refs snapshot carries no tag messages.
+- **Remotes** are added, edited (URL and an optional separate push URL), renamed and removed
+  through `git remote` (`op_remote_add`, `op_remote_set_url`, `op_remote_rename`,
+  `op_remote_remove`), from `RemoteDialog.vue`. It opens from a remote's heading in the Branches
+  panel, the Remotes heading (Add Remote…), and Repository › Remotes, where the remote is picked
+  in the dialog so the native menu never needs rebuilding. Renaming and removing rewrite
+  remote-tracking branches and upstreams, so they wait for a running fetch. Removing confirms by
+  naming the remote-tracking branches deleted and the local branches left tracking nothing.
 - **Upstreams are set as a separate step.** Pushing and creating a branch from a remote branch
   never touch `.git/config`; the upstream is set afterwards (`trackAfter` in `repoActions.ts`),
   because with a `config.lock` in place `git push --set-upstream` pushes, fails to record the

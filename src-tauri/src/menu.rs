@@ -102,6 +102,14 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
         .build()?;
 
+    // Edit, Rename and Remove pick the remote in the dialog, so the menu never needs rebuilding
+    // when the active tab or its remotes change.
+    let remotes = SubmenuBuilder::new(app, "Rem&otes")
+        .text("repo.remote_add", "&Add Remote…")
+        .text("repo.remote_edit", "&Edit Remote URL…")
+        .text("repo.remote_rename", "Re&name Remote…")
+        .text("repo.remote_remove", "&Remove Remote…")
+        .build()?;
     let repository = SubmenuBuilder::new(app, "&Repository")
         // F5 belongs to View > Refresh; showing it twice would give a Mac two items on one key.
         .text("repo.refresh", if mac { "Re&fresh Repository" } else { "Re&fresh Repository\tF5" })
@@ -116,6 +124,7 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .text("repo.pull", "&Pull")
         .text("repo.push", "Pus&h")
         .text("repo.sync", "S&ync (Pull, then Push)")
+        .item(&remotes)
         .separator()
         .text("repo.merge", "&Merge into the Current Branch…")
         .text("repo.rebase", "R&ebase the Current Branch…")

@@ -781,6 +781,39 @@ pub async fn op_push_to(
     }
 }
 
+/// Add remote `name` at `url`, without fetching it (call `opFetch` for that). Git refuses a name
+/// that is already a remote, with `ok: false`.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_remote_add(app: AppHandle, state: State<'_, AppState>, key: String, name: String, url: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::remote_add(c, &name, &url).await)
+}
+
+/// Set remote `name`'s URL, and its separate push URL, or with a null `pushUrl` remove any so
+/// pushes go to `url` as well.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_remote_set_url(app: AppHandle, state: State<'_, AppState>, key: String, name: String, url: String, push_url: Option<String>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::remote_set_url(c, &name, &url, push_url.as_deref()).await)
+}
+
+/// Rename remote `oldName` to `newName`, with its remote-tracking branches and the upstreams of
+/// the branches that track it. Waits for a running fetch, since it rewrites refs.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_remote_rename(app: AppHandle, state: State<'_, AppState>, key: String, old_name: String, new_name: String) -> Result<OpResult> {
+    write_op!(refs app, state, key, |c| ops::remote_rename(c, &old_name, &new_name).await)
+}
+
+/// Remove remote `name` from this repository: its remote-tracking branches are deleted and the
+/// branches that tracked it track nothing. The remote itself is untouched. Confirm with the user
+/// first. Waits for a running fetch, since it deletes refs.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_remote_remove(app: AppHandle, state: State<'_, AppState>, key: String, name: String) -> Result<OpResult> {
+    write_op!(refs app, state, key, |c| ops::remote_remove(c, &name).await)
+}
+
 /// Rename local branch `oldName` to `newName`, keeping its upstream.
 #[tauri::command]
 #[specta::specta]
