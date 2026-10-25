@@ -9,19 +9,30 @@
 #   scripts/windows.sh ux      # frontend hot reload: Vite runs here in WSL, the
 #                              # Windows app loads from it. Edit in WSL, see it live.
 #   scripts/windows.sh dev     # sync, then run the app fully on Windows (Vite too)
-#   scripts/windows.sh build   # sync, build the release binary and installers, and
-#                              # copy them to bundle/ here and in the Windows mirror
+#   scripts/windows.sh build   # sync, build the release binary and installers,
+#                              # copy them to bundle/ here and in the Windows mirror,
+#                              # then remove the release build's intermediate files
 #   scripts/windows.sh sync    # mirror the source and run npm install on Windows
 #
 # The mirror is one-way: edit the code in WSL, then re-run this script.
 # In `ux` mode nothing needs a re-run: Vue, TypeScript and CSS changes hot
 # reload in the running app, and src-tauri/ keeps being copied to the mirror,
 # so the Windows `tauri dev` rebuilds and restarts the app after a Rust change.
+#
+# The Windows folder comes from STASHPANDA_WIN_DIR, set in the environment or in
+# the repository's .env file (see .env.example).
 set -euo pipefail
 
-WIN_DIR='C:\src\stashpanda'
-WSL_DIR="$(wslpath -u "$WIN_DIR")"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+. "$SRC_DIR/scripts/load-env.sh"
+load_env "$SRC_DIR/.env"
+if [ -z "${STASHPANDA_WIN_DIR:-}" ]; then
+  echo "STASHPANDA_WIN_DIR is not set. Copy .env.example to .env and set it to the Windows" >&2
+  echo "folder to mirror the source to and build in." >&2
+  exit 1
+fi
+WIN_DIR="$STASHPANDA_WIN_DIR"
+WSL_DIR="$(wslpath -u "$WIN_DIR")"
 ACTION="${1:-ux}"
 VITE_PORT=1420
 
@@ -289,10 +300,28 @@ collect_bundle() {
   echo "On Windows: $WIN_DIR\\bundle"
 }
 
+# Tauri adds each build's installer to bundle/nsis and never removes the ones
+# from earlier versions, so they are cleared first: collect_bundle then copies
+# only the installer this build made.
+clear_old_installers() {
+  rm -f "$WSL_DIR/src-tauri/target/release/bundle/nsis/"*-setup.exe
+}
+
+# Once the binary and installer are in bundle/, the release build's own files
+# (about 2 GB, mostly compiled crates) are only a cache for the next build, so
+# they are removed to save disk space. The next build compiles everything again.
+# Cargo removes them on the Windows side, which is far quicker than deleting
+# that many files through /mnt/c.
+clean_release_build() {
+  echo
+  echo "Removing the release build's intermediate files (cargo clean --release)..."
+  run_win "cd src-tauri && cargo clean --release"
+}
+
 case "$ACTION" in
   ux)    ux_mode ;;
   sync)  run_win "npm install" ;;
   dev)   dev_mode ;;
-  build) run_win "npm install && npm run tauri build"; collect_bundle ;;
+  build) clear_old_installers; run_win "npm install && npm run tauri build"; collect_bundle; clean_release_build ;;
   *)     echo "Unknown action: $ACTION (expected ux, sync, dev or build)" >&2; exit 1 ;;
 esac

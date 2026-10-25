@@ -17,7 +17,8 @@
 # to the server.
 #
 # `windows` runs this script in Git Bash, so the clones are made by Windows
-# git.exe in C:\src\stashpanda-testbeds. They use their own bare repositories
+# git.exe in ~/stashpanda-testbeds in the Windows home folder, or in
+# TESTBED_WIN_CLONE_DIR if that is set. They use their own bare repositories
 # (git-testbeds-windows on the server), so resetting one side leaves the other alone.
 #
 # Needs SSH key login to the server, with no password prompt, through a
@@ -25,7 +26,8 @@
 # C:\Users\<name>\.ssh\config for Windows). The entry is an alias rather than
 # the server's address, so that StashPanda's own SSH connections to the address
 # still ask for a password. The settings below can be overridden with
-# environment variables of the same name.
+# environment variables of the same name, set directly or in the repository's
+# .env file (see .env.example).
 set -euo pipefail
 
 if [ "${1:-}" = windows ]; then
@@ -33,9 +35,12 @@ if [ "${1:-}" = windows ]; then
   exec "/mnt/c/Program Files/Git/bin/bash.exe" "$(wslpath -m "$0")" "$@"
 fi
 
+. "$(dirname "$0")/load-env.sh"
+load_env "$(dirname "$0")/../.env"
+
 case "${OSTYPE:-}" in
-  msys* | cygwin*) clone_dir=/c/src/stashpanda-testbeds; server_dir=git-testbeds-windows ;;
-  *)               clone_dir=$HOME/stashpanda-testbeds;   server_dir=git-testbeds ;;
+  msys* | cygwin*) clone_dir=${TESTBED_WIN_CLONE_DIR:-$HOME/stashpanda-testbeds}; server_dir=git-testbeds-windows ;;
+  *)               clone_dir=$HOME/stashpanda-testbeds;                            server_dir=git-testbeds ;;
 esac
 TESTBED_SERVER="${TESTBED_SERVER:-stashpanda-git}"
 TESTBED_SERVER_DIR="${TESTBED_SERVER_DIR:-$server_dir}"   # relative to the server account's home

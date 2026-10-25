@@ -36,6 +36,9 @@ dist-ssr
 # Photoshop source files for artwork such as the app icon. Only the exported PNGs are committed.
 *.psd
 
+# Local settings for the scripts in scripts/, such as the Windows mirror folder. See .env.example.
+.env
+
 # Mobile icon sets that `npm run icons` (tauri icon) also writes; StashPanda is desktop only.
 /src-tauri/icons/android/
 /src-tauri/icons/ios/
