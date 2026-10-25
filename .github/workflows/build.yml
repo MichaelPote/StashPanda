@@ -137,9 +137,17 @@ jobs:
         with:
           path: release-files
           merge-multiple: true
+      # The Linux artifact keeps its deb/, rpm/ and appimage/ folders, so the files are listed one
+      # by one. A release left by an earlier run of this tag gets the files again instead of failing.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" release-files/* \
-            --title "StashPanda ${GITHUB_REF_NAME#v}" --generate-notes --draft --verify-tag
+          mapfile -t files < <(find release-files -type f | sort)
+          printf 'Attaching %s\n' "${files[@]}"
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --title "StashPanda ${GITHUB_REF_NAME#v}" --generate-notes --draft --verify-tag
+          fi
