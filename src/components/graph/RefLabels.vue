@@ -79,13 +79,13 @@ function shapeFor(label: RefLabel): PillShape {
     >
       <RefPill
         :label="label"
-        :colour="label.colour"
+        :colour="label.colour" :oid="oid"
         :upstream-remote="remoteFor(label)"
         :shape="shapeFor(label)"
         @dblclick.stop="checkoutOnDoubleClick(label)"
       />
     </RefContextMenu>
-    <RefPill v-else :label="label" :colour="label.colour" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
+    <RefPill v-else :label="label" :colour="label.colour" :oid="oid" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
   </template>
   <Popover v-if="hidden.length > 0">
     <PopoverTrigger as-child>
@@ -110,13 +110,13 @@ function shapeFor(label: RefLabel): PillShape {
           >
             <RefPill
               :label="label"
-              :colour="label.colour"
+              :colour="label.colour" :oid="oid"
               :upstream-remote="remoteFor(label)"
               :shape="shapeFor(label)"
               @dblclick.stop="checkoutOnDoubleClick(label)"
             />
           </RefContextMenu>
-          <RefPill v-else :label="label" :colour="label.colour" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
+          <RefPill v-else :label="label" :colour="label.colour" :oid="oid" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
         </template>
       </div>
     </PopoverContent>

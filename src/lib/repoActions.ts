@@ -17,6 +17,7 @@ import {
   type ResolveSide,
   type StashEntry,
   type SyncResult,
+  type TagsToPush,
 } from "@/lib/bindings";
 import { hasConflictMarkers, OPERATION_VERBS, operationNames, takeAllChoices, takeAllText, type OperationNames, type TakeAll } from "@/lib/conflicts";
 import { pathBasename } from "@/lib/format";
@@ -1622,6 +1623,79 @@ export async function removeTag(key: string, name: string): Promise<void> {
   }
 }
 
+/** Why tags cannot be pushed right now, or null when they can. */
+export function pushTagsReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (!session.refs) return "The repository is still loading.";
+  if (session.refs.remotes.length === 0) return "This repository has no remotes to push to.";
+  return busyReason(session);
+}
+
+/** The remote a tag goes to unless the user picks one: origin, else the first remote; null when there are none. */
+export function defaultTagRemote(session: RepoSession | null | undefined): string | null {
+  const remotes = session?.refs?.remotes.map((r) => r.name) ?? [];
+  return remotes.includes("origin") ? "origin" : (remotes[0] ?? null);
+}
+
+/** What `opPushTags` returns as stdout when there was no tag to push (`NO_TAGS_TO_PUSH`). */
+const NO_TAGS_TO_PUSH = "No tags to push.";
+
+/** "v1", "v1 and v2", "v1, v2 and v3", or the first three and "and 4 more". */
+function listNames(names: string[]): string {
+  if (names.length <= 3) return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+  return `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`;
+}
+
+/**
+ * What to report after `opPushTags`, from Git's own lines: ` * [new tag]  v1 -> v1` for a tag
+ * pushed, ` ! [rejected]  v1 -> v1 (already exists)` for one the remote has on another commit.
+ * `what` names the tags asked for ("v1.2", "every tag", "the tags on main").
+ */
+export function tagPushOutcome(result: OpResult, remote: string, what: string): { message: string; failed: boolean } {
+  if (result.ok && result.stdout === NO_TAGS_TO_PUSH) return { message: `There were no tags to push to ${remote}.`, failed: false };
+  const output = `${result.stdout}\n${result.stderr}`;
+  const pushed = [...output.matchAll(/^\s*\*\s+\[new tag\]\s+(\S+)\s+->/gm)].map((m) => m[1]);
+  const refused = [...output.matchAll(/^\s*!\s+\[rejected\]\s+(\S+)\s+->\s+\S+\s+\(already exists\)/gm)].map((m) => m[1]);
+  const pushedNote = pushed.length > 0 ? ` Pushed ${listNames(pushed)}.` : "";
+  if (result.ok) {
+    return { message: pushed.length > 0 ? `Pushed ${listNames(pushed)} to ${remote}.` : `${remote} already has ${what}.`, failed: false };
+  }
+  if (refused.length > 0) {
+    const them = refused.length === 1 ? `a tag ${refused[0]}` : `tags ${listNames(refused)}`;
+    return {
+      message:
+        `${remote} already has ${them} on another commit, so ${refused.length === 1 ? "it was" : "they were"} not pushed: ` +
+        `StashPanda never moves a tag on a remote, since others may already be using it.${pushedNote}`,
+      failed: true,
+    };
+  }
+  return { message: networkFailureText(result, `Pushing ${what} to ${remote}`), failed: true };
+}
+
+/**
+ * Pushes `tags` to `remote`, with progress and Stop in the status bar, and reports the outcome.
+ * `what` names them for the notices ("v1.2", "every tag"). Returns the outcome, or null when the
+ * push could not start or was stopped (already reported).
+ */
+export async function pushTags(key: string, remote: string, tags: TagsToPush, what: string): Promise<{ message: string; failed: boolean } | null> {
+  const sessions = useSessionsStore();
+  const reason = pushTagsReason(sessions.sessions.get(key));
+  if (reason) {
+    sessions.notify(reason);
+    return null;
+  }
+  try {
+    const result = await runOperation(key, `Pushing ${what} to ${remote}`, (opId) => commands.opPushTags(key, opId, remote, tags), "push");
+    const outcome = tagPushOutcome(result, remote, what);
+    if (outcome.failed) sessions.notify(outcome.message);
+    else sessions.notifySuccess(outcome.message);
+    return outcome;
+  } catch (e) {
+    sessions.notify(isCancelled(e) ? `Pushing ${what} was stopped. ${remote} may already have some of the tags; the next fetch shows which.` : errorMessage(e));
+    return null;
+  }
+}
+
 /**
  * Asks for confirmation, then runs `git branch -d <name>`. When Git refuses because the branch
  * is not fully merged, offers `git branch -D <name>` in a second confirmation.
@@ -1894,10 +1968,18 @@ export async function pushBranchTo(key: string, branch: string, preset: PushToPr
       (opId) => commands.opPushTo(key, opId, branch, choice.remote, choice.target, choice.force, choice.expected, choice.source),
       "push",
     );
+    const pushed = `${choice.force ? "Force-pushed" : "Pushed"} ${branch} to ${to}.`;
+    // The tags on what was pushed go as a step of their own, so a refused tag is reported as such
+    // and never as a refused branch.
+    const tags = result.ok && choice.remote !== null && choice.includeTags ? await pushTagsAfter(key, choice.remote, choice.source, branch) : null;
+    const done = tags && !tags.failed && tags.message ? `${pushed} ${tags.message}` : pushed;
     if (result.ok && choice.remote !== null && choice.track) {
-      await trackAfter(key, branch, `refs/remotes/${to}`, `${choice.force ? "Force-pushed" : "Pushed"} ${branch} to ${to}.`);
+      await trackAfter(key, branch, `refs/remotes/${to}`, done);
+      if (tags?.failed) sessions.notify(`${pushed} ${tags.message}`);
+    } else if (result.ok && tags?.failed) {
+      sessions.notify(`${pushed} ${tags.message}`);
     } else if (result.ok) {
-      sessions.notifySuccess(choice.remote === null ? `${choice.target} now points at ${branch}'s commit.` : `${choice.force ? "Force-pushed" : "Pushed"} ${branch} to ${to}.`);
+      sessions.notifySuccess(choice.remote === null ? `${choice.target} now points at ${branch}'s commit.` : done);
     } else if (result.stderr.includes("(source moved)")) {
       sessions.notify(`${branch} has moved since the list of dropped commits was made, so nothing was pushed. Open Push To again to see what would be dropped now.`);
     } else if (choice.remote === null && choice.force && /cannot lock ref|but expected/i.test(result.stderr)) {
@@ -1915,6 +1997,24 @@ export async function pushBranchTo(key: string, branch: string, preset: PushToPr
     }
   } catch (e) {
     sessions.notify(isCancelled(e) ? `The push was stopped. ${to} may already have the commits; the next fetch shows whether it does.` : errorMessage(e));
+  }
+}
+
+/**
+ * Pushes the tags on `commit`'s history to `remote` after `branch` was pushed there, as Push To's
+ * "Also push its tags" does, and returns the outcome to add to the push's own notice. A stopped
+ * or failed tag push becomes a failed outcome rather than its own notice.
+ */
+async function pushTagsAfter(key: string, remote: string, commit: string, branch: string): Promise<{ message: string; failed: boolean }> {
+  const what = `the tags on ${branch}`;
+  try {
+    const result = await runOperation(key, `Pushing ${what} to ${remote}`, (opId) => commands.opPushTags(key, opId, remote, { type: "mergedInto", commit }), "push");
+    const outcome = tagPushOutcome(result, remote, what);
+    // Nothing new to say when there were none, or the remote had them all.
+    if (!outcome.failed && !/^Pushed /.test(outcome.message)) return { message: "", failed: false };
+    return outcome;
+  } catch (e) {
+    return { message: isCancelled(e) ? `Pushing its tags was stopped; ${remote} may already have some of them.` : `Its tags were not pushed: ${errorMessage(e)}`, failed: true };
   }
 }
 

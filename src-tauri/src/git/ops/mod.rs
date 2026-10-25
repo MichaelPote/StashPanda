@@ -62,7 +62,7 @@ pub fn index_lock_in(res: &OpResult) -> Option<String> {
     }
 }
 
-fn valid_ref_name(name: &str) -> Result<()> {
+pub(crate) fn valid_ref_name(name: &str) -> Result<()> {
     let bad = name.is_empty()
         || name.starts_with('-')
         || name.contains("..")
@@ -559,6 +559,98 @@ pub async fn push(
     let args = ["push", "--progress", target.remote.as_str(), refspec.as_str()];
     let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
     Ok(result(out))
+}
+
+/// Which tags `push_tags` sends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum TagsToPush {
+    /// Every tag in the repository.
+    All,
+    /// These tags, by name (`v1.2`).
+    Named { names: Vec<String> },
+    /// The tags on `commit` or its ancestors: the ones a push of a branch at `commit` carries.
+    MergedInto { commit: String },
+}
+
+/// What `push_tags` returns when there was no tag to push; the frontend reports it as such.
+pub const NO_TAGS_TO_PUSH: &str = "No tags to push.";
+
+/// Most bytes of tag names given to one `git push`, well under the Windows command-line limit.
+const TAG_BATCH_BYTES: usize = 24 * 1024;
+
+/// Push tags to `remote` with `git push --progress <remote> refs/tags/<name>…`, or `refs/tags/*`
+/// for every tag. Full ref names, so a branch with a tag's name is never pushed instead. Never
+/// forces: a tag the remote already has on another commit is refused with `[rejected]` and
+/// "(already exists)" in stderr while the others still go, and `ok` is false. Tags the remote
+/// already has on the same commit are left as they are. Named tags go in batches of at most
+/// `TAG_BATCH_BYTES`, one `git push` each, and their output is joined. With no tag to push it runs
+/// nothing and returns `ok` with `NO_TAGS_TO_PUSH` as stdout.
+pub async fn push_tags(
+    client: &GitClient,
+    remote: &str,
+    tags: &TagsToPush,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_remote(remote)?;
+    let names: Vec<String> = match tags {
+        TagsToPush::All => {
+            let args = ["push", "--progress", remote, "refs/tags/*"];
+            let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
+            return Ok(result(out));
+        }
+        TagsToPush::Named { names } => {
+            for name in names {
+                valid_ref_name(name)?;
+            }
+            names.clone()
+        }
+        TagsToPush::MergedInto { commit } => tags_merged_into(client, commit).await?,
+    };
+    if names.is_empty() {
+        return Ok(OpResult { ok: true, exit_code: Some(0), stdout: NO_TAGS_TO_PUSH.into(), stderr: String::new(), conflicts: false });
+    }
+    let mut joined = OpResult { ok: true, exit_code: Some(0), stdout: String::new(), stderr: String::new(), conflicts: false };
+    let mut batch: Vec<String> = Vec::new();
+    let mut bytes = 0;
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    for name in names {
+        let refspec = format!("refs/tags/{name}");
+        if bytes + refspec.len() > TAG_BATCH_BYTES && !batch.is_empty() {
+            batches.push(std::mem::take(&mut batch));
+            bytes = 0;
+        }
+        bytes += refspec.len() + 1;
+        batch.push(refspec);
+    }
+    batches.push(batch);
+    for refspecs in batches {
+        let mut args = vec!["push".to_string(), "--progress".into(), remote.to_string()];
+        args.extend(refspecs);
+        let out = result(client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?);
+        for (all, part) in [(&mut joined.stdout, out.stdout), (&mut joined.stderr, out.stderr)] {
+            if !part.is_empty() {
+                if !all.is_empty() {
+                    all.push('\n');
+                }
+                all.push_str(&part);
+            }
+        }
+        if !out.ok {
+            joined.ok = false;
+            joined.exit_code = out.exit_code;
+        }
+    }
+    Ok(joined)
+}
+
+/// The names of the tags on `commit` or its ancestors.
+async fn tags_merged_into(client: &GitClient, commit: &str) -> Result<Vec<String>> {
+    valid_revision(commit)?;
+    let merged = format!("--merged={commit}");
+    let out = client.exec(GitReq::new("for-each-ref", ["for-each-ref", merged.as_str(), "--format=%(refname)", "refs/tags"])).await?;
+    Ok(String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.strip_prefix("refs/tags/")).map(str::to_string).collect())
 }
 
 /// The remote-tracking branch here (`refs/remotes/origin/dev`) that holds `target` as last
@@ -2278,6 +2370,98 @@ mod e2e {
         assert!(!popped.ok && popped.conflicts, "{popped:?}");
         assert_eq!(stashes().await.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn pushes_tags_by_name_by_branch_and_all_and_never_moves_one() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-tags-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local, other) = (root.join("origin.git"), root.join("local"), root.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        for dir in [&local, &other] {
+            run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), dir.as_os_str()]);
+            for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false"), ("tag.gpgsign", "false")] {
+                git(dir, &["config", k, v]);
+            }
+        }
+        let client = client_for(&local);
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let commit = |dir: &Path, file: &str| {
+            std::fs::write(dir.join(file), file).unwrap();
+            git(dir, &["add", "-A"]);
+            git(dir, &["commit", "-qm", file]);
+        };
+        let origin_tags = || {
+            let out = Command::new("git").arg("-C").arg(&origin).args(["tag", "--list"]).output().unwrap().stdout;
+            String::from_utf8(out).unwrap().lines().map(str::to_string).collect::<Vec<_>>()
+        };
+        let origin_rev = |r: &str| String::from_utf8(Command::new("git").arg("-C").arg(&origin).args(["rev-parse", r]).output().unwrap().stdout).unwrap();
+
+        // main: one (v1, lightweight), three (v3, annotated); side: two (v2-side), not on main.
+        commit(&local, "one");
+        git(&local, &["tag", "v1"]);
+        git(&local, &["switch", "-q", "-c", "side"]);
+        commit(&local, "two");
+        git(&local, &["tag", "-a", "v2-side", "-m", "Side release"]);
+        git(&local, &["switch", "-q", "main"]);
+        commit(&local, "three");
+        git(&local, &["tag", "-a", "v3", "-m", "Version 3\n\nWith notes."]);
+        let main = PushTarget { remote: "origin".into(), branch: "main".into() };
+        assert!(push(&client, "main", &main, &progress, &cancel).await.unwrap().ok);
+        assert!(origin_tags().is_empty(), "a branch push sends no tags");
+
+        // The tags on main's history, not the one only on side.
+        let merged = push_tags(&client, "origin", &TagsToPush::MergedInto { commit: "refs/heads/main".into() }, &progress, &cancel).await.unwrap();
+        assert!(merged.ok, "{merged:?}");
+        assert_eq!(origin_tags(), ["v1", "v3"]);
+
+        // By name; nothing to push; and a tag the remote already has on the same commit.
+        let named = push_tags(&client, "origin", &TagsToPush::Named { names: vec!["v2-side".into()] }, &progress, &cancel).await.unwrap();
+        assert!(named.ok, "{named:?}");
+        assert_eq!(origin_tags(), ["v1", "v2-side", "v3"]);
+        let none = push_tags(&client, "origin", &TagsToPush::Named { names: vec![] }, &progress, &cancel).await.unwrap();
+        assert!(none.ok && none.stdout == NO_TAGS_TO_PUSH, "{none:?}");
+        let again = push_tags(&client, "origin", &TagsToPush::Named { names: vec!["v1".into()] }, &progress, &cancel).await.unwrap();
+        assert!(again.ok, "{again:?}");
+
+        // Another clone pushes a tag "clash" on another commit: ours is refused, the remote's
+        // stays where it was, and "fresh", pushed alongside, still goes.
+        commit(&other, "elsewhere");
+        git(&other, &["tag", "clash"]);
+        git(&other, &["push", "-q", "origin", "refs/tags/clash"]);
+        let theirs = origin_rev("clash");
+        git(&local, &["tag", "clash"]);
+        git(&local, &["tag", "fresh"]);
+        let clashed = push_tags(&client, "origin", &TagsToPush::Named { names: vec!["clash".into(), "fresh".into()] }, &progress, &cancel).await.unwrap();
+        assert!(!clashed.ok && clashed.stderr.contains("[rejected]") && clashed.stderr.contains("already exists"), "{clashed:?}");
+        assert_eq!(origin_rev("clash"), theirs);
+        assert!(origin_tags().contains(&"fresh".to_string()));
+
+        // Every tag: a new one goes, and clash is still refused.
+        git(&local, &["tag", "late"]);
+        let all = push_tags(&client, "origin", &TagsToPush::All, &progress, &cancel).await.unwrap();
+        assert!(!all.ok && all.stderr.contains("clash"), "{all:?}");
+        assert!(origin_tags().contains(&"late".to_string()));
+        assert_eq!(origin_rev("clash"), theirs);
+
+        // A name that is not a valid tag name is refused before Git runs.
+        assert!(push_tags(&client, "origin", &TagsToPush::Named { names: vec!["-x".into()] }, &progress, &cancel).await.is_err());
+
+        // The annotation behind a tag's pill, and its date in the refs snapshot.
+        let v3 = crate::git::queries::refs::get_tag_annotation(&client, "v3").await.unwrap().unwrap();
+        assert!(v3.annotated && v3.tagger_name == "T" && v3.tagger_email == "t@t" && v3.tagger_time > 0, "{v3:?}");
+        assert_eq!(v3.message, "Version 3\n\nWith notes.");
+        let v1 = crate::git::queries::refs::get_tag_annotation(&client, "v1").await.unwrap().unwrap();
+        assert!(!v1.annotated && v1.message.is_empty(), "{v1:?}");
+        assert_eq!(crate::git::queries::refs::get_tag_annotation(&client, "missing").await.unwrap(), None);
+        let refs = get_refs(&client).await.unwrap();
+        let tagged = refs.refs.iter().find(|r| r.full_name == "refs/tags/v3").unwrap();
+        assert!(tagged.committer_time > 0, "an annotated tag carries the date it was tagged");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     fn client_for(dir: &Path) -> GitClient {

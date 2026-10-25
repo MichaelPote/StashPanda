@@ -31,6 +31,8 @@ pub struct RefEntry {
     pub behind: Option<u32>,
     pub upstream_gone: bool,
     pub is_head: bool,
+    /// Unix seconds: the commit's committer date, or for an annotated tag the date it was tagged
+    /// (`%(creatordate)`; `%(committerdate)` is empty for a tag object).
     pub committer_time: i64,
     pub subject: String,
     pub worktree_path: Option<String>,
@@ -56,7 +58,7 @@ pub struct RefsSnapshot {
     pub remotes: Vec<Remote>,
 }
 
-pub const FOR_EACH_REF_FORMAT: &str = "%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(HEAD)%00%(committerdate:unix)%00%(subject)%00%(worktreepath)";
+pub const FOR_EACH_REF_FORMAT: &str = "%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(HEAD)%00%(creatordate:unix)%00%(subject)%00%(worktreepath)";
 
 /// The short name and kind of `full`. A remote branch's remote is the longest of `remotes` its
 /// name starts with, since a remote's name may itself contain `/` (`team/origin`); the first part
@@ -260,6 +262,54 @@ pub async fn get_refs(client: &GitClient) -> Result<RefsSnapshot> {
         outs.push(client.exec_allow_failure(req).await?);
     }
     refs_from(&outs)
+}
+
+/// What an annotated tag says about itself, for the tooltip on its pill.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TagAnnotation {
+    /// False for a lightweight tag, which has no message, tagger or date of its own; the other
+    /// fields are then empty or 0.
+    pub annotated: bool,
+    pub tagger_name: String,
+    pub tagger_email: String,
+    /// Unix seconds.
+    pub tagger_time: i64,
+    /// The whole message, a signature block included, without trailing whitespace.
+    pub message: String,
+}
+
+const TAG_ANNOTATION_FORMAT: &str = "%(refname)%00%(objecttype)%00%(taggername)%00%(taggeremail:trim)%00%(taggerdate:unix)%00%(contents)%00";
+
+/// The annotation of tag `name` (`v1.2`), or None when there is no such tag. One `for-each-ref`
+/// for that tag alone, so the refs snapshot does not carry every tag's message on each refresh.
+pub async fn get_tag_annotation(client: &GitClient, name: &str) -> Result<Option<TagAnnotation>> {
+    crate::git::ops::valid_ref_name(name)?;
+    let full = format!("refs/tags/{name}");
+    let format = format!("--format={TAG_ANNOTATION_FORMAT}");
+    let out = client.exec(GitReq::new("for-each-ref", ["for-each-ref", format.as_str(), full.as_str()])).await?;
+    Ok(parse_tag_annotation(&out.stdout, &full))
+}
+
+/// Picks the record for `full` out of `for-each-ref` output in `TAG_ANNOTATION_FORMAT`. Each
+/// record ends with NUL and a newline; the message is the only field that can hold a newline.
+fn parse_tag_annotation(stdout: &[u8], full: &str) -> Option<TagAnnotation> {
+    let text = lossy(stdout);
+    text.split("\0\n").find_map(|record| {
+        let fields: Vec<&str> = record.trim_start_matches('\n').splitn(6, '\0').collect();
+        let [refname, kind, name, email, time, message] = fields.as_slice() else { return None };
+        if *refname != full {
+            return None;
+        }
+        let annotated = *kind == "tag";
+        Some(TagAnnotation {
+            annotated,
+            tagger_name: if annotated { name.to_string() } else { String::new() },
+            tagger_email: if annotated { email.to_string() } else { String::new() },
+            tagger_time: if annotated { parse_i64(time.as_bytes()).unwrap_or(0) } else { 0 },
+            message: if annotated { message.trim_end().to_string() } else { String::new() },
+        })
+    })
 }
 
 #[cfg(test)]

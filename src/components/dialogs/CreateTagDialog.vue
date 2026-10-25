@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { errorMessage } from "@/lib/ipc";
 import { validateRefName } from "@/lib/refNames";
-import { opFailureText, runOp } from "@/lib/repoActions";
+import { defaultTagRemote, opFailureText, pushTags, runOp } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore } from "@/stores/sessions";
 
@@ -21,14 +21,20 @@ const request = computed(() => dialogs.current("createTag"));
 const name = ref("");
 const message = ref("");
 const force = ref(false);
+/** Push the new tag once it is created. Off by default: a tag stays in this repository until pushed, as in Git. */
+const push = ref(false);
 const error = ref<string | null>(null);
 const submitting = ref(false);
+
+/** Where the tag is pushed when Push is ticked; null when the repository has no remotes, which hides the box. */
+const remote = computed(() => (request.value ? defaultTagRemote(sessions.sessions.get(request.value.key)) : null));
 
 watch(request, (r) => {
   if (!r) return;
   name.value = "";
   message.value = "";
   force.value = false;
+  push.value = false;
   error.value = null;
   submitting.value = false;
 });
@@ -56,7 +62,10 @@ async function submit(): Promise<void> {
       return;
     }
     sessions.notifySuccess(`Created ${text.length > 0 ? "annotated " : ""}tag ${tag} at ${r.targetLabel}.`);
+    const pushTo = push.value ? remote.value : null;
     dialogs.resolve("createTag", result);
+    // After the dialog closes: the push shows its progress in the status bar like any other.
+    if (pushTo) void pushTags(r.key, pushTo, { type: "named", names: [tag] }, tag);
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
@@ -101,6 +110,16 @@ async function submit(): Promise<void> {
           <input v-model="force" type="checkbox" class="size-3.5 accent-primary" />
           Replace an existing tag with this name
         </label>
+
+        <div v-if="remote" class="grid gap-1">
+          <label class="flex items-center gap-2 text-base select-none">
+            <input v-model="push" type="checkbox" class="size-3.5 accent-primary" data-create-tag-push />
+            Push to {{ remote }}
+          </label>
+          <p class="text-xs text-muted-foreground">
+            Otherwise the tag stays in this repository until you push it. {{ remote }} refuses a tag it already has on another commit.
+          </p>
+        </div>
 
         <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
           {{ error }}

@@ -455,6 +455,13 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   `git push` would, following `push.default`, `branch.<name>.pushRemote` and `remote.pushDefault`;
   when that would be refused, `PushDefaultDialog.vue` explains why and offers to set
   `push.default`. Push To can force, after a check.
+- **Tags** are pushed only on request (`op_push_tags`): one tag from its menu, every tag from the
+  Tags heading's menu, the new tag from Create Tag's "Push to origin", or, from Push To's "Also
+  push its tags" (on by default), the tags on the pushed commit's history, as a step of its own
+  after the branch push so a refused tag is never reported as a refused branch. Full ref names
+  (`refs/tags/<name>`), never forced: a tag the remote has on another commit is refused and left
+  as it is there. Tag annotations are loaded one tag at a time when a pill is first hovered
+  (`get_tag_annotation`), so the refs snapshot carries no tag messages.
 - **Upstreams are set as a separate step.** Pushing and creating a branch from a remote branch
   never touch `.git/config`; the upstream is set afterwards (`trackAfter` in `repoActions.ts`),
   because with a `config.lock` in place `git push --set-upstream` pushes, fails to record the

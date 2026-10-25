@@ -8,7 +8,8 @@ import { useSessionsStore } from "@/stores/sessions";
 /**
  * The right-click menu of a heading in the Branches panel: a section, a remote or a branch folder.
  * "Add Branch…" opens the Create Branch dialog at the checked-out commit; from a folder, the new
- * branch's name starts with the folder's path (`feature/`). The slot is the trigger.
+ * branch's name starts with the folder's path (`feature/`). The default slot is the trigger;
+ * the `items` slot adds a heading's own items below Add Branch….
  */
 const props = defineProps<{
   sessionKey: string;
@@ -35,6 +36,7 @@ function addBranch(): void {
     </ContextMenuTrigger>
     <ContextMenuContent class="min-w-44">
       <ContextMenuItem class="text-base" data-add-branch @select="addBranch">Add Branch…</ContextMenuItem>
+      <slot name="items" />
     </ContextMenuContent>
   </ContextMenu>
 </template>

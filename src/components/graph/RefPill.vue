@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import { ChevronRightIcon, TagIcon } from "@lucide/vue";
 import { Tip } from "@/components/ui/tooltip";
-import type { RefLabel } from "@/lib/bindings";
+import type { RefLabel, TagAnnotation } from "@/lib/bindings";
+import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { laneVars } from "@/lib/graph/paths";
+import { loadTagAnnotation, tagTooltip } from "@/lib/tagAnnotations";
 import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -21,6 +23,8 @@ const props = defineProps<{
   /** Remote name of the branch's upstream, for the collapsed `origin | dev` form. */
   upstreamRemote?: string | null;
   shape?: PillShape;
+  /** The commit of the row the pill is on: for a tag, the commit it points at. */
+  oid?: string;
 }>();
 
 /** The remote shown before the chevron seam when the upstream is on the same commit. */
@@ -88,6 +92,26 @@ const title = computed(() => {
   if (label.behind) parts.push(`↓${label.behind}`);
   return parts.join(" ") + (isCurrent.value ? " (checked out)" : "");
 });
+
+/**
+ * A tag's tooltip shows its annotation: the message, and who tagged it when. It is loaded when
+ * the pointer first reaches the pill, not with the graph, so the refs carry no messages.
+ */
+const ctx = inject(GRAPH_CONTEXT, null);
+const annotation = ref<TagAnnotation | null | undefined>(undefined);
+// A pill reused for another tag, or a tag moved to another commit, loads afresh on the next hover.
+watch(
+  () => [props.label.fullName, props.oid],
+  () => (annotation.value = undefined),
+);
+function loadAnnotation(): void {
+  const { label } = props;
+  if (label.kind.type !== "tag" || !ctx || annotation.value !== undefined) return;
+  void loadTagAnnotation(ctx.sessionKey, label.short, props.oid ?? "").then((a) => {
+    if (props.label.fullName === label.fullName) annotation.value = a;
+  });
+}
+const tagTip = computed(() => (props.label.kind.type === "tag" ? tagTooltip(props.label.fullName, props.label.short, annotation.value) : null));
 </script>
 
 <template>
@@ -119,10 +143,12 @@ const title = computed(() => {
       </span>
     </button>
   </Tip>
-  <Tip v-else :content="title">
+  <Tip v-else :content="tagTip?.content ?? title" :heading="tagTip?.heading">
     <button
       v-bind="$attrs"
       type="button"
+      @pointerenter="loadAnnotation"
+      @focus="loadAnnotation"
       :class="
         cn(
           'inline-flex shrink-0 items-center gap-1 text-sm leading-none font-normal whitespace-nowrap',

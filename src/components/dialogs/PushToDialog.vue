@@ -30,6 +30,8 @@ const target = ref("");
 const newName = ref("");
 const force = ref(false);
 const track = ref(false);
+/** Also push the tags on what is pushed. On by default; a push within this repository has no use for it. */
+const includeTags = ref(true);
 
 const server = computed(() => request.value?.servers[serverIndex.value] ?? null);
 const branches = computed(() => server.value?.branches ?? []);
@@ -90,6 +92,7 @@ watch(request, (r) => {
   pick(r.target ?? r.branch);
   force.value = r.force;
   track.value = creating.value;
+  includeTags.value = true;
 });
 
 /** Another server lists other branches: keep the same name there. */
@@ -129,6 +132,7 @@ function submit(): void {
     expected: tip.value,
     source: request.value!.sourceOid,
     track: track.value && canTrack.value,
+    includeTags: includeTags.value && server.value.remote !== null,
   });
 }
 </script>
@@ -189,6 +193,16 @@ function submit(): void {
           <p class="text-xs text-muted-foreground">
             Sets <span class="font-mono">{{ destination }}</span> as the upstream of <span class="font-mono">{{ request.branch }}</span> once
             the push has worked, so Pull and Push use it without asking.
+          </p>
+        </div>
+        <div v-if="server?.remote" class="grid gap-1">
+          <label class="flex items-center gap-2 text-base select-none">
+            <input v-model="includeTags" type="checkbox" class="size-3.5 accent-primary" data-push-to-tags />
+            Also push its tags
+          </label>
+          <p class="text-xs text-muted-foreground">
+            Pushes the tags on <span class="font-mono">{{ request.branch }}</span>'s commits that {{ server.remote }} does not have yet, once the
+            branch push has worked. A tag {{ server.remote }} already has on another commit is left as it is.
           </p>
         </div>
         <div class="grid gap-1">

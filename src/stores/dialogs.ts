@@ -205,6 +205,8 @@ export interface PushToChoice {
   source: string;
   /** Make `branch` track the remote branch pushed to, once the push has worked. */
   track: boolean;
+  /** Also push the tags on the commits pushed, once the push has worked. Remotes only. */
+  includeTags: boolean;
 }
 
 /** Where the Push dialog chose to push, and whether the branch should track it from now on. */

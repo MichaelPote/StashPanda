@@ -27,7 +27,8 @@ import RefToggleTag from "@/components/shell/RefToggleTag.vue";
 import BranchName from "@/components/shell/BranchName.vue";
 import { branchTreeRows } from "@/lib/branchTree";
 import { formatRelativeTime } from "@/lib/format";
-import { applyStash, dropStash, popStash, requestCheckout } from "@/lib/repoActions";
+import { applyStash, dropStash, popStash, pushTags, pushTagsReason, requestCheckout } from "@/lib/repoActions";
+import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { stashParts, stashTitle } from "@/lib/stash";
 import { laneColour } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
@@ -68,6 +69,10 @@ const tags = computed<RefEntry[]>(() =>
     .filter((r) => r.kind.type === "tag")
     .sort((a, b) => b.committerTime - a.committerTime || byName(a, b)),
 );
+
+/** The Tags heading's menu pushes every tag, to each remote in turn; one greyed-out item when there are none. */
+const tagRemotes = computed(() => refs.value?.remotes.map((r) => r.name) ?? []);
+const pushAllTagsReason = computed(() => pushTagsReason(active.value) ?? (tags.value.length === 0 ? "There are no tags to push." : null));
 
 const stashes = computed<StashEntry[]>(() => active.value?.stashes ?? []);
 /** The list's length once loaded; until then the count from status. */
@@ -383,6 +388,18 @@ async function reveal(entry: RefEntry): Promise<void> {
             Tags
             <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ tags.length }}</span>
           </button>
+          <template #items>
+            <ContextMenuSeparator />
+            <ActionMenuItem v-if="tagRemotes.length === 0" :reason="pushAllTagsReason">Push All Tags</ActionMenuItem>
+            <ActionMenuItem
+              v-for="remote in tagRemotes"
+              :key="remote"
+              :reason="pushAllTagsReason"
+              @select="pushTags(activeKey, remote, { type: 'all' }, 'every tag')"
+            >
+              Push All Tags to {{ remote }}
+            </ActionMenuItem>
+          </template>
         </AddBranchMenu>
         <template v-if="isOpen('tags')">
           <p v-if="tags.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No tags</p>

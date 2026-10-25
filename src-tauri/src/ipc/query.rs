@@ -14,7 +14,7 @@ use crate::git::queries::commit_files::{get_commit_files, FileChange};
 use crate::git::queries::conflict_file::{get_conflict_file as conflict_file_of, ConflictFile};
 use crate::git::queries::diff::{get_diff, join_repo_path, DiffOptions, DiffTarget, DiffText};
 use crate::git::queries::log::{get_commit_body, get_stashes, get_unchanged_parents as unchanged_parents, StashEntry};
-use crate::git::queries::refs::{get_refs, RefsSnapshot};
+use crate::git::queries::refs::{get_refs, get_tag_annotation as tag_annotation_of, RefsSnapshot, TagAnnotation};
 use crate::git::queries::full_status;
 use crate::git::queries::status::StatusSnapshot;
 use crate::repo::RepoHandle;
@@ -85,6 +85,15 @@ pub async fn get_commit_changes(
 pub async fn get_commit_message(state: State<'_, AppState>, key: String, commit: String) -> Result<String> {
     let h = repo(&state, &key).await?;
     with_read_slot!(h, get_commit_body(&h.client, &commit).await)
+}
+
+/// Tag `name`'s message, tagger and date, for its pill's tooltip; `annotated: false` for a
+/// lightweight tag, and null when there is no such tag.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_tag_annotation(state: State<'_, AppState>, key: String, name: String) -> Result<Option<TagAnnotation>> {
+    let h = repo(&state, &key).await?;
+    with_read_slot!(h, tag_annotation_of(&h.client, &name).await)
 }
 
 /// A merge commit's branch and parents, for the Files panel's merge summary.

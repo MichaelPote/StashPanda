@@ -154,6 +154,23 @@ export const commands = {
 	 *  `rev` is null.
 	 */
 	getFileBlame: (key: string, path: string, rev: string | null) => typedError<FileBlame, GitError>(__TAURI_INVOKE("get_file_blame", { key, path, rev })),
+	/**
+	 *  Tag `name`'s message, tagger and date, for its pill's tooltip; `annotated: false` for a
+	 *  lightweight tag, and null when there is no such tag.
+	 */
+	getTagAnnotation: (key: string, name: string) => typedError<{
+	/**
+	 *  False for a lightweight tag, which has no message, tagger or date of its own; the other
+	 *  fields are then empty or 0.
+	 */
+	annotated: boolean,
+	taggerName: string,
+	taggerEmail: string,
+	/**  Unix seconds. */
+	taggerTime: number,
+	/**  The whole message, a signature block included, without trailing whitespace. */
+	message: string,
+} | null, GitError>(__TAURI_INVOKE("get_tag_annotation", { key, name })),
 	getRepoStashes: (key: string) => typedError<StashEntry[], GitError>(__TAURI_INVOKE("get_repo_stashes", { key })),
 	/**
 	 *  Current snapshot metadata. When none exists yet a live load starts in the
@@ -456,6 +473,14 @@ export const commands = {
 	 *  `opId` works as for `opPull`; `opCancel` stops it at any point.
 	 */
 	opDeleteRemoteBranch: (key: string, opId: string, remote: string, branch: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_delete_remote_branch", { key, opId, remote, branch })),
+	/**
+	 *  Push tags to `remote`: every tag, the named ones, or those on a commit's history (what a push
+	 *  of a branch at that commit carries). Never forces: a tag the remote already has on another
+	 *  commit comes back with `ok: false`, `[rejected]` and "(already exists)" in stderr, and the
+	 *  other tags are still pushed. With no tag to push, `ok` with "No tags to push." as stdout.
+	 *  `opId` works as for `opPush`; `opCancel` stops it at any point.
+	 */
+	opPushTags: (key: string, opId: string, remote: string, tags: TagsToPush) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push_tags", { key, opId, remote, tags })),
 	/**
 	 *  Pull local `branch`'s upstream into it, then push it back there: one operation under the write
 	 *  gate, so no other write runs in between. The pull works as for `opPull`. The push runs only
@@ -1621,6 +1646,10 @@ export type RefEntry = {
 	behind: number | null,
 	upstreamGone: boolean,
 	isHead: boolean,
+	/**
+	 *  Unix seconds: the commit's committer date, or for an annotated tag the date it was tagged
+	 *  (`%(creatordate)`; `%(committerdate)` is empty for a tag object).
+	 */
 	committerTime: number,
 	subject: string,
 	worktreePath: string | null,
@@ -1912,6 +1941,30 @@ export type SyncResult = {
 	 */
 	rewrotePushed: boolean,
 };
+
+/**  What an annotated tag says about itself, for the tooltip on its pill. */
+export type TagAnnotation = {
+	/**
+	 *  False for a lightweight tag, which has no message, tagger or date of its own; the other
+	 *  fields are then empty or 0.
+	 */
+	annotated: boolean,
+	taggerName: string,
+	taggerEmail: string,
+	/**  Unix seconds. */
+	taggerTime: number,
+	/**  The whole message, a signature block included, without trailing whitespace. */
+	message: string,
+};
+
+/**  Which tags `push_tags` sends. */
+export type TagsToPush = 
+/**  Every tag in the repository. */
+{ type: "all" } | 
+/**  These tags, by name (`v1.2`). */
+{ type: "named"; names: string[] } | 
+/**  The tags on `commit` or its ancestors: the ones a push of a branch at `commit` carries. */
+{ type: "mergedInto"; commit: string };
 
 export type Theme = "system" | "dark" | "light";
 

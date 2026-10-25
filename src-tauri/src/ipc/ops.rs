@@ -553,6 +553,17 @@ pub async fn op_delete_remote_branch(app: AppHandle, state: State<'_, AppState>,
     network_op!(app, state, key, op_id, |h, progress, cancel| ops::delete_remote_branch(&h.client, &remote, &branch, &progress, cancel).await)
 }
 
+/// Push tags to `remote`: every tag, the named ones, or those on a commit's history (what a push
+/// of a branch at that commit carries). Never forces: a tag the remote already has on another
+/// commit comes back with `ok: false`, `[rejected]` and "(already exists)" in stderr, and the
+/// other tags are still pushed. With no tag to push, `ok` with "No tags to push." as stdout.
+/// `opId` works as for `opPush`; `opCancel` stops it at any point.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_push_tags(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, remote: String, tags: ops::TagsToPush) -> Result<OpResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| ops::push_tags(&h.client, &remote, &tags, &progress, cancel).await)
+}
+
 /// Make local `branch` track the remote branch whose remote-tracking branch is `upstream`, given
 /// by its full name (`refs/remotes/origin/dev`), or with null stop it tracking any branch. Fails
 /// with `invalidPath` when `upstream` is not under `refs/remotes/`. Git refuses an upstream that

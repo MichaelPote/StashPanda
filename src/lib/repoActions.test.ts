@@ -19,7 +19,7 @@ vi.mock("@/stores/sessions", () => ({
   useSessionsStore: () => ({ sessions: mocks.sessions, notify: vi.fn(), notifySuccess: vi.fn(), refetchRefsAndStatus: vi.fn() }),
 }));
 
-const { checkoutTargetOf, continueOutcome, openMergeDialog, rebaseOutcome, requestCheckout, resetReason, revisionOf, trackRemoteBranch } =
+const { checkoutTargetOf, continueOutcome, openMergeDialog, rebaseOutcome, requestCheckout, resetReason, revisionOf, tagPushOutcome, trackRemoteBranch } =
   await import("./repoActions");
 
 const ref = (fullName: string, kind: RefKind): RefEntry =>
@@ -147,5 +147,40 @@ describe("a rebase that stops", () => {
     expect(open.kind).toBe("error");
     expect(open.message).toContain("is still open");
     expect(open.message).toContain("would be overwritten by merge");
+  });
+});
+
+describe("the outcome of pushing tags", () => {
+  // Git 2.43's own lines, from `git push --progress origin refs/tags/clash refs/tags/new1`.
+  const pushed = (stderr: string, ok = true): OpResult => ({ ok, exitCode: ok ? 0 : 1, stdout: "", stderr, conflicts: false });
+
+  it("names the tags that were pushed", () => {
+    const outcome = tagPushOutcome(pushed("To o.git\n * [new tag]         v1 -> v1\n * [new tag]         v2 -> v2"), "origin", "every tag");
+    expect(outcome).toEqual({ message: "Pushed v1 and v2 to origin.", failed: false });
+  });
+
+  it("says when the remote had them all already", () => {
+    expect(tagPushOutcome(pushed("Everything up-to-date"), "origin", "v1")).toEqual({ message: "origin already has v1.", failed: false });
+  });
+
+  it("says when there was nothing to push", () => {
+    const none: OpResult = { ok: true, exitCode: 0, stdout: "No tags to push.", stderr: "", conflicts: false };
+    expect(tagPushOutcome(none, "origin", "the tags on main")).toEqual({ message: "There were no tags to push to origin.", failed: false });
+  });
+
+  it("explains a tag the remote has on another commit, and still names those that went", () => {
+    const stderr =
+      "To o.git\n * [new tag]         new1 -> new1\n ! [rejected]        clash -> clash (already exists)\n" +
+      "error: failed to push some refs to 'o.git'\nhint: Updates were rejected because the tag already exists in the remote.";
+    const outcome = tagPushOutcome(pushed(stderr, false), "origin", "every tag");
+    expect(outcome.failed).toBe(true);
+    expect(outcome.message).toBe(
+      "origin already has a tag clash on another commit, so it was not pushed: StashPanda never moves a tag on a remote, since others may already be using it. Pushed new1.",
+    );
+  });
+
+  it("lists many tags briefly", () => {
+    const lines = ["a", "b", "c", "d", "e"].map((t) => ` * [new tag]         ${t} -> ${t}`).join("\n");
+    expect(tagPushOutcome(pushed(lines), "origin", "every tag").message).toBe("Pushed a, b, c and 2 more to origin.");
   });
 });

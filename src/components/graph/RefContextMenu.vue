@@ -23,6 +23,8 @@ import {
   pushBranch,
   pushBranchTo,
   pushBranchReason,
+  pushTags,
+  pushTagsReason,
   removeTag,
   renameBranch,
   requestCheckout,
@@ -87,6 +89,10 @@ const mergeReason = computed(() => {
 });
 
 const deleteReason = computed(() => (props.isCurrent ? "The checked-out branch cannot be deleted." : null));
+
+/** The remotes a tag can be pushed to: one menu item each, or one greyed-out item when there are none. */
+const tagRemotes = computed(() => session.value?.refs?.remotes.map((r) => r.name) ?? []);
+const pushTagReason = computed(() => pushTagsReason(session.value));
 
 /**
  * True when this local branch is behind HEAD on the checked-out branch's own lane, so it can be
@@ -173,6 +179,15 @@ function chooseColour(colour: number | null): void {
       </template>
       <template v-else-if="kind.type === 'tag'">
         <ContextMenuSeparator />
+        <ActionMenuItem v-if="tagRemotes.length === 0" :reason="pushTagReason">Push Tag</ActionMenuItem>
+        <ActionMenuItem
+          v-for="remote in tagRemotes"
+          :key="remote"
+          :reason="pushTagReason"
+          @select="pushTags(sessionKey, remote, { type: 'named', names: [short] }, short)"
+        >
+          Push Tag to {{ remote }}
+        </ActionMenuItem>
         <ActionMenuItem destructive @select="removeTag(sessionKey, short)">Remove Tag {{ short }}</ActionMenuItem>
       </template>
 
