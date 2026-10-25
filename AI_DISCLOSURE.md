@@ -8,7 +8,7 @@ scope: |
   Most application code is AI-generated with manual review.
   Tests are ai-generated.
   Documentation is ai-generated with human review and editing.
-last-updated: 2026-05-17
+last-updated: 2026-10-25
 ---
 
 # AI Disclosure
