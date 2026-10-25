@@ -9,6 +9,7 @@
     "test": "vitest run",
     "preview": "vite preview",
     "tauri": "tauri",
+    "icons": "tauri icon assets/app_icon.png",
     "win:ux": "bash scripts/windows.sh ux",
     "win:sync": "bash scripts/windows.sh sync",
     "win:dev": "bash scripts/windows.sh dev",

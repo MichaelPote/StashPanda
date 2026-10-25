@@ -18,6 +18,10 @@ fn main() {
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
     }
+    // tauri-build compiles icons/icon.ico into the Windows resource that Explorer shows as the
+    // .exe's icon, but does not tell Cargo to watch it, so a build after `npm run icons` kept the
+    // old icon until something else made this script run again.
+    println!("cargo:rerun-if-changed=icons/icon.ico");
     tauri_build::try_build(tauri_build::Attributes::new().windows_attributes(windows))
         .expect("tauri-build failed");
 }

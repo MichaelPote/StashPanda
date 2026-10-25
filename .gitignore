@@ -32,3 +32,10 @@ dist-ssr
 
 # Git worktrees that Claude Code creates for its background agents.
 /.claude/worktrees/
+
+# Photoshop source files for artwork such as the app icon. Only the exported PNGs are committed.
+*.psd
+
+# Mobile icon sets that `npm run icons` (tauri icon) also writes; StashPanda is desktop only.
+/src-tauri/icons/android/
+/src-tauri/icons/ios/
