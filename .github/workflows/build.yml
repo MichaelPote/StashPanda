@@ -1,4 +1,6 @@
-# Builds the StashPanda installers for each platform, after the tests pass.
+# Builds the StashPanda installers for each platform, after the tests pass. Pushing a version tag
+# (v0.7.0, as `npm version` makes) also creates a draft GitHub Release with the installers
+# attached, to be read over and published by hand on the Releases page.
 #
 # Linux builds on Ubuntu 22.04 on purpose: a binary only runs where the C library (glibc) is at
 # least as new as the one it was built against, so building on the oldest supported release lets
@@ -14,8 +16,13 @@ name: Build
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+# Read-only unless a job asks for more; only the release job does.
+permissions:
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -106,3 +113,33 @@ jobs:
           name: stashpanda-${{ matrix.name }}
           path: ${{ matrix.artifacts }}
           if-no-files-found: error
+
+  release:
+    name: Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # The only job that may write to the repository: it creates the release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      # The installers are named after package.json's version, so a tag on a commit still at
+      # another version would publish installers that say the wrong version.
+      - name: Check the tag matches the app's version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not match the version in package.json ($version)."
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-files
+          merge-multiple: true
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-files/* \
+            --title "StashPanda ${GITHUB_REF_NAME#v}" --generate-notes --draft --verify-tag
