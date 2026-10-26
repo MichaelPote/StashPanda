@@ -1,7 +1,5 @@
 # StashPanda
 
-![StashPanda](/assets/repository-open-graph-banner.jpg)
-
 A lightweight but fully featured standalone desktop Git GUI. It does not bundle a Git install, it works with your existing installed Git and its configuration.
 
 > [!IMPORTANT]
