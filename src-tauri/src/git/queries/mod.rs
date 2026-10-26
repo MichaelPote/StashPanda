@@ -4,6 +4,7 @@
 pub mod blame;
 pub mod blob;
 pub mod commit_files;
+pub mod config;
 pub mod conflict_file;
 pub mod diff;
 pub mod history;

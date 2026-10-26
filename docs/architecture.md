@@ -470,6 +470,16 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   in the dialog so the native menu never needs rebuilding. Renaming and removing rewrite
   remote-tracking branches and upstreams, so they wait for a running fetch. Removing confirms by
   naming the remote-tracking branches deleted and the local branches left tracking nothing.
+- **Git settings** (`RepoSettingsDialog.vue`): one tab for the repository's own file and one for
+  the global file of the machine whose Git runs it (that WSL distro or SSH server, not this
+  computer, since that is the file that applies). `get_git_config` lists every file Git reads with
+  `git config --list --show-scope --show-origin -z`, leaving out the `-c` options every StashPanda
+  command carries; `op_config_change` applies Set, Replace (one value of several, with
+  `--fixed-value`), Add and Unset with `--` before the key, so a value such as `--oneline` is
+  kept. The common settings, their choices and explanations are data in `lib/gitSettings.ts`;
+  everything else in the file is listed under Other settings, editable. Opens from Repository ›
+  Repository Settings…, a repository's right-click menu in the Repositories list, and an optional
+  toolbar item.
 - **Upstreams are set as a separate step.** Pushing and creating a branch from a remote branch
   never touch `.git/config`; the upstream is set afterwards (`trackAfter` in `repoActions.ts`),
   because with a `config.lock` in place `git push --set-upstream` pushes, fails to record the

@@ -30,6 +30,7 @@ import {
   SearchIcon,
   SeparatorVerticalIcon,
   SettingsIcon,
+  SlidersHorizontalIcon,
   TagIcon,
   Undo2Icon,
 } from "@lucide/vue";
@@ -46,6 +47,7 @@ import {
   openMergeDialog,
   openPullDialog,
   openRebaseDialog,
+  openRepoSettings,
   openStashDialog,
   pushCurrentBranch,
   stageSelected,
@@ -208,6 +210,15 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
     },
   },
   { id: "settings", label: "Settings…", description: "Change how StashPanda looks and works.", caption: "Settings", icon: SettingsIcon, needsRepo: false, run: () => useDialogsStore().open("settings", {}) },
+  {
+    id: "repoSettings",
+    label: "Repository Settings…",
+    description: "See and change the open repository's Git settings, and the global ones.",
+    caption: "Git Config",
+    icon: SlidersHorizontalIcon,
+    needsRepo: true,
+    run: () => openRepoSettings(useSessionsStore().activeKey),
+  },
 ];
 
 const COMMANDS_BY_ID: ReadonlyMap<string, ToolbarCommand> = new Map(TOOLBAR_COMMANDS.map((c) => [c.id, c]));

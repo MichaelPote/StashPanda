@@ -87,6 +87,16 @@ pub async fn get_commit_message(state: State<'_, AppState>, key: String, commit:
     with_read_slot!(h, get_commit_body(&h.client, &commit).await)
 }
 
+/// Every Git setting that applies to the repository, from each file Git reads (system, global,
+/// local, worktree), with the file it came from. Read through the repository's own transport, so
+/// for a WSL or SSH repository the global settings are those of that machine.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_git_config(state: State<'_, AppState>, key: String) -> Result<Vec<crate::git::queries::config::ConfigEntry>> {
+    let h = repo(&state, &key).await?;
+    with_read_slot!(h, crate::git::queries::config::get_config_entries(&h.client).await)
+}
+
 /// Tag `name`'s message, tagger and date, for its pill's tooltip; `annotated: false` for a
 /// lightweight tag, and null when there is no such tag.
 #[tauri::command]

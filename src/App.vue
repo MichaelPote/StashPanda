@@ -18,6 +18,7 @@ import FileHistoryDialog from "@/components/dialogs/FileHistoryDialog.vue";
 import HostKeyDialog from "@/components/dialogs/HostKeyDialog.vue";
 import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
 import RemoteDialog from "@/components/dialogs/RemoteDialog.vue";
+import RepoSettingsDialog from "@/components/dialogs/RepoSettingsDialog.vue";
 import SshPasswordDialog from "@/components/dialogs/SshPasswordDialog.vue";
 import MergeDialog from "@/components/dialogs/MergeDialog.vue";
 import PullDialog from "@/components/dialogs/PullDialog.vue";
@@ -278,6 +279,7 @@ function dismissRepoWarning(warning: string): void {
     <CreateTagDialog />
     <RenameBranchDialog />
     <RemoteDialog />
+    <RepoSettingsDialog />
     <CommitDialog />
     <StashDialog />
     <ApplyStashDialog />

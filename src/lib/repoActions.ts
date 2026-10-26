@@ -1654,6 +1654,20 @@ export async function openRemoteDialog(session: RepoSession | null | undefined, 
   }
 }
 
+/**
+ * Opens Repository Settings for library entry `key`, opening its tab first when it is not open:
+ * its settings are read through the repository's own connection.
+ */
+export async function openRepoSettings(key: string | null | undefined): Promise<void> {
+  const sessions = useSessionsStore();
+  if (!key) {
+    sessions.notify("Open a repository first.");
+    return;
+  }
+  if (!sessions.sessions.has(key) && !(await openRepository(key))) return;
+  await useDialogsStore().open("repoSettings", { key });
+}
+
 /** Why tags cannot be pushed right now, or null when they can. */
 export function pushTagsReason(session: RepoSession | null | undefined): string | null {
   if (!session) return "Open a repository first.";

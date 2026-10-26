@@ -19,6 +19,7 @@ import {
 import HueSubmenu from "@/components/ui/HueSubmenu.vue";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { shortOid, transportDetail, transportLabel } from "@/lib/format";
+import { openRepoSettings } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { repoDisplayName, useLibraryStore, type LibraryNode } from "@/stores/library";
 import { useSessionsStore } from "@/stores/sessions";
@@ -153,6 +154,7 @@ function toggleGroup(): void {
       <ContextMenuContent class="min-w-44">
         <ContextMenuItem class="text-base" @select="emit('open', node.id)">Open</ContextMenuItem>
         <ContextMenuItem class="text-base" @select="emit('edit', node.id)">Edit…</ContextMenuItem>
+        <ContextMenuItem class="text-base" data-repo-settings @select="openRepoSettings(node.id)">Repository Settings…</ContextMenuItem>
         <!-- Its icon here, and the interface's accent while its tab is active. -->
         <HueSubmenu :chosen="node.repo.colour ?? null" @choose="(c) => library.setRepoColour(node.id, c)" />
         <ContextMenuSeparator />

@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, Remote, StashEntry } from "@/lib/bindings";
+import type { ConfigScope, OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, Remote, StashEntry } from "@/lib/bindings";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -40,6 +40,12 @@ export interface RemotePayload {
 export interface RemoteResult {
   name: string;
   fetch: boolean;
+}
+
+export interface RepoSettingsPayload {
+  key: string;
+  /** The tab to open on: the repository's own settings (the default) or the global ones. */
+  scope?: ConfigScope;
 }
 
 /** The name the Rename Branch dialog gave the branch, and whether its remote copy is to be renamed too. */
@@ -359,6 +365,7 @@ export interface DialogSpecs {
   renameBranch: { payload: RenameBranchPayload; result: RenameBranchResult | null };
   /** Resolves once the dialog has made its change; null when nothing changed. */
   remote: { payload: RemotePayload; result: RemoteResult | null };
+  repoSettings: { payload: RepoSettingsPayload; result: null };
   commit: { payload: CommitPayload; result: OpResult | null };
   stashPush: { payload: StashPushPayload; result: OpResult | null };
   stashApply: { payload: StashApplyPayload; result: StashApplyChoice | null };
@@ -393,6 +400,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createTag: null,
   renameBranch: null,
   remote: null,
+  repoSettings: null,
   commit: null,
   stashPush: null,
   stashApply: null,

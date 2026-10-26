@@ -935,6 +935,106 @@ pub async fn remote_remove(client: &GitClient, name: &str) -> Result<OpResult> {
     Ok(result(out))
 }
 
+/// Which configuration file a change goes to: the repository's own (`.git/config`), or the global
+/// one of the machine whose Git runs the repository (`~/.gitconfig` there).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfigScope {
+    Local,
+    Global,
+}
+
+impl ConfigScope {
+    fn flag(self) -> &'static str {
+        match self {
+            ConfigScope::Local => "--local",
+            ConfigScope::Global => "--global",
+        }
+    }
+}
+
+/// One change to a configuration file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ConfigChange {
+    /// Give `key` the single value `value`, replacing every value it had.
+    Set { key: String, value: String },
+    /// Replace exactly one of `key`'s values, `old`, with `value`; its other values stay.
+    Replace { key: String, old: String, value: String },
+    /// Add `value` as another value of `key`.
+    Add { key: String, value: String },
+    /// Remove `key`'s value `value`, or with None every value it has.
+    Unset { key: String, value: Option<String> },
+}
+
+/// A configuration key as Git requires one: a section and a name made of letters, digits and
+/// `-`, the name starting with a letter, with an optional subsection between them that may hold
+/// anything but a newline (`remote.my origin.url`).
+pub(crate) fn valid_config_key(key: &str) -> Result<()> {
+    let bad = || GitError::InvalidPath { path: key.to_string(), reason: "not a valid Git setting name (section.name)".into() };
+    let (section, rest) = key.split_once('.').ok_or_else(bad)?;
+    let (subsection, name) = match rest.rsplit_once('.') {
+        Some((sub, name)) => (Some(sub), name),
+        None => (None, rest),
+    };
+    let word = |w: &str| w.starts_with(|c: char| c.is_ascii_alphanumeric()) && w.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !word(section)
+        || !word(name)
+        || !name.starts_with(|c: char| c.is_ascii_alphabetic())
+        || subsection == Some("")
+        || key.chars().any(|c| c.is_control())
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
+/// A value the dialog can write: anything on one line.
+fn valid_config_value(value: &str) -> Result<()> {
+    if value.contains(['\n', '\r', '\0']) {
+        return Err(GitError::InvalidPath { path: value.to_string(), reason: "a setting's value must be on one line".into() });
+    }
+    Ok(())
+}
+
+/// Apply `change` to the `scope` file with `git config`. `--` ends the options, so a value such as
+/// an alias's `--oneline --graph` is written as it is. `--fixed-value` makes Replace and an Unset
+/// of one value match that value exactly rather than as a regular expression. Removing a key that
+/// is not set (Git exits 5) counts as done.
+pub async fn config_change(client: &GitClient, scope: ConfigScope, change: &ConfigChange) -> Result<OpResult> {
+    let mut args: Vec<String> = vec!["config".into(), scope.flag().into()];
+    match change {
+        ConfigChange::Set { key, value } => {
+            valid_config_key(key)?;
+            valid_config_value(value)?;
+            args.extend(["--replace-all".into(), "--".into(), key.clone(), value.clone()]);
+        }
+        ConfigChange::Replace { key, old, value } => {
+            valid_config_key(key)?;
+            valid_config_value(value)?;
+            args.extend(["--fixed-value".into(), "--replace-all".into(), "--".into(), key.clone(), value.clone(), old.clone()]);
+        }
+        ConfigChange::Add { key, value } => {
+            valid_config_key(key)?;
+            valid_config_value(value)?;
+            args.extend(["--add".into(), "--".into(), key.clone(), value.clone()]);
+        }
+        ConfigChange::Unset { key, value: Some(value) } => {
+            valid_config_key(key)?;
+            args.extend(["--fixed-value".into(), "--unset".into(), "--".into(), key.clone(), value.clone()]);
+        }
+        ConfigChange::Unset { key, value: None } => {
+            valid_config_key(key)?;
+            args.extend(["--unset-all".into(), "--".into(), key.clone()]);
+        }
+    }
+    let out = client.exec_allow_failure(GitReq::new("config", args).user()).await?;
+    if matches!(change, ConfigChange::Unset { .. }) && out.exit_code == Some(5) {
+        return Ok(OpResult { ok: true, exit_code: Some(0), stdout: String::new(), stderr: String::new(), conflicts: false });
+    }
+    Ok(result(out))
+}
+
 /// `-M` for a rename that only changes letter case, unless a branch named exactly `new` exists:
 /// where branch names are case-insensitive (Windows, macOS) Git finds `old` under `new` and
 /// refuses `-m` with "a branch named 'New' already exists". Otherwise `-m`, so that an existing
@@ -2524,6 +2624,62 @@ mod e2e {
         assert!(tagged.committer_time > 0, "an annotated tag carries the date it was tagged");
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn changes_repository_settings_one_value_or_all() {
+        if which::which("git").is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("stashpanda-config-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        let client = client_for(&dir);
+        let local = ConfigScope::Local;
+        let values = |key: &str| {
+            let out = Command::new("git").arg("-C").arg(&dir).args(["config", "--local", "--get-all", key]).output().unwrap();
+            String::from_utf8(out.stdout).unwrap().lines().map(str::to_string).collect::<Vec<_>>()
+        };
+        let set = |key: &str, value: &str| ConfigChange::Set { key: key.into(), value: value.into() };
+
+        // A plain setting, and a value that starts with "-", which is not read as an option.
+        assert!(config_change(&client, local, &set("push.followTags", "true")).await.unwrap().ok);
+        assert!(config_change(&client, local, &set("alias.lg", "--oneline --graph")).await.unwrap().ok);
+        assert_eq!(values("push.followtags"), ["true"]);
+        assert_eq!(values("alias.lg"), ["--oneline --graph"]);
+
+        // Several values: add, replace exactly one (a regex character in it means nothing), remove one.
+        for v in ["/a", "/b.*", "/c"] {
+            assert!(config_change(&client, local, &ConfigChange::Add { key: "safe.directory".into(), value: v.into() }).await.unwrap().ok);
+        }
+        let replace = ConfigChange::Replace { key: "safe.directory".into(), old: "/b.*".into(), value: "/b".into() };
+        assert!(config_change(&client, local, &replace).await.unwrap().ok);
+        assert_eq!(values("safe.directory"), ["/a", "/b", "/c"]);
+        let unset_one = ConfigChange::Unset { key: "safe.directory".into(), value: Some("/a".into()) };
+        assert!(config_change(&client, local, &unset_one).await.unwrap().ok);
+        assert_eq!(values("safe.directory"), ["/b", "/c"]);
+        // Set replaces every value; Unset with no value removes the key; removing it again is fine.
+        assert!(config_change(&client, local, &set("safe.directory", "/only")).await.unwrap().ok);
+        assert_eq!(values("safe.directory"), ["/only"]);
+        let unset_all = ConfigChange::Unset { key: "safe.directory".into(), value: None };
+        assert!(config_change(&client, local, &unset_all).await.unwrap().ok);
+        assert!(config_change(&client, local, &unset_all).await.unwrap().ok);
+        assert!(values("safe.directory").is_empty());
+
+        // A subsection may hold spaces; bad names and multi-line values are refused before Git runs.
+        assert!(config_change(&client, local, &set("remote.my origin.url", "u")).await.unwrap().ok);
+        for bad in ["nodot", "-x.y", "a.1b", "a..b", "sec tion.name"] {
+            assert!(config_change(&client, local, &set(bad, "v")).await.is_err(), "{bad}");
+        }
+        assert!(config_change(&client, local, &set("a.b", "two\nlines")).await.is_err());
+
+        // The listing shows them with their scope and file, and leaves out the command line's `-c` options.
+        let entries = crate::git::queries::config::get_config_entries(&client).await.unwrap();
+        let mine: Vec<_> = entries.iter().filter(|e| e.scope == "local").map(|e| (e.key.as_str(), e.value.as_deref())).collect();
+        assert!(mine.contains(&("push.followtags", Some("true"))), "{mine:?}");
+        assert!(mine.contains(&("alias.lg", Some("--oneline --graph"))), "{mine:?}");
+        assert!(entries.iter().all(|e| e.scope != "command"));
+        assert!(entries.iter().filter(|e| e.scope == "local").all(|e| e.origin.ends_with(".git/config")), "{entries:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

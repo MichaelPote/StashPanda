@@ -814,6 +814,24 @@ pub async fn op_remote_remove(app: AppHandle, state: State<'_, AppState>, key: S
     write_op!(refs app, state, key, |c| ops::remote_remove(c, &name).await)
 }
 
+/// Apply `changes`, in order, to the `scope` configuration file: the repository's own, or the
+/// global one of the machine whose Git runs it. Stops at the first that Git refuses and returns
+/// that result; the ones before it stay applied. With none refused, the last result.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_config_change(app: AppHandle, state: State<'_, AppState>, key: String, scope: ops::ConfigScope, changes: Vec<ops::ConfigChange>) -> Result<OpResult> {
+    write_op!(app, state, key, |c| {
+        let mut last = Ok(OpResult { ok: true, exit_code: Some(0), stdout: String::new(), stderr: String::new(), conflicts: false });
+        for change in &changes {
+            last = ops::config_change(c, scope, change).await;
+            if !matches!(&last, Ok(r) if r.ok) {
+                break;
+            }
+        }
+        last
+    })
+}
+
 /// Rename local branch `oldName` to `newName`, keeping its upstream.
 #[tauri::command]
 #[specta::specta]

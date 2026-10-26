@@ -171,6 +171,12 @@ export const commands = {
 	/**  The whole message, a signature block included, without trailing whitespace. */
 	message: string,
 } | null, GitError>(__TAURI_INVOKE("get_tag_annotation", { key, name })),
+	/**
+	 *  Every Git setting that applies to the repository, from each file Git reads (system, global,
+	 *  local, worktree), with the file it came from. Read through the repository's own transport, so
+	 *  for a WSL or SSH repository the global settings are those of that machine.
+	 */
+	getGitConfig: (key: string) => typedError<ConfigEntry[], GitError>(__TAURI_INVOKE("get_git_config", { key })),
 	getRepoStashes: (key: string) => typedError<StashEntry[], GitError>(__TAURI_INVOKE("get_repo_stashes", { key })),
 	/**
 	 *  Current snapshot metadata. When none exists yet a live load starts in the
@@ -502,6 +508,12 @@ export const commands = {
 	 *  first. Waits for a running fetch, since it deletes refs.
 	 */
 	opRemoteRemove: (key: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_remote_remove", { key, name })),
+	/**
+	 *  Apply `changes`, in order, to the `scope` configuration file: the repository's own, or the
+	 *  global one of the machine whose Git runs it. Stops at the first that Git refuses and returns
+	 *  that result; the ones before it stay applied. With none refused, the last result.
+	 */
+	opConfigChange: (key: string, scope: ConfigScope, changes: ConfigChange[]) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_config_change", { key, scope, changes })),
 	/**
 	 *  Pull local `branch`'s upstream into it, then push it back there: one operation under the write
 	 *  gate, so no other write runs in between. The pull works as for `opPull`. The push runs only
@@ -847,6 +859,35 @@ export type CommitPreselect =
 export type CommitSettings = {
 	preselect?: CommitPreselect,
 };
+
+/**  One change to a configuration file. */
+export type ConfigChange = 
+/**  Give `key` the single value `value`, replacing every value it had. */
+{ type: "set"; key: string; value: string } | 
+/**  Replace exactly one of `key`'s values, `old`, with `value`; its other values stay. */
+{ type: "replace"; key: string; old: string; value: string } | 
+/**  Add `value` as another value of `key`. */
+{ type: "add"; key: string; value: string } | 
+/**  Remove `key`'s value `value`, or with None every value it has. */
+{ type: "unset"; key: string; value: string | null };
+
+/**  One setting as Git lists it. A key with several values (`safe.directory`) is several entries. */
+export type ConfigEntry = {
+	/**  `system`, `global`, `local` or `worktree`. */
+	scope: string,
+	/**  Where Git read it: `file:.git/config`, `file:/home/me/.gitconfig`. */
+	origin: string,
+	/**  The key as Git lists it, lower case apart from any subsection (`remote.origin.url`). */
+	key: string,
+	/**  None for a key written with no `=` at all, which Git reads as true. */
+	value: string | null,
+};
+
+/**
+ *  Which configuration file a change goes to: the repository's own (`.git/config`), or the global
+ *  one of the machine whose Git runs the repository (`~/.gitconfig` there).
+ */
+export type ConfigScope = "local" | "global";
 
 /**  One block of conflict markers in the working tree file. */
 export type ConflictBlock = {
