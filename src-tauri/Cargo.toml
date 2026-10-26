@@ -57,6 +57,8 @@ base64 = "0.23.1"
 zeroize = "1.9.0"
 keyring = "4.2.0"
 fontdb = "0.24.0"
+tauri-plugin-updater = "~2.12"
+tauri-plugin-process = "~2.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

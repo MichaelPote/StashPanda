@@ -71,6 +71,20 @@ Decisions taken with Michael on 2026-09-18 that still shape the code:
   `cargo test --lib` on Ubuntu 22.04, then builds `.deb`, `.rpm` and AppImage there (22.04 is the
   oldest supported release, for glibc) and the NSIS installer on `windows-latest`. macOS is in its
   matrix, commented out.
+- **Updates:** installed copies update themselves from the GitHub releases with
+  `tauri-plugin-updater`. They read `latest.json` from the newest *published* release, so a draft
+  reaches nobody until it is published. CI builds with `src-tauri/tauri.release.conf.json`, which
+  turns on the updater's `.sig` files, signed with the private key in the repository secrets
+  `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; the public half is
+  `plugins.updater.pubkey` in `tauri.conf.json`. Local builds leave that file out and need no
+  key. The bundler signs every installer, `.deb` and `.rpm` included: the updater installs those
+  too, with `pkexec dpkg -i` or `rpm -U`, which ask for the password. A build whose key does not
+  match `pubkey` warns about it in the log. `scripts/updater-manifest.mjs` writes `latest.json`
+  from the signed files. Losing the private key means installed copies can never update again: a new
+  key needs a new public key, which only a manually installed version carries. The app checks
+  when it starts (`updates.checkAutomatically`) and from Help › Check for Updates;
+  `update_prepare` refuses while Git is writing and saves settings first, because the Windows
+  installer ends the app without going through the close guard.
 - **Versions:** `npm version <x.y.z>` bumps the version everywhere. Its `version` script runs
   `scripts/sync-version.mjs`, which copies the version into `src-tauri/tauri.conf.json`,
   `src-tauri/Cargo.toml` and `Cargo.lock`.
@@ -178,6 +192,7 @@ ipc/                   thin #[tauri::command] wrappers: settings, repos, query, 
 | `which`, `dunce`, `shlex` | finding executables, plain Windows paths, quoting arguments for SSH |
 | `fontdb` | the list of monospaced fonts for the diff font setting |
 | `tauri-plugin-dialog`, `tauri-plugin-window-state`, `tauri-plugin-opener` | folder picker, window size and position, opening files |
+| `tauri-plugin-updater`, `tauri-plugin-process` | installing new versions from the GitHub releases, and restarting afterwards. Held at `~2.12` and `~2.3`, the last versions that work with Tauri 2.11: newer ones need Tauri 2.12, whose wry uses `webview2-com` 0.39 rather than the 0.38 pinned for `webview.rs` |
 | `webview2-com`, `windows-core` (Windows only) | WebView2 settings Tauri does not expose, at the versions `wry` uses |
 
 ### Running Git

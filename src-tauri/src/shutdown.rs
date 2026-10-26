@@ -82,6 +82,12 @@ pub fn defer_exit(app: &AppHandle) -> bool {
 
 /// The repositories, open or just closed (`retire`), whose exclusive lock is held, or wanted, by
 /// a write.
+/// True while Git is changing any repository, so quitting now could leave it half done. An
+/// update's installer quits the app without asking it (on Windows), so it checks this first.
+pub fn git_is_writing(app: &AppHandle) -> bool {
+    !busy_repos(app).is_empty()
+}
+
 fn busy_repos(app: &AppHandle) -> Vec<Arc<RepoHandle>> {
     let mut busy: Vec<Arc<RepoHandle>> = {
         let mut retired = RETIRED.lock().expect("retired repositories lock");

@@ -40,6 +40,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::settings::ui_state_get,
             ipc::settings::ui_state_update,
             ipc::settings::startup_warnings,
+            ipc::settings::update_prepare,
             ipc::fonts::fonts_monospace,
             ipc::repos::repo_resolve,
             ipc::repos::clone_inspect,
@@ -206,6 +207,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(builder.invoke_handler())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

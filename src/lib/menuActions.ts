@@ -7,6 +7,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { events, type Theme } from "@/lib/bindings";
 import { errorMessage } from "@/lib/ipc";
 import { shortSha } from "@/lib/refNames";
+import { checkForUpdates } from "@/lib/updates";
 import {
   createBranchHere,
   createTagAt,
@@ -171,6 +172,9 @@ export async function dispatch(id: string): Promise<void> {
       return;
     case "help.about":
       await dialogs.open("about", null);
+      return;
+    case "help.check_updates":
+      await checkForUpdates(false);
       return;
     default:
       console.warn(`Unhandled menu action: ${id}`);

@@ -37,6 +37,20 @@ pub async fn settings_update(
     Ok(next)
 }
 
+/// Called just before an update is installed, which quits the app without going through the
+/// close guard in `shutdown` (the Windows installer ends the process at once). False while Git
+/// is changing a repository, so the update waits; otherwise settings and UI state are written
+/// to disk now, and true.
+#[tauri::command]
+#[specta::specta]
+pub async fn update_prepare(app: AppHandle, state: State<'_, AppState>) -> Result<bool> {
+    if crate::shutdown::git_is_writing(&app) {
+        return Ok(false);
+    }
+    state.flush();
+    Ok(true)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn ui_state_get(state: State<'_, AppState>) -> Result<UiState> {

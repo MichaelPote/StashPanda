@@ -1,6 +1,7 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
 import type { ConfigScope, OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, Remote, StashEntry } from "@/lib/bindings";
+import type { Update } from "@tauri-apps/plugin-updater";
 import type { CommitFile } from "@/lib/files";
 
 export interface CreateBranchPayload {
@@ -358,6 +359,11 @@ export interface MergeEditorPayload {
 /** The Add Repository dialog's tabs: add a folder that is a repository already, or clone one. */
 export type AddRepoTab = "existing" | "clone";
 
+export interface UpdatePayload {
+  /** The newer version `check()` found, which the dialog downloads and installs. */
+  update: Update;
+}
+
 /** Every dialog the store can open, with what the caller passes in and what the promise resolves to. */
 export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
@@ -390,6 +396,8 @@ export interface DialogSpecs {
   /** Resolves true when the changes were saved. */
   settings: { payload: SettingsPayload; result: boolean };
   about: { payload: null; result: null };
+  /** Resolves when dismissed with Later; once installing, the app restarts instead. */
+  update: { payload: UpdatePayload; result: null };
 }
 
 export type DialogKind = keyof DialogSpecs;
@@ -421,6 +429,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   sshPassword: false,
   settings: false,
   about: null,
+  update: null,
 };
 
 /**

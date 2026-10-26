@@ -18,7 +18,7 @@ import KeyManagerPage from "./KeyManagerPage.vue";
 import ToolbarPage from "./ToolbarPage.vue";
 
 /** The sections of `settings.json` the dialog edits. `version` and `library` are left out. */
-export type SettingsGroup = "git" | "appearance" | "console" | "polling" | "cache" | "commit" | "merge" | "diff";
+export type SettingsGroup = "git" | "appearance" | "console" | "polling" | "cache" | "commit" | "merge" | "diff" | "updates";
 
 /** What a field holds while the dialog is open: the text in its box, or a toggle's state. */
 export type FormValue = string | boolean;
@@ -483,7 +483,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "advanced",
     label: "Advanced",
     icon: WrenchIcon,
-    description: "What the Console records, how much history is kept on disk, and how often repositories are checked for changes.",
+    description: "What the Console records, how much history is kept on disk, how often repositories are checked for changes, and new versions of StashPanda.",
     fields: [
       {
         kind: "toggle",
@@ -594,6 +594,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         optional: true,
         emptyLabel: "Off",
         help: "Every open repository fetches from all its remotes this often. A failure is reported once, until a fetch works again.",
+      },
+      {
+        kind: "toggle",
+        heading: { title: "Updates", description: "New versions of StashPanda, from its GitHub releases." },
+        group: "updates",
+        key: "checkAutomatically",
+        label: "Check for updates",
+        help: "Look for a new version each time StashPanda starts, and offer to install it. Help > Check for Updates still looks when you choose it.",
       },
     ],
   },

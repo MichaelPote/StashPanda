@@ -26,6 +26,7 @@ pub struct Settings {
     pub merge: MergeSettings,
     pub diff: DiffSettings,
     pub keys: KeySettings,
+    pub updates: UpdateSettings,
     pub library: RepoLibrary,
     /// The toolbar's items from left to right, by id (`fetch`, `commit`, `divider`, `spacer`;
     /// the list is in `src/lib/toolbarItems.ts`). None draws the default toolbar, which is also
@@ -47,9 +48,25 @@ impl Default for Settings {
             merge: MergeSettings::default(),
             diff: DiffSettings::default(),
             keys: KeySettings::default(),
+            updates: UpdateSettings::default(),
             library: RepoLibrary::default(),
             toolbar: None,
         }
+    }
+}
+
+/// New versions, from the GitHub releases (`plugins.updater` in `tauri.conf.json`).
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdateSettings {
+    /// Look for a new version each time the app starts, and offer to install it. On by default;
+    /// Help > Check for Updates works either way.
+    pub check_automatically: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { check_automatically: true }
     }
 }
 

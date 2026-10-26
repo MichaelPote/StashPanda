@@ -28,6 +28,7 @@ import PushDefaultDialog from "@/components/dialogs/PushDefaultDialog.vue";
 import RebaseDialog from "@/components/dialogs/RebaseDialog.vue";
 import StashDialog from "@/components/dialogs/StashDialog.vue";
 import TrackRemoteBranchDialog from "@/components/dialogs/TrackRemoteBranchDialog.vue";
+import UpdateDialog from "@/components/dialogs/UpdateDialog.vue";
 import PassphraseDialog from "@/components/settings/PassphraseDialog.vue";
 import SettingsDialog from "@/components/settings/SettingsDialog.vue";
 import AddRepoDialog from "@/components/shell/AddRepoDialog.vue";
@@ -44,6 +45,7 @@ import { isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
 import { installMenuActions } from "@/lib/menuActions";
 import { autoFetchDue } from "@/lib/repoActions";
+import { checkForUpdates } from "@/lib/updates";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useHostStore } from "@/stores/host";
 import { useLibraryStore } from "@/stores/library";
@@ -87,6 +89,8 @@ onMounted(async () => {
   }
   ready.value = true;
   await sessions.restore();
+  // Development builds are not installed, so there is nothing for an update to replace.
+  if (!import.meta.env.DEV && settings.settings?.updates?.checkAutomatically !== false) void checkForUpdates(true);
 });
 
 // Ctrl+A never selects the page text: outside a text field it means "select every file", which
@@ -300,5 +304,6 @@ function dismissRepoWarning(warning: string): void {
     <HostKeyDialog />
     <SshPasswordDialog />
     <AboutDialog />
+    <UpdateDialog />
   </TooltipProvider>
 </template>

@@ -15,6 +15,13 @@ export const commands = {
 	/**  Problems found while loading config files; the UI calls this once at start. */
 	startupWarnings: () => typedError<string[], GitError>(__TAURI_INVOKE("startup_warnings")),
 	/**
+	 *  Called just before an update is installed, which quits the app without going through the
+	 *  close guard in `shutdown` (the Windows installer ends the process at once). False while Git
+	 *  is changing a repository, so the update waits; otherwise settings and UI state are written
+	 *  to disk now, and true.
+	 */
+	updatePrepare: () => typedError<boolean, GitError>(__TAURI_INVOKE("update_prepare")),
+	/**
 	 *  Family names of the monospaced fonts installed on this machine, sorted and without repeats.
 	 * 
 	 *  The backend and the WebView run on the same machine, so every name here can be drawn by the
@@ -1897,6 +1904,7 @@ export type Settings = {
 	merge?: MergeSettings,
 	diff?: DiffSettings,
 	keys?: KeySettings,
+	updates?: UpdateSettings,
 	library?: RepoLibrary,
 	/**
 	 *  The toolbar's items from left to right, by id (`fetch`, `commit`, `divider`, `spacer`;
@@ -2056,6 +2064,15 @@ export type UiState = {
 
 export type UiStateChanged = {
 	revision: number,
+};
+
+/**  New versions, from the GitHub releases (`plugins.updater` in `tauri.conf.json`). */
+export type UpdateSettings = {
+	/**
+	 *  Look for a new version each time the app starts, and offer to install it. On by default;
+	 *  Help > Check for Updates works either way.
+	 */
+	checkAutomatically?: boolean,
 };
 
 export type WatcherKind = "native" | "remoteInotify" | "polling" | "off";

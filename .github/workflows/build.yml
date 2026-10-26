@@ -1,6 +1,8 @@
 # Builds the StashPanda installers for each platform, after the tests pass. Pushing a version tag
 # (v0.7.0, as `npm version` makes) also creates a draft GitHub Release with the installers
-# attached, to be read over and published by hand on the Releases page.
+# attached, to be read over and published by hand on the Releases page. The release also gets
+# latest.json, which installed copies of the app read to update themselves; they only see it
+# once the release is published.
 #
 # Linux builds on Ubuntu 22.04 on purpose: a binary only runs where the C library (glibc) is at
 # least as new as the one it was built against, so building on the oldest supported release lets
@@ -72,13 +74,17 @@ jobs:
             args: ""
             artifacts: |
               src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/deb/*.deb.sig
               src-tauri/target/release/bundle/rpm/*.rpm
+              src-tauri/target/release/bundle/rpm/*.rpm.sig
               src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/appimage/*.AppImage.sig
           - name: Windows
             platform: windows-latest
             args: ""
             artifacts: |
               src-tauri/target/release/bundle/nsis/*-setup.exe
+              src-tauri/target/release/bundle/nsis/*-setup.exe.sig
           # - name: macOS
           #   platform: macos-latest
           #   # One app for both Apple Silicon and Intel Macs.
@@ -106,8 +112,20 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev \
             libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - run: npm ci
+      # tauri.release.conf.json turns on the updater's .sig files, signed with the key in these
+      # secrets; its public half is in tauri.conf.json. A pull request from a fork gets no
+      # secrets, so it builds without them, unsigned.
       - name: Build the installers
-        run: npm run tauri build -- ${{ matrix.args }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            npm run tauri build -- --config src-tauri/tauri.release.conf.json ${{ matrix.args }}
+          else
+            npm run tauri build -- ${{ matrix.args }}
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: stashpanda-${{ matrix.name }}
@@ -137,13 +155,18 @@ jobs:
         with:
           path: release-files
           merge-multiple: true
+      # What the app's updater reads once the release is published. The .sig files go into it,
+      # so they are not attached themselves.
+      - name: Write latest.json for the updater
+        run: node scripts/updater-manifest.mjs release-files "$GITHUB_REF_NAME" latest.json
       # The Linux artifact keeps its deb/, rpm/ and appimage/ folders, so the files are listed one
       # by one. A release left by an earlier run of this tag gets the files again instead of failing.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mapfile -t files < <(find release-files -type f | sort)
+          mapfile -t files < <(find release-files -type f ! -name '*.sig' | sort)
+          files+=(latest.json)
           printf 'Attaching %s\n' "${files[@]}"
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber

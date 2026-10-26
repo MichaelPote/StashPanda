@@ -133,7 +133,11 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .text("repo.remove", "&Remove from Library")
         .build()?;
 
-    let mut help = SubmenuBuilder::new(app, "&Help").text("help.docs", "&Documentation").text("help.console_log", "Show &Console Log");
+    let mut help = SubmenuBuilder::new(app, "&Help")
+        .text("help.docs", "&Documentation")
+        .text("help.console_log", "Show &Console Log")
+        .separator()
+        .text("help.check_updates", "Check for &Updates…");
     if !mac {
         help = help.separator().text("help.about", "&About StashPanda");
     }
