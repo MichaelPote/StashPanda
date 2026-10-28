@@ -39,6 +39,31 @@ impl Host {
     }
 }
 
+/// The network share a mapped drive letter points to (`\\wsl$\Ubuntu` for `W`), as `net use`
+/// shows it. None for a local drive, an unmapped letter, or on any other OS.
+#[cfg(windows)]
+pub fn mapped_drive_remote(letter: char) -> Option<String> {
+    #[link(name = "mpr")]
+    extern "system" {
+        fn WNetGetConnectionW(local_name: *const u16, remote_name: *mut u16, length: *mut u32) -> u32;
+    }
+    let local: Vec<u16> = format!("{letter}:").encode_utf16().chain([0]).collect();
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    // SAFETY: `local` is NUL-terminated and `len` is the length of `buf` in UTF-16 units.
+    let rc = unsafe { WNetGetConnectionW(local.as_ptr(), buf.as_mut_ptr(), &mut len) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..end]))
+}
+
+#[cfg(not(windows))]
+pub fn mapped_drive_remote(_letter: char) -> Option<String> {
+    None
+}
+
 /// macOS: give this process the PATH the user's login shell has. Started from Finder or the Dock,
 /// an app gets only `/usr/bin:/bin:/usr/sbin:/sbin`, so Git's hooks and credential helpers could
 /// not find what the user installed with Homebrew, nvm and the like (a husky hook that runs

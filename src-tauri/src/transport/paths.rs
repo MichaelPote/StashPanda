@@ -275,6 +275,19 @@ pub fn linux_to_unc(linux: &str, distro: &str) -> String {
     format!(r"\\wsl.localhost\{distro}{}", n.replace('/', "\\"))
 }
 
+/// `W:\home\me\code\x` -> `\\wsl$\Ubuntu\home\me\code\x` when `remote_of('W')` says the drive is mapped to
+/// a WSL share. None for any other path or drive. Without this, a mapped drive gets a different
+/// library key from the same folder written as a UNC path, and runs Windows git over the share.
+pub fn wsl_drive_to_unc(path: &str, remote_of: impl FnOnce(char) -> Option<String>) -> Option<String> {
+    let PathKind::WindowsDrive { normalized } = classify(path) else { return None };
+    let remote = remote_of(normalized.chars().next()?)?;
+    let remote = normalize_windows(&remote);
+    if !matches!(classify(&remote), PathKind::WslUnc { .. }) {
+        return None;
+    }
+    Some(format!("{remote}{}", normalized[2..].trim_end_matches('\\')))
+}
+
 /// Same-path mapper for Local transports.
 pub struct IdentityMapper;
 impl PathMapper for IdentityMapper {
@@ -446,6 +459,22 @@ mod tests {
         assert_eq!(windows_to_wsl(r"C:\x", "/custom/").unwrap(), "/custom/c/x");
         assert!(wsl_to_windows("/home/me/code", "/mnt").is_err());
         assert_eq!(linux_to_unc("/home/me/code/x", "Ubuntu"), r"\\wsl.localhost\Ubuntu\home\me\code\x");
+    }
+
+    #[test]
+    fn mapped_wsl_drive_becomes_unc() {
+        let wsl = |d: char| (d == 'W').then(|| r"\\wsl$\Ubuntu".to_string());
+        assert_eq!(wsl_drive_to_unc(r"W:\home\me\code\x\", wsl).as_deref(), Some(r"\\wsl$\Ubuntu\home\me\code\x"));
+        assert_eq!(wsl_drive_to_unc("w:/home/me/code/x", wsl).as_deref(), Some(r"\\wsl$\Ubuntu\home\me\code\x"));
+        assert_eq!(wsl_drive_to_unc(r"W:\", wsl).as_deref(), Some(r"\\wsl$\Ubuntu"));
+        assert_eq!(wsl_drive_to_unc(r"C:\src\x", wsl), None);
+        assert_eq!(wsl_drive_to_unc(r"\\wsl.localhost\Ubuntu\x", wsl), None);
+        assert_eq!(wsl_drive_to_unc(r"S:\x", |_| Some(r"\\fileserver\share\".to_string())), None);
+        // The same folder through the drive and through the share is one path once classified.
+        assert_eq!(
+            classify(&wsl_drive_to_unc(r"W:\home\me\code\x", wsl).unwrap()),
+            classify(r"\\wsl.localhost\Ubuntu\home\me\code\x")
+        );
     }
 
     #[test]

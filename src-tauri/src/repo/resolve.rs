@@ -8,7 +8,7 @@ use crate::settings::{Connection, RepoEntry, ResolvedTransport, Settings};
 use crate::transport::discover::{find_local_git, find_windows_git_from_linux};
 use crate::transport::local::LocalTransport;
 use crate::transport::paths::{
-    classify, HostPath, IdentityMapper, NativePath, PathKind, PathMapper, WindowsFromLinuxMapper, WslMapper,
+    classify, wsl_drive_to_unc, HostPath, IdentityMapper, NativePath, PathKind, PathMapper, WindowsFromLinuxMapper, WslMapper,
 };
 use crate::transport::ssh::SshTransport;
 use crate::transport::ssh_pool::{resolve_target, SshContext};
@@ -65,7 +65,16 @@ pub fn auto_connection(path: &str, host: &Host, settings: &Settings) -> Result<C
 
 pub fn resolve(entry: &RepoEntry, settings: &Settings, host: &Host, ssh: Option<&Arc<SshContext>>) -> Result<Resolution> {
     let mut warnings = Vec::new();
-    let kind = classify(&entry.path);
+    // A drive letter mapped to a WSL share is that share, so `W:\x` gets the same transport and
+    // key as `\\wsl.localhost\Ubuntu\x`. A Local connection chosen by hand keeps Windows git.
+    let unmapped = match (&entry.connection, host) {
+        (Connection::Auto | Connection::Wsl { .. }, Host::Windows) => {
+            wsl_drive_to_unc(&entry.path, crate::platform::mapped_drive_remote)
+        }
+        _ => None,
+    };
+    let path = unmapped.as_deref().unwrap_or(&entry.path);
+    let kind = classify(path);
     if let PathKind::Invalid { reason } = &kind {
         return Err(GitError::InvalidPath {
             path: entry.path.clone(),
@@ -73,7 +82,7 @@ pub fn resolve(entry: &RepoEntry, settings: &Settings, host: &Host, ssh: Option<
         });
     }
     let connection = match &entry.connection {
-        Connection::Auto => auto_connection(&entry.path, host, settings)?,
+        Connection::Auto => auto_connection(path, host, settings)?,
         other => other.clone(),
     };
     let automount = settings.git.wsl_automount_root.clone();
@@ -159,7 +168,7 @@ pub fn resolve(entry: &RepoEntry, settings: &Settings, host: &Host, ssh: Option<
             let mapper = WslMapper { distro: distro.clone(), automount_root: automount };
             let host_path = HostPath(match &kind {
                 PathKind::WindowsDrive { normalized } => normalized.clone(),
-                PathKind::WslUnc { .. } => entry.path.trim().to_string(),
+                PathKind::WslUnc { .. } => path.trim().to_string(),
                 PathKind::LinuxAbsolute { normalized } => crate::transport::paths::linux_to_unc(normalized, &distro),
                 _ => {
                     return Err(GitError::InvalidPath {
