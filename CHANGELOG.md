@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Build the installers on GitHub only for a version tag or a run started by hand; other pushes run just the tests
 - Take each GitHub release's notes from CHANGELOG.md, whose Unreleased section npm version now turns into the version's
 
 ## 0.6.4 (2026-10-28)

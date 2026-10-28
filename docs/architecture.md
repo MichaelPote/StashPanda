@@ -68,9 +68,10 @@ Decisions taken with Michael on 2026-09-18 that still shape the code:
     `objc2-exception-helper`), but it has never run on a Mac. `tauri-driver` has no macOS
     support, so a Mac build has to be tested by hand.
 - **CI:** `.github/workflows/build.yml` runs the TypeScript check, the frontend tests and
-  `cargo test --lib` on Ubuntu 22.04, then builds `.deb`, `.rpm` and AppImage there (22.04 is the
-  oldest supported release, for glibc) and the NSIS installer on `windows-latest`. macOS is in its
-  matrix, commented out.
+  `cargo test --lib` on Ubuntu 22.04 for every push to `main` and every pull request. Only for a
+  version tag, or a run started by hand from the Actions tab, does it then build `.deb`, `.rpm`
+  and AppImage there (22.04 is the oldest supported release, for glibc) and the NSIS installer on
+  `windows-latest`. macOS is in its matrix, commented out.
 - **Updates:** installed copies update themselves from the GitHub releases with
   `tauri-plugin-updater`. They read `latest.json` from the newest *published* release, so a draft
   reaches nobody until it is published. CI builds with `src-tauri/tauri.release.conf.json`, which

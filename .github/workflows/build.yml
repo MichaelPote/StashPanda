@@ -1,8 +1,9 @@
-# Builds the StashPanda installers for each platform, after the tests pass. Pushing a version tag
-# (v0.7.0, as `npm version` makes) also creates a draft GitHub Release with the installers
-# attached, to be read over and published by hand on the Releases page. The release also gets
-# latest.json, which installed copies of the app read to update themselves; they only see it
-# once the release is published.
+# Runs the tests on every push to main and every pull request. The installers for each platform
+# are built only for a version tag (v0.7.0, as `npm version` makes), or when the workflow is run
+# by hand from the Actions tab. A version tag also creates a draft GitHub Release with the
+# installers attached, to be read over and published by hand on the Releases page. The release
+# also gets latest.json, which installed copies of the app read to update themselves; they only
+# see it once the release is published.
 #
 # Linux builds on Ubuntu 22.04 on purpose: a binary only runs where the C library (glibc) is at
 # least as new as the one it was built against, so building on the oldest supported release lets
@@ -65,6 +66,9 @@ jobs:
   build:
     name: Build (${{ matrix.name }})
     needs: test
+    # Installers take a while on two machines, so a push to main or a pull request only runs the
+    # tests. Run by hand, the workflow builds them without making a release.
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
