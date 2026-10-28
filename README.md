@@ -49,6 +49,7 @@ How the app works, and the decisions behind it, are in
   `ipc/` holds the Tauri commands.
 - `docs/architecture.md` – how the app works, and the pitfalls found while building it.
 - `docs/next-steps.md` – the work that is still open.
+- `docs/changelog.md` – how `CHANGELOG.md` is kept, and how it becomes the release notes.
 
 ## Commands
 

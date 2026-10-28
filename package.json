@@ -16,7 +16,7 @@
     "win:sync": "bash scripts/windows.sh sync",
     "win:dev": "bash scripts/windows.sh dev",
     "win:build": "bash scripts/windows.sh build",
-    "version": "node scripts/sync-version.mjs && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock"
+    "version": "node scripts/sync-version.mjs && node scripts/changelog-version.mjs && git add src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock CHANGELOG.md"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

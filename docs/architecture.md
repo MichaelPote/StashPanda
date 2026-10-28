@@ -87,7 +87,10 @@ Decisions taken with Michael on 2026-09-18 that still shape the code:
   installer ends the app without going through the close guard.
 - **Versions:** `npm version <x.y.z>` bumps the version everywhere. Its `version` script runs
   `scripts/sync-version.mjs`, which copies the version into `src-tauri/tauri.conf.json`,
-  `src-tauri/Cargo.toml` and `Cargo.lock`.
+  `src-tauri/Cargo.toml` and `Cargo.lock`, then `scripts/changelog-version.mjs`, which turns
+  `## Unreleased` in `CHANGELOG.md` into the version's section. The release job takes the
+  release notes from that section. Every commit adds its line under `## Unreleased`; see
+  [changelog.md](changelog.md).
 - **App icon:** `npm run icons` runs `tauri icon assets/app_icon.png`, which writes every icon
   size into `src-tauri/icons/`. The Photoshop source in `assets/` is ignored by Git.
 

@@ -160,7 +160,10 @@ jobs:
       - name: Write latest.json for the updater
         run: node scripts/updater-manifest.mjs release-files "$GITHUB_REF_NAME" latest.json
       # The Linux artifact keeps its deb/, rpm/ and appimage/ folders, so the files are listed one
-      # by one. A release left by an earlier run of this tag gets the files again instead of failing.
+      # by one. A release left by an earlier run of this tag gets the files again instead of failing,
+      # and keeps its notes, which may have been edited on the Releases page since.
+      # The notes are the version's lines in CHANGELOG.md, which `npm version` moved there from
+      # "## Unreleased". A tag whose changelog has none gets GitHub's notes from the commits.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -171,6 +174,12 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
           else
+            if node scripts/release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md; then
+              notes=(--notes-file release-notes.md)
+            else
+              echo "::warning::CHANGELOG.md has no lines for $GITHUB_REF_NAME, so the release notes come from the commits."
+              notes=(--generate-notes)
+            fi
             gh release create "$GITHUB_REF_NAME" "${files[@]}" \
-              --title "StashPanda ${GITHUB_REF_NAME#v}" --generate-notes --draft --verify-tag
+              --title "StashPanda ${GITHUB_REF_NAME#v}" "${notes[@]}" --draft --verify-tag
           fi
