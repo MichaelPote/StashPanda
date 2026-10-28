@@ -5,11 +5,11 @@ release moves those lines under its version number.
 
 ## Unreleased
 
-- Build the installers on GitHub only for a version tag or a run started by hand; other pushes run just the tests
-- Take each GitHub release's notes from CHANGELOG.md, whose Unreleased section npm version now turns into the version's
-
 ## 0.6.4 (2026-10-28)
 
+- Make a draft release from a run of the build started by hand, for the version in package.json
+- Build the installers on GitHub only for a version tag or a run started by hand; other pushes run just the tests
+- Take each GitHub release's notes from CHANGELOG.md, whose Unreleased section npm version now turns into the version's
 - Give the SSH Keys page a tab for Windows, each WSL distro and each server, and a Copy to… button that never replaces a key
 - Never overwrite a key or its .pub file when exporting, generating or importing one
 - Stop a long menu scrolling the whole window up when the pointer moves over its items

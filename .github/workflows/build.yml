@@ -1,9 +1,10 @@
 # Runs the tests on every push to main and every pull request. The installers for each platform
 # are built only for a version tag (v0.7.0, as `npm version` makes), or when the workflow is run
-# by hand from the Actions tab. A version tag also creates a draft GitHub Release with the
-# installers attached, to be read over and published by hand on the Releases page. The release
-# also gets latest.json, which installed copies of the app read to update themselves; they only
-# see it once the release is published.
+# by hand from the Actions tab. Either way the installers then go into a draft GitHub Release for
+# v<package.json's version>, to be read over and published by hand on the Releases page; run by
+# hand from a branch, the draft is for the commit that was built, and is refused when that
+# version is already published. The release also gets latest.json, which installed copies of the
+# app read to update themselves; they only see it once the release is published.
 #
 # Linux builds on Ubuntu 22.04 on purpose: a binary only runs where the C library (glibc) is at
 # least as new as the one it was built against, so building on the oldest supported release lets
@@ -67,7 +68,7 @@ jobs:
     name: Build (${{ matrix.name }})
     needs: test
     # Installers take a while on two machines, so a push to main or a pull request only runs the
-    # tests. Run by hand, the workflow builds them without making a release.
+    # tests. Run by hand, the workflow builds them and makes a draft release (see the release job).
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
@@ -139,22 +140,44 @@ jobs:
   release:
     name: Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # The only job that may write to the repository: it creates the release.
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      # The installers are named after package.json's version, so a tag on a commit still at
-      # another version would publish installers that say the wrong version.
-      - name: Check the tag matches the app's version
+      # The release is for v<package.json's version>. Pushed as a tag, the tag has to be that:
+      # the installers are named after package.json's version, so a tag on a commit still at
+      # another version would publish installers that say the wrong version. Run by hand from a
+      # branch, the draft is for the commit that was built, and GitHub makes the tag when the
+      # draft is published; a version that is already published, or whose tag is on another
+      # commit, is refused, so a manual run never touches a release that is out.
+      - name: Choose the release's tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(node -p "require('./package.json').version")
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "::error::The tag $GITHUB_REF_NAME does not match the version in package.json ($version)."
-            exit 1
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+              echo "::error::The tag $GITHUB_REF_NAME does not match the version in package.json ($version)."
+              exit 1
+            fi
+          else
+            draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)
+            if [ "$draft" = false ]; then
+              echo "::error::$tag is already published. Run npm version to make a new version, then run this again."
+              exit 1
+            fi
+            # The commit an existing tag is on: the peeled ^{} line for an annotated tag.
+            on=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" | sort -k2 | tail -n 1 | cut -f1)
+            if [ -n "$on" ] && [ "$on" != "$GITHUB_SHA" ]; then
+              echo "::error::The tag $tag is on another commit ($on). Run npm version to make a new version, then run this again."
+              exit 1
+            fi
           fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           path: release-files
@@ -162,12 +185,13 @@ jobs:
       # What the app's updater reads once the release is published. The .sig files go into it,
       # so they are not attached themselves.
       - name: Write latest.json for the updater
-        run: node scripts/updater-manifest.mjs release-files "$GITHUB_REF_NAME" latest.json
+        run: node scripts/updater-manifest.mjs release-files "$TAG" latest.json
       # The Linux artifact keeps its deb/, rpm/ and appimage/ folders, so the files are listed one
-      # by one. A release left by an earlier run of this tag gets the files again instead of failing,
-      # and keeps its notes, which may have been edited on the Releases page since.
+      # by one. A release left by an earlier run gets the files again instead of failing, and
+      # keeps its notes, which may have been edited on the Releases page since; a draft from an
+      # earlier manual run moves to this run's commit.
       # The notes are the version's lines in CHANGELOG.md, which `npm version` moved there from
-      # "## Unreleased". A tag whose changelog has none gets GitHub's notes from the commits.
+      # "## Unreleased". A version whose changelog has none gets GitHub's notes from the commits.
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -175,15 +199,23 @@ jobs:
           mapfile -t files < <(find release-files -type f ! -name '*.sig' | sort)
           files+=(latest.json)
           printf 'Attaching %s\n' "${files[@]}"
-          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            if [ "$GITHUB_REF_TYPE" != tag ]; then
+              gh release edit "$TAG" --target "$GITHUB_SHA"
+            fi
+            gh release upload "$TAG" "${files[@]}" --clobber
           else
-            if node scripts/release-notes.mjs "$GITHUB_REF_NAME" > release-notes.md; then
+            if node scripts/release-notes.mjs "$TAG" > release-notes.md; then
               notes=(--notes-file release-notes.md)
             else
-              echo "::warning::CHANGELOG.md has no lines for $GITHUB_REF_NAME, so the release notes come from the commits."
+              echo "::warning::CHANGELOG.md has no lines for $TAG, so the release notes come from the commits."
               notes=(--generate-notes)
             fi
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
-              --title "StashPanda ${GITHUB_REF_NAME#v}" "${notes[@]}" --draft --verify-tag
+            if [ "$GITHUB_REF_TYPE" = tag ]; then
+              where=(--verify-tag)
+            else
+              where=(--target "$GITHUB_SHA")
+            fi
+            gh release create "$TAG" "${files[@]}" \
+              --title "StashPanda ${TAG#v}" "${notes[@]}" --draft "${where[@]}"
           fi

@@ -38,10 +38,12 @@ app does, or how it is built or released, adds one line there, in the same commi
    goes into the version's commit and tag with the other version files.
    `scripts/changelog-version.mjs` stops with an error when the changelog has no
    `## Unreleased`, or already has a section for that version.
-2. Pushing the tag (`git push --follow-tags`) runs `.github/workflows/build.yml`. Its release job
-   takes the release notes from that version's section with `scripts/release-notes.mjs <x.y.z>`,
-   and creates the draft release with them. A tag whose `CHANGELOG.md` has no lines for its
-   version gets GitHub's notes made from the commits instead, with a warning in the job's log.
+2. Pushing the tag (`git push --follow-tags`) runs `.github/workflows/build.yml`. So does Run
+   workflow on the Actions tab, which needs no tag: its draft is for the commit it built, and
+   publishing it makes the tag. Its release job takes the release notes from that version's
+   section with `scripts/release-notes.mjs <x.y.z>`, and creates the draft release with them. A
+   version whose `CHANGELOG.md` has no lines for it gets GitHub's notes made from the commits
+   instead, with a warning in the job's log.
 3. The draft is read over, and its notes edited if need be, on the Releases page, then
    published. A rerun of the release job for a tag that already has a release only uploads the
    files again, so it never replaces notes edited there.
