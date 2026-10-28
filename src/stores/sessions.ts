@@ -105,7 +105,7 @@ export interface RunningOperation {
   cancellable: boolean;
   /** Stop was pressed and the operation has not finished yet. */
   stopping: boolean;
-  /** The toolbar command it belongs to (`fetch`, `pull`, `push` or `sync`), whose button shows a spinner meanwhile; null for none. */
+  /** The toolbar command it belongs to (`fetch`, `pull`, `push`, `pushAll` or `sync`), whose button shows a spinner meanwhile; null for none. */
   command: string | null;
 }
 
@@ -776,10 +776,14 @@ export const useSessionsStore = defineStore("sessions", () => {
 
   /** Replaces the selection with one row and makes it the Files panel's subject. */
   function selectRow(session: RepoSession, row: GraphRow): void {
+    // Clicking the commit that is already the only one selected keeps the file chosen in it.
+    const same = session.selection.oids.size === 1 && session.selection.oids.has(row.oid) && session.selectedRow?.oid === row.oid;
     session.selection = { oids: new Set([row.oid]), anchorOid: row.oid };
     session.selectedRow = row;
-    session.selectedFile = null;
-    session.fileSelection = emptyFileSelection();
+    if (!same) {
+      session.selectedFile = null;
+      session.fileSelection = emptyFileSelection();
+    }
     if (row.kind === "commit") uiState.patchDebounced({ perRepo: { [session.key]: { lastSelectedOid: row.oid } } });
   }
 

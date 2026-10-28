@@ -10,6 +10,8 @@ import {
   type InProgress,
   type OpResult,
   type PullMode,
+  type PushAllOutcome,
+  type PushAllResult,
   type PushTarget,
   type RefEntry,
   type RefKind,
@@ -453,6 +455,34 @@ export function networkFailureText(result: OpResult, what: string): string {
 }
 
 /**
+ * A notice's Diagnose… button for a failure where an SSH remote refused every key Git offered
+ * (`git@github.com: Permission denied (publickey).`), or null for any other failure. It opens
+ * the SSH Diagnosis dialog for that login.
+ */
+export function sshDiagnoseAction(key: string, result: OpResult): NoticeAction | null {
+  const dest = sshDeniedDestination(`${result.stdout}\n${result.stderr}`);
+  if (dest === null) return null;
+  return { label: "Diagnose…", run: () => void useDialogsStore().open("sshDiagnose", { key, dest, port: remotePort(key, dest) }) };
+}
+
+/** `git@github.com` from SSH's `git@github.com: Permission denied (publickey).`, or null. */
+export function sshDeniedDestination(output: string): string | null {
+  return /^([^\s@:]+@[^\s:]+): Permission denied \([^)]*publickey/m.exec(output)?.[1] ?? null;
+}
+
+/** The port in a remote URL `ssh://user@host:port/…` whose host is `dest`'s, or null for the default. */
+function remotePort(key: string, dest: string): number | null {
+  const host = dest.slice(dest.indexOf("@") + 1).toLowerCase();
+  for (const remote of useSessionsStore().sessions.get(key)?.refs?.remotes ?? []) {
+    for (const url of [remote.url, remote.pushUrl]) {
+      const m = url ? /^ssh:\/\/(?:[^@/]+@)?([^/:]+):(\d+)\//i.exec(url) : null;
+      if (m && m[1].toLowerCase() === host) return Number(m[2]);
+    }
+  }
+  return null;
+}
+
+/**
  * Repositories where a sync or push has been clicked and is still getting ready: reading the
  * upstream and the push target, and asking about uncommitted changes, before `runOperation` puts
  * it in the status bar. Without this a double click started two.
@@ -486,7 +516,7 @@ export async function runOperation<T = OpResult>(
   key: string,
   title: string,
   start: (opId: string) => Promise<IpcResult<T>>,
-  command: "fetch" | "pull" | "push" | "sync" | null = null,
+  command: "fetch" | "pull" | "push" | "pushAll" | "sync" | null = null,
 ): Promise<T> {
   const sessions = useSessionsStore();
   const session = sessions.sessions.get(key);
@@ -543,7 +573,7 @@ export async function fetchAll(session: RepoSession | null): Promise<void> {
       session.autoFetchFailed = false;
       sessions.notifySuccess(`Fetched from ${from}.`);
     } else {
-      sessions.notify(networkFailureText(result, `Fetching from ${from}`));
+      sessions.notify(networkFailureText(result, `Fetching from ${from}`), sshDiagnoseAction(key, result));
     }
   } catch (e) {
     sessions.notify(isCancelled(e) ? "The fetch was stopped. The remote branches are as they were before it." : errorMessage(e));
@@ -592,7 +622,10 @@ export async function autoFetchDue(): Promise<void> {
         session.autoFetchFailed = false;
       } else if (!session.autoFetchFailed) {
         session.autoFetchFailed = true;
-        sessions.notify(`${networkFailureText(result, `Fetching ${session.info.displayName} automatically`)} Automatic fetches carry on; this is not reported again until one works.`);
+        sessions.notify(
+          `${networkFailureText(result, `Fetching ${session.info.displayName} automatically`)} Automatic fetches carry on; this is not reported again until one works.`,
+          sshDiagnoseAction(key, result),
+        );
       }
     } catch (e) {
       session.lastFetchAt = Date.now();
@@ -696,6 +729,71 @@ export async function pushCurrentBranch(session: RepoSession | null): Promise<vo
   await pushBranch(session, branch);
 }
 
+/** Why Push All Tracked Branches cannot run right now, or null when it can. */
+export function pushAllReason(session: RepoSession | null | undefined): string | null {
+  if (!session) return "Open a repository first.";
+  if (!session.status || !session.refs) return "The repository is still loading.";
+  if (session.refs.remotes.length === 0) return "This repository has no remotes to push to.";
+  return busyReason(session);
+}
+
+/**
+ * What to report after `opPushAll`: the branches pushed, then one sentence for each kind of
+ * problem. `failed` when anything was not pushed that had something to push.
+ */
+export function pushAllOutcome(result: PushAllResult): { message: string; failed: boolean } {
+  const named = (outcome: PushAllOutcome) => result.branches.filter((b) => b.outcome === outcome);
+  const pushed = named("pushed");
+  const rejected = named("rejected");
+  const skipped = named("skipped");
+  const parts: string[] = [];
+  if (pushed.length === 1) parts.push(`Pushed ${pushed[0]!.branch} to ${pushed[0]!.to}.`);
+  else if (pushed.length > 1) parts.push(`Pushed ${pushed.length} branches: ${listNames(pushed.map((b) => b.branch))}.`);
+  if (rejected.length > 0) {
+    parts.push(
+      rejected.length === 1
+        ? `${rejected[0]!.branch} was not pushed, because ${rejected[0]!.to} has commits it lacks. Pull them first.`
+        : `${listNames(rejected.map((b) => b.branch))} were not pushed, because their remote branches have commits they lack. Pull them first.`,
+    );
+  }
+  for (const b of skipped) parts.push(`${b.branch} was skipped: ${b.detail}.`);
+  for (const f of result.failures) parts.push(networkFailureText(f.result, `Pushing to ${f.remote}`));
+  const failed = rejected.length > 0 || skipped.length > 0 || result.failures.length > 0;
+  if (parts.length === 0) {
+    const none = result.branches.length === 0 ? "No branch tracks a remote branch, so there was nothing to push." : "Every tracked branch is up to date on its remote.";
+    return { message: none, failed: false };
+  }
+  return { message: parts.join(" "), failed };
+}
+
+/**
+ * Pushes every local branch that tracks a remote branch to where Git's own `git push` would push
+ * it (see `opPushAll`), with progress and Stop in the status bar, then reports every branch in
+ * one notice. Untracked branches are left out, nothing is forced, and nothing is asked first.
+ */
+export async function pushAllBranches(session: RepoSession | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const reason = pushAllReason(session);
+  if (reason || !session) {
+    sessions.notify(reason ?? "Open a repository first.");
+    return;
+  }
+  const key = session.key;
+  await claimed(key, async () => {
+    try {
+      const result = await runOperation(key, "Pushing all tracked branches", (opId) => commands.opPushAll(key, opId), "pushAll");
+      const outcome = pushAllOutcome(result);
+      const failure = result.failures[0];
+      if (outcome.failed) sessions.notify(outcome.message, failure ? sshDiagnoseAction(key, failure.result) : null);
+      else sessions.notifySuccess(outcome.message);
+    } catch (e) {
+      sessions.notify(
+        isCancelled(e) ? "Pushing all tracked branches was stopped. The remotes may already have some of them; the next fetch shows which." : errorMessage(e),
+      );
+    }
+  });
+}
+
 /**
  * Pushes local `branch`, checked out or not, where plain `git push` would: the remote branch it
  * tracks, or where `remote.pushDefault`, `branch.<name>.pushRemote` or the remote's push refspecs
@@ -782,7 +880,7 @@ async function pushBranchNow(session: RepoSession, branch: string): Promise<void
     } else if (result.stderr.includes("[rejected]")) {
       sessions.notify(...(await rejectedPushNotice(key, branch, target)));
     } else {
-      sessions.notify(networkFailureText(result, `Pushing ${branch} to ${to}`));
+      sessions.notify(networkFailureText(result, `Pushing ${branch} to ${to}`), sshDiagnoseAction(key, result));
     }
   } catch (e) {
     sessions.notify(
@@ -857,8 +955,9 @@ async function syncBranch(session: RepoSession, branch: string): Promise<void> {
   try {
     const result = await runOperation(key, `Syncing ${branch} with ${to}`, (opId) => commands.opSync(key, opId, branch, mode, autostash, pushTo), "sync");
     const outcome = syncOutcome(key, result, branch, mode);
+    const diagnose = sshDiagnoseAction(key, result.pull) ?? (result.push ? sshDiagnoseAction(key, result.push) : null);
     if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
-    else sessions.notify(outcome.message, outcome.action);
+    else sessions.notify(outcome.message, outcome.action ?? diagnose);
   } catch (e) {
     sessions.notify(isCancelled(e) ? `The sync was stopped while fetching. Nothing was merged or pushed.` : errorMessage(e));
   }
@@ -1493,7 +1592,7 @@ export async function renameOnRemote(key: string, old: string, renamed: string, 
       const reason = result.stderr.includes("[rejected]")
         ? `${remote} already has a branch ${renamed} with commits that ${renamed} does not have, so the push was refused.`
         : networkFailureText(result, pushing);
-      sessions.notify(`${done} ${reason} ${kept}`);
+      sessions.notify(`${done} ${reason} ${kept}`, sshDiagnoseAction(key, result));
       return;
     }
   } catch (e) {
@@ -1732,7 +1831,7 @@ export async function pushTags(key: string, remote: string, tags: TagsToPush, wh
   try {
     const result = await runOperation(key, `Pushing ${what} to ${remote}`, (opId) => commands.opPushTags(key, opId, remote, tags), "push");
     const outcome = tagPushOutcome(result, remote, what);
-    if (outcome.failed) sessions.notify(outcome.message);
+    if (outcome.failed) sessions.notify(outcome.message, sshDiagnoseAction(key, result));
     else sessions.notifySuccess(outcome.message);
     return outcome;
   } catch (e) {
@@ -1852,7 +1951,7 @@ export async function deleteRemoteBranch(key: string, short: string, remote: str
           `Fetch, look at what is new on ${short}, then delete it again if it is still not needed.`,
       );
     } else {
-      sessions.notify(networkFailureText(result, what));
+      sessions.notify(networkFailureText(result, what), sshDiagnoseAction(key, result));
     }
   } catch (e) {
     sessions.notify(isCancelled(e) ? `The deletion was stopped. ${remote} may already have deleted ${branch}; the next fetch shows whether it did.` : errorMessage(e));
@@ -2038,7 +2137,7 @@ export async function pushBranchTo(key: string, branch: string, preset: PushToPr
     } else if (result.stderr.includes("[rejected]")) {
       sessions.notify(...(await rejectedPushNotice(key, branch, { remote: choice.remote, branch: choice.target })));
     } else {
-      sessions.notify(networkFailureText(result, what));
+      sessions.notify(networkFailureText(result, what), sshDiagnoseAction(key, result));
     }
   } catch (e) {
     sessions.notify(isCancelled(e) ? `The push was stopped. ${to} may already have the commits; the next fetch shows whether it does.` : errorMessage(e));

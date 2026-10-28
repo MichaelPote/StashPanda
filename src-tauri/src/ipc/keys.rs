@@ -44,19 +44,13 @@ fn fill_memory(cache: &PassphraseCache, info: &mut KeyInfo) {
 }
 
 /// The default folders. On Windows these include the home folders of the running WSL distros.
-async fn default_dirs(host: &Host) -> Vec<PathBuf> {
+pub(crate) async fn default_dirs(host: &Host) -> Vec<PathBuf> {
     let distros = match host {
         Host::Windows => crate::transport::wsl::list_running_distros().await.unwrap_or_default(),
         _ => Vec::new(),
     };
     let host = host.clone();
     blocking(move || keys::default_key_dirs(&host, &distros)).await.unwrap_or_default()
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn keys_default_dirs(state: State<'_, AppState>) -> Result<Vec<String>> {
-    Ok(default_dirs(&state.host).await.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
 }
 
 /// Every key in the default folders plus `extra_dirs`, with agent presence and where each
@@ -76,11 +70,7 @@ pub async fn keys_scan(state: State<'_, AppState>, extra_dirs: Vec<String>) -> R
         infos
     })
     .await?;
-    if let Ok(in_agent) = keys::agent::list_fingerprints().await {
-        for i in &mut infos {
-            i.in_agent = i.fingerprint.as_ref().is_some_and(|f| in_agent.contains(f));
-        }
-    }
+    crate::ipc::key_places::fill_places(&state.host, &mut infos).await;
     Ok(infos)
 }
 
@@ -187,8 +177,10 @@ pub async fn keys_convert(
     keys::write_private_file(&out, &text, overwrite)?;
     let pub_line = keys::public_line(&key)?;
     let pub_path = PathBuf::from(format!("{}.pub", out.to_string_lossy()));
-    if overwrite || !pub_path.exists() {
+    if overwrite {
         std::fs::write(&pub_path, format!("{pub_line}\n"))?;
+    } else {
+        keys::write_public_file(&out, &pub_line)?;
     }
     Ok(out.to_string_lossy().into_owned())
 }
@@ -208,7 +200,11 @@ pub async fn keys_generate(
     let text = keys::export_private(&key, ExportFormat::OpenSsh, passphrase.as_deref())?;
     let out = Path::new(&out_path);
     keys::write_private_file(out, &text, overwrite)?;
-    std::fs::write(format!("{out_path}.pub"), format!("{}\n", keys::public_line(&key)?))?;
+    if overwrite {
+        std::fs::write(format!("{out_path}.pub"), format!("{}\n", keys::public_line(&key)?))?;
+    } else {
+        keys::write_public_file(out, &keys::public_line(&key)?)?;
+    }
     Ok(keys::inspect(out))
 }
 
@@ -259,7 +255,11 @@ pub async fn keys_import(text: String, out_path: String, passphrase: Option<Stri
     let key = keys::load_private_key("pasted key", text.as_bytes(), passphrase.as_deref())?;
     let out = keys::export_private(&key, ExportFormat::OpenSsh, new_passphrase.as_deref())?;
     keys::write_private_file(Path::new(&out_path), &out, overwrite)?;
-    std::fs::write(format!("{out_path}.pub"), format!("{}\n", keys::public_line(&key)?))?;
+    if overwrite {
+        std::fs::write(format!("{out_path}.pub"), format!("{}\n", keys::public_line(&key)?))?;
+    } else {
+        keys::write_public_file(Path::new(&out_path), &keys::public_line(&key)?)?;
+    }
     Ok(keys::inspect(Path::new(&out_path)))
 }
 

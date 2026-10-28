@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "@/components/ui/label";
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, IpcError } from "@/lib/ipc";
-import { pullOutcome, runOperation, stopOperation } from "@/lib/repoActions";
+import { pullOutcome, runOperation, sshDiagnoseAction, stopOperation } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore } from "@/stores/sessions";
@@ -88,12 +88,14 @@ async function submit(): Promise<void> {
       "pull",
     );
     const outcome = pullOutcome(result, from.short, r.into, chosen);
-    if (outcome.failed && showing()) {
+    // A refused SSH key goes to the notice, whose Diagnose… button opens the SSH Diagnosis dialog.
+    const diagnose = sshDiagnoseAction(r.key, result);
+    if (outcome.failed && showing() && diagnose === null) {
       error.value = outcome.message;
       return;
     }
     if (outcome.kind === "success") sessions.notifySuccess(outcome.message);
-    else sessions.notify(outcome.message, outcome.action);
+    else sessions.notify(outcome.message, outcome.action ?? diagnose);
     if (showing()) dialogs.resolve("pull", result);
   } catch (e) {
     const cancelled = e instanceof IpcError && e.error.kind === "cancelled";

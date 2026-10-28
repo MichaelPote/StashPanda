@@ -57,17 +57,18 @@ const continueTitle = computed(() => {
   return op.value?.kind === "rebase" ? "Commit the resolved changes and go on with the next commit" : `Commit the resolved changes and finish the ${verb.value}`;
 });
 
-const BUTTON_CLASS =
-  "inline-flex h-[20px] shrink-0 items-center gap-1 rounded-sm border border-border-soft bg-background/60 px-2 text-xs leading-none font-medium hover:bg-row-hover aria-disabled:cursor-default aria-disabled:opacity-50 aria-disabled:hover:bg-background/60";
+/** Continue and Skip in the conflict yellow; Abort in red, since it throws the work away. */
+const BUTTON_CLASS = "bar-key key-conflict";
+const ABORT_CLASS = "bar-key key-danger";
 </script>
 
 <template>
-  <div v-if="op" class="flex min-h-[28px] shrink-0 items-center gap-2 border-b border-border band-conflict px-2 py-1 text-base" role="status" data-operation-banner>
+  <div v-if="op" class="flex min-h-[36px] shrink-0 items-center gap-2 border-b border-border band-conflict px-2 py-1 text-base" role="status" data-operation-banner>
     <component :is="ICONS[op.kind]" class="size-3.5 shrink-0 text-(--state-conflict)" aria-hidden="true" />
     <span class="shrink-0 font-medium">{{ names.title }}</span>
     <span v-if="op.subject" class="min-w-0 truncate text-muted-foreground" :title="op.subject">{{ op.subject }}</span>
     <span :class="['shrink-0 text-xs', conflicted > 0 ? 'text-foreground' : 'text-muted-foreground']">{{ stateText }}</span>
-    <span class="ml-auto flex shrink-0 items-center gap-1.5">
+    <span class="ml-auto flex shrink-0 items-center gap-3 pb-0.5">
       <!-- aria-disabled rather than disabled, so the tooltip with the reason still shows. -->
       <Tip :content="continueTitle">
         <button
@@ -96,7 +97,7 @@ const BUTTON_CLASS =
       <Tip :content="`Stop the ${verb} and put the branch back where it was`">
         <button
           type="button"
-          :class="[BUTTON_CLASS, 'text-destructive']"
+          :class="ABORT_CLASS"
           :aria-disabled="busy !== null"
           data-operation-abort
           @click="run('abort')"

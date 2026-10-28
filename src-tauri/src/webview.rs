@@ -61,3 +61,16 @@ pub fn open_inspector(app: &AppHandle) {
         window.open_devtools();
     }
 }
+
+/// Reloads the interface, as F5 would in a browser (the window's own shortcuts are off). The
+/// backend keeps its open repositories; the frontend opens its saved tabs again. Debug builds
+/// only; Developer > Refresh Window.
+#[cfg(debug_assertions)]
+pub fn reload_window(app: &AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        if let Err(e) = window.reload() {
+            tracing::warn!("could not reload the window: {e}");
+        }
+    }
+}

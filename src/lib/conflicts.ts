@@ -38,6 +38,34 @@ export interface OperationNames {
  * The names for the operation in `status`. Without one (conflicts left by applying a stash),
  * the checked-out branch and the stash when it is known, else "the other side".
  */
+/**
+ * The two sides' names cut short for the Take buttons: each word with a slash keeps only what
+ * comes after its last slash (`feature/planting-polygons` is `planting-polygons`,
+ * `origin/dependabot/npm_and_yarn/vite-8.3.4` is `vite-8.3.4`). When that makes the two the same
+ * (`feature/x` and `origin/feature/x`), each such word keeps what comes before its first slash
+ * instead, and when that does too, the full names are used.
+ */
+export function shortSideNames(names: Pick<OperationNames, "ours" | "theirs">): { ours: string; theirs: string } {
+  const cut = (name: string, part: (word: string) => string) => name.split(" ").map((w) => (w.includes("/") ? part(w) : w)).join(" ");
+  const last = (w: string) => w.split("/").pop() || w;
+  const first = (w: string) => w.slice(0, w.indexOf("/")) || w;
+  for (const part of [last, first]) {
+    const short = { ours: cut(names.ours, part), theirs: cut(names.theirs, part) };
+    if (short.ours !== short.theirs) return short;
+  }
+  return { ours: names.ours, theirs: names.theirs };
+}
+
+/**
+ * A Take button's label, `Take planting-polygons (Left)`: Left when `side` is the comparison's
+ * left pane (its `from`), Right when it is the right one, and neither when the comparison in the
+ * diff panel does not show that side.
+ */
+export function takeLabel(side: "ours" | "theirs", name: string, comparison: ConflictComparison | null): string {
+  const pane = comparison?.from === side ? " (Left)" : comparison?.to === side ? " (Right)" : "";
+  return `Take ${name}${pane}`;
+}
+
 export function operationNames(status: StatusSnapshot | null, refs: RefsSnapshot | null, stash: string | null = null): OperationNames {
   const op = status?.inProgress ?? null;
   const head = status?.branch ?? "HEAD";

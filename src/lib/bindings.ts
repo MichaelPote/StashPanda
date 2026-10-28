@@ -78,6 +78,16 @@ export const commands = {
 	 */
 	repoHeads: (keys: string[]) => typedError<RepoHead[], GitError>(__TAURI_INVOKE("repo_heads", { keys })),
 	wslListDistros: () => typedError<string[], GitError>(__TAURI_INVOKE("wsl_list_distros")),
+	/**
+	 *  Which Git and `ssh` the repository uses for `dest` (`git@github.com`), with the keys `ssh`
+	 *  would offer and the ones its agent holds. `port` is the remote URL's, when it names one.
+	 */
+	remoteSshSetup: (key: string, dest: string, port: number | null) => typedError<SshSetup, GitError>(__TAURI_INVOKE("remote_ssh_setup", { key, dest, port })),
+	/**
+	 *  Logs in to `dest` with the SSH command Git uses, without a shell and without waiting for a
+	 *  password or passphrase, and reports which keys were offered and whether one was accepted.
+	 */
+	remoteSshTest: (key: string, dest: string, port: number | null) => typedError<SshTest, GitError>(__TAURI_INVOKE("remote_ssh_test", { key, dest, port })),
 	hostInfo: () => typedError<HostInfo, GitError>(__TAURI_INVOKE("host_info")),
 	/**  Record the host key a server offered, so the next open succeeds. */
 	sshTrustHost: (host: string, port: number) => typedError<null, GitError>(__TAURI_INVOKE("ssh_trust_host", { host, port })),
@@ -204,7 +214,20 @@ export const commands = {
 	 *  has gone wrong.
 	 */
 	graphRefresh: (key: string, full: boolean) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_refresh", { key, full })),
-	keysDefaultDirs: () => typedError<string[], GitError>(__TAURI_INVOKE("keys_default_dirs")),
+	/**  The default key folders and `extra_dirs`, each with its place. */
+	keysFolders: (extraDirs: string[]) => typedError<KeyFolder[], GitError>(__TAURI_INVOKE("keys_folders", { extraDirs })),
+	/**
+	 *  `~/.ssh` on the server of every open repository reached over SSH, one entry per server. Only
+	 *  open repositories are used, so this reads through connections already made and never logs in.
+	 */
+	keysScanRemote: () => typedError<RemoteKeys[], GitError>(__TAURI_INVOKE("keys_scan_remote")),
+	/**
+	 *  Copies the key at `source_path` (in `source_place`) to `target`, as `name`, with its `.pub`
+	 *  beside it when it has one. `folder` is the folder to write to for Windows and this machine;
+	 *  a WSL distro reached from Windows and a server get `~/.ssh` of their own user. Never
+	 *  overwrites: a name that is taken fails with `KeyExists`. Returns where the key was written.
+	 */
+	keysCopy: (sourcePath: string, sourcePlace: KeyPlace, target: KeyPlace, folder: string | null, name: string) => typedError<string, GitError>(__TAURI_INVOKE("keys_copy", { sourcePath, sourcePlace, target, folder, name })),
 	/**
 	 *  Every key in the default folders plus `extra_dirs`, with agent presence and where each
 	 *  encrypted key's passphrase is remembered.
@@ -475,6 +498,14 @@ export const commands = {
 	/**  The branch name on the remote, without `refs/heads/`. */
 	branch: string,
 } | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push", { key, opId, branch, target })),
+	/**
+	 *  Push every local branch that tracks a remote branch to where plain `git push` would push it,
+	 *  one `git push` per remote; untracked branches are left out. Never forces: a rejected branch
+	 *  does not stop the others, and each branch's outcome is in the result. `opId` works as for
+	 *  `opPull`; `opCancel` stops it at any point, after which a remote may already have some of the
+	 *  branches.
+	 */
+	opPushAll: (key: string, opId: string) => typedError<PushAllResult, GitError>(__TAURI_INVOKE("op_push_all", { key, opId })),
 	/**
 	 *  Delete `branch` (the name on the remote, `feature/x`) on `remote`, for everyone who uses that
 	 *  remote: `git push <remote> --delete refs/heads/<branch>`, which also removes the
@@ -1359,7 +1390,9 @@ export type GitError = { kind: "gitNotFound"; searched: string[] } | { kind: "gi
  *  writing the config, or one died and left the file behind. `lock_path` is the lock file as
  *  Git names it, relative to the repository when Git gives a relative path.
  */
-{ kind: "configLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | 
+{ kind: "configLocked"; lockPath: string } | { kind: "invalidPath"; path: string; reason: string } | 
+/**  A key file is already there; the Key Manager never overwrites one, and asks for another name. */
+{ kind: "keyExists"; path: string } | { kind: "objectNotFound"; spec: string } | { kind: "tooLarge"; bytes: number; limit: number } | 
 /**
  *  A file was about to be saved over, but its contents on disk are no longer the ones it was
  *  opened with: another program, or Git, has changed it since. Nothing was written.
@@ -1500,6 +1533,20 @@ export type GraphSnapshotEvent = {
 /**  Which OS this build runs on, so the UI can phrase paths and options. */
 export type HostInfo = { type: "windows" } | { type: "linuxWsl"; distro: string } | { type: "linux" } | { type: "macOs" };
 
+export type IdentityFile = {
+	path: string,
+	state: IdentityFileState,
+	/**  From `ssh-keygen -l` when the file could be read. */
+	key: KeyLine | null,
+};
+
+export type IdentityFileState = "present" | "missing" | 
+/**
+ *  An old PEM key with no `.pub` beside it: its fingerprint, and any use of it, needs the
+ *  passphrase, which nothing can type when the app runs Git.
+ */
+"encrypted" | "unreadable";
+
 export type InProgress = {
 	kind: InProgressKind,
 	/**
@@ -1536,6 +1583,14 @@ export type InProgress = {
 
 export type InProgressKind = "merge" | "rebase" | "cherryPick" | "revert";
 
+/**  One folder the Key Manager reads keys from, with the tab it belongs in. */
+export type KeyFolder = {
+	path: string,
+	place: KeyPlace,
+	/**  Added with Add Folder…, so it can be removed again. */
+	extra: boolean,
+};
+
 export type KeyFormat = "ppkV2" | "ppkV3" | "openSsh" | 
 /**  `BEGIN RSA PRIVATE KEY` (PKCS#1), possibly OpenSSL-encrypted. */
 "pemRsa" | 
@@ -1561,7 +1616,31 @@ export type KeyInfo = {
 	inAgent: boolean,
 	/**  Where its passphrase is remembered, for an encrypted key. Filled by the caller. */
 	passphraseRemembered: PassphraseMemory,
+	/**  Which machine or WSL distro the key is on, for the Key Manager's tabs. Filled by the caller. */
+	place: KeyPlace,
 };
+
+/**  One key as `ssh-add -l` and `ssh-keygen -l` print it: `256 SHA256:… me@laptop (ED25519)`. */
+export type KeyLine = {
+	bits: number | null,
+	fingerprint: string,
+	comment: string,
+	keyType: string,
+};
+
+/**  Where a key or a key folder is, as the Key Manager's tabs group them. */
+export type KeyPlace = 
+/**  Windows: this machine on the Windows build, or `/mnt/<drive>/` from inside WSL. */
+{ type: "windows" } | 
+/**
+ *  A WSL distro: reached through `\\wsl.localhost\<distro>` from Windows, or the distro the
+ *  Linux build runs in.
+ */
+{ type: "wsl"; distro: string } | 
+/**  This machine, on Linux outside WSL or on macOS. */
+{ type: "local" } | 
+/**  `~/.ssh` on the server of a repository opened over SSH, read through its connection. */
+{ type: "remote"; repoKey: string; server: string };
 
 /**  The SSH key manager. */
 export type KeySettings = {
@@ -1689,6 +1768,45 @@ export type PullMode =
 /**  Only move the branch forward; refuse when both sides have new commits (`--ff-only`). */
 "fastForwardOnly";
 
+/**  One tracked local branch in `push_all`'s result. */
+export type PushAllBranch = {
+	/**  `dev` */
+	branch: string,
+	/**
+	 *  `origin/dev`: where it went or would have gone, as `git push` names it. Empty for a
+	 *  skipped branch.
+	 */
+	to: string,
+	outcome: PushAllOutcome,
+	/**  Why a branch was skipped, or Git's reason for a rejection (`fetch first`); otherwise empty. */
+	detail: string,
+};
+
+/**  A remote whose `git push` failed as a whole, with Git's output for the error notice. */
+export type PushAllFailure = {
+	remote: string,
+	result: OpResult,
+};
+
+/**  What `push_all` did with one branch. */
+export type PushAllOutcome = 
+/**  The remote branch now has the branch's commits. */
+"pushed" | 
+/**  Nothing to push: the remote branch already has every commit on it, as last fetched. */
+"upToDate" | 
+/**  The remote has commits the branch lacks; pulling them first lets it be pushed. */
+"rejected" | 
+/**  Not pushed, because `git push` would not push it, or not to a branch; `detail` says why. */
+"skipped" | 
+/**  The push to its remote failed as a whole (network, login); see `PushAllResult::failures`. */
+"failed";
+
+export type PushAllResult = {
+	/**  Every local branch that tracks a remote branch, by name. */
+	branches: PushAllBranch[],
+	failures: PushAllFailure[],
+};
+
 /**
  *  The `push.default` values that push a branch to a branch with another name: `upstream` to the
  *  branch it tracks, `current` to its own name on that branch's remote.
@@ -1759,6 +1877,19 @@ export type Remote = {
 	name: string,
 	url: string | null,
 	pushUrl: string | null,
+};
+
+/**  The keys in `~/.ssh` on one server. */
+export type RemoteKeys = {
+	/**  The open repository whose connection reached the server. */
+	repoKey: string,
+	/**  `user@host`, with `:port` when it is not 22. */
+	server: string,
+	/**  The server's `~/.ssh`, empty when it could not be read. */
+	folder: string,
+	keys: KeyInfo[],
+	/**  Why the folder could not be read. */
+	error: string | null,
 };
 
 export type RepoChangedEvent = {
@@ -1923,6 +2054,53 @@ export type SnapshotReason = "cache" | "live" | "refresh" | "status" |
 /**  Refs were switched on or off in the graph. */
 "filter";
 
+export type SshAgent = { state: "keys"; keys: KeyLine[] } | 
+/**  An agent answered and holds no keys. */
+{ state: "empty" } | 
+/**  No agent could be reached; `detail` is what `ssh-add` said. */
+{ state: "unavailable" } | { state: "failed"; detail: string };
+
+/**  How Git reaches `user@host`, read without connecting. */
+export type SshSetup = {
+	/**  The Git executable, as the app runs it. */
+	gitExecutable: string,
+	gitVersion: string,
+	/**  What chose the SSH command: `GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand` or `default`. */
+	sshSource: string,
+	/**  The SSH command Git runs, such as `ssh` or a path set in `core.sshCommand`. */
+	sshCommand: string,
+	/**  Where that command's program is. */
+	sshProgram: string,
+	/**  `ssh -V`. */
+	sshVersion: string,
+	/**  From `ssh -G`. Empty when the SSH program is not OpenSSH and could not say. */
+	user: string,
+	hostname: string,
+	port: string,
+	/**  `IdentitiesOnly yes`: only the identity files are offered, not other keys in the agent. */
+	identitiesOnly: boolean,
+	identityAgent: string | null,
+	/**  The key files `ssh` tries, in its order. */
+	identityFiles: IdentityFile[],
+	agent: SshAgent,
+};
+
+/**  The outcome of `ssh -T -v user@host`. */
+export type SshTest = {
+	outcome: SshTestOutcome,
+	/**  The command to run by hand, without the options that keep the test from waiting. */
+	command: string,
+	exitCode: number | null,
+	/**  Every key `ssh` considered, in its order, marked with whether it was offered and accepted. */
+	keys: TriedKey[],
+	/**  The whole of `ssh`'s output. */
+	output: string,
+};
+
+export type SshTestOutcome = "authenticated" | "denied" | 
+/**  `Host key verification failed`: the host is not in known_hosts, or its key changed. */
+"hostKeyUnverified" | "couldNotConnect" | "unknown";
+
 /**  Which lock file `op_remove_stale_lock` deletes. */
 export type StaleLock = 
 /**  `<git dir>/index.lock`, after an `indexLocked` error. */
@@ -2048,6 +2226,17 @@ export type TransportState = {
 	detail: string | null,
 	/**  For Degraded: how long until the next attempt. */
 	retryInMs: number | null,
+};
+
+export type TriedKey = {
+	/**  The key file's path, or an agent key's comment. */
+	label: string,
+	keyType: string | null,
+	fingerprint: string | null,
+	/**  Where `ssh` found it: `explicit` (an IdentityFile), `agent`, and so on. */
+	source: string,
+	offered: boolean,
+	accepted: boolean,
 };
 
 export type UiState = {

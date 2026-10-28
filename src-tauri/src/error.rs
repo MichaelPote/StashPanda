@@ -66,6 +66,9 @@ pub enum GitError {
     ConfigLocked { lock_path: String },
     #[error("invalid path {path}: {reason}")]
     InvalidPath { path: String, reason: String },
+    /// A key file is already there; the Key Manager never overwrites one, and asks for another name.
+    #[error("{path} already exists")]
+    KeyExists { path: String },
     #[error("object not found: {spec}")]
     ObjectNotFound { spec: String },
     #[error("content is too large ({bytes} bytes, limit {limit})")]

@@ -64,7 +64,8 @@ describe("availableCommands", () => {
   it("lists the commands not on the toolbar, in registry order", () => {
     const available = availableCommands(DEFAULT_TOOLBAR).map((c) => c.id);
     expect(available).not.toContain("commit");
-    expect(available).toContain("settings");
+    expect(available).not.toContain("settings");
+    expect(available).toContain("sync");
     expect(availableCommands([]).length).toBe(TOOLBAR_COMMANDS.length);
   });
 });

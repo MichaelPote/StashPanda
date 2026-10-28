@@ -2,7 +2,7 @@
  * What the SSH Keys page in Settings and the Add Repository dialog's key picker share: how a key
  * is labelled, the folders scanned, the system keychain's status, and asking for a passphrase.
  */
-import { commands, type Connection, type KeychainStatus, type KeyFormat, type KeyInfo, type RepoEntry } from "@/lib/bindings";
+import { commands, type Connection, type KeychainStatus, type KeyFormat, type KeyInfo, type KeyPlace, type RepoEntry } from "@/lib/bindings";
 import { IpcError, unwrap } from "@/lib/ipc";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSettingsStore } from "@/stores/settings";
@@ -115,4 +115,30 @@ export function connectionWithKey(entry: RepoEntry, path: string): Connection {
   const c = entry.connection;
   if (c?.type === "ssh") return { ...c, identityFile: path };
   return { type: "ssh", host: "", user: null, port: null, identityFile: path, remoteGit: null };
+}
+
+/** A stable id for a key place, for the Key Manager's tabs. */
+export function placeId(place: KeyPlace): string {
+  switch (place.type) {
+    case "wsl":
+      return `wsl:${place.distro}`;
+    case "remote":
+      return `remote:${place.server}`;
+    default:
+      return place.type;
+  }
+}
+
+/** The tab's name for a key place: "Windows", "WSL (Ubuntu)", "This computer", "me@build.example.com". */
+export function placeLabel(place: KeyPlace): string {
+  switch (place.type) {
+    case "windows":
+      return "Windows";
+    case "wsl":
+      return `WSL (${place.distro})`;
+    case "local":
+      return "This computer";
+    case "remote":
+      return place.server;
+  }
 }

@@ -4,14 +4,15 @@ import { join } from "@tauri-apps/api/path";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { FolderPlusIcon, KeyRoundIcon, LoaderCircleIcon, RefreshCwIcon, UploadIcon, XIcon } from "@lucide/vue";
-import { commands, type ExportFormat, type GenerateAlgorithm, type KeychainStatus, type KeyInfo, type RepoEntry } from "@/lib/bindings";
+import { commands, type ExportFormat, type GenerateAlgorithm, type KeychainStatus, type KeyFolder, type KeyInfo, type KeyPlace, type RemoteKeys, type RepoEntry } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tip } from "@/components/ui/tooltip";
 import { pathBasename } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
-import { connectionWithKey, extraKeyDirs, isSshEntry, keychainStatus, scanKeys, withPassphrase } from "@/lib/keys";
+import { connectionWithKey, extraKeyDirs, isSshEntry, keychainStatus, placeId, placeLabel, scanKeys, withPassphrase } from "@/lib/keys";
 import { openRepository } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
 import { useDialogsStore } from "@/stores/dialogs";
@@ -28,7 +29,11 @@ const settingsStore = useSettingsStore();
 
 const keys = ref<KeyInfo[] | null>(null);
 const loading = ref(false);
-const defaultDirs = ref<string[]>([]);
+/** Every folder read, default and added, with the tab it belongs in. */
+const folders = ref<KeyFolder[]>([]);
+const defaultDirs = computed(() => folders.value.filter((f) => !f.extra).map((f) => f.path));
+/** `~/.ssh` on the server of each open repository reached over SSH. */
+const remote = ref<RemoteKeys[]>([]);
 const extraDirs = computed(() => extraKeyDirs());
 const agentAvailable = ref(false);
 const keychain = ref<KeychainStatus | null>(null);
@@ -42,10 +47,67 @@ type Panel =
   | { kind: "generate" }
   | { kind: "import" }
   | { kind: "export"; key: KeyInfo }
-  | { kind: "changePassphrase"; key: KeyInfo };
+  | { kind: "changePassphrase"; key: KeyInfo }
+  | { kind: "copy"; key: KeyInfo };
 const panel = ref<Panel | null>(null);
 
 const sshRepos = computed<RepoEntry[]>(() => library.repos.filter(isSshEntry));
+
+/** One tab: Windows, a WSL distro, this computer, or a server. */
+interface PlaceTab {
+  id: string;
+  label: string;
+  place: KeyPlace;
+  folders: KeyFolder[];
+  keys: KeyInfo[];
+  /** Where a copy into this place is written: its first folder, or null for `~/.ssh` of a WSL
+   *  distro reached from Windows or of a server, which the backend finds itself. */
+  writeFolder: string | null;
+  /** Why a server's keys could not be read. */
+  error: string | null;
+}
+
+const PLACE_ORDER: Record<KeyPlace["type"], number> = { windows: 0, wsl: 1, local: 2, remote: 3 };
+
+const tabs = computed<PlaceTab[]>(() => {
+  const byId = new Map<string, PlaceTab>();
+  const tabFor = (place: KeyPlace): PlaceTab => {
+    const id = placeId(place);
+    let tab = byId.get(id);
+    if (!tab) {
+      tab = { id, label: placeLabel(place), place, folders: [], keys: [], writeFolder: null, error: null };
+      byId.set(id, tab);
+    }
+    return tab;
+  };
+  for (const f of folders.value) tabFor(f.place).folders.push(f);
+  for (const k of keys.value ?? []) tabFor(k.place).keys.push(k);
+  for (const r of remote.value) {
+    const tab = tabFor({ type: "remote", repoKey: r.repoKey, server: r.server });
+    tab.keys.push(...r.keys);
+    tab.error = r.error;
+    if (r.folder) tab.folders.push({ path: r.folder, place: tab.place, extra: false });
+  }
+  for (const tab of byId.values()) {
+    const first = tab.folders.find((f) => !f.extra)?.path ?? tab.folders[0]?.path ?? null;
+    // A WSL distro seen from Windows is written to through the distro, so its own permissions apply.
+    const throughShell = tab.place.type === "remote" || (tab.place.type === "wsl" && (first ?? "\\\\").startsWith("\\\\"));
+    tab.writeFolder = throughShell ? null : first;
+  }
+  return [...byId.values()].sort((a, b) => PLACE_ORDER[a.place.type] - PLACE_ORDER[b.place.type] || a.label.localeCompare(b.label));
+});
+
+const activeTab = ref("");
+watch(tabs, (list) => {
+  if (!list.some((t) => t.id === activeTab.value)) activeTab.value = list[0]?.id ?? "";
+});
+const shown = computed(() => tabs.value.find((t) => t.id === activeTab.value) ?? null);
+
+/** Where a key can be copied to: every place but its own that can be written to. */
+function copyTargets(key: KeyInfo): PlaceTab[] {
+  const own = placeId(key.place);
+  return tabs.value.filter((t) => t.id !== own && t.error === null && (t.writeFolder !== null || t.place.type === "remote" || t.place.type === "wsl"));
+}
 
 /** The folder new keys go in: the first default one (`~/.ssh`). */
 const firstFolder = computed(() => defaultDirs.value[0] ?? extraDirs.value[0] ?? null);
@@ -61,9 +123,14 @@ function fail(e: unknown): void {
 async function refresh(): Promise<void> {
   loading.value = true;
   try {
-    const [found, dirs] = await Promise.all([scanKeys(), unwrap(commands.keysDefaultDirs())]);
+    const [found, dirs, servers] = await Promise.all([
+      scanKeys(),
+      unwrap(commands.keysFolders(extraKeyDirs())),
+      unwrap(commands.keysScanRemote()).catch((): RemoteKeys[] => []),
+    ]);
     keys.value = found;
-    defaultDirs.value = dirs;
+    folders.value = dirs;
+    remote.value = servers;
   } catch (e) {
     keys.value ??= [];
     fail(e);
@@ -162,6 +229,9 @@ function onAction(info: KeyInfo, action: KeyAction): void {
         succeed(`Forgot the passphrase of ${info.fileName}.`);
       });
       return;
+    case "copyTo":
+      openPanel({ kind: "copy", key: info });
+      return;
     case "reveal":
       void onKey(info, () => revealItemInDir(info.path));
       return;
@@ -215,6 +285,9 @@ const form = ref({
   protection: "same" as "same" | "none" | "new",
   format: "openSsh" as ExportFormat,
   current: "",
+  /** Copy To: the tab id of the place to copy to, and the name to give the copy. */
+  copyTarget: "",
+  copyName: "",
 });
 const formError = ref<string | null>(null);
 const formBusy = ref(false);
@@ -233,6 +306,8 @@ function openPanel(p: Panel): void {
     protection: p.kind === "changePassphrase" ? "new" : "same",
     format: "openSsh",
     current: "",
+    copyTarget: p.kind === "copy" ? (copyTargets(p.key)[0]?.id ?? "") : "",
+    copyName: p.kind === "copy" ? p.key.fileName : "",
   };
   if (p.kind === "generate" && form.value.comment === "") {
     unwrap(commands.keysDefaultComment())
@@ -280,6 +355,7 @@ const formReady = computed(() => {
   if (needsNew && passphraseMismatch.value) return false;
   if (p.kind !== "generate" && form.value.protection === "new" && form.value.passphrase.length === 0) return false;
   if (p.kind === "generate") return form.value.outPath.trim().length > 0;
+  if (p.kind === "copy") return form.value.copyTarget !== "" && form.value.copyName.trim().length > 0;
   return true;
 });
 
@@ -318,14 +394,24 @@ async function submitForm(): Promise<void> {
         return;
       }
       const newPassphrase = chosenPassphrase();
-      // The save dialog has already asked about replacing an existing file.
+      // Never over a file that is there, even one the save dialog offered to replace: keyExists
+      // comes back instead, and the form stays open for another name.
       const written = await withPassphrase(p.key, "to export it", (pass) =>
-        unwrap(commands.keysConvert(p.key.path, form.value.format, outPath, pass, newPassphrase, true)),
+        unwrap(commands.keysConvert(p.key.path, form.value.format, outPath, pass, newPassphrase, false)),
       );
       if (written === undefined) return;
       panel.value = null;
       await refresh();
       succeed(`Exported ${p.key.fileName} in ${formatName} format as ${written}, with a .pub file beside it.`);
+    } else if (p.kind === "copy") {
+      const target = tabs.value.find((t) => t.id === form.value.copyTarget);
+      if (!target) return;
+      const name = form.value.copyName.trim();
+      // Never overwrites: a name that is taken comes back as keyExists, and the form stays open.
+      const written = await unwrap(commands.keysCopy(p.key.path, p.key.place, target.place, target.writeFolder, name));
+      panel.value = null;
+      await refresh();
+      succeed(`Copied ${p.key.fileName} to ${target.label} as ${written}${p.key.publicKeyFile ? ", with its .pub file" : ""}.`);
     } else if (p.kind === "changePassphrase") {
       const current = form.value.current || null;
       const next = form.value.protection === "none" ? null : form.value.passphrase;
@@ -373,23 +459,29 @@ const selectClass =
       </Button>
     </div>
 
+    <Tabs v-if="tabs.length > 1" v-model="activeTab">
+      <TabsList class="flex-wrap justify-start">
+        <TabsTrigger v-for="t in tabs" :key="t.id" :value="t.id" class="text-base" :data-key-place="t.id">
+          {{ t.label }}<span class="ml-1 text-muted-foreground">({{ t.keys.length }})</span>
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
+
     <div class="grid gap-1 text-xs text-muted-foreground">
-      <p>Looking for keys in:</p>
+      <p>{{ shown?.place.type === "remote" ? `Keys on ${shown.label}, read through the connection of an open repository:` : "Looking for keys in:" }}</p>
       <ul class="grid gap-0.5">
-        <Tip v-for="dir in defaultDirs" :key="dir" :content="dir">
-          <li class="truncate font-mono">{{ dir }}</li>
-        </Tip>
-        <li v-for="dir in extraDirs" :key="dir" class="flex min-w-0 items-center gap-1">
-          <Tip :content="dir">
-            <span class="truncate font-mono">{{ dir }}</span>
+        <li v-for="f in shown?.folders ?? []" :key="f.path" class="flex min-w-0 items-center gap-1">
+          <Tip :content="f.path">
+            <span class="truncate font-mono">{{ f.path }}</span>
           </Tip>
-          <Tip :content="`Stop looking in ${dir}`">
-            <button type="button" class="shrink-0 rounded p-0.5 hover:bg-row-hover hover:text-foreground" :aria-label="`Stop looking in ${dir}`" @click="removeFolder(dir)">
+          <Tip v-if="f.extra" :content="`Stop looking in ${f.path}`">
+            <button type="button" class="shrink-0 rounded p-0.5 hover:bg-row-hover hover:text-foreground" :aria-label="`Stop looking in ${f.path}`" @click="removeFolder(f.path)">
               <XIcon class="size-3" />
             </button>
           </Tip>
         </li>
-        <li v-if="defaultDirs.length === 0 && extraDirs.length === 0">No .ssh folder was found. Generate or import a key to create one.</li>
+        <li v-if="shown?.error" class="text-destructive">{{ shown.error }}</li>
+        <li v-else-if="(shown?.folders.length ?? 0) === 0">No .ssh folder was found. Generate or import a key to create one.</li>
       </ul>
     </div>
 
@@ -444,6 +536,27 @@ const selectClass =
         </div>
       </template>
 
+      <template v-else-if="panel.kind === 'copy'">
+        <h4 class="text-base font-medium">Copy {{ panel.key.fileName }}</h4>
+        <p class="text-xs text-muted-foreground">
+          Copies the private key{{ panel.key.publicKeyFile ? " and its .pub file" : "" }} as they are, passphrase included. Into WSL or onto a server it goes in ~/.ssh,
+          readable only by you. A key that is already there is never replaced: if the name is taken, choose another.
+        </p>
+        <p v-if="copyTargets(panel.key).length === 0" class="text-base text-muted-foreground">There is nowhere else to copy it to. Open a repository on a server, or start a WSL distro, to copy it there.</p>
+        <div v-else class="grid grid-cols-2 gap-3">
+          <div class="grid gap-1.5">
+            <Label for="key-copy-target" class="text-base">Copy to</Label>
+            <select id="key-copy-target" v-model="form.copyTarget" :class="selectClass">
+              <option v-for="t in copyTargets(panel.key)" :key="t.id" :value="t.id">{{ t.label }}{{ t.writeFolder ? ` (${t.writeFolder})` : " (~/.ssh)" }}</option>
+            </select>
+          </div>
+          <div class="grid gap-1.5">
+            <Label for="key-copy-name" class="text-base">Name</Label>
+            <Input id="key-copy-name" v-model="form.copyName" class="font-mono text-base" autocomplete="off" spellcheck="false" />
+          </div>
+        </div>
+      </template>
+
       <template v-else-if="panel.kind === 'changePassphrase'">
         <h4 class="text-base font-medium">Change the passphrase of {{ panel.key.fileName }}</h4>
         <div v-if="panel.key.encrypted && panel.key.passphraseRemembered === 'none'" class="grid gap-1.5">
@@ -453,7 +566,7 @@ const selectClass =
       </template>
 
       <!-- The new file's passphrase: Generate always asks; Export and Change Passphrase offer a choice. -->
-      <fieldset v-if="panel.kind !== 'generate'" class="grid gap-1">
+      <fieldset v-if="panel.kind === 'export' || panel.kind === 'changePassphrase'" class="grid gap-1">
         <legend class="mb-1 text-base">{{ panel.kind === "export" ? "Passphrase of the exported file" : "New passphrase" }}</legend>
         <label v-if="panel.kind === 'export'" class="flex items-center gap-2 text-base select-none">
           <input v-model="form.protection" type="radio" name="key-protection" value="same" class="size-3.5 accent-primary" />
@@ -468,7 +581,7 @@ const selectClass =
           No passphrase (anyone who can read the file can use the key)
         </label>
       </fieldset>
-      <div v-if="panel.kind === 'generate' || form.protection === 'new'" class="grid grid-cols-2 gap-3">
+      <div v-if="panel.kind === 'generate' || (panel.kind !== 'copy' && form.protection === 'new')" class="grid grid-cols-2 gap-3">
         <div class="grid gap-1.5">
           <Label for="key-form-passphrase" class="text-base">
             Passphrase <span v-if="panel.kind === 'generate'" class="text-muted-foreground">(optional)</span>
@@ -497,7 +610,7 @@ const selectClass =
         <Button type="button" variant="outline" @click="panel = null">Cancel</Button>
         <Button type="submit" :disabled="!formReady">
           <LoaderCircleIcon v-if="formBusy" class="animate-spin" />
-          {{ panel.kind === "generate" ? "Generate" : panel.kind === "export" ? "Export As…" : "Change Passphrase" }}
+          {{ panel.kind === "generate" ? "Generate" : panel.kind === "export" ? "Export As…" : panel.kind === "copy" ? "Copy" : "Change Passphrase" }}
         </Button>
       </div>
     </form>
@@ -506,10 +619,12 @@ const selectClass =
       <LoaderCircleIcon class="size-3.5 animate-spin" />
       Looking for keys…
     </div>
-    <p v-else-if="keys.length === 0" class="text-base text-muted-foreground">No private keys were found. Generate one, or import one you have.</p>
+    <p v-else-if="(shown?.keys.length ?? 0) === 0" class="text-base text-muted-foreground">
+      {{ shown?.place.type === "remote" ? "No private keys were found in ~/.ssh on this server." : "No private keys were found. Generate one, or import one you have." }}
+    </p>
     <div v-else class="grid gap-2">
       <KeyRow
-        v-for="k in keys"
+        v-for="k in shown?.keys ?? []"
         :key="k.path"
         :info="k"
         :ssh-repos="sshRepos"

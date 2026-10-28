@@ -567,6 +567,15 @@
     height: 100%;
     overflow: hidden;
   }
+  /* A menu that reaches past the bottom of the window (in a portal at the end of body) focuses
+     the item under the pointer, and a hidden overflow can still be scrolled from code, so the
+     whole interface scrolled up to bring that item into view. A clip cannot be scrolled at all,
+     but on html it would apply to the viewport, which treats it as hidden; on body, positioned so
+     that it holds the menus, it clips them instead. */
+  body {
+    position: relative;
+    overflow: clip;
+  }
   .font-mono {
     font-family: var(--font-mono);
   }
@@ -897,6 +906,64 @@
     transform: translateY(2px);
     border-bottom-color: var(--danger-edge);
     box-shadow: none;
+  }
+}
+
+/* Conflict chiclet key (Continue, Abort, Take, Mark as resolved): the conflict yellow with dark
+   ink, so the way out of a conflict stands out from everything else on screen. */
+@utility key-conflict {
+  color: var(--state-conflict-ink);
+  background: var(--state-conflict);
+  border-color: color-mix(in oklch, var(--state-conflict) 55%, black);
+  border-bottom-color: color-mix(in oklch, var(--state-conflict) 45%, black);
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--state-conflict) 45%, black), 0 2px 0 rgba(0, 0, 0, 0.35);
+  &:hover:not(:disabled):not([aria-disabled="true"]) {
+    background: color-mix(in oklch, var(--state-conflict) 85%, white);
+  }
+  &:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: translateY(2px);
+    border-bottom-color: color-mix(in oklch, var(--state-conflict) 55%, black);
+    box-shadow: none;
+  }
+}
+
+/* Merge Editor… key: purple with white text, apart from the yellow Take keys beside it. */
+@utility key-merge {
+  color: #ffffff;
+  background: #8250df;
+  border-color: #5a32a3;
+  border-bottom-color: #4c2889;
+  box-shadow: 0 1px 0 #4c2889, 0 2px 0 rgba(0, 0, 0, 0.35);
+  &:hover:not(:disabled):not([aria-disabled="true"]) {
+    background: color-mix(in oklch, #8250df 85%, white);
+  }
+  &:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: translateY(2px);
+    border-bottom-color: #5a32a3;
+    box-shadow: none;
+  }
+}
+
+/* The size of the keys in the merge bar and the conflict strip above a conflicted file
+   (Continue, Abort, Take, Mark as resolved): large enough to find at a glance. */
+@utility bar-key {
+  display: inline-flex;
+  height: 26px;
+  min-width: calc(var(--spacing) * 24);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  gap: calc(var(--spacing) * 1.5);
+  border-width: 1px;
+  border-radius: var(--radius-md);
+  padding-inline: calc(var(--spacing) * 4);
+  font-size: var(--text-sm);
+  line-height: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  &[aria-disabled="true"] {
+    cursor: default;
+    opacity: 0.5;
   }
 }
 

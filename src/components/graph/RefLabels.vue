@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject } from "vue";
-import type { RefLabel } from "@/lib/bindings";
+import type { GraphRow, RefLabel } from "@/lib/bindings";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
@@ -17,6 +17,8 @@ const props = defineProps<{
   colour: number;
   /** True on HEAD's row when no local branch is current: shows a detached HEAD pill. */
   detachedHead: boolean;
+  /** The row the labels sit on, which gives the branch menu the commit row's own items. */
+  row?: GraphRow | null;
 }>();
 
 const MAX_VISIBLE = 3;
@@ -76,6 +78,7 @@ function shapeFor(label: RefLabel): PillShape {
       :kind="label.kind"
       :target="oid"
       :is-current="label.isCurrent"
+      :row="row"
     >
       <RefPill
         :label="label"
@@ -107,6 +110,7 @@ function shapeFor(label: RefLabel): PillShape {
             :kind="label.kind"
             :target="oid"
             :is-current="label.isCurrent"
+            :row="row"
           >
             <RefPill
               :label="label"

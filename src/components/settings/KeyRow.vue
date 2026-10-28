@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { CopyIcon, EllipsisVerticalIcon, KeyRoundIcon, LockIcon, TriangleAlertIcon } from "@lucide/vue";
+import { CopyIcon, CopyPlusIcon, EllipsisVerticalIcon, KeyRoundIcon, LockIcon, TriangleAlertIcon } from "@lucide/vue";
 import type { KeyInfo, RepoEntry } from "@/lib/bindings";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,8 @@ export type KeyAction =
   | "changePassphrase"
   | "forgetPassphrase"
   | "reveal"
-  | "delete";
+  | "delete"
+  | "copyTo";
 
 const props = defineProps<{
   info: KeyInfo;
@@ -47,6 +48,8 @@ const emit = defineEmits<{
 }>();
 
 const algorithm = computed(() => keyAlgorithmLabel(props.info));
+/** A key on a server, read through a repository's connection: it can only be copied from there. */
+const remote = computed(() => props.info.place.type === "remote");
 const isOpenSsh = computed(() => props.info.format === "openSsh");
 
 // Why each greyed-out action is unavailable, shown as its tooltip.
@@ -92,11 +95,17 @@ const rememberedLabel = computed(() => {
         </Badge>
       </Tip>
       <div class="ml-auto flex shrink-0 items-center gap-1">
-        <Button type="button" variant="outline" size="sm" :disabled="busy || info.error !== null" @click="emit('action', 'copyPublic')">
+        <Tip content="Copy the key, and its .pub file, to Windows, a WSL distro or a server. An existing key is never replaced.">
+          <Button type="button" variant="outline" size="sm" :disabled="busy" @click="emit('action', 'copyTo')">
+            <CopyPlusIcon />
+            Copy to…
+          </Button>
+        </Tip>
+        <Button v-if="!remote" type="button" variant="outline" size="sm" :disabled="busy || info.error !== null" @click="emit('action', 'copyPublic')">
           <CopyIcon />
           Copy public key
         </Button>
-        <DropdownMenu>
+        <DropdownMenu v-if="!remote">
           <Tip content="More actions">
             <DropdownMenuTrigger as-child>
               <Button type="button" variant="ghost" size="icon-sm" :disabled="busy" :aria-label="`Actions for ${info.fileName}`">

@@ -645,6 +645,164 @@ pub async fn push_tags(
     Ok(joined)
 }
 
+/// What `push_all` did with one branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PushAllOutcome {
+    /// The remote branch now has the branch's commits.
+    Pushed,
+    /// Nothing to push: the remote branch already has every commit on it, as last fetched.
+    UpToDate,
+    /// The remote has commits the branch lacks; pulling them first lets it be pushed.
+    Rejected,
+    /// Not pushed, because `git push` would not push it, or not to a branch; `detail` says why.
+    Skipped,
+    /// The push to its remote failed as a whole (network, login); see `PushAllResult::failures`.
+    Failed,
+}
+
+/// One tracked local branch in `push_all`'s result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PushAllBranch {
+    /// `dev`
+    pub branch: String,
+    /// `origin/dev`: where it went or would have gone, as `git push` names it. Empty for a
+    /// skipped branch.
+    pub to: String,
+    pub outcome: PushAllOutcome,
+    /// Why a branch was skipped, or Git's reason for a rejection (`fetch first`); otherwise empty.
+    pub detail: String,
+}
+
+/// A remote whose `git push` failed as a whole, with Git's output for the error notice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PushAllFailure {
+    pub remote: String,
+    pub result: OpResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PushAllResult {
+    /// Every local branch that tracks a remote branch, by name.
+    pub branches: Vec<PushAllBranch>,
+    pub failures: Vec<PushAllFailure>,
+}
+
+/// Most bytes of refspecs given to one `git push`, well under the Windows command-line limit.
+const REFSPEC_BATCH_BYTES: usize = 24 * 1024;
+
+/// Push every local branch that tracks a remote branch to where plain `git push` would push it
+/// (see `implicit_push_target`), with one `git push --porcelain` per remote and batch of
+/// refspecs. Untracked branches, and tracked ones whose remote branch is gone, are left out. A
+/// branch that Git, as last fetched, finds has nothing new for its push destination
+/// (`%(push:track)` without "ahead") is reported up to date without being sent. Never forces: a
+/// rejected branch does not stop the others. A failure that is not about one branch (no network,
+/// a refused login) fails that remote's branches and is returned in `failures`.
+pub async fn push_all(
+    client: &GitClient,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<PushAllResult> {
+    let out = client
+        .exec(GitReq::new(
+            "for-each-ref",
+            // The full name, since `refname:short` gives `heads/dev` when a tag is also called `dev`.
+            ["for-each-ref", "--format=%(refname)%00%(upstream)%00%(upstream:track,nobracket)%00%(push)%00%(push:track,nobracket)", "refs/heads"],
+        ))
+        .await?;
+    let mut branches = Vec::new();
+    // Branches to push, by remote, in the order the remotes first come up.
+    let mut by_remote: Vec<(String, Vec<(String, PushTarget)>)> = Vec::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        let [refname, upstream, upstream_track, push_ref, push_track] = line.split('\0').collect::<Vec<_>>()[..] else { continue };
+        let Some(branch) = refname.strip_prefix("refs/heads/") else { continue };
+        if !upstream.starts_with("refs/remotes/") || upstream_track == "gone" {
+            continue;
+        }
+        if let Some(to) = push_ref.strip_prefix("refs/remotes/") {
+            if !push_track.contains("ahead") {
+                branches.push(PushAllBranch { branch: branch.into(), to: to.into(), outcome: PushAllOutcome::UpToDate, detail: String::new() });
+                continue;
+            }
+        }
+        let skipped = |detail: String| PushAllBranch { branch: branch.into(), to: String::new(), outcome: PushAllOutcome::Skipped, detail };
+        match implicit_push_target(client, branch).await {
+            Ok(Some(target)) => match by_remote.iter_mut().find(|(r, _)| *r == target.remote) {
+                Some((_, list)) => list.push((branch.into(), target)),
+                None => by_remote.push((target.remote.clone(), vec![(branch.into(), target)])),
+            },
+            Ok(None) => branches.push(skipped("it does not track a remote branch".into())),
+            Err(GitError::InvalidPath { reason, .. } | GitError::PushTargetRefused { reason, .. }) => branches.push(skipped(reason)),
+            Err(e) => return Err(e),
+        }
+    }
+
+    let mut failures = Vec::new();
+    for (remote, list) in by_remote {
+        let mut batches: Vec<Vec<(String, PushTarget)>> = vec![Vec::new()];
+        let mut bytes = 0;
+        for item in list {
+            let len = item.0.len() + item.1.branch.len() + 24;
+            if bytes + len > REFSPEC_BATCH_BYTES && !batches.last().is_some_and(Vec::is_empty) {
+                batches.push(Vec::new());
+                bytes = 0;
+            }
+            bytes += len;
+            batches.last_mut().expect("never empty").push(item);
+        }
+        for batch in batches {
+            let mut args = vec!["push".to_string(), "--progress".into(), "--porcelain".into(), remote.clone()];
+            args.extend(batch.iter().map(|(branch, t)| format!("refs/heads/{branch}:refs/heads/{}", t.branch)));
+            let res = result(client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?);
+            let lines = porcelain_push_lines(&res.stdout);
+            let mut whole_failed = false;
+            for (branch, target) in batch {
+                let to = format!("{}/{}", target.remote, target.branch);
+                let (outcome, detail) = match lines.iter().find(|l| l.from == format!("refs/heads/{branch}")) {
+                    Some(l) if l.flag == '!' => (PushAllOutcome::Rejected, l.reason.clone()),
+                    Some(l) if l.flag == '=' => (PushAllOutcome::UpToDate, String::new()),
+                    Some(_) => (PushAllOutcome::Pushed, String::new()),
+                    None => {
+                        whole_failed = true;
+                        (PushAllOutcome::Failed, String::new())
+                    }
+                };
+                branches.push(PushAllBranch { branch, to, outcome, detail });
+            }
+            if whole_failed {
+                failures.push(PushAllFailure { remote: remote.clone(), result: res });
+            }
+        }
+    }
+    Ok(PushAllResult { branches, failures })
+}
+
+/// One ref's line in `git push --porcelain` output: `<flag>\t<from>:<to>\t<summary> (<reason>)`.
+struct PorcelainPushLine {
+    /// ` ` fast-forward, `+` forced, `-` deleted, `*` new, `!` rejected, `=` up to date.
+    flag: char,
+    from: String,
+    /// `fetch first`, `non-fast-forward`; empty when there is none.
+    reason: String,
+}
+
+fn porcelain_push_lines(stdout: &str) -> Vec<PorcelainPushLine> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let flag = fields.next()?.chars().next()?;
+            let (from, _) = fields.next()?.split_once(':')?;
+            let summary = fields.next().unwrap_or("");
+            let reason = summary.rsplit_once(" (").map_or("", |(_, r)| r.trim_end_matches(')')).to_string();
+            Some(PorcelainPushLine { flag, from: from.to_string(), reason })
+        })
+        .collect()
+}
+
 /// The names of the tags on `commit` or its ancestors.
 async fn tags_merged_into(client: &GitClient, commit: &str) -> Result<Vec<String>> {
     valid_revision(commit)?;
@@ -4393,6 +4551,111 @@ mod e2e {
         git(&local, &["branch", "untracked"]);
         assert!(matches!(fast_forward_to_upstream(&client, "untracked", false).await, Err(GitError::InvalidPath { .. })));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn push_all_pushes_tracked_branches_and_reports_each() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-push-all-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, backup, local, other) = (root.join("origin.git"), root.join("backup.git"), root.join("local"), root.join("other"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        for bare in [&origin, &backup] {
+            run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), bare.as_os_str()]);
+        }
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), local.as_os_str()]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&local, &["config", k, v]);
+        }
+        let client = client_for(&local);
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let rev = |dir: &Path, r: &str| String::from_utf8(Command::new("git").arg("-C").arg(dir).args(["rev-parse", r]).output().unwrap().stdout).unwrap();
+        let commit = |name: &str| {
+            std::fs::write(local.join(name), name).unwrap();
+            git(&local, &["add", "-A"]);
+            git(&local, &["commit", "-qm", name]);
+        };
+
+        commit("one");
+        git(&local, &["push", "-q", "-u", "origin", "main"]);
+        for b in ["dev", "steady", "shared", "renamed", "gone"] {
+            let dst = if b == "renamed" { "remote-renamed" } else { b };
+            git(&local, &["push", "-q", "origin", &format!("main:refs/heads/{dst}")]);
+        }
+        git(&local, &["fetch", "-q", "origin"]);
+        for b in ["dev", "steady", "shared", "gone"] {
+            git(&local, &["branch", "-q", "--track", b, &format!("origin/{b}")]);
+        }
+        git(&local, &["branch", "-q", "--track", "renamed", "origin/remote-renamed"]);
+        // A tag with a branch's name, which `refname:short` would turn into `heads/dev`.
+        git(&local, &["tag", "dev"]);
+
+        // dev is ahead; steady has nothing new; scratch tracks nothing.
+        git(&local, &["checkout", "-q", "dev"]);
+        commit("dev");
+        git(&local, &["checkout", "-q", "-b", "scratch"]);
+        commit("scratch");
+        // renamed is ahead, but plain git push (push.default simple) will not push onto another name.
+        git(&local, &["checkout", "-q", "renamed"]);
+        commit("renamed");
+        // shared is ahead, but someone else pushed to it meanwhile.
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), other.as_os_str()]);
+        for (k, v) in [("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")] {
+            git(&other, &["config", k, v]);
+        }
+        git(&other, &["checkout", "-q", "shared"]);
+        std::fs::write(other.join("theirs"), "theirs").unwrap();
+        git(&other, &["add", "-A"]); git(&other, &["commit", "-qm", "theirs"]); git(&other, &["push", "-q", "origin", "shared"]);
+        git(&local, &["checkout", "-q", "shared"]);
+        commit("shared");
+        // gone's remote branch was deleted and pruned: left out, not pushed back.
+        git(&other, &["push", "-q", "origin", "--delete", "gone"]);
+        git(&local, &["checkout", "-q", "gone"]);
+        commit("gone");
+        git(&local, &["fetch", "-q", "--prune", "origin"]);
+        // b2 tracks a branch on a second remote.
+        git(&local, &["remote", "add", "backup", backup.to_str().unwrap()]);
+        git(&local, &["checkout", "-q", "main"]);
+        git(&local, &["push", "-q", "backup", "main:refs/heads/b2"]);
+        git(&local, &["fetch", "-q", "backup"]);
+        git(&local, &["checkout", "-q", "--track", "-b", "b2", "backup/b2"]);
+        commit("b2");
+
+        let res = push_all(&client, &progress, &cancel).await.unwrap();
+        assert!(res.failures.is_empty(), "{res:?}");
+        let outcome = |b: &str| res.branches.iter().find(|x| x.branch == b).map(|x| (x.outcome.clone(), x.to.clone()));
+        assert_eq!(outcome("dev"), Some((PushAllOutcome::Pushed, "origin/dev".into())));
+        assert_eq!(outcome("b2"), Some((PushAllOutcome::Pushed, "backup/b2".into())));
+        assert_eq!(outcome("steady"), Some((PushAllOutcome::UpToDate, "origin/steady".into())));
+        assert_eq!(outcome("main"), Some((PushAllOutcome::UpToDate, "origin/main".into())));
+        assert_eq!(outcome("shared").map(|o| o.0), Some(PushAllOutcome::Rejected));
+        // `non-fast-forward` rather than `fetch first`, since the fetch above brought their commit here.
+        assert!(res.branches.iter().any(|x| x.branch == "shared" && x.detail == "non-fast-forward"), "{res:?}");
+        assert_eq!(outcome("renamed").map(|o| o.0), Some(PushAllOutcome::Skipped));
+        assert_eq!(outcome("scratch"), None, "untracked");
+        assert_eq!(outcome("gone"), None, "its remote branch is gone");
+        assert_eq!(rev(&origin, "refs/heads/dev"), rev(&local, "refs/heads/dev"));
+        assert_eq!(rev(&backup, "refs/heads/b2"), rev(&local, "refs/heads/b2"));
+        assert_ne!(rev(&origin, "refs/heads/remote-renamed"), rev(&local, "refs/heads/renamed"));
+        assert!(Command::new("git").arg("-C").arg(&origin).args(["rev-parse", "--verify", "-q", "refs/heads/gone"]).status().unwrap().code() == Some(1));
+        assert!(Command::new("git").arg("-C").arg(&origin).args(["rev-parse", "--verify", "-q", "refs/heads/scratch"]).status().unwrap().code() == Some(1));
+
+        // Run again: everything pushed is now up to date, and still nothing is forced.
+        let again = push_all(&client, &progress, &cancel).await.unwrap();
+        assert!(again.branches.iter().all(|x| x.outcome != PushAllOutcome::Pushed), "{again:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_porcelain_push_lines() {
+        let out = "To /tmp/origin.git\n \trefs/heads/dev:refs/heads/dev\tabc..def\n!\trefs/heads/shared:refs/heads/shared\t[rejected] (fetch first)\n=\trefs/heads/main:refs/heads/main\t[up to date]\nDone";
+        let lines = porcelain_push_lines(out);
+        assert_eq!(lines.iter().map(|l| (l.flag, l.from.as_str(), l.reason.as_str())).collect::<Vec<_>>(), [
+            (' ', "refs/heads/dev", ""),
+            ('!', "refs/heads/shared", "fetch first"),
+            ('=', "refs/heads/main", ""),
+        ]);
     }
 
     #[tokio::test]

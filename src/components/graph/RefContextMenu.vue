@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { commands, type RefKind } from "@/lib/bindings";
+import { commands, type GraphRow, type RefKind } from "@/lib/bindings";
 import { unwrap } from "@/lib/ipc";
 import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import HueSubmenu from "@/components/ui/HueSubmenu.vue";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
-import { shortSha } from "@/lib/refNames";
+import CommitMenuItems from "@/components/graph/CommitMenuItems.vue";
+import LaneBranchName from "@/components/graph/LaneBranchName.vue";
 import {
   checkoutTargetOf,
-  copyText,
   createBranchHere,
   currentBranch,
   deleteBranch,
@@ -25,7 +25,6 @@ import {
   pushBranchReason,
   pushTags,
   pushTagsReason,
-  removeTag,
   renameBranch,
   requestCheckout,
   revisionOf,
@@ -50,6 +49,11 @@ const props = defineProps<{
   target: string;
   /** True for the checked-out local branch. */
   isCurrent: boolean;
+  /**
+   * The commit's row, for a pill in the graph; it adds Cherry-pick, Revert and Reset. The Branches
+   * panel passes none, since its branch may not be among the loaded rows.
+   */
+  row?: GraphRow | null;
 }>();
 
 const sessions = useSessionsStore();
@@ -69,10 +73,13 @@ const createsLocal = computed(
     props.kind.type === "remoteBranch" &&
     !(session.value?.refs?.refs ?? []).some((r) => r.kind.type === "localBranch" && r.short === checkoutTarget.value),
 );
-const checkoutText = computed(() => {
-  if (createsLocal.value) return `Checkout ${checkoutTarget.value} (tracking ${props.short})…`;
-  return `Checkout ${checkoutTarget.value}`;
+/** The branch a checkout lands on, for its lane colour; null for a tag, which detaches HEAD. */
+const checkoutFullName = computed(() => {
+  if (props.kind.type === "remoteBranch") return `refs/heads/${checkoutTarget.value}`;
+  return props.kind.type === "localBranch" ? props.fullName : null;
 });
+/** The checked-out branch's full name, for its lane colour. */
+const branchFullName = computed(() => (branch.value ? `refs/heads/${branch.value}` : ""));
 
 function runCheckout(): void {
   void requestCheckout(props.sessionKey, checkoutTargetOf(props));
@@ -127,7 +134,6 @@ const pushUpstream = computed(() => {
   const up = (session.value?.refs?.refs ?? []).find((r) => r.fullName === props.fullName)?.upstream ?? null;
   return up?.startsWith("refs/remotes/") ? up.slice("refs/remotes/".length) : null;
 });
-const pushText = computed(() => (pushUpstream.value ? `Push to ${pushUpstream.value}` : "Push to a New Remote Branch…"));
 const pushReason = computed(() => pushBranchReason(session.value, props.short));
 /** A fetch, pull or push already running would have to finish first. */
 const deleteRemoteReason = computed(() => deleteRemoteBranchReason(session.value));
@@ -149,23 +155,36 @@ function chooseColour(colour: number | null): void {
       <slot />
     </ContextMenuTrigger>
     <ContextMenuContent class="min-w-52">
+      <!-- Labels naming a branch are one <span>, because the item is a flex row whose gap would replace the spaces between words. -->
       <ActionMenuItem :reason="checkoutReason" @select="runCheckout">
-        {{ checkoutText }}
+        <span>
+          Checkout
+          <LaneBranchName v-if="checkoutFullName" :session="session" :full-name="checkoutFullName" :name="checkoutTarget" />
+          <template v-else>{{ checkoutTarget }}</template>
+          <template v-if="createsLocal">(tracking <LaneBranchName :session="session" :full-name="fullName" :name="short" />)…</template>
+        </span>
       </ActionMenuItem>
       <ActionMenuItem v-if="kind.type !== 'tag'" :reason="mergeReason" @select="mergeInto(sessionKey, revisionOf(props, session?.refs?.refs ?? []), short)">
-        Merge {{ short }} into {{ branch ?? "current branch" }}
+        <span>
+          Merge <LaneBranchName :session="session" :full-name="fullName" :name="short" /> into
+          <LaneBranchName v-if="branch" :session="session" :full-name="branchFullName" :name="branch" />
+          <template v-else>current branch</template>
+        </span>
       </ActionMenuItem>
       <ActionMenuItem v-if="fastForwards && branch" :reason="fastForwardBlocked" @select="fastForwardToHead(sessionKey, short)">
-        Fast-forward to {{ branch }}
+        <span>Fast-forward to <LaneBranchName :session="session" :full-name="branchFullName" :name="branch" /></span>
       </ActionMenuItem>
       <ActionMenuItem v-if="upstreamTarget" :reason="fastForwardBlocked" @select="fastForwardToUpstream(sessionKey, short, upstreamTarget)">
-        Fast-forward to {{ upstreamTarget }}
+        <span>Fast-forward to <LaneBranchName :session="session" :full-name="`refs/remotes/${upstreamTarget}`" :name="upstreamTarget" /></span>
       </ActionMenuItem>
       <ActionMenuItem @select="createBranchHere(sessionKey, target, short)">Create Branch Here…</ActionMenuItem>
 
       <template v-if="kind.type === 'localBranch'">
         <ContextMenuSeparator />
-        <ActionMenuItem :reason="pushReason" @select="pushBranch(session, short)">{{ pushText }}</ActionMenuItem>
+        <ActionMenuItem :reason="pushReason" @select="pushBranch(session, short)">
+          <span v-if="pushUpstream">Push to <LaneBranchName :session="session" :full-name="`refs/remotes/${pushUpstream}`" :name="pushUpstream" /></span>
+          <template v-else>Push to a New Remote Branch…</template>
+        </ActionMenuItem>
         <ActionMenuItem :reason="fastForwardBlocked" @select="pushBranchTo(sessionKey, short)">Push To…</ActionMenuItem>
         <ActionMenuItem @select="trackRemoteBranch(sessionKey, short)">Track Remote Branch…</ActionMenuItem>
         <ActionMenuItem @select="renameBranch(sessionKey, short)">Rename Branch…</ActionMenuItem>
@@ -188,14 +207,14 @@ function chooseColour(colour: number | null): void {
         >
           Push Tag to {{ remote }}
         </ActionMenuItem>
-        <ActionMenuItem destructive @select="removeTag(sessionKey, short)">Remove Tag {{ short }}</ActionMenuItem>
       </template>
 
       <ContextMenuSeparator />
       <!-- Kept in the app's own UI state, not in the repository. -->
       <HueSubmenu :chosen="chosenColour" @choose="chooseColour" />
       <ContextMenuSeparator />
-      <ActionMenuItem @select="copyText(target, 'the SHA')">Copy SHA {{ shortSha(target) }}</ActionMenuItem>
+      <!-- The commit row's items, from Cherry-pick on; Remove Tag for a tag is among them. -->
+      <CommitMenuItems v-if="session" :session="session" :oid="target" :row="row" />
     </ContextMenuContent>
   </ContextMenu>
 </template>

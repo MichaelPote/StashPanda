@@ -20,6 +20,7 @@ import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
 import RemoteDialog from "@/components/dialogs/RemoteDialog.vue";
 import RepoSettingsDialog from "@/components/dialogs/RepoSettingsDialog.vue";
 import SshPasswordDialog from "@/components/dialogs/SshPasswordDialog.vue";
+import SshDiagnoseDialog from "@/components/dialogs/SshDiagnoseDialog.vue";
 import MergeDialog from "@/components/dialogs/MergeDialog.vue";
 import PullDialog from "@/components/dialogs/PullDialog.vue";
 import PushDialog from "@/components/dialogs/PushDialog.vue";
@@ -173,7 +174,7 @@ function dismissRepoWarning(warning: string): void {
         <button
           v-if="sessions.noticeAction"
           type="button"
-          class="ml-1 shrink-0 rounded border border-destructive/40 px-1.5 text-xs font-medium hover:bg-destructive/20"
+          class="key-danger ml-1 shrink-0 rounded border px-2 py-px text-xs font-medium"
           @click="runNoticeAction"
         >
           {{ sessions.noticeAction.label }}
@@ -303,6 +304,7 @@ function dismissRepoWarning(warning: string): void {
     <PassphraseDialog />
     <HostKeyDialog />
     <SshPasswordDialog />
+    <SshDiagnoseDialog />
     <AboutDialog />
     <UpdateDialog />
   </TooltipProvider>

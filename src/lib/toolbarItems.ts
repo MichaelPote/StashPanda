@@ -15,6 +15,7 @@ import {
   ArrowDownUpIcon,
   ArrowUpFromLineIcon,
   CloudDownloadIcon,
+  CloudUploadIcon,
   FolderDownIcon,
   FolderOpenIcon,
   GitBranchPlusIcon,
@@ -49,6 +50,8 @@ import {
   openRebaseDialog,
   openRepoSettings,
   openStashDialog,
+  pushAllBranches,
+  pushAllReason,
   pushCurrentBranch,
   stageSelected,
   syncCurrentBranch,
@@ -119,6 +122,16 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   { id: "pull", label: "Pull", description: "Bring the checked-out branch up to date with a branch on a remote.", caption: "Pull", icon: ArrowDownToLineIcon, needsRepo: true, run: () => openPullDialog(active()), reason: busyReason },
   { id: "sync", label: "Sync: Pull, then Push", description: "Pull the checked-out branch's upstream into it, then push it back, in one step.", caption: "Sync", icon: ArrowDownUpIcon, needsRepo: true, run: () => syncCurrentBranch(active()), reason: busyReason },
   { id: "push", label: "Push to Upstream", description: "Send the checked-out branch's new commits to its upstream branch.", caption: "Push", icon: ArrowUpFromLineIcon, needsRepo: true, run: () => pushCurrentBranch(active()), reason: busyReason },
+  {
+    id: "pushAll",
+    label: "Push All Tracked Branches",
+    description: "Send the new commits on every branch that tracks a remote branch to that branch. Branches that track nothing are left out.",
+    caption: "Push All",
+    icon: CloudUploadIcon,
+    needsRepo: true,
+    run: () => pushAllBranches(active()),
+    reason: pushAllReason,
+  },
   { id: "commit", label: "Commit", description: "Record the staged changes as a new commit on the checked-out branch.", caption: "Commit", icon: GitCommitHorizontalIcon, primary: true, needsRepo: true, run: () => openCommitDialog(active()) },
   {
     id: "stage",
@@ -228,14 +241,13 @@ export function toolbarCommand(id: string): ToolbarCommand | undefined {
   return COMMANDS_BY_ID.get(id);
 }
 
-/** The toolbar as it was before it could be customised, which is what a new or older settings file gets. */
+/** The toolbar a new settings file gets, and an older one from before the toolbar could be customised. */
 export const DEFAULT_TOOLBAR: readonly string[] = [
   "open",
-  "refresh",
   DIVIDER,
   "fetch",
+  "refresh",
   "pull",
-  "sync",
   "push",
   "commit",
   DIVIDER,
@@ -249,6 +261,9 @@ export const DEFAULT_TOOLBAR: readonly string[] = [
   DIVIDER,
   "merge",
   "rebase",
+  SPACER,
+  "repoSettings",
+  "settings",
 ];
 
 /** One item of the toolbar as drawn, with a `key` that is unique within the layout. */

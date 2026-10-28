@@ -20,7 +20,7 @@ import { BandBuilder, bandEdges, bandPath, GAP_PX, sideEdges, sideFill, sideOffs
 import { highlightRuns, insertGaps, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { conflictComparisons, conflictStages, conflictSummary, missingVersionNote, operationNames, type ConflictComparison } from "@/lib/conflicts";
+import { conflictComparisons, conflictStages, conflictSummary, missingVersionNote, operationNames, shortSideNames, takeLabel, type ConflictComparison } from "@/lib/conflicts";
 import type { FileItem } from "@/lib/files";
 import { markResolved, openFileReason, openWorktreeFile, opFailureText, runOp, takeVersion } from "@/lib/repoActions";
 import { cn } from "@/lib/utils";
@@ -1027,6 +1027,8 @@ const conflictFile = computed(() => {
   return { item, stages: conflictStages(letters), letters };
 });
 const sideNames = computed(() => operationNames(props.session.status, props.session.refs, props.session.stashConflict));
+/** The same names cut short for the Take buttons; the tooltips keep the full ones. */
+const buttonNames = computed(() => shortSideNames(sideNames.value));
 const comparisons = computed(() => conflictComparisons(sideNames.value));
 const openReason = computed(() => openFileReason(props.session));
 
@@ -1131,7 +1133,7 @@ function toggleContext(value: string): void {
               </span>
             </Tip>
           </div>
-          <label class="inline-flex items-center gap-1 text-muted-foreground">
+          <label class="ml-2.5 inline-flex items-center gap-1 text-muted-foreground">
             Context
             <select
               class="well h-[17px] rounded-md border px-1 text-[0.7rem] text-foreground"
@@ -1206,11 +1208,11 @@ function toggleContext(value: string): void {
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
-      <span class="ml-auto flex flex-wrap items-center gap-1">
+      <span class="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1.5 py-0.5">
         <Tip :content="mergeEditorReason(conflictFile.letters) ?? 'Resolve this file block by block in the three-pane merge editor'">
           <button
             type="button"
-            :class="cn('diff-action', mergeEditorReason(conflictFile.letters) && 'opacity-50')"
+            class="bar-key key-merge"
             :aria-disabled="mergeEditorReason(conflictFile.letters) !== null"
             data-resolve="editor"
             @click="!mergeEditorReason(conflictFile.letters) && openMergeEditor(session.key, conflictFile.item.path)"
@@ -1219,19 +1221,19 @@ function toggleContext(value: string): void {
           </button>
         </Tip>
         <Tip :content="takeTitle('ours')">
-          <button type="button" class="diff-action" data-resolve="ours" @click="takeVersion(session, [conflictFile.item], 'ours')">
-            Take the version from {{ sideNames.ours }}
+          <button type="button" class="bar-key key-conflict" data-resolve="ours" @click="takeVersion(session, [conflictFile.item], 'ours')">
+            {{ takeLabel("ours", buttonNames.ours, currentComparison) }}
           </button>
         </Tip>
         <Tip :content="takeTitle('theirs')">
-          <button type="button" class="diff-action" data-resolve="theirs" @click="takeVersion(session, [conflictFile.item], 'theirs')">
-            Take the version from {{ sideNames.theirs }}
+          <button type="button" class="bar-key key-conflict" data-resolve="theirs" @click="takeVersion(session, [conflictFile.item], 'theirs')">
+            {{ takeLabel("theirs", buttonNames.theirs, currentComparison) }}
           </button>
         </Tip>
         <Tip content="After editing the file to resolve the conflict, stage it as it is on disk (git add)">
           <button
             type="button"
-            class="diff-action"
+            class="bar-key key-conflict"
             data-resolve="mark"
             @click="markResolved(session, [conflictFile.item])"
           >
@@ -1241,7 +1243,7 @@ function toggleContext(value: string): void {
         <Tip :content="openReason ?? 'Open the file in the program your system uses for it, to edit it by hand'">
           <button
             type="button"
-            :class="cn('diff-action', openReason && 'opacity-50')"
+            class="bar-key key-primary"
             :aria-disabled="openReason !== null"
             @click="!openReason && openWorktreeFile(session.key, conflictFile.item.path)"
           >

@@ -19,6 +19,7 @@ import {
   openRemoteDialog,
   openRepoSettings,
   openStashDialog,
+  pushAllBranches,
   pushCurrentBranch,
   removeFromLibrary,
   syncCurrentBranch,
@@ -133,6 +134,9 @@ export async function dispatch(id: string): Promise<void> {
       return;
     case "repo.push":
       await pushCurrentBranch(sessions.active);
+      return;
+    case "repo.push_all":
+      await pushAllBranches(sessions.active);
       return;
     case "repo.merge":
       await openMergeDialog(sessions.active);

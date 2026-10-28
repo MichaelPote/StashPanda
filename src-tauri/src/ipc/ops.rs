@@ -10,7 +10,7 @@ use tauri_specta::Event;
 use tokio_util::sync::CancellationToken;
 
 use crate::error::{GitError, Result};
-use crate::git::ops::{self, OpResult, PullMode, PushTarget, ResetMode, ResolveSide, SyncResult};
+use crate::git::ops::{self, OpResult, PullMode, PushAllResult, PushTarget, ResetMode, ResolveSide, SyncResult};
 use crate::git::queries::in_progress::InProgressKind;
 use crate::git::ops::lines::{LineAction, SelectedLine};
 use crate::graph::loader::refresh_if_changed;
@@ -537,6 +537,17 @@ pub async fn op_push(
             Err(e) => Err(e),
         }
     })
+}
+
+/// Push every local branch that tracks a remote branch to where plain `git push` would push it,
+/// one `git push` per remote; untracked branches are left out. Never forces: a rejected branch
+/// does not stop the others, and each branch's outcome is in the result. `opId` works as for
+/// `opPull`; `opCancel` stops it at any point, after which a remote may already have some of the
+/// branches.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_push_all(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String) -> Result<PushAllResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| ops::push_all(&h.client, &progress, cancel).await)
 }
 
 /// Delete `branch` (the name on the remote, `feature/x`) on `remote`, for everyone who uses that

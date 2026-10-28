@@ -323,6 +323,14 @@ export interface SshHostKeyPayload {
   subject: string;
 }
 
+/** A remote refused Git's SSH key: `dest` is the `user@host` Git's error named. */
+export interface SshDiagnosePayload {
+  key: string;
+  dest: string;
+  /** The port from the remote's URL, when it names one. */
+  port: number | null;
+}
+
 export interface SshPasswordPayload {
   host: string;
   port: number;
@@ -393,6 +401,7 @@ export interface DialogSpecs {
   sshHostKey: { payload: SshHostKeyPayload; result: boolean };
   /** Resolves true once the password has been handed to `sshSetPassword`. */
   sshPassword: { payload: SshPasswordPayload; result: boolean };
+  sshDiagnose: { payload: SshDiagnosePayload; result: null };
   /** Resolves true when the changes were saved. */
   settings: { payload: SettingsPayload; result: boolean };
   about: { payload: null; result: null };
@@ -427,6 +436,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   passphrase: null,
   sshHostKey: false,
   sshPassword: false,
+  sshDiagnose: null,
   settings: false,
   about: null,
   update: null,

@@ -40,6 +40,35 @@ pub struct KeyInfo {
     pub in_agent: bool,
     /// Where its passphrase is remembered, for an encrypted key. Filled by the caller.
     pub passphrase_remembered: PassphraseMemory,
+    /// Which machine or WSL distro the key is on, for the Key Manager's tabs. Filled by the caller.
+    pub place: KeyPlace,
+}
+
+/// Where a key or a key folder is, as the Key Manager's tabs group them.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Type)]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum KeyPlace {
+    /// Windows: this machine on the Windows build, or `/mnt/<drive>/` from inside WSL.
+    Windows,
+    /// A WSL distro: reached through `\\wsl.localhost\<distro>` from Windows, or the distro the
+    /// Linux build runs in.
+    Wsl { distro: String },
+    /// This machine, on Linux outside WSL or on macOS.
+    Local,
+    /// `~/.ssh` on the server of a repository opened over SSH, read through its connection.
+    Remote { repo_key: String, server: String },
+}
+
+/// The place of a local path: a WSL share, a Windows drive seen from WSL, or this machine.
+pub fn place_of(path: &str, host: &Host) -> KeyPlace {
+    use crate::transport::paths::{classify, PathKind};
+    match (classify(path), host) {
+        (PathKind::WslUnc { distro, .. }, _) => KeyPlace::Wsl { distro },
+        (PathKind::LinuxMnt { .. }, Host::LinuxWsl { .. }) => KeyPlace::Windows,
+        (_, Host::Windows) => KeyPlace::Windows,
+        (_, Host::LinuxWsl { distro }) => KeyPlace::Wsl { distro: distro.clone() },
+        _ => KeyPlace::Local,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
@@ -171,10 +200,24 @@ fn fill_from_public(info: &mut KeyInfo, pk: &PublicKey) {
 /// Everything we can say about a key file without a passphrase.
 pub fn inspect(path: &Path) -> KeyInfo {
     let path_s = path.to_string_lossy().into_owned();
-    let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut info = KeyInfo {
-        path: path_s.clone(),
-        file_name,
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let pub_path = format!("{path_s}.pub");
+            let public = Path::new(&pub_path).is_file().then(|| (pub_path.clone(), std::fs::read_to_string(&pub_path).unwrap_or_default()));
+            inspect_bytes(&path_s, &bytes, public)
+        }
+        Err(e) => {
+            let mut info = empty_info(&path_s);
+            info.error = Some(e.to_string());
+            info
+        }
+    }
+}
+
+fn empty_info(path: &str) -> KeyInfo {
+    KeyInfo {
+        path: path.to_string(),
+        file_name: path.rsplit(['/', '\\']).next().unwrap_or(path).to_string(),
         format: KeyFormat::Unknown,
         encrypted: false,
         algorithm: None,
@@ -185,24 +228,22 @@ pub fn inspect(path: &Path) -> KeyInfo {
         error: None,
         in_agent: false,
         passphrase_remembered: PassphraseMemory::None,
-    };
-    let bytes = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) => {
-            info.error = Some(e.to_string());
-            return info;
-        }
-    };
-    let d: Detected = detect(&bytes);
+        place: KeyPlace::Local,
+    }
+}
+
+/// `inspect` for a key already read: `bytes` is the private key file, `public` the path and text
+/// of the `.pub` file beside it when there is one. Used for keys read from a server too.
+pub fn inspect_bytes(path: &str, bytes: &[u8], public: Option<(String, String)>) -> KeyInfo {
+    let mut info = empty_info(path);
+    let d: Detected = detect(bytes);
     info.format = d.format;
     info.encrypted = d.encrypted.unwrap_or(false);
     info.algorithm = d.algorithm_hint.clone();
-    let pub_path = PathBuf::from(format!("{path_s}.pub"));
-    if pub_path.is_file() {
-        info.public_key_file = Some(pub_path.to_string_lossy().into_owned());
-    }
-    let text = String::from_utf8_lossy(&bytes);
-    match load_private_key(&path_s, &bytes, None) {
+    let public_text = public.as_ref().map(|(_, t)| t.clone());
+    info.public_key_file = public.map(|(p, _)| p);
+    let text = String::from_utf8_lossy(bytes);
+    match load_private_key(path, bytes, None) {
         Ok(key) => {
             fill_from_public(&mut info, key.public_key());
             let c = key.comment().to_string();
@@ -219,15 +260,13 @@ pub fn inspect(path: &Path) -> KeyInfo {
                     }
                 }
                 KeyFormat::OpenSsh => {
-                    if let Ok(k) = PrivateKey::from_openssh(&bytes) {
+                    if let Ok(k) = PrivateKey::from_openssh(bytes) {
                         fill_from_public(&mut info, k.public_key());
                     }
                 }
                 _ => {
-                    if let Some(p) = &info.public_key_file {
-                        if let Ok(pk) = PublicKey::read_openssh_file(Path::new(p)) {
-                            fill_from_public(&mut info, &pk);
-                        }
+                    if let Some(Ok(pk)) = public_text.as_deref().map(|t| PublicKey::from_openssh(t.trim())) {
+                        fill_from_public(&mut info, &pk);
                     }
                 }
             }
@@ -368,6 +407,11 @@ pub fn read_key_text(path: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Whether `bytes` look like a private key in a format StashPanda reads.
+pub fn is_private_key_bytes(bytes: &[u8]) -> bool {
+    is_private_format(detect(bytes).format)
+}
+
 fn is_private_format(format: KeyFormat) -> bool {
     !matches!(format, KeyFormat::Unknown | KeyFormat::PublicOpenSsh | KeyFormat::PublicRfc4716)
 }
@@ -430,14 +474,45 @@ pub fn generate(alg: GenerateAlgorithm, comment: &str) -> Result<PrivateKey> {
     Ok(key)
 }
 
-/// Write a private key file with owner-only permissions. Never overwrites
-/// unless asked.
-pub fn write_private_file(path: &Path, contents: &str, overwrite: bool) -> Result<()> {
-    if path.exists() && !overwrite {
-        return Err(GitError::Io { detail: format!("{} already exists", path.display()) });
+/// Creates `path` with `bytes`, failing with `KeyExists` when anything is there already, even a
+/// file that appeared a moment ago: the open itself is create-only. A private key gets
+/// owner-only permissions on Linux and macOS.
+pub fn create_new(path: &Path, bytes: &[u8], private: bool) -> Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(if private { 0o600 } else { 0o644 });
     }
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut file = options.open(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            GitError::KeyExists { path: path.to_string_lossy().into_owned() }
+        } else {
+            GitError::from(e)
+        }
+    })?;
+    file.write_all(bytes)?;
+    Ok(())
+}
+
+/// Write a private key file with owner-only permissions. Without `overwrite` it never replaces
+/// anything: it refuses with `KeyExists` when the file or the `.pub` beside it is there, and
+/// creates the file create-only. Only Change Passphrase passes `overwrite`, to re-encrypt a key
+/// in place.
+pub fn write_private_file(path: &Path, contents: &str, overwrite: bool) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
+    }
+    if !overwrite {
+        let public = PathBuf::from(format!("{}.pub", path.to_string_lossy()));
+        if public.exists() {
+            return Err(GitError::KeyExists { path: public.to_string_lossy().into_owned() });
+        }
+        return create_new(path, contents.as_bytes(), true);
     }
     std::fs::write(path, contents)?;
     #[cfg(unix)]
@@ -448,9 +523,33 @@ pub fn write_private_file(path: &Path, contents: &str, overwrite: bool) -> Resul
     Ok(())
 }
 
+/// Writes the `.pub` file for the private key at `private_path`, create-only.
+pub fn write_public_file(private_path: &Path, line: &str) -> Result<()> {
+    create_new(&PathBuf::from(format!("{}.pub", private_path.to_string_lossy())), format!("{line}\n").as_bytes(), false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn writing_a_key_never_replaces_one() {
+        let dir = std::env::temp_dir().join(format!("stashpanda-key-write-{}", uuid::Uuid::new_v4().simple()));
+        let key = dir.join("id_new");
+        write_private_file(&key, "FIRST", false).unwrap();
+        write_public_file(&key, "ssh-ed25519 AAAA first").unwrap();
+        assert!(matches!(write_private_file(&key, "SECOND", false), Err(GitError::KeyExists { .. })));
+        assert!(matches!(write_public_file(&key, "ssh-ed25519 AAAA second"), Err(GitError::KeyExists { .. })));
+        assert_eq!(std::fs::read_to_string(&key).unwrap(), "FIRST");
+        assert_eq!(std::fs::read_to_string(dir.join("id_new.pub")).unwrap(), "ssh-ed25519 AAAA first\n");
+
+        // A .pub on its own blocks the name too, and is left as it was.
+        std::fs::write(dir.join("id_lone.pub"), "KEEP").unwrap();
+        assert!(matches!(write_private_file(&dir.join("id_lone"), "NEW", false), Err(GitError::KeyExists { .. })));
+        assert!(!dir.join("id_lone").exists());
+        assert_eq!(std::fs::read_to_string(dir.join("id_lone.pub")).unwrap(), "KEEP");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn generate_export_reload_round_trip() {

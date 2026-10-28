@@ -123,6 +123,7 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         .text("repo.fetch", "&Fetch")
         .text("repo.pull", "&Pull")
         .text("repo.push", "Pus&h")
+        .text("repo.push_all", "Push All Tracked Bra&nches")
         .text("repo.sync", "S&ync (Pull, then Push)")
         .item(&remotes)
         .text("repo.settings", "Repository Settin&gs…")
@@ -169,7 +170,13 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
     // Debug builds get a Developer menu: WebView2's own shortcut for the inspector is off (see
     // `webview::disable_browser_shortcuts`), and the other platforms never had one.
     #[cfg(debug_assertions)]
-    menu.append(&SubmenuBuilder::new(app, "&Developer").text("dev.inspector", "Open Dev &Inspector").build()?)?;
+    menu.append(
+        &SubmenuBuilder::new(app, "&Developer")
+            .text("dev.inspector", "Open Dev &Inspector")
+            // The whole interface, as a browser's reload does; View › Refresh re-reads the repository.
+            .text("dev.reload", "Refresh &Window")
+            .build()?,
+    )?;
     app.set_menu(menu)?;
     app.manage(ThemeMenu { dark: theme_dark, light: theme_light, system: theme_system });
     app.on_menu_event(|app, event| {
@@ -177,6 +184,11 @@ pub fn install(app: &AppHandle<Wry>) -> tauri::Result<()> {
         #[cfg(debug_assertions)]
         if id == "dev.inspector" {
             crate::webview::open_inspector(app);
+            return;
+        }
+        #[cfg(debug_assertions)]
+        if id == "dev.reload" {
+            crate::webview::reload_window(app);
             return;
         }
         // Put the ticks right at once; the frontend then saves the setting, and

@@ -9,11 +9,11 @@ export const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: 'key-primary font-semibold',
+        default: 'key-primary font-medium',
         outline: 'key aria-expanded:text-foreground',
         secondary: 'key aria-expanded:text-foreground',
         ghost: 'border-transparent hover:bg-ghost-hover hover:text-foreground aria-expanded:bg-ghost-hover aria-expanded:text-foreground active:not-aria-[haspopup]:translate-y-px',
-        destructive: 'key-danger font-semibold focus-visible:ring-destructive/40',
+        destructive: 'key-danger font-medium focus-visible:ring-destructive/40',
         link: 'border-transparent text-primary-tint underline-offset-4 hover:underline',
       },
       size: {

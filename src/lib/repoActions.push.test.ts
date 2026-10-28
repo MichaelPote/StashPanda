@@ -48,6 +48,8 @@ import {
   pushCurrentBranch,
   renameBranch,
   renameOnRemote,
+  sshDeniedDestination,
+  sshDiagnoseAction,
   syncCurrentBranch,
   syncOutcome,
   updateRefsLeftBehind,
@@ -642,5 +644,35 @@ describe("merging with uncommitted changes", () => {
     const stopped = { ok: false, exitCode: 1, stdout: "CONFLICT (content): Merge conflict in c.txt", stderr: "", conflicts: true };
     expect(mergeOutcome(stopped, "topic", "feature", true).message).toMatch(/Your uncommitted changes are set aside, and come back when the merge is finished or aborted\.$/);
     expect(mergeOutcome(stopped, "topic", "feature", false).message).not.toMatch(/set aside/);
+  });
+});
+
+describe("a remote that refused the SSH key", () => {
+  const denied = (stderr: string) => ({ ok: false, exitCode: 128, stdout: "", stderr, conflicts: false });
+  const refusedLine = "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.";
+
+  it("finds the login in SSH's refusal, and nothing in other failures", () => {
+    expect(sshDeniedDestination(refusedLine)).toBe("git@github.com");
+    expect(sshDeniedDestination("me@git.example.com: Permission denied (publickey,password).")).toBe("me@git.example.com");
+    expect(sshDeniedDestination("fatal: could not read Username for 'https://github.com'")).toBeNull();
+    expect(sshDeniedDestination("error: cannot open .git/FETCH_HEAD: Permission denied")).toBeNull();
+  });
+
+  it("offers Diagnose…, which opens the dialog with the port from the remote's URL", () => {
+    sessionMap.set("k", { refs: { remotes: [{ name: "origin", url: "ssh://git@git.example.com:2222/team/app.git", pushUrl: null }] } });
+    const action = sshDiagnoseAction("k", denied("git@git.example.com: Permission denied (publickey)."));
+    expect(action?.label).toBe("Diagnose…");
+    action?.run();
+    expect(dialogs.open).toHaveBeenCalledWith("sshDiagnose", { key: "k", dest: "git@git.example.com", port: 2222 });
+    sshDiagnoseAction("k", denied(refusedLine))?.run();
+    expect(dialogs.open).toHaveBeenLastCalledWith("sshDiagnose", { key: "k", dest: "git@github.com", port: null });
+    expect(sshDiagnoseAction("k", denied("! [rejected] main -> main (fetch first)"))).toBeNull();
+    sessionMap.delete("k");
+  });
+
+  it("puts Diagnose… on the notice of a push the remote refused", async () => {
+    commands.opPush.mockReturnValue(ok(denied(refusedLine)));
+    await pushBranch(session(), "main");
+    expect(notices[notices.length - 1]?.action?.label).toBe("Diagnose…");
   });
 });
