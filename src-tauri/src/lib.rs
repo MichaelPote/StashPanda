@@ -203,6 +203,10 @@ pub fn run() {
         )
         .expect("failed to export TypeScript bindings");
 
+    let context = tauri::generate_context!();
+    #[cfg(windows)]
+    platform::set_app_user_model_id(&context.config().identifier);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -227,7 +231,7 @@ pub fn run() {
             webview::clear_dev_browsing_data(app.handle());
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { api, .. } = event {

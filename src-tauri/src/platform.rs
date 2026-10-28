@@ -64,6 +64,25 @@ pub fn mapped_drive_remote(_letter: char) -> Option<String> {
     None
 }
 
+/// Windows: tag this process with the App User Model ID that the installer writes on the Start
+/// menu shortcut (the bundle identifier). Without it Windows groups the window by its .exe path
+/// instead, so the running window and the shortcut count as two different apps: the window's
+/// taskbar button cannot be pinned, and its right-click menu shows a second StashPanda entry with
+/// whatever icon Windows cached for the shortcut. Call it before the first window opens.
+#[cfg(windows)]
+pub fn set_app_user_model_id(id: &str) {
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+    }
+    let wide: Vec<u16> = id.encode_utf16().chain([0]).collect();
+    // SAFETY: `wide` is NUL-terminated and outlives the call, which copies it.
+    let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
+    if hr < 0 {
+        tracing::warn!("could not set the App User Model ID: HRESULT {hr:#010x}");
+    }
+}
+
 /// macOS: give this process the PATH the user's login shell has. Started from Finder or the Dock,
 /// an app gets only `/usr/bin:/bin:/usr/sbin:/sbin`, so Git's hooks and credential helpers could
 /// not find what the user installed with Homebrew, nvm and the like (a husky hook that runs
