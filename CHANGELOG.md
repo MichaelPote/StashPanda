@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Toggle the commit list's columns and column headings from a right-click on the Commits pane's header, which also counts the rows selected when there is more than one
 - Enable the Push button again as soon as a push or sync finishes, instead of only after something else redraws the toolbar
 
 ## 0.6.5 (2026-10-29)

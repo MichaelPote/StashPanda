@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { ContextMenu, ContextMenuCheckboxItem, ContextMenuContent, ContextMenuLabel, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
-import { COMMIT_COLUMNS, useCommitColumns } from "@/composables/useCommitColumns";
+import CommitColumnsMenuItems from "@/components/graph/CommitColumnsMenuItems.vue";
+import { useCommitColumns } from "@/composables/useCommitColumns";
 import { COLUMN_LIMITS, type SizedColumn } from "@/lib/graph/columnWidths";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -21,7 +22,7 @@ const props = defineProps<{
 }>();
 
 /** Which columns show; a hidden one has no heading and no resize handle. The heading row's menu changes them. */
-const { shown, setShown } = useCommitColumns();
+const { shown } = useCommitColumns();
 const settings = useSettingsStore();
 
 /**
@@ -137,16 +138,7 @@ function startDrag(column: ResizableColumn, direction: 1 | -1, event: PointerEve
       </div>
     </ContextMenuTrigger>
     <ContextMenuContent class="min-w-40">
-      <ContextMenuLabel>Columns</ContextMenuLabel>
-      <ContextMenuCheckboxItem
-        v-for="c in COMMIT_COLUMNS"
-        :key="c.column"
-        :model-value="shown[c.column]"
-        @update:model-value="(v: boolean | 'indeterminate') => setShown(c.column, v === true)"
-        @select.prevent
-      >
-        {{ c.label }}
-      </ContextMenuCheckboxItem>
+      <CommitColumnsMenuItems />
     </ContextMenuContent>
   </ContextMenu>
 </template>

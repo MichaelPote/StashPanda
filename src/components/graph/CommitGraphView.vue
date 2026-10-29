@@ -3,6 +3,8 @@ import { computed, provide, ref, watch } from "vue";
 import { useElementSize, useEventListener } from "@vueuse/core";
 import type { DateFormat, GraphRow } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
+import CommitColumnsMenuItems from "@/components/graph/CommitColumnsMenuItems.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
 import CommitContextMenu from "@/components/graph/CommitContextMenu.vue";
 import CommitRow from "@/components/graph/CommitRow.vue";
@@ -226,6 +228,8 @@ watch(
 // ---- Selection -----------------------------------------------------------------------------
 
 const selection = computed(() => props.session.selection);
+/** How many rows are selected, the working tree's included; the header says so when it is more than one. */
+const selectedCount = computed(() => selection.value.oids.size);
 /** Snapshot index the keyboard moves from; re-derived from the anchor oid after a snapshot swap. */
 const cursorIndex = ref<number | null>(null);
 
@@ -410,6 +414,15 @@ useEventListener(window, "keydown", (event: KeyboardEvent) => {
   openFind();
 });
 
+/**
+ * Leaves a right-click in a text field to the browser's Cut, Copy and Paste menu instead of the
+ * header's column menu. Only there: anywhere else the event must reach `window`, whose listener
+ * keeps the browser's page menu away.
+ */
+function keepTextFieldMenu(event: MouseEvent): void {
+  if (isEditableTarget(event.target)) event.stopPropagation();
+}
+
 function onFindClosed(): void {
   container.value?.focus();
 }
@@ -417,15 +430,27 @@ function onFindClosed(): void {
 
 <template>
   <section ref="container" class="area flex h-full min-h-0 flex-col outline-none" :style="columnStyle" tabindex="0" @keydown="onKeydown">
-    <PanelHeader title="Commits">
-      <span class="truncate text-xs text-muted-foreground select-text">{{ session.info.toplevel }}</span>
-      <template #actions>
-        <span v-if="meta && meta.total > 0" class="mr-1.5 text-[0.7rem] text-muted-foreground tabular-nums">
-          {{ meta.total.toLocaleString() }} rows<template v-if="meta.truncated"> (truncated)</template>
-        </span>
-        <GraphSearchField :session="session" :current="currentIndex" @close="onFindClosed" />
-      </template>
-    </PanelHeader>
+    <!-- The column switches are here too, since the column headings can be hidden. -->
+    <ContextMenu>
+      <ContextMenuTrigger as-child>
+        <PanelHeader title="Commits" data-commits-header>
+          <span class="truncate text-xs text-muted-foreground select-text">{{ session.info.toplevel }}</span>
+          <template #actions>
+            <span v-if="meta && meta.total > 0" class="mr-1.5 text-[0.7rem] text-muted-foreground tabular-nums" data-commits-count>
+              <template v-if="selectedCount > 1">{{ selectedCount.toLocaleString() }} rows selected</template>
+              <template v-else>{{ meta.total.toLocaleString() }} rows<template v-if="meta.truncated"> (truncated)</template></template>
+            </span>
+            <!-- A right-click in the search box keeps the text field's own Cut, Copy and Paste menu. -->
+            <span class="contents" @contextmenu="keepTextFieldMenu">
+              <GraphSearchField :session="session" :current="currentIndex" @close="onFindClosed" />
+            </span>
+          </template>
+        </PanelHeader>
+      </ContextMenuTrigger>
+      <ContextMenuContent class="min-w-40">
+        <CommitColumnsMenuItems />
+      </ContextMenuContent>
+    </ContextMenu>
     <GraphHeader
       v-if="showHeadings"
       :graph-width="fitted.graph"
