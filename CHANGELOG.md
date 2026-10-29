@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+## 0.6.5 (2026-10-29)
+
 - Rename and move tags from their right-click menu, choosing the commit from a searchable list, and remove, rename or move them on remotes too, with each remote checked in the background for whether it has the tag
 - Offer to move a tag in Create Tag only when the name is already taken, saying which commit it moves from
 
