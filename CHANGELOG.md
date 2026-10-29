@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Enable the Push button again as soon as a push or sync finishes, instead of only after something else redraws the toolbar
+
 ## 0.6.5 (2026-10-29)
 
 - Rename and move tags from their right-click menu, choosing the commit from a searchable list, and remove, rename or move them on remotes too, with each remote checked in the background for whether it has the tag

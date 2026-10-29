@@ -3,6 +3,7 @@
  * panel and the native menu bar, plus removing a repository from the library. Every function
  * reports through `sessions.notify`, refetches refs and status afterwards, and never throws.
  */
+import { reactive } from "vue";
 import {
   commands,
   type GitError,
@@ -486,9 +487,11 @@ function remotePort(key: string, dest: string): number | null {
 /**
  * Repositories where a sync or push has been clicked and is still getting ready: reading the
  * upstream and the push target, and asking about uncommitted changes, before `runOperation` puts
- * it in the status bar. Without this a double click started two.
+ * it in the status bar. Without this a double click started two. Reactive, because `busyReason`
+ * reads it: as a plain Set, the toolbar's Push button stayed greyed out after a push or sync until
+ * something else made it redraw.
  */
-const starting = new Set<string>();
+const starting = reactive(new Set<string>());
 
 /** Runs `action` with the repository marked busy from the first moment, so `busyReason` refuses a second one meanwhile. */
 async function claimed(key: string, action: () => Promise<void>): Promise<void> {

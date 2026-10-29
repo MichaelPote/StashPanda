@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { reactive, watchEffect } from "vue";
 import type { PushTarget, SyncResult } from "@/lib/bindings";
 
 const commands = vi.hoisted(() => ({
@@ -36,6 +37,7 @@ vi.mock("@/stores/sessions", () => ({
 }));
 
 import {
+  busyReason,
   fastForwardToUpstream,
   mergeInto,
   mergeOutcome,
@@ -674,5 +676,20 @@ describe("a remote that refused the SSH key", () => {
     commands.opPush.mockReturnValue(ok(denied(refusedLine)));
     await pushBranch(session(), "main");
     expect(notices[notices.length - 1]?.action?.label).toBe("Diagnose…");
+  });
+});
+
+describe("the Push button once a push has finished", () => {
+  it("is enabled again straight away, without waiting for something else to redraw it", async () => {
+    // Reactive like the store's sessions, so the button follows `operation` as it does in the app.
+    const s = reactive(session() as unknown as { operation: unknown; key: string });
+    sessionMap.set("repo", s);
+    // Recomputed the moment anything it read changes, as the toolbar redraws while the push is
+    // still finishing.
+    const seen: (string | null)[] = [];
+    watchEffect(() => seen.push(busyReason(s as never)), { flush: "sync" });
+    await pushCurrentBranch(s as never);
+    expect(seen.some((r) => r?.startsWith("Wait for the current operation to finish ("))).toBe(true);
+    expect(seen[seen.length - 1]).toBeNull();
   });
 });
