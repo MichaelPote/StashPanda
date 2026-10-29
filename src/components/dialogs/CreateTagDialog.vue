@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { errorMessage } from "@/lib/ipc";
-import { validateRefName } from "@/lib/refNames";
+import { shortSha, validateRefName } from "@/lib/refNames";
 import { defaultTagRemote, opFailureText, pushTags, runOp } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore } from "@/stores/sessions";
@@ -20,6 +20,7 @@ const request = computed(() => dialogs.current("createTag"));
 
 const name = ref("");
 const message = ref("");
+/** Move an existing tag of this name here (`git tag -f`). Offered only when the name is taken. */
 const force = ref(false);
 /** Push the new tag once it is created. Off by default: a tag stays in this repository until pushed, as in Git. */
 const push = ref(false);
@@ -41,7 +42,14 @@ watch(request, (r) => {
 
 const trimmed = computed(() => name.value.trim());
 const nameProblem = computed(() => (trimmed.value.length === 0 ? null : validateRefName(trimmed.value, "tag")));
-const canSubmit = computed(() => trimmed.value.length > 0 && nameProblem.value === null && !submitting.value);
+
+/** The tag that already has this name, which Create would refuse unless it is moved here. */
+const existing = computed(() => {
+  const r = request.value;
+  if (!r || trimmed.value.length === 0) return null;
+  return (sessions.sessions.get(r.key)?.refs?.refs ?? []).find((e) => e.kind.type === "tag" && e.short === trimmed.value) ?? null;
+});
+const canSubmit = computed(() => trimmed.value.length > 0 && nameProblem.value === null && (existing.value === null || force.value) && !submitting.value);
 
 function onOpenChange(open: boolean): void {
   if (!open) dialogs.cancel();
@@ -56,12 +64,15 @@ async function submit(): Promise<void> {
   submitting.value = true;
   error.value = null;
   try {
-    const result = await runOp(r.key, () => commands.opTagCreate(r.key, tag, r.target, text.length > 0 ? text : null, force.value));
+    const moved = existing.value !== null && force.value;
+    const result = await runOp(r.key, () => commands.opTagCreate(r.key, tag, r.target, text.length > 0 ? text : null, moved));
     if (!result.ok) {
       error.value = opFailureText(result, `Creating tag ${tag}`);
       return;
     }
-    sessions.notifySuccess(`Created ${text.length > 0 ? "annotated " : ""}tag ${tag} at ${r.targetLabel}.`);
+    sessions.notifySuccess(
+      moved ? `Moved tag ${tag} to ${r.targetLabel}.` : `Created ${text.length > 0 ? "annotated " : ""}tag ${tag} at ${r.targetLabel}.`,
+    );
     const pushTo = push.value ? remote.value : null;
     dialogs.resolve("createTag", result);
     // After the dialog closes: the push shows its progress in the status bar like any other.
@@ -106,10 +117,17 @@ async function submit(): Promise<void> {
           <Textarea id="create-tag-message" v-model="message" data-dialog-grow style="--grow-basis: 4rem" class="min-h-16 text-base" placeholder="Release 1.2.0" spellcheck="true" />
         </div>
 
-        <label class="flex items-center gap-2 text-base select-none">
-          <input v-model="force" type="checkbox" class="size-3.5 accent-primary" />
-          Replace an existing tag with this name
-        </label>
+        <div v-if="existing" class="grid gap-1">
+          <label class="flex items-center gap-2 text-base select-none">
+            <input v-model="force" type="checkbox" class="size-3.5 accent-primary" data-create-tag-move />
+            <span>Move <span class="font-mono">{{ existing.short }}</span> here from <span class="font-mono">{{ shortSha(existing.target) }}</span></span>
+          </label>
+          <p class="text-xs text-muted-foreground">
+            A tag <span class="font-mono">{{ existing.short }}</span> already exists on <span class="font-mono">{{ shortSha(existing.target) }}</span>
+            <template v-if="existing.subject"> ({{ existing.subject }})</template>. Ticking this removes it from there and creates it on
+            <span class="font-mono">{{ request.targetLabel }}</span> instead, with the message above. To keep it, choose another name.
+          </p>
+        </div>
 
         <div v-if="remote" class="grid gap-1">
           <label class="flex items-center gap-2 text-base select-none">

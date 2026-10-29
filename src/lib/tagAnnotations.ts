@@ -34,3 +34,11 @@ export function tagTooltip(fullName: string, short: string, annotation: TagAnnot
   const message = annotation.message || "(no message)";
   return { heading: short, content: `${message}\n\nTagged by ${who}${when}` };
 }
+
+/**
+ * The message of an annotated tag ends with a signature block (PGP, SSH or X.509), which
+ * `getTagAnnotation` includes in the message. Renaming or moving such a tag drops the signature.
+ */
+export function isSignedTagMessage(message: string): boolean {
+  return /^-----BEGIN (PGP SIGNATURE|SSH SIGNATURE|SIGNED MESSAGE)-----$/m.test(message);
+}

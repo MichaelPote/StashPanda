@@ -483,8 +483,28 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   push its tags" (on by default), the tags on the pushed commit's history, as a step of its own
   after the branch push so a refused tag is never reported as a refused branch. Full ref names
   (`refs/tags/<name>`), never forced: a tag the remote has on another commit is refused and left
-  as it is there. Tag annotations are loaded one tag at a time when a pill is first hovered
-  (`get_tag_annotation`), so the refs snapshot carries no tag messages.
+  as it is there. The one exception is Move Tag (below). Tag annotations are loaded one tag at a
+  time when a pill is first hovered (`get_tag_annotation`), so the refs snapshot carries no tag
+  messages.
+- **Removing, renaming and moving tags** go through `RemoveTagDialog.vue`, `RenameTagDialog.vue`
+  and `MoveTagDialog.vue`. Each has an unticked checkbox per remote (`RemoteTagOptions.vue`) and,
+  when it opens, asks every remote in the background whether it has the tag
+  (`query_remote_tag`, `git ls-remote --tags <remote> refs/tags/<name> refs/tags/<name>^{}`: the
+  second pattern is needed, because a pattern matches the end of a name, so without it the
+  annotated tag's commit line is left out). Until a remote answers, the dialog acts as if it has
+  no such tag; the check registers an operation id so closing the dialog cancels it, and it takes
+  no gate. Remove Tag deletes from the ticked remotes first (`op_delete_remote_tag`), and only
+  when all of them worked deletes the tag here, so a failure leaves it here to try again.
+  `op_tag_rename` creates the new name and then deletes the old one; an annotated tag is rebuilt
+  from `git cat-file tag` with `--cleanup=verbatim`, `tag.gpgSign=false` and the original tagger
+  and date in `GIT_COMMITTER_NAME`, `GIT_COMMITTER_EMAIL` and `GIT_COMMITTER_DATE`, so the name
+  stored inside the tag object matches. On a remote, a rename pushes the new name (never forced),
+  then deletes the old one. `op_tag_move` keeps an annotated tag's message with the user as
+  tagger. A signature cannot survive either, so both dialogs warn about a signed tag. Moving on a
+  remote is `op_push_tag_force`, with `--force-with-lease=refs/tags/<name>:<oid>` on the object
+  the dialog found there ("" for none), or plain `--force` when the check had not answered. Move
+  Tag's commit list (`CommitPicker.vue`) is the graph: the newest 200 rows, or `graph_search`'s
+  matches fetched with `graph_rows_at`, so commits only on hidden branches are not offered.
 - **Remotes** are added, edited (URL and an optional separate push URL), renamed and removed
   through `git remote` (`op_remote_add`, `op_remote_set_url`, `op_remote_rename`,
   `op_remote_remove`), from `RemoteDialog.vue`. It opens from a remote's heading in the Branches

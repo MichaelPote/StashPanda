@@ -65,13 +65,13 @@ const tags = computed(() =>
 
   <ActionMenuItem @select="createTagAt(session.key, oid, sha)">Add Tag…</ActionMenuItem>
   <ActionMenuItem v-if="tags.length === 1" destructive @select="removeTag(session.key, tags[0]!)">
-    Remove Tag {{ tags[0] }}
+    Remove Tag {{ tags[0] }}…
   </ActionMenuItem>
   <ContextMenuSub v-else-if="tags.length > 1">
     <ContextMenuSubTrigger class="text-base">Remove Tag</ContextMenuSubTrigger>
     <ContextMenuSubContent>
       <ActionMenuItem v-for="t in tags" :key="t" destructive @select="removeTag(session.key, t)">
-        {{ t }}
+        {{ t }}…
       </ActionMenuItem>
     </ContextMenuSubContent>
   </ContextMenuSub>

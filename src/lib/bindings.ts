@@ -209,6 +209,11 @@ export const commands = {
 	 */
 	graphSearch: (key: string, version: number, query: string, fromRow: number | null, direction: SearchDirection) => typedError<GraphSearchResult, GitError>(__TAURI_INVOKE("graph_search", { key, version, query, fromRow, direction })),
 	/**
+	 *  The rows at `indexes`, in that order, leaving out any past the end; at most 1000. For lists of
+	 *  rows that are not next to each other, such as `graphSearch`'s matches.
+	 */
+	graphRowsAt: (key: string, version: number, indexes: number[]) => typedError<GraphRow[], GitError>(__TAURI_INVOKE("graph_rows_at", { key, version, indexes })),
+	/**
 	 *  Reload refs and history (full) or just the working tree row (status only). The full reload
 	 *  reads the whole history again rather than only what changed, so it also repairs a cache that
 	 *  has gone wrong.
@@ -366,6 +371,30 @@ export const commands = {
 	opMergeAbort: (key: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_merge_abort", { key })),
 	opTagCreate: (key: string, name: string, target: string, message: string | null, force: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_create", { key, name, target, message, force })),
 	opTagDelete: (key: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_delete", { key, name })),
+	/**
+	 *  Rename tag `old` to `renamed` here; an annotated tag keeps its message, tagger and date, and a
+	 *  signed one loses its signature. Git refuses when `renamed` exists. Remotes are not touched.
+	 */
+	opTagRename: (key: string, old: string, renamed: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_rename", { key, old, renamed })),
+	/**  Move tag `name` here to `target`; an annotated tag keeps its message. Remotes are not touched. */
+	opTagMove: (key: string, name: string, target: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_tag_move", { key, name, target })),
+	/**
+	 *  Whether `remote` has tag `name`, and on what, with `git ls-remote`. Read only: it waits for no
+	 *  other operation and refreshes nothing. `opId` registers it, so `opCancel` stops it (when the
+	 *  dialog that asked closes); a failure to reach the remote is in `result`.
+	 */
+	queryRemoteTag: (key: string, opId: string, remote: string, name: string) => typedError<RemoteTagLookup, GitError>(__TAURI_INVOKE("query_remote_tag", { key, opId, remote, name })),
+	/**
+	 *  Delete tag `name` on `remote`, for everyone who uses it. A remote without the tag still returns
+	 *  `ok`, with "deleting a non-existent ref" in stderr. `opId` works as for `opPush`.
+	 */
+	opDeleteRemoteTag: (key: string, opId: string, remote: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_delete_remote_tag", { key, opId, remote, name })),
+	/**
+	 *  Push tag `name` to `remote`, replacing the tag it has there. With `expected` (the object
+	 *  `queryRemoteTag` found there, or "" for none) the push carries a lease and is refused with
+	 *  "(stale info)" when the remote's tag has changed since; without it, it is `--force`.
+	 */
+	opPushTagForce: (key: string, opId: string, remote: string, name: string, expected: string | null) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_push_tag_force", { key, opId, remote, name, expected })),
 	/**
 	 *  Save the working tree's changes as a new stash. `message` names it; without one Git names it
 	 *  after the commit it was made on.
@@ -1890,6 +1919,23 @@ export type RemoteKeys = {
 	keys: KeyInfo[],
 	/**  Why the folder could not be read. */
 	error: string | null,
+};
+
+/**  A tag as a remote has it. */
+export type RemoteTag = {
+	/**  What `refs/tags/<name>` points at there: the tag object for an annotated tag. */
+	oid: string,
+	/**  The commit it ends at, for comparing with the tag here. */
+	commit: string,
+};
+
+/**
+ *  What `remote_tag` found: `tag` is None when the remote has no such tag, or when `result`
+ *  failed (the remote could not be reached).
+ */
+export type RemoteTagLookup = {
+	result: OpResult,
+	tag: RemoteTag | null,
 };
 
 export type RepoChangedEvent = {

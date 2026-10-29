@@ -20,12 +20,14 @@ import {
   fastForwardToUpstream,
   isDetached,
   mergeInto,
+  moveTag,
   pushBranch,
   pushBranchTo,
   pushBranchReason,
   pushTags,
   pushTagsReason,
   renameBranch,
+  renameTag,
   requestCheckout,
   revisionOf,
   stripRemote,
@@ -207,6 +209,8 @@ function chooseColour(colour: number | null): void {
         >
           Push Tag to {{ remote }}
         </ActionMenuItem>
+        <ActionMenuItem @select="renameTag(sessionKey, short)">Rename Tag…</ActionMenuItem>
+        <ActionMenuItem @select="moveTag(sessionKey, short)">Move Tag…</ActionMenuItem>
       </template>
 
       <ContextMenuSeparator />

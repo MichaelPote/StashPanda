@@ -114,6 +114,19 @@ pub async fn graph_find(
     Ok(oids.iter().map(|o| snap.find(o)).collect())
 }
 
+/// The rows at `indexes`, in that order, leaving out any past the end; at most 1000. For lists of
+/// rows that are not next to each other, such as `graphSearch`'s matches.
+#[tauri::command]
+#[specta::specta]
+pub async fn graph_rows_at(state: State<'_, AppState>, key: String, version: u64, indexes: Vec<u32>) -> Result<Vec<GraphRow>> {
+    let h = repo(&state, &key).await?;
+    let snap = h.graph.load_full().ok_or(GitError::StaleVersion { requested: version, current: 0 })?;
+    if snap.version != version {
+        return Err(GitError::StaleVersion { requested: version, current: snap.version });
+    }
+    Ok(indexes.iter().take(1000).filter_map(|&i| snap.row(i)).collect())
+}
+
 /// The Commits panel's search box: the next row from `from_row` in `direction` whose subject,
 /// author or oid matches `query`, wrapping around the ends, and every row that matches.
 #[tauri::command]

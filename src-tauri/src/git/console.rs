@@ -315,6 +315,7 @@ pub fn command_title(args: &[String]) -> String {
         "fetch" if first == Some(".") => "Move branch",
         "fetch" => "Fetch",
         "pull" => "Pull",
+        "push" if (has("--delete") || has("-d")) && after.iter().any(|a| a.starts_with("refs/tags/")) => "Delete remote tag",
         "push" if has("--delete") || has("-d") => "Delete remote branch",
         "push" if forced => "Force push",
         "push" => "Push",
@@ -401,6 +402,7 @@ mod tests {
         assert_eq!(title("rebase --abort"), "Abort rebase");
         assert_eq!(title("cherry-pick --continue"), "Continue cherry-pick");
         assert_eq!(title("push --progress origin --delete refs/heads/x"), "Delete remote branch");
+        assert_eq!(title("push --progress origin --delete refs/tags/v1"), "Delete remote tag");
         assert_eq!(title("push --progress origin refs/heads/main:refs/heads/main"), "Push");
         assert_eq!(title("push --progress --force-with-lease=refs/heads/main:abc origin refs/heads/main:refs/heads/main"), "Force push");
         assert_eq!(title("fetch --no-write-fetch-head . refs/heads/main:refs/heads/release"), "Move branch");

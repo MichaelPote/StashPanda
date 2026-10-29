@@ -29,6 +29,7 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { errorMessage, IpcError, unwrap, type IpcResult } from "@/lib/ipc";
 import { resolvedFileText } from "@/lib/merge/autoResolve";
 import { shortSha } from "@/lib/refNames";
+import { moveLease } from "@/lib/remoteTags";
 import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice, type PushToServer, type RemoteDialogMode } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/sessions";
@@ -1702,24 +1703,113 @@ export async function createTagAt(key: string, target: string, targetLabel: stri
   await dialogs.open("createTag", { key, target, targetLabel });
 }
 
-/** Asks for confirmation, then runs `git tag -d <name>`. */
+/**
+ * Opens the Remove Tag dialog, then removes the tag from each remote ticked there, one at a time,
+ * and only when all of those worked, here with `git tag -d <name>`. A tag that could not be
+ * removed from a remote stays here too, so Remove Tag can be tried again.
+ */
 export async function removeTag(key: string, name: string): Promise<void> {
-  const dialogs = useDialogsStore();
   const sessions = useSessionsStore();
-  const confirmed = await dialogs.open("confirm", {
-    title: `Remove tag ${name}?`,
-    message: `The tag ${name} is deleted from this repository. Copies on remotes are not touched.`,
-    confirmLabel: "Remove tag",
-    destructive: true,
-  });
-  if (!confirmed) return;
+  const choice = await useDialogsStore().open("removeTag", { key, name });
+  if (!choice) return;
+  const removedFrom: string[] = [];
+  for (const { remote } of choice.remotes) {
+    const what = `Removing tag ${name} from ${remote}`;
+    const kept = `The tag is still here${removedFrom.length > 0 ? `; it was removed from ${listNames(removedFrom)}` : ""}.`;
+    try {
+      const result = await runOperation(key, what, (opId) => commands.opDeleteRemoteTag(key, opId, remote, name), "push");
+      if (!result.ok && !REMOTE_BRANCH_MISSING.test(`${result.stdout}\n${result.stderr}`)) {
+        sessions.notify(`${networkFailureText(result, what)} ${kept}`, sshDiagnoseAction(key, result));
+        return;
+      }
+      removedFrom.push(remote);
+    } catch (e) {
+      sessions.notify(`${isCancelled(e) ? `${what} was stopped; the next fetch shows whether ${remote} removed it.` : errorMessage(e)} ${kept}`);
+      return;
+    }
+  }
+  const remotesNote = removedFrom.length > 0 ? ` here and from ${listNames(removedFrom)}` : "";
   try {
     const result = await runOp(key, () => commands.opTagDelete(key, name));
-    if (result.ok) sessions.notifySuccess(`Removed tag ${name}.`);
-    else sessions.notify(opFailureText(result, `Removing tag ${name}`));
+    if (result.ok) sessions.notifySuccess(`Removed tag ${name}${remotesNote}.`);
+    else sessions.notify(`${opFailureText(result, `Removing tag ${name}`)}${removedFrom.length > 0 ? ` It was removed from ${listNames(removedFrom)}.` : ""}`);
   } catch (e) {
     sessions.notify(errorMessage(e));
   }
+}
+
+/**
+ * Opens the Rename Tag dialog, which renames the tag here, then renames it on each remote ticked
+ * there: pushes the new name, then deletes the old one, so the old name is never deleted on a
+ * remote that did not take the new one.
+ */
+export async function renameTag(key: string, name: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const choice = await useDialogsStore().open("renameTag", { key, name });
+  if (!choice || choice.remotes.length === 0) return;
+  const renamed = choice.name;
+  const done: string[] = [];
+  const prefix = () => `Renamed tag ${name} to ${renamed}${done.length > 0 ? ` here and on ${listNames(done)}` : ""}.`;
+  for (const { remote } of choice.remotes) {
+    const pushing = `Pushing ${renamed} to ${remote}`;
+    try {
+      const result = await runOperation(key, pushing, (opId) => commands.opPushTags(key, opId, remote, { type: "named", names: [renamed] }), "push");
+      if (!result.ok) {
+        const reason = result.stderr.includes("[rejected]")
+          ? `${remote} already has a tag ${renamed} on another commit, so the push was refused.`
+          : networkFailureText(result, pushing);
+        sessions.notify(`${prefix()} ${reason} ${remote} still has ${name}.`, sshDiagnoseAction(key, result));
+        return;
+      }
+    } catch (e) {
+      sessions.notify(`${prefix()} ${isCancelled(e) ? `The push to ${remote} was stopped; the next fetch shows whether it arrived.` : errorMessage(e)} ${remote} still has ${name}.`);
+      return;
+    }
+    const deleting = `Removing tag ${name} from ${remote}`;
+    try {
+      const result = await runOperation(key, deleting, (opId) => commands.opDeleteRemoteTag(key, opId, remote, name), "push");
+      if (!result.ok && !REMOTE_BRANCH_MISSING.test(`${result.stdout}\n${result.stderr}`)) {
+        sessions.notify(`${prefix()} Pushed ${renamed} to ${remote}, but ${remote} still has ${name}. ${networkFailureText(result, deleting)}`, sshDiagnoseAction(key, result));
+        return;
+      }
+    } catch (e) {
+      sessions.notify(`${prefix()} Pushed ${renamed} to ${remote}, but ${isCancelled(e) ? `removing ${name} there was stopped.` : errorMessage(e)}`);
+      return;
+    }
+    done.push(remote);
+  }
+  sessions.notifySuccess(prefix());
+}
+
+/**
+ * Opens the Move Tag dialog, which moves the tag here, then pushes it to each remote ticked there
+ * with `opPushTagForce`. The push carries a lease on what the dialog found on that remote, so a
+ * tag someone else has changed there since is not replaced.
+ */
+export async function moveTag(key: string, name: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const choice = await useDialogsStore().open("moveTag", { key, name });
+  if (!choice || choice.remotes.length === 0) return;
+  const done: string[] = [];
+  const prefix = () => `Moved tag ${name} to ${choice.targetLabel}${done.length > 0 ? ` here and on ${listNames(done)}` : ""}.`;
+  for (const { remote, found } of choice.remotes) {
+    const pushing = `Moving tag ${name} on ${remote}`;
+    try {
+      const result = await runOperation(key, pushing, (opId) => commands.opPushTagForce(key, opId, remote, name, moveLease(found)), "push");
+      if (!result.ok) {
+        const reason = result.stderr.includes("(stale info)")
+          ? `${remote}'s ${name} changed after StashPanda checked it, so it was not replaced. Fetch, look at it, then move the tag again.`
+          : networkFailureText(result, pushing);
+        sessions.notify(`${prefix()} ${reason}`, sshDiagnoseAction(key, result));
+        return;
+      }
+    } catch (e) {
+      sessions.notify(`${prefix()} ${isCancelled(e) ? `The push to ${remote} was stopped; the next fetch shows whether it arrived.` : errorMessage(e)}`);
+      return;
+    }
+    done.push(remote);
+  }
+  sessions.notifySuccess(prefix());
 }
 
 /**
@@ -1809,7 +1899,7 @@ export function tagPushOutcome(result: OpResult, remote: string, what: string): 
     return {
       message:
         `${remote} already has ${them} on another commit, so ${refused.length === 1 ? "it was" : "they were"} not pushed: ` +
-        `StashPanda never moves a tag on a remote, since others may already be using it.${pushedNote}`,
+        `a push never moves a tag on a remote, since others may already be using it. Move Tag… in the tag's menu can replace it there.${pushedNote}`,
       failed: true,
     };
   }

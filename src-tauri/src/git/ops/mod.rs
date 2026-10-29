@@ -1011,6 +1011,222 @@ pub async fn tag_delete(client: &GitClient, name: &str) -> Result<OpResult> {
     Ok(result(out))
 }
 
+/// What an annotated tag holds besides its target, read from the tag object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TagObject {
+    /// The object the tag points at, usually a commit.
+    object: String,
+    tagger_name: String,
+    tagger_email: String,
+    /// As Git stores it: `1700000000 +0200`.
+    tagger_date: String,
+    /// The message exactly as stored, without a signature block.
+    message: String,
+    /// The message ended with a PGP, SSH or X.509 signature, which a rebuilt tag cannot keep.
+    signed: bool,
+}
+
+/// The lines that start a signature block at the end of a tag message.
+const SIGNATURE_STARTS: [&str; 3] = ["-----BEGIN PGP SIGNATURE-----", "-----BEGIN SSH SIGNATURE-----", "-----BEGIN SIGNED MESSAGE-----"];
+
+/// Parses `git cat-file tag` output: header lines, a blank line, then the message.
+fn parse_tag_object(raw: &str) -> Option<TagObject> {
+    let (headers, message) = raw.split_once("\n\n").unwrap_or((raw.trim_end_matches('\n'), ""));
+    let mut object = None;
+    let mut tagger = None;
+    for line in headers.lines() {
+        if let Some(v) = line.strip_prefix("object ") {
+            object = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("tagger ") {
+            tagger = Some(v);
+        }
+    }
+    // `Name <email> 1700000000 +0200`; a name can hold spaces but not `<`.
+    let (who, date) = tagger?.rsplit_once("> ")?;
+    let (name, email) = who.split_once(" <").or_else(|| who.split_once('<'))?;
+    let cut = message
+        .match_indices('\n')
+        .map(|(i, _)| i + 1)
+        .chain(std::iter::once(0))
+        .filter(|&i| SIGNATURE_STARTS.iter().any(|s| message[i..].starts_with(s)))
+        .min();
+    Some(TagObject {
+        object: object?,
+        tagger_name: name.trim().to_string(),
+        tagger_email: email.to_string(),
+        tagger_date: date.trim().to_string(),
+        message: cut.map_or(message, |i| &message[..i]).to_string(),
+        signed: cut.is_some(),
+    })
+}
+
+/// The tag object behind `refs/tags/<name>`, or None for a lightweight tag.
+async fn read_tag_object(client: &GitClient, name: &str) -> Result<Option<TagObject>> {
+    let full = format!("refs/tags/{name}");
+    let kind = client.exec(GitReq::new("cat-file", ["cat-file", "-t", full.as_str()])).await?;
+    if String::from_utf8_lossy(&kind.stdout).trim() != "tag" {
+        return Ok(None);
+    }
+    let raw = client.exec(GitReq::new("cat-file", ["cat-file", "tag", full.as_str()])).await?;
+    let text = String::from_utf8_lossy(&raw.stdout).into_owned();
+    parse_tag_object(&text)
+        .map(Some)
+        .ok_or_else(|| GitError::internal(format!("could not read the tag object of {name}")))
+}
+
+/// `git tag -a` for `name` at `target` with `tag`'s message, unchanged (`--cleanup=verbatim`) and
+/// never signed, whatever `tag.gpgSign` says. With `keep_tagger`, the new tag carries `tag`'s
+/// tagger and date (Git takes the tagger from the committer variables); otherwise the user's.
+fn rebuild_tag_req(name: &str, target: &str, tag: &TagObject, force: bool, keep_tagger: bool) -> GitReq {
+    let mut args: Vec<String> = vec!["tag".into(), "-a".into(), "--cleanup=verbatim".into(), "-F".into(), "-".into()];
+    if force {
+        args.push("-f".into());
+    }
+    args.push(name.to_string());
+    args.push(target.to_string());
+    let mut req = GitReq::new("tag", args).user().stdin(tag.message.clone().into_bytes());
+    req.config.push(("tag.gpgSign".into(), "false".into()));
+    if keep_tagger {
+        req = req
+            .env("GIT_COMMITTER_NAME", &tag.tagger_name)
+            .env("GIT_COMMITTER_EMAIL", &tag.tagger_email)
+            .env("GIT_COMMITTER_DATE", &format!("@{}", tag.tagger_date));
+    }
+    req
+}
+
+/// Rename tag `old` to `new`: create `new` on the same commit, then delete `old`. An annotated tag
+/// is rebuilt with the same message, tagger and date, so the name stored inside it is `new` too;
+/// a signature cannot be carried over, so a signed tag comes out unsigned. Git refuses when `new`
+/// already exists. When `old` cannot be deleted afterwards, both names are left and the result
+/// says so in stderr.
+pub async fn tag_rename(client: &GitClient, old: &str, new: &str) -> Result<OpResult> {
+    valid_ref_name(old)?;
+    valid_ref_name(new)?;
+    let created = match read_tag_object(client, old).await? {
+        Some(tag) => result(client.exec_allow_failure(rebuild_tag_req(new, &tag.object, &tag, false, true)).await?),
+        None => {
+            let source = format!("refs/tags/{old}");
+            result(client.exec_allow_failure(GitReq::new("tag", ["tag", new, source.as_str()]).user()).await?)
+        }
+    };
+    if !created.ok {
+        return Ok(created);
+    }
+    let deleted = tag_delete(client, old).await?;
+    if !deleted.ok {
+        return Ok(refusal(format!("Created tag {new}, but could not remove {old}: {}", deleted.stderr)));
+    }
+    Ok(deleted)
+}
+
+/// Move tag `name` to `target`. An annotated tag keeps its message, with the user as tagger and
+/// now as the date, as `git tag -f -a` would give it; a signed one comes out unsigned. A
+/// lightweight tag is `git tag -f`.
+pub async fn tag_move(client: &GitClient, name: &str, target: &str) -> Result<OpResult> {
+    valid_ref_name(name)?;
+    valid_revision(target)?;
+    let out = match read_tag_object(client, name).await? {
+        Some(tag) => client.exec_allow_failure(rebuild_tag_req(name, target, &tag, true, false)).await?,
+        None => client.exec_allow_failure(GitReq::new("tag", ["tag", "-f", name, target]).user()).await?,
+    };
+    Ok(result(out))
+}
+
+/// A tag as a remote has it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTag {
+    /// What `refs/tags/<name>` points at there: the tag object for an annotated tag.
+    pub oid: String,
+    /// The commit it ends at, for comparing with the tag here.
+    pub commit: String,
+}
+
+/// What `remote_tag` found: `tag` is None when the remote has no such tag, or when `result`
+/// failed (the remote could not be reached).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTagLookup {
+    pub result: OpResult,
+    pub tag: Option<RemoteTag>,
+}
+
+/// Whether `remote` has tag `name`, with `git ls-remote --tags <remote> refs/tags/<name>
+/// refs/tags/<name>^{}`. It
+/// reads only, so it takes no gate and refreshes nothing.
+pub async fn remote_tag(client: &GitClient, remote: &str, name: &str, cancel: &tokio_util::sync::CancellationToken) -> Result<RemoteTagLookup> {
+    valid_remote(remote)?;
+    valid_ref_name(name)?;
+    let full = format!("refs/tags/{name}");
+    // The pattern matches the end of a name, so the annotated tag's commit needs its own.
+    let peeled = format!("{full}^{{}}");
+    let args = ["ls-remote", "--tags", remote, full.as_str(), peeled.as_str()];
+    let out = result(client.exec_streaming(GitReq::new("ls-remote", args).own_session(), &|_| {}, cancel).await?);
+    let tag = out.ok.then(|| parse_remote_tag(&out.stdout, &full)).flatten();
+    Ok(RemoteTagLookup { result: out, tag })
+}
+
+/// The tag `full` in `ls-remote` output: `<oid>\trefs/tags/v1`, and for an annotated tag also
+/// `<commit>\trefs/tags/v1^{}`.
+fn parse_remote_tag(stdout: &str, full: &str) -> Option<RemoteTag> {
+    let peeled = format!("{full}^{{}}");
+    let mut oid = None;
+    let mut commit = None;
+    for line in stdout.lines() {
+        let Some((id, refname)) = line.split_once('\t') else { continue };
+        if refname == full {
+            oid = Some(id.to_string());
+        } else if refname == peeled {
+            commit = Some(id.to_string());
+        }
+    }
+    let oid = oid?;
+    Some(RemoteTag { commit: commit.unwrap_or_else(|| oid.clone()), oid })
+}
+
+/// Delete tag `name` on `remote`, for everyone who uses it: `git push --progress <remote> --delete
+/// refs/tags/<name>`. The full name, so a branch of that name is never deleted instead. A remote
+/// without the tag still returns `ok`, with "deleting a non-existent ref" in stderr.
+pub async fn delete_remote_tag(
+    client: &GitClient,
+    remote: &str,
+    name: &str,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_remote(remote)?;
+    valid_ref_name(name)?;
+    let full = format!("refs/tags/{name}");
+    let args = ["push", "--progress", remote, "--delete", full.as_str()];
+    let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
+    Ok(result(out))
+}
+
+/// Push tag `name` to `remote` replacing the tag it has there, which `push_tags` never does. With
+/// `expected`, `--force-with-lease=refs/tags/<name>:<expected>`: the remote's tag must still be
+/// that object (empty: the remote must not have the tag), or Git refuses with "(stale info)".
+/// Without it, `--force`.
+pub async fn push_tag_force(
+    client: &GitClient,
+    remote: &str,
+    name: &str,
+    expected: Option<&str>,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_remote(remote)?;
+    valid_ref_name(name)?;
+    let full = format!("refs/tags/{name}");
+    let force = match expected {
+        Some(oid) => format!("--force-with-lease={full}:{oid}"),
+        None => "--force".into(),
+    };
+    let args = ["push".to_string(), "--progress".into(), force, remote.to_string(), full];
+    let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
+    Ok(result(out))
+}
+
 pub async fn branch_delete(client: &GitClient, name: &str, force: bool) -> Result<OpResult> {
     valid_ref_name(name)?;
     let flag = if force { "-D" } else { "-d" };
@@ -4749,6 +4965,119 @@ mod e2e {
         let nowhere = PushTarget { remote: "origin".into(), branch: "never-pushed".into() };
         assert_eq!(tracking_ref_of(&client, &nowhere).await.unwrap(), None);
         assert!(!head_on_push_target(&client, &nowhere).await.unwrap());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_tag_object_is_read_with_its_signature_split_off() {
+        let raw = "object 1111111111111111111111111111111111111111\ntype commit\ntag v1\ntagger Ann Lee <ann@example.com> 1700000000 +0200\n\nRelease 1\n\n#12 fixed\n-----BEGIN PGP SIGNATURE-----\n\nabc\n-----END PGP SIGNATURE-----\n";
+        let tag = parse_tag_object(raw).unwrap();
+        assert_eq!(tag.object, "1111111111111111111111111111111111111111");
+        assert_eq!((tag.tagger_name.as_str(), tag.tagger_email.as_str(), tag.tagger_date.as_str()), ("Ann Lee", "ann@example.com", "1700000000 +0200"));
+        assert_eq!(tag.message, "Release 1\n\n#12 fixed\n");
+        assert!(tag.signed);
+
+        let plain = parse_tag_object("object 22\ntype commit\ntag v2\ntagger <x@y> 1 +0000\n\nNotes\n").unwrap();
+        assert_eq!((plain.tagger_name.as_str(), plain.message.as_str(), plain.signed), ("", "Notes\n", false));
+        let empty = parse_tag_object("object 33\ntype commit\ntag v3\ntagger T <t@t> 1 +0000\n\n").unwrap();
+        assert_eq!(empty.message, "");
+        assert!(parse_tag_object("object 44\ntype commit\ntag v4\n\nno tagger\n").is_none());
+    }
+
+    #[test]
+    fn a_remote_tag_is_read_from_ls_remote() {
+        let annotated = "aaa\trefs/tags/v1\nccc\trefs/tags/v1^{}\n";
+        assert_eq!(parse_remote_tag(annotated, "refs/tags/v1"), Some(RemoteTag { oid: "aaa".into(), commit: "ccc".into() }));
+        assert_eq!(parse_remote_tag("ccc\trefs/tags/v1\n", "refs/tags/v1"), Some(RemoteTag { oid: "ccc".into(), commit: "ccc".into() }));
+        // ls-remote matches the end of a name, so a longer name is not the tag.
+        assert_eq!(parse_remote_tag("ddd\trefs/tags/x/refs/tags/v1\n", "refs/tags/v1"), None);
+        assert_eq!(parse_remote_tag("", "refs/tags/v1"), None);
+    }
+
+    #[tokio::test]
+    async fn tags_are_renamed_moved_and_changed_on_a_remote() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-tags-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local) = (root.join("origin.git"), root.join("local"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), local.as_os_str()]);
+        for (k, v) in [("user.email", "me@here"), ("user.name", "Me"), ("commit.gpgsign", "false"), ("tag.gpgSign", "false")] {
+            git(&local, &["config", k, v]);
+        }
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        let (one, two) = (out(&local, &["rev-parse", "HEAD~1"]), out(&local, &["rev-parse", "HEAD"]));
+        let client = client_for(&local);
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        // An annotated tag by someone else, with a line Git would strip as a comment.
+        let tagged = Command::new("git").arg("-C").arg(&local)
+            .args(["-c", "user.name=Ann Lee", "-c", "user.email=ann@example.com", "tag", "-a", "--cleanup=verbatim", "-m", "Release 1\n#12 fixed", "v1", &one])
+            .env("GIT_COMMITTER_DATE", "@1700000000 +0200")
+            .status().unwrap();
+        assert!(tagged.success());
+        git(&local, &["tag", "light", &one]);
+        git(&local, &["push", "-q", "origin", "main", "refs/tags/v1", "refs/tags/light"]);
+
+        // The remote's copies, and a tag it does not have.
+        let v1 = remote_tag(&client, "origin", "v1", &cancel).await.unwrap();
+        assert!(v1.result.ok, "{v1:?}");
+        let v1 = v1.tag.unwrap();
+        assert_eq!((v1.oid.as_str(), v1.commit.as_str()), (out(&local, &["rev-parse", "refs/tags/v1"]).as_str(), one.as_str()));
+        assert_eq!(remote_tag(&client, "origin", "nope", &cancel).await.unwrap().tag, None);
+        let unreachable = remote_tag(&client, "no-such-remote", "v1", &cancel).await.unwrap();
+        assert!(!unreachable.result.ok && unreachable.tag.is_none());
+
+        // Renaming keeps the commit, message, tagger and date, and the name inside the tag object.
+        let renamed = tag_rename(&client, "v1", "release-1").await.unwrap();
+        assert!(renamed.ok, "{renamed:?}");
+        assert_eq!(out(&local, &["tag", "-l", "v1"]), "");
+        assert_eq!(out(&local, &["rev-parse", "release-1^{commit}"]), one);
+        assert_eq!(out(&local, &["for-each-ref", "--format=%(taggername) %(taggeremail) %(taggerdate:raw)", "refs/tags/release-1"]), "Ann Lee <ann@example.com> 1700000000 +0200");
+        assert_eq!(out(&local, &["for-each-ref", "--format=%(contents)", "refs/tags/release-1"]), "Release 1\n#12 fixed");
+        assert!(out(&local, &["cat-file", "tag", "release-1"]).contains("\ntag release-1\n"));
+        assert!(Command::new("git").arg("-C").arg(&local).args(["fsck", "--no-dangling"]).output().unwrap().stderr.is_empty(), "fsck warns about nothing");
+        // A lightweight tag, and a name that is taken.
+        assert!(tag_rename(&client, "light", "light-2").await.unwrap().ok);
+        assert_eq!(out(&local, &["cat-file", "-t", "refs/tags/light-2"]), "commit");
+        let taken = tag_rename(&client, "light-2", "release-1").await.unwrap();
+        assert!(!taken.ok && taken.stderr.contains("already exists"), "{taken:?}");
+        assert_eq!(out(&local, &["rev-parse", "refs/tags/light-2"]), one, "a refused rename leaves the tag");
+
+        // The remote half of a rename: push the new name, delete the old one.
+        assert!(push_tags(&client, "origin", &TagsToPush::Named { names: vec!["release-1".into()] }, &progress, &cancel).await.unwrap().ok);
+        let deleted = delete_remote_tag(&client, "origin", "v1", &progress, &cancel).await.unwrap();
+        assert!(deleted.ok, "{deleted:?}");
+        let remote_tags = out(&local, &["ls-remote", "--tags", "--refs", "origin"]);
+        assert!(remote_tags.contains("refs/tags/release-1") && !remote_tags.contains("refs/tags/v1"), "{remote_tags}");
+        let again = delete_remote_tag(&client, "origin", "v1", &progress, &cancel).await.unwrap();
+        assert!(again.ok && again.stderr.contains("non-existent"), "{again:?}");
+
+        // Moving an annotated tag keeps its message, with the user as tagger.
+        let moved = tag_move(&client, "release-1", &two).await.unwrap();
+        assert!(moved.ok, "{moved:?}");
+        assert_eq!(out(&local, &["rev-parse", "release-1^{commit}"]), two);
+        assert_eq!(out(&local, &["for-each-ref", "--format=%(taggername)|%(contents)", "refs/tags/release-1"]), "Me|Release 1\n#12 fixed");
+        assert!(tag_move(&client, "light-2", &two).await.unwrap().ok);
+        assert_eq!(out(&local, &["rev-parse", "refs/tags/light-2"]), two);
+
+        // A plain push refuses the moved tag; a lease on what the remote had lets it through.
+        let refused = push_tags(&client, "origin", &TagsToPush::Named { names: vec!["release-1".into()] }, &progress, &cancel).await.unwrap();
+        assert!(!refused.ok, "{refused:?}");
+        let before = remote_tag(&client, "origin", "release-1", &cancel).await.unwrap().tag.unwrap();
+        let stale = push_tag_force(&client, "origin", "release-1", Some(&two), &progress, &cancel).await.unwrap();
+        assert!(!stale.ok && stale.stderr.contains("stale info"), "{stale:?}");
+        let forced = push_tag_force(&client, "origin", "release-1", Some(&before.oid), &progress, &cancel).await.unwrap();
+        assert!(forced.ok, "{forced:?}");
+        assert_eq!(remote_tag(&client, "origin", "release-1", &cancel).await.unwrap().tag.unwrap().commit, two);
+        // An empty lease pushes a tag the remote does not have, and plain --force pushes any.
+        assert!(push_tag_force(&client, "origin", "light-2", Some(""), &progress, &cancel).await.unwrap().ok);
+        git(&local, &["tag", "-f", "light-2", &one]);
+        assert!(push_tag_force(&client, "origin", "light-2", None, &progress, &cancel).await.unwrap().ok);
+        assert_eq!(remote_tag(&client, "origin", "light-2", &cancel).await.unwrap().tag.unwrap().commit, one);
         let _ = std::fs::remove_dir_all(&root);
     }
 

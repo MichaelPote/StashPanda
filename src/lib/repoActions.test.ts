@@ -175,7 +175,7 @@ describe("the outcome of pushing tags", () => {
     const outcome = tagPushOutcome(pushed(stderr, false), "origin", "every tag");
     expect(outcome.failed).toBe(true);
     expect(outcome.message).toBe(
-      "origin already has a tag clash on another commit, so it was not pushed: StashPanda never moves a tag on a remote, since others may already be using it. Pushed new1.",
+      "origin already has a tag clash on another commit, so it was not pushed: a push never moves a tag on a remote, since others may already be using it. Move Tag… in the tag's menu can replace it there. Pushed new1.",
     );
   });
 

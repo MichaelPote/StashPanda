@@ -1,6 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { defineStore } from "pinia";
-import type { ConfigScope, OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, Remote, StashEntry } from "@/lib/bindings";
+import type { ConfigScope, OpResult, PassphraseMemory, PullMode, PushDefault, PushTarget, Remote, RemoteTag, StashEntry } from "@/lib/bindings";
 import type { Update } from "@tauri-apps/plugin-updater";
 import type { CommitFile } from "@/lib/files";
 
@@ -59,6 +59,39 @@ export interface CreateTagPayload {
   key: string;
   target: string;
   targetLabel: string;
+}
+
+/** The tag that Remove Tag, Rename Tag or Move Tag acts on. */
+export interface TagPayload {
+  key: string;
+  /** `v1.2` */
+  name: string;
+}
+
+/**
+ * A remote ticked in a tag dialog, with what the dialog found there: the remote's tag, null when
+ * it has none, or undefined when the check had not answered (or failed) by the time it was ticked.
+ */
+export interface RemoteTagChoice {
+  remote: string;
+  found: RemoteTag | null | undefined;
+}
+
+/** Remove Tag only chooses; the caller removes the tag from the remotes, then here. */
+export interface RemoveTagResult {
+  remotes: RemoteTagChoice[];
+}
+
+/** Rename Tag has renamed the tag here; the caller renames it on `remotes`. */
+export interface RenameTagResult {
+  name: string;
+  remotes: RemoteTagChoice[];
+}
+
+/** Move Tag has moved the tag here, to `targetLabel` (a short sha); the caller moves it on `remotes`. */
+export interface MoveTagResult {
+  targetLabel: string;
+  remotes: RemoteTagChoice[];
 }
 
 export interface CommitPayload {
@@ -377,6 +410,9 @@ export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
   renameBranch: { payload: RenameBranchPayload; result: RenameBranchResult | null };
+  removeTag: { payload: TagPayload; result: RemoveTagResult | null };
+  renameTag: { payload: TagPayload; result: RenameTagResult | null };
+  moveTag: { payload: TagPayload; result: MoveTagResult | null };
   /** Resolves once the dialog has made its change; null when nothing changed. */
   remote: { payload: RemotePayload; result: RemoteResult | null };
   repoSettings: { payload: RepoSettingsPayload; result: null };
@@ -416,6 +452,9 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createBranch: null,
   createTag: null,
   renameBranch: null,
+  removeTag: null,
+  renameTag: null,
+  moveTag: null,
   remote: null,
   repoSettings: null,
   commit: null,

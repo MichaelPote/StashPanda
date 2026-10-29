@@ -906,6 +906,57 @@ pub async fn op_tag_delete(app: AppHandle, state: State<'_, AppState>, key: Stri
     write_op!(refs app, state, key, |c| ops::tag_delete(c, &name).await)
 }
 
+/// Rename tag `old` to `renamed` here; an annotated tag keeps its message, tagger and date, and a
+/// signed one loses its signature. Git refuses when `renamed` exists. Remotes are not touched.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_tag_rename(app: AppHandle, state: State<'_, AppState>, key: String, old: String, renamed: String) -> Result<OpResult> {
+    write_op!(refs app, state, key, |c| ops::tag_rename(c, &old, &renamed).await)
+}
+
+/// Move tag `name` here to `target`; an annotated tag keeps its message. Remotes are not touched.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_tag_move(app: AppHandle, state: State<'_, AppState>, key: String, name: String, target: String) -> Result<OpResult> {
+    write_op!(app, state, key, |c| ops::tag_move(c, &name, &target).await)
+}
+
+/// Whether `remote` has tag `name`, and on what, with `git ls-remote`. Read only: it waits for no
+/// other operation and refreshes nothing. `opId` registers it, so `opCancel` stops it (when the
+/// dialog that asked closes); a failure to reach the remote is in `result`.
+#[tauri::command]
+#[specta::specta]
+pub async fn query_remote_tag(state: State<'_, AppState>, key: String, op_id: String, remote: String, name: String) -> Result<ops::RemoteTagLookup> {
+    let h = repo(&state, &key).await?;
+    let op = h.start_operation(&op_id)?;
+    ops::remote_tag(&h.client, &remote, &name, &op.token).await
+}
+
+/// Delete tag `name` on `remote`, for everyone who uses it. A remote without the tag still returns
+/// `ok`, with "deleting a non-existent ref" in stderr. `opId` works as for `opPush`.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_delete_remote_tag(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, remote: String, name: String) -> Result<OpResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| ops::delete_remote_tag(&h.client, &remote, &name, &progress, cancel).await)
+}
+
+/// Push tag `name` to `remote`, replacing the tag it has there. With `expected` (the object
+/// `queryRemoteTag` found there, or "" for none) the push carries a lease and is refused with
+/// "(stale info)" when the remote's tag has changed since; without it, it is `--force`.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_push_tag_force(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    op_id: String,
+    remote: String,
+    name: String,
+    expected: Option<String>,
+) -> Result<OpResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| ops::push_tag_force(&h.client, &remote, &name, expected.as_deref(), &progress, cancel).await)
+}
+
 /// The sync sequence against throwaway repositories, through a real `RepoHandle` opened the way
 /// the app opens one (without an `AppHandle`, so nothing is emitted to a window).
 #[cfg(test)]
