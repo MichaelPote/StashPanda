@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+## 0.6.6 (2026-10-29)
+
 - Give the error and warning bars a full-size Close key in their own colour, keys the size of the merge banner's, and a larger icon at the top
 - Toggle the commit list's columns and column headings from a right-click on the Commits pane's header, which also counts the rows selected when there is more than one
 - Enable the Push button again as soon as a push or sync finishes, instead of only after something else redraws the toolbar
