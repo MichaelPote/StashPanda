@@ -2,6 +2,8 @@
 import { computed, reactive } from "vue";
 import {
   ArchiveIcon,
+  ArrowDownIcon,
+  ArrowUpIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   CloudIcon,
@@ -24,6 +26,7 @@ import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import AddBranchMenu from "@/components/shell/AddBranchMenu.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import RefToggleTag from "@/components/shell/RefToggleTag.vue";
+import RemoteTagContextMenu from "@/components/graph/RemoteTagContextMenu.vue";
 import BranchName from "@/components/shell/BranchName.vue";
 import { branchTreeRows } from "@/lib/branchTree";
 import { formatRelativeTime } from "@/lib/format";
@@ -31,7 +34,9 @@ import { applyStash, dropStash, openRemoteDialog, popStash, pushTags, pushTagsRe
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { stashParts, stashTitle } from "@/lib/stash";
 import { laneColour } from "@/lib/graph/paths";
+import { localOnlyNote, remoteOnlyNote } from "@/lib/tagSync";
 import { cn } from "@/lib/utils";
+import { useTagSync } from "@/stores/remoteTags";
 import { useSessionsStore } from "@/stores/sessions";
 
 const sessions = useSessionsStore();
@@ -69,6 +74,9 @@ const tags = computed<RefEntry[]>(() =>
     .filter((r) => r.kind.type === "tag")
     .sort((a, b) => b.committerTime - a.committerTime || byName(a, b)),
 );
+
+/** Which tags are pushed: an arrow on local-only tags, and the remote-only ones listed after them. */
+const tagSync = useTagSync(() => active.value);
 
 /** The Tags heading's menu pushes every tag, to each remote in turn; one greyed-out item when there are none. */
 const tagRemotes = computed(() => refs.value?.remotes.map((r) => r.name) ?? []);
@@ -435,6 +443,7 @@ async function reveal(entry: RefEntry): Promise<void> {
                   <span class="size-3.5 shrink-0" />
                   <RefToggleTag :colour="colourOf(t)" :visible="isShown(t)" :name="t.short" @toggle="toggleShown(t)" />
                   <span :class="cn('truncate', !isShown(t) && 'text-muted-foreground')">{{ t.short }}</span>
+                  <ArrowUpIcon v-if="tagSync?.local.get(t.short)?.state === 'localOnly'" class="size-3 shrink-0 text-muted-foreground" aria-label="not pushed" />
                   <span v-if="t.kind.type === 'tag' && t.kind.annotated" class="ml-auto text-[0.7rem] text-muted-foreground">annotated</span>
                 </div>
               </TooltipTrigger>
@@ -443,6 +452,27 @@ async function reveal(entry: RefEntry): Promise<void> {
               <div class="flex flex-col gap-0.5 whitespace-pre-line [overflow-wrap:anywhere]">
                 <span class="font-semibold">{{ t.fullName }}</span>
                 <span>{{ `${t.target}\n${t.subject}` }}</span>
+                <span v-if="tagSync?.local.get(t.short)?.state === 'localOnly'">{{ localOnlyNote(tagSync.local.get(t.short)!) }}</span>
+              </div>
+            </TooltipContent>
+          </Tooltip>
+          <!-- Tags only a remote has: Git has not fetched them, so they have no row in the graph. -->
+          <Tooltip v-for="t in tagSync?.notHere ?? []" :key="`remote:${t.name}:${t.commit}`">
+            <RemoteTagContextMenu :session-key="activeKey" :name="t.name" :remotes="t.remotes">
+              <TooltipTrigger as-child>
+                <div role="button" tabindex="0" class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left text-muted-foreground hover:bg-row-hover">
+                  <span class="size-3.5 shrink-0" />
+                  <TagIcon class="size-3 shrink-0" />
+                  <span class="truncate">{{ t.name }}</span>
+                  <ArrowDownIcon class="size-3 shrink-0" aria-label="not fetched" />
+                  <span class="ml-auto text-[0.7rem]">{{ t.remotes.join(", ") }}</span>
+                </div>
+              </TooltipTrigger>
+            </RemoteTagContextMenu>
+            <TooltipContent side="right" class="max-w-sm">
+              <div class="flex flex-col gap-0.5 whitespace-pre-line [overflow-wrap:anywhere]">
+                <span class="font-semibold">{{ t.name }}</span>
+                <span>{{ `${t.commit}\n${remoteOnlyNote(t, false)}` }}</span>
               </div>
             </TooltipContent>
           </Tooltip>

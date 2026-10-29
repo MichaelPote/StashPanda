@@ -1185,6 +1185,65 @@ fn parse_remote_tag(stdout: &str, full: &str) -> Option<RemoteTag> {
     Some(RemoteTag { commit: commit.unwrap_or_else(|| oid.clone()), oid })
 }
 
+/// One tag in `remote_tags`: its name, without `refs/tags/`, and where it points there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedRemoteTag {
+    pub name: String,
+    pub tag: RemoteTag,
+}
+
+/// What `remote_tags` found: every tag on the remote, or none when `result` failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTagList {
+    pub result: OpResult,
+    pub tags: Vec<NamedRemoteTag>,
+}
+
+/// Every tag on `remote`, with `git ls-remote --tags <remote>`, for comparing with the tags here.
+/// It reads only, so it takes no gate and refreshes nothing.
+pub async fn remote_tags(client: &GitClient, remote: &str, cancel: &tokio_util::sync::CancellationToken) -> Result<RemoteTagList> {
+    valid_remote(remote)?;
+    let out = result(client.exec_streaming(GitReq::new("ls-remote", ["ls-remote", "--tags", remote]).own_session(), &|_| {}, cancel).await?);
+    let tags = if out.ok { parse_remote_tags(&out.stdout) } else { Vec::new() };
+    Ok(RemoteTagList { result: out, tags })
+}
+
+/// Every tag in `ls-remote --tags` output, by name, each annotated tag's `^{}` line giving its
+/// commit.
+fn parse_remote_tags(stdout: &str) -> Vec<NamedRemoteTag> {
+    let mut tags: std::collections::BTreeMap<String, RemoteTag> = std::collections::BTreeMap::new();
+    for line in stdout.lines() {
+        let Some((id, refname)) = line.split_once('\t') else { continue };
+        let Some(name) = refname.strip_prefix("refs/tags/") else { continue };
+        if let Some(name) = name.strip_suffix("^{}") {
+            let entry = tags.entry(name.to_string()).or_insert_with(|| RemoteTag { oid: id.to_string(), commit: id.to_string() });
+            entry.commit = id.to_string();
+        } else {
+            let entry = tags.entry(name.to_string()).or_insert_with(|| RemoteTag { oid: id.to_string(), commit: id.to_string() });
+            entry.oid = id.to_string();
+        }
+    }
+    tags.into_iter().map(|(name, tag)| NamedRemoteTag { name, tag }).collect()
+}
+
+/// Fetch tag `name` from `remote`: `git fetch --progress <remote> refs/tags/<name>:refs/tags/<name>`.
+/// Without `--force`, so Git refuses when a tag of that name is already here on another commit.
+pub async fn fetch_tag(
+    client: &GitClient,
+    remote: &str,
+    name: &str,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_remote(remote)?;
+    valid_ref_name(name)?;
+    let spec = format!("refs/tags/{name}:refs/tags/{name}");
+    let req = GitReq::new("fetch", ["fetch", "--progress", "--no-auto-maintenance", remote, spec.as_str()]).user().timeout(None).own_session();
+    Ok(result(client.exec_streaming(req, progress, cancel).await?))
+}
+
 /// Delete tag `name` on `remote`, for everyone who uses it: `git push --progress <remote> --delete
 /// refs/tags/<name>`. The full name, so a branch of that name is never deleted instead. A remote
 /// without the tag still returns `ok`, with "deleting a non-existent ref" in stderr.
@@ -4992,6 +5051,21 @@ mod e2e {
         // ls-remote matches the end of a name, so a longer name is not the tag.
         assert_eq!(parse_remote_tag("ddd\trefs/tags/x/refs/tags/v1\n", "refs/tags/v1"), None);
         assert_eq!(parse_remote_tag("", "refs/tags/v1"), None);
+    }
+
+    #[test]
+    fn every_remote_tag_is_read_from_ls_remote() {
+        let out = "aaa\trefs/tags/v1\nccc\trefs/tags/v1^{}\nbbb\trefs/tags/v2\nddd\trefs/heads/main\n";
+        assert_eq!(
+            parse_remote_tags(out),
+            vec![
+                NamedRemoteTag { name: "v1".into(), tag: RemoteTag { oid: "aaa".into(), commit: "ccc".into() } },
+                NamedRemoteTag { name: "v2".into(), tag: RemoteTag { oid: "bbb".into(), commit: "bbb".into() } },
+            ]
+        );
+        // The peeled line can come first; the tag object's line still sets the oid.
+        assert_eq!(parse_remote_tags("ccc\trefs/tags/v1^{}\naaa\trefs/tags/v1\n")[0].tag, RemoteTag { oid: "aaa".into(), commit: "ccc".into() });
+        assert!(parse_remote_tags("").is_empty());
     }
 
     #[tokio::test]

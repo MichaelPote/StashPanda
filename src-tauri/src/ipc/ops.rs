@@ -932,6 +932,33 @@ pub async fn query_remote_tag(state: State<'_, AppState>, key: String, op_id: St
     ops::remote_tag(&h.client, &remote, &name, &op.token).await
 }
 
+/// Every tag on `remote`, with `git ls-remote --tags`, for marking which tags are pushed. Read
+/// only, like `queryRemoteTag`; a failure to reach the remote is in `result`.
+#[tauri::command]
+#[specta::specta]
+pub async fn query_remote_tags(state: State<'_, AppState>, key: String, op_id: String, remote: String) -> Result<ops::RemoteTagList> {
+    let h = repo(&state, &key).await?;
+    let op = h.start_operation(&op_id)?;
+    ops::remote_tags(&h.client, &remote, &op.token).await
+}
+
+/// Fetch tag `name` from `remote`, refusing when a tag of that name is here on another commit.
+/// `opId` works as for `opFetch`.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_fetch_tag(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, remote: String, name: String) -> Result<OpResult> {
+    let h = repo(&state, &key).await?;
+    let emit = progress_emitter(&app, &key, &op_id);
+    let out = {
+        let op = h.start_operation(&op_id)?;
+        let _network = lock_or_cancel(&h.network_gate, &op.token).await?;
+        let progress = |line: String| emit(line, true);
+        ops::fetch_tag(&h.client, &remote, &name, &progress, &op.token).await
+    };
+    after_write(&app, &state, &key).await;
+    out
+}
+
 /// Delete tag `name` on `remote`, for everyone who uses it. A remote without the tag still returns
 /// `ok`, with "deleting a non-existent ref" in stderr. `opId` works as for `opPush`.
 #[tauri::command]

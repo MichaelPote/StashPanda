@@ -1,5 +1,6 @@
 import type { ComputedRef, InjectionKey } from "vue";
 import type { DateFormat } from "@/lib/bindings";
+import type { TagSyncView } from "@/lib/tagSync";
 
 /** Per-graph values every row needs, provided once by `CommitGraphView` instead of prop-drilling. */
 export interface GraphContext {
@@ -12,6 +13,8 @@ export interface GraphContext {
   trackedRemotes: ComputedRef<Set<string>>;
   /** The text of the last commit search, which the rows mark with pills; "" for none. */
   findText: ComputedRef<string>;
+  /** Which tags are pushed, for the tag pills; null until the refs have loaded. */
+  tagSync: ComputedRef<TagSyncView | null>;
 }
 
 export const GRAPH_CONTEXT: InjectionKey<GraphContext> = Symbol("graph-context");

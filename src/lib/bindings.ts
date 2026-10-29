@@ -385,6 +385,16 @@ export const commands = {
 	 */
 	queryRemoteTag: (key: string, opId: string, remote: string, name: string) => typedError<RemoteTagLookup, GitError>(__TAURI_INVOKE("query_remote_tag", { key, opId, remote, name })),
 	/**
+	 *  Every tag on `remote`, with `git ls-remote --tags`, for marking which tags are pushed. Read
+	 *  only, like `queryRemoteTag`; a failure to reach the remote is in `result`.
+	 */
+	queryRemoteTags: (key: string, opId: string, remote: string) => typedError<RemoteTagList, GitError>(__TAURI_INVOKE("query_remote_tags", { key, opId, remote })),
+	/**
+	 *  Fetch tag `name` from `remote`, refusing when a tag of that name is here on another commit.
+	 *  `opId` works as for `opFetch`.
+	 */
+	opFetchTag: (key: string, opId: string, remote: string, name: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_fetch_tag", { key, opId, remote, name })),
+	/**
 	 *  Delete tag `name` on `remote`, for everyone who uses it. A remote without the tag still returns
 	 *  `ok`, with "deleting a non-existent ref" in stderr. `opId` works as for `opPush`.
 	 */
@@ -699,6 +709,11 @@ export type Appearance = {
 	 *  outlined. Off (the default) draws local branches solid and remote branches outlined.
 	 */
 	solidRemotePills?: boolean,
+	/**
+	 *  Count a tag as pushed only when every remote has it on the same commit. Off compares
+	 *  against only the remote tags are pushed to by default. On by default.
+	 */
+	compareTagsAllRemotes?: boolean,
 	/**
 	 *  Draw the commit graph's lanes at the start of the commit message column instead of in a
 	 *  column of their own, so each message starts just past the lanes drawn on its row and the
@@ -1738,6 +1753,12 @@ export type MergeSettings = {
 	autoResolve?: AutoResolve,
 };
 
+/**  One tag in `remote_tags`: its name, without `refs/tags/`, and where it points there. */
+export type NamedRemoteTag = {
+	name: string,
+	tag: RemoteTag,
+};
+
 export type OpResult = {
 	ok: boolean,
 	exitCode: number | null,
@@ -1927,6 +1948,12 @@ export type RemoteTag = {
 	oid: string,
 	/**  The commit it ends at, for comparing with the tag here. */
 	commit: string,
+};
+
+/**  What `remote_tags` found: every tag on the remote, or none when `result` failed. */
+export type RemoteTagList = {
+	result: OpResult,
+	tags: NamedRemoteTag[],
 };
 
 /**

@@ -15,6 +15,7 @@ vi.mock("@/lib/bindings", () => ({ commands }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), revealItemInDir: vi.fn() }));
 vi.mock("@/stores/dialogs", () => ({ useDialogsStore: () => dialogs }));
 vi.mock("@/stores/library", () => ({ repoDisplayName: vi.fn(), useLibraryStore: () => ({}) }));
+vi.mock("@/stores/remoteTags", () => ({ useRemoteTagsStore: () => ({ refresh: vi.fn() }) }));
 vi.mock("@/stores/settings", () => ({ useSettingsStore: () => ({ settings: null }) }));
 vi.mock("@/stores/uiState", () => ({ useUiStateStore: () => ({ state: null }) }));
 vi.mock("@/stores/sessions", () => ({

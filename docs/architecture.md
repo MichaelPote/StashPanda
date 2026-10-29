@@ -486,6 +486,21 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   as it is there. The one exception is Move Tag (below). Tag annotations are loaded one tag at a
   time when a pill is first hovered (`get_tag_annotation`), so the refs snapshot carries no tag
   messages.
+- **Which tags are pushed.** Git keeps no record of a remote's tags (there is no
+  `refs/remotes/<remote>/tags/`; a fetch puts the tags it brings straight into `refs/tags`), so
+  the app asks: `query_remote_tags` runs `git ls-remote --tags <remote>` for each remote, with no
+  gate, when a repository's graph first shows and again after every fetch, pull and push
+  (`runOperation` with a toolbar command), never on a plain refresh. The answers live in
+  `stores/remoteTags.ts`, and `lib/tagSync.ts` compares them with the tags here, against every
+  remote or only the default tag remote (`appearance.compareTagsAllRemotes`). A tag every remote
+  compared has on the same commit is solid; one a remote lacks or has on another commit takes the
+  local branch style with ↑; a remote's tag that is not here on that commit gets its own pill on
+  that commit's row in the remote branch style with ↓, so a tag moved on one side is drawn twice.
+  `solidRemotePills` swaps the two styles, and the arrows keep remote-only apart from a pushed
+  tag either way. A remote tag whose commit was never fetched has no row, so it is listed only in
+  the Branches panel, where its menu offers Fetch Tag (`op_fetch_tag`, never forced) and Remove
+  from the remote. Until every remote compared has answered, and for an unreachable one, a tag is
+  drawn as before.
 - **Removing, renaming and moving tags** go through `RemoveTagDialog.vue`, `RenameTagDialog.vue`
   and `MoveTagDialog.vue`. Each has an unticked checkbox per remote (`RemoteTagOptions.vue`) and,
   when it opens, asks every remote in the background whether it has the tag

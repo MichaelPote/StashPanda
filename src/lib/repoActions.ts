@@ -33,6 +33,7 @@ import { shortSha } from "@/lib/refNames";
 import { moveLease } from "@/lib/remoteTags";
 import { useDialogsStore, type BranchChoice, type PullSource, type PushDefaultChoice, type PushToServer, type RemoteDialogMode } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
+import { useRemoteTagsStore } from "@/stores/remoteTags";
 import { useSessionsStore, type NoticeAction, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
@@ -530,6 +531,8 @@ export async function runOperation<T = OpResult>(
     return await runOp(key, () => start(opId), opId);
   } finally {
     if (session && session.operation?.opId === opId) session.operation = null;
+    // A fetch, pull or push can change which tags the remotes have, or which are here.
+    if (command) void useRemoteTagsStore().refresh(key);
   }
 }
 
@@ -1704,6 +1707,42 @@ export async function openCommitDialog(session: RepoSession | null): Promise<voi
 export async function createTagAt(key: string, target: string, targetLabel: string): Promise<void> {
   const dialogs = useDialogsStore();
   await dialogs.open("createTag", { key, target, targetLabel });
+}
+
+/**
+ * Fetches tag `name` from `remote`, for a tag only the remote has. Git refuses when a tag of that
+ * name is here on another commit, and that refusal is shown as it is.
+ */
+export async function fetchTag(key: string, remote: string, name: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const what = `Fetching tag ${name} from ${remote}`;
+  try {
+    const result = await runOperation(key, what, (opId) => commands.opFetchTag(key, opId, remote, name), "fetch");
+    if (result.ok) sessions.notifySuccess(`Fetched tag ${name} from ${remote}.`);
+    else sessions.notify(networkFailureText(result, what), sshDiagnoseAction(key, result));
+  } catch (e) {
+    sessions.notify(isCancelled(e) ? `${what} was stopped.` : errorMessage(e));
+  }
+}
+
+/** Removes tag `name` from `remote` after asking, for a tag only the remote has. */
+export async function removeRemoteOnlyTag(key: string, remote: string, name: string): Promise<void> {
+  const sessions = useSessionsStore();
+  const confirmed = await useDialogsStore().open("confirm", {
+    title: `Remove tag ${name} from ${remote}?`,
+    message: `The tag ${name} is deleted on ${remote}, for everyone who uses it. Anyone who has already fetched it keeps their copy.`,
+    confirmLabel: "Remove from remote",
+    destructive: true,
+  });
+  if (!confirmed) return;
+  const what = `Removing tag ${name} from ${remote}`;
+  try {
+    const result = await runOperation(key, what, (opId) => commands.opDeleteRemoteTag(key, opId, remote, name), "push");
+    if (result.ok || REMOTE_BRANCH_MISSING.test(`${result.stdout}\n${result.stderr}`)) sessions.notifySuccess(`Removed tag ${name} from ${remote}.`);
+    else sessions.notify(networkFailureText(result, what), sshDiagnoseAction(key, result));
+  } catch (e) {
+    sessions.notify(isCancelled(e) ? `${what} was stopped; the next fetch shows whether ${remote} removed it.` : errorMessage(e));
+  }
 }
 
 /**

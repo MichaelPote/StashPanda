@@ -20,6 +20,8 @@ const props = defineProps<{
 }>();
 
 const ctx = inject(GRAPH_CONTEXT, null);
+/** A remote has a tag on this commit that is not here on it, which gets a pill of its own. */
+const remoteTagsHere = computed(() => (ctx?.tagSync.value?.remoteOnly.get(props.row.oid)?.length ?? 0) > 0);
 
 const avatarColour = computed(() => laneColour(hashString(props.row.authorEmail.toLowerCase()) % PALETTE_SIZE));
 const avatarText = computed(() => initials(props.row.authorName));
@@ -56,7 +58,7 @@ const dateText = computed(() =>
     <!-- Pills always show their whole name; the subject truncates. A column narrower than the
          pills clips them at its edge rather than letting them cover the next column. -->
     <div class="flex min-w-0 items-center gap-1 overflow-hidden pr-2 leading-(--row-h)" :style="indent != null ? { paddingLeft: `${indent}px` } : undefined">
-      <RefLabels v-if="row.refs.length > 0 || detachedHead" :refs="row.refs" :oid="row.oid" :row="row" :colour="row.refColour" :detached-head="detachedHead" />
+      <RefLabels v-if="row.refs.length > 0 || detachedHead || remoteTagsHere" :refs="row.refs" :oid="row.oid" :row="row" :colour="row.refColour" :detached-head="detachedHead" />
       <span class="min-w-0 truncate" :title="row.subject"><template v-for="(part, i) in subjectParts" :key="i"><mark v-if="part.match" class="find-match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
     </div>
     <!-- A size container, so the name can hide once the column is too narrow for even one letter

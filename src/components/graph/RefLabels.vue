@@ -6,8 +6,10 @@ import { Tip } from "@/components/ui/tooltip";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import RefPill, { type PillShape } from "@/components/graph/RefPill.vue";
+import RemoteTagContextMenu from "@/components/graph/RemoteTagContextMenu.vue";
 import { laneVars } from "@/lib/graph/paths";
 import { requestCheckout } from "@/lib/repoActions";
+import { localOnlyNote, remoteOnlyNote, type RemoteOnlyTag } from "@/lib/tagSync";
 
 const props = defineProps<{
   refs: RefLabel[];
@@ -27,8 +29,48 @@ const ctx = inject(GRAPH_CONTEXT, null);
 /** Without a graph context (no session) the pills are plain and have no menu. */
 const sessionKey = ctx?.sessionKey ?? null;
 
-const visible = computed(() => props.refs.slice(0, MAX_VISIBLE));
-const hidden = computed(() => props.refs.slice(MAX_VISIBLE));
+/**
+ * One pill: a ref here, or a tag a remote has on this commit that is not here on it (`remote`).
+ * `sync` and `note` mark a tag that is not on every remote compared.
+ */
+interface Item {
+  label: RefLabel;
+  sync: "localOnly" | "remoteOnly" | null;
+  note: string;
+  remote: RemoteOnlyTag | null;
+}
+
+const items = computed<Item[]>(() => {
+  const view = ctx?.tagSync.value ?? null;
+  const out: Item[] = props.refs.map((label) => {
+    const sync = label.kind.type === "tag" ? view?.local.get(label.short) : undefined;
+    return sync?.state === "localOnly"
+      ? { label, sync: "localOnly", note: localOnlyNote(sync), remote: null }
+      : { label, sync: null, note: "", remote: null };
+  });
+  for (const tag of view?.remoteOnly.get(props.oid) ?? []) {
+    out.push({
+      label: {
+        // Not a ref here: the prefix keeps its key apart from a local tag of the same name.
+        fullName: `remote:refs/tags/${tag.name}`,
+        short: tag.name,
+        kind: { type: "tag", annotated: false },
+        isCurrent: false,
+        colour: props.colour,
+        upstreamAtSameCommit: false,
+        ahead: null,
+        behind: null,
+      },
+      sync: "remoteOnly",
+      note: remoteOnlyNote(tag, view?.local.has(tag.name) ?? false),
+      remote: tag,
+    });
+  }
+  return out;
+});
+
+const visible = computed(() => items.value.slice(0, MAX_VISIBLE));
+const hidden = computed(() => items.value.slice(MAX_VISIBLE));
 
 function remoteFor(label: RefLabel): string | null {
   return ctx?.upstreamRemotes.value.get(label.fullName) ?? null;
@@ -69,26 +111,31 @@ function shapeFor(label: RefLabel): PillShape {
       <span class="pill-text">HEAD</span>
     </span>
   </Tip>
-  <template v-for="label in visible" :key="label.fullName">
+  <template v-for="item in visible" :key="item.label.fullName">
+    <RemoteTagContextMenu v-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
+      <RefPill :label="item.label" :colour="item.label.colour" :oid="oid" sync="remoteOnly" :sync-note="item.note" />
+    </RemoteTagContextMenu>
     <RefContextMenu
-      v-if="sessionKey"
+      v-else-if="sessionKey"
       :session-key="sessionKey"
-      :full-name="label.fullName"
-      :short="label.short"
-      :kind="label.kind"
+      :full-name="item.label.fullName"
+      :short="item.label.short"
+      :kind="item.label.kind"
       :target="oid"
-      :is-current="label.isCurrent"
+      :is-current="item.label.isCurrent"
       :row="row"
     >
       <RefPill
-        :label="label"
-        :colour="label.colour" :oid="oid"
-        :upstream-remote="remoteFor(label)"
-        :shape="shapeFor(label)"
-        @dblclick.stop="checkoutOnDoubleClick(label)"
+        :label="item.label"
+        :colour="item.label.colour" :oid="oid"
+        :upstream-remote="remoteFor(item.label)"
+        :shape="shapeFor(item.label)"
+        :sync="item.sync"
+        :sync-note="item.note"
+        @dblclick.stop="checkoutOnDoubleClick(item.label)"
       />
     </RefContextMenu>
-    <RefPill v-else :label="label" :colour="label.colour" :oid="oid" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
+    <RefPill v-else :label="item.label" :colour="item.label.colour" :oid="oid" :upstream-remote="remoteFor(item.label)" :shape="shapeFor(item.label)" :sync="item.sync" :sync-note="item.note" />
   </template>
   <Popover v-if="hidden.length > 0">
     <PopoverTrigger as-child>
@@ -101,26 +148,31 @@ function shapeFor(label: RefLabel): PillShape {
     </PopoverTrigger>
     <PopoverContent align="start" class="w-auto max-w-xs p-2">
       <div class="flex flex-wrap gap-1">
-        <template v-for="label in hidden" :key="label.fullName">
+        <template v-for="item in hidden" :key="item.label.fullName">
+          <RemoteTagContextMenu v-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
+            <RefPill :label="item.label" :colour="item.label.colour" :oid="oid" sync="remoteOnly" :sync-note="item.note" />
+          </RemoteTagContextMenu>
           <RefContextMenu
-            v-if="sessionKey"
+            v-else-if="sessionKey"
             :session-key="sessionKey"
-            :full-name="label.fullName"
-            :short="label.short"
-            :kind="label.kind"
+            :full-name="item.label.fullName"
+            :short="item.label.short"
+            :kind="item.label.kind"
             :target="oid"
-            :is-current="label.isCurrent"
+            :is-current="item.label.isCurrent"
             :row="row"
           >
             <RefPill
-              :label="label"
-              :colour="label.colour" :oid="oid"
-              :upstream-remote="remoteFor(label)"
-              :shape="shapeFor(label)"
-              @dblclick.stop="checkoutOnDoubleClick(label)"
+              :label="item.label"
+              :colour="item.label.colour" :oid="oid"
+              :upstream-remote="remoteFor(item.label)"
+              :shape="shapeFor(item.label)"
+              :sync="item.sync"
+              :sync-note="item.note"
+              @dblclick.stop="checkoutOnDoubleClick(item.label)"
             />
           </RefContextMenu>
-          <RefPill v-else :label="label" :colour="label.colour" :oid="oid" :upstream-remote="remoteFor(label)" :shape="shapeFor(label)" />
+          <RefPill v-else :label="item.label" :colour="item.label.colour" :oid="oid" :upstream-remote="remoteFor(item.label)" :shape="shapeFor(item.label)" :sync="item.sync" :sync-note="item.note" />
         </template>
       </div>
     </PopoverContent>

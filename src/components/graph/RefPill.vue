@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from "vue";
-import { ChevronRightIcon, TagIcon } from "@lucide/vue";
+import { ArrowDownIcon, ArrowUpIcon, ChevronRightIcon, TagIcon } from "@lucide/vue";
 import { Tip } from "@/components/ui/tooltip";
 import type { RefLabel, TagAnnotation } from "@/lib/bindings";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
@@ -25,6 +25,14 @@ const props = defineProps<{
   shape?: PillShape;
   /** The commit of the row the pill is on: for a tag, the commit it points at. */
   oid?: string;
+  /**
+   * For a tag: `localOnly` when a remote compared lacks it or has it on another commit, drawn in
+   * the local branch style with ↑; `remoteOnly` for a remote's tag that is not here on this
+   * commit, drawn in the remote branch style with ↓. Otherwise solid, as a tag every remote has.
+   */
+  sync?: "localOnly" | "remoteOnly" | null;
+  /** The line the tooltip adds for `sync`: which remotes have the tag. */
+  syncNote?: string;
 }>();
 
 /** The remote shown before the chevron seam when the upstream is on the same commit. */
@@ -68,7 +76,8 @@ const settings = useSettingsStore();
 
 /**
  * Local branches are solid and remote branches outlined, or the other way round when
- * `appearance.solidRemotePills` is on. Tags are always solid.
+ * `appearance.solidRemotePills` is on. A tag every remote has is always solid; a tag only here or
+ * only on a remote takes the local or remote style.
  */
 const swapped = computed(() => settings.settings?.appearance?.solidRemotePills ?? false);
 const localClass = computed(() => (swapped.value ? "pill-lane" : "pill-lane-solid"));
@@ -81,6 +90,8 @@ const colourClass = computed(() => {
     case "remoteBranch":
       return remoteClass.value;
     case "tag":
+      if (props.sync === "localOnly") return localClass.value;
+      if (props.sync === "remoteOnly") return remoteClass.value;
       return "pill-lane-solid";
   }
 });
@@ -106,12 +117,18 @@ watch(
 );
 function loadAnnotation(): void {
   const { label } = props;
-  if (label.kind.type !== "tag" || !ctx || annotation.value !== undefined) return;
+  // A remote-only tag is not here to read.
+  if (label.kind.type !== "tag" || props.sync === "remoteOnly" || !ctx || annotation.value !== undefined) return;
   void loadTagAnnotation(ctx.sessionKey, label.short, props.oid ?? "").then((a) => {
     if (props.label.fullName === label.fullName) annotation.value = a;
   });
 }
-const tagTip = computed(() => (props.label.kind.type === "tag" ? tagTooltip(props.label.fullName, props.label.short, annotation.value) : null));
+const tagTip = computed(() => {
+  if (props.label.kind.type !== "tag") return null;
+  if (props.sync === "remoteOnly") return { heading: props.label.short, content: props.syncNote ?? "" };
+  const tip = tagTooltip(props.label.fullName, props.label.short, annotation.value);
+  return props.syncNote ? { ...tip, content: `${tip.content}\n\n${props.syncNote}` } : tip;
+});
 </script>
 
 <template>
@@ -171,6 +188,8 @@ const tagTip = computed(() => (props.label.kind.type === "tag" ? tagTooltip(prop
         <circle cx="4.5" cy="4.5" r="1.4" fill="currentColor" />
       </svg>
       <span class="pill-text">{{ text }}</span>
+      <ArrowUpIcon v-if="sync === 'localOnly'" class="-mx-0.5 size-3 shrink-0" aria-label="not pushed" />
+      <ArrowDownIcon v-else-if="sync === 'remoteOnly'" class="-mx-0.5 size-3 shrink-0" aria-label="not fetched" />
     </button>
   </Tip>
 </template>

@@ -128,6 +128,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_tag_rename,
             ipc::ops::op_tag_move,
             ipc::ops::query_remote_tag,
+            ipc::ops::query_remote_tags,
+            ipc::ops::op_fetch_tag,
             ipc::ops::op_delete_remote_tag,
             ipc::ops::op_push_tag_force,
             ipc::ops::op_stash_push,

@@ -199,7 +199,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         group: "appearance",
         key: "solidRemotePills",
         label: "Solid remote branch pills",
-        help: "Draw remote branches solid and local branches outlined in the commit graph, instead of the other way round. Tags stay solid.",
+        help: "Draw remote branches solid and local branches outlined in the commit graph, instead of the other way round. A tag that every remote has stays solid; a tag only here or only on a remote takes the local or remote style.",
+      },
+      {
+        kind: "toggle",
+        group: "appearance",
+        key: "compareTagsAllRemotes",
+        label: "Compare tags against all remotes",
+        help: "A tag counts as pushed only when every remote has it on the same commit. Untick to compare against only the remote that tags are pushed to by default.",
       },
       {
         kind: "toggle",

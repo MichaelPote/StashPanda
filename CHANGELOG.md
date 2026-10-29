@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Mark tags that are only here with ↑ and tags only on a remote with ↓, in the local and remote pill styles, with a setting to compare against every remote or only the default one
+
 ## 0.6.6 (2026-10-29)
 
 - Give the error and warning bars a full-size Close key in their own colour, keys the size of the merge banner's, and a larger icon at the top

@@ -23,6 +23,7 @@ import { autoGraphColumnWidth, messageIndent, ROW_HEIGHT } from "@/lib/graph/pat
 import { isEditableTarget } from "@/lib/files";
 import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useDialogsStore } from "@/stores/dialogs";
+import { useTagSync } from "@/stores/remoteTags";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
@@ -66,7 +67,8 @@ const trackedRemotes = computed(() => {
   return set;
 });
 const findText = computed(() => props.session.findText);
-provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes, findText });
+const tagSync = useTagSync(() => props.session);
+provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes, findText, tagSync });
 
 // ---- Columns -------------------------------------------------------------------------------
 

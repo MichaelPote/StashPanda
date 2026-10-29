@@ -28,6 +28,7 @@ import { DEFAULT_COMPARISON, type ConflictComparison } from "@/lib/conflicts";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { ROW_HEIGHT } from "@/lib/graph/paths";
 import { rowAt } from "@/composables/useGraphPages";
+import { useRemoteTagsStore } from "@/stores/remoteTags";
 import { useSettingsStore } from "@/stores/settings";
 import { useUiStateStore } from "@/stores/uiState";
 
@@ -686,6 +687,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     sessions.delete(key);
     unloaded.delete(key);
     consoleBuffers.delete(key);
+    useRemoteTagsStore().forget(key);
     if (activeKey.value === key) {
       activeKey.value = keys[idx + 1] ?? keys[idx - 1] ?? null;
     }

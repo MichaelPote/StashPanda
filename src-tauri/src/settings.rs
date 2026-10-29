@@ -214,6 +214,9 @@ pub struct Appearance {
     /// Swap the ref pill styles in the commit graph: remote branches solid and local branches
     /// outlined. Off (the default) draws local branches solid and remote branches outlined.
     pub solid_remote_pills: bool,
+    /// Count a tag as pushed only when every remote has it on the same commit. Off compares
+    /// against only the remote tags are pushed to by default. On by default.
+    pub compare_tags_all_remotes: bool,
     /// Draw the commit graph's lanes at the start of the commit message column instead of in a
     /// column of their own, so each message starts just past the lanes drawn on its row and the
     /// messages indent as the number of lanes changes down the list.
@@ -248,6 +251,7 @@ impl Default for Appearance {
             graph_order: GraphOrder::Date,
             commit_lane_colours: CommitLaneColours::KeepLane,
             solid_remote_pills: false,
+            compare_tags_all_remotes: true,
             graph_in_message_column: false,
             show_column_headings: true,
             author_avatar_only: false,
