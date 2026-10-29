@@ -927,6 +927,23 @@
   }
 }
 
+/* The orange of the warning bars, with their dark ink: their Close key. */
+@utility key-modified {
+  color: var(--state-modified-ink);
+  background: var(--state-modified);
+  border-color: color-mix(in oklch, var(--state-modified) 55%, black);
+  border-bottom-color: color-mix(in oklch, var(--state-modified) 45%, black);
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--state-modified) 45%, black), 0 2px 0 rgba(0, 0, 0, 0.35);
+  &:hover:not(:disabled):not([aria-disabled="true"]) {
+    background: color-mix(in oklch, var(--state-modified) 85%, white);
+  }
+  &:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: translateY(2px);
+    border-bottom-color: color-mix(in oklch, var(--state-modified) 55%, black);
+    box-shadow: none;
+  }
+}
+
 /* Merge Editor… key: purple with white text, apart from the yellow Take keys beside it. */
 @utility key-merge {
   color: #ffffff;

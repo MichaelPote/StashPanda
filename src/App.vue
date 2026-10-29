@@ -2,7 +2,7 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watchEffect } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { useEventListener } from "@vueuse/core";
-import { FolderOpenIcon, TriangleAlertIcon, XIcon } from "@lucide/vue";
+import { FolderOpenIcon } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -37,6 +37,7 @@ import PassphraseDialog from "@/components/settings/PassphraseDialog.vue";
 import SettingsDialog from "@/components/settings/SettingsDialog.vue";
 import AddRepoDialog from "@/components/shell/AddRepoDialog.vue";
 import AppToolbar from "@/components/shell/AppToolbar.vue";
+import NoticeBar from "@/components/shell/NoticeBar.vue";
 import BranchesPanel from "@/components/shell/BranchesPanel.vue";
 import ConsolePanel from "@/components/shell/ConsolePanel.vue";
 import EmptyState from "@/components/shell/EmptyState.vue";
@@ -164,56 +165,27 @@ function dismissRepoWarning(warning: string): void {
     <div class="flex h-screen w-screen flex-col overflow-hidden bg-window text-foreground">
       <AppToolbar />
 
-      <!-- An error notice: red, with a warning icon. Success messages show in the status bar instead.
-           Padding in whole pixels, so the 12px icons start on whole pixels (see index.css). -->
-      <div
+      <!-- An error notice. Success messages show in the status bar instead. -->
+      <NoticeBar
         v-if="sessions.notice"
-        class="flex shrink-0 items-center gap-2 border-b border-diff-del-mark bg-diff-del px-[10px] py-[4px] text-base text-destructive"
-        role="alert"
-      >
-        <TriangleAlertIcon class="size-3.5 shrink-0" />
-        <!-- Up to three lines, so a reason after Git's first line still shows; the tooltip has all of it. -->
-        <span class="line-clamp-3 min-w-0 break-words whitespace-pre-line select-text" :title="sessions.notice">{{ sessions.notice }}</span>
-        <button
-          v-if="sessions.noticeAction"
-          type="button"
-          class="key-danger ml-1 shrink-0 rounded border px-2 py-px text-xs font-medium"
-          @click="runNoticeAction"
-        >
-          {{ sessions.noticeAction.label }}
-        </button>
-        <button type="button" class="ml-auto rounded p-[2px] hover:bg-destructive/20" aria-label="Dismiss" @click="sessions.dismissNotice()">
-          <XIcon class="size-3.5" />
-        </button>
-      </div>
+        tone="error"
+        :message="sessions.notice"
+        :action="sessions.noticeAction?.label"
+        @action="runNoticeAction"
+        @close="sessions.dismissNotice()"
+      />
 
-      <div
-        v-for="(warning, i) in host.warnings"
-        :key="i"
-        class="flex shrink-0 items-center gap-2 border-b border-modified/40 bg-modified/10 px-[10px] py-[4px] text-base text-modified-fg"
-        role="status"
-      >
-        <TriangleAlertIcon class="size-3.5 shrink-0" />
-        <span class="truncate">{{ warning }}</span>
-        <button type="button" class="ml-auto rounded p-0.5 hover:bg-modified/20" aria-label="Dismiss" @click="host.dismissWarning(i)">
-          <XIcon class="size-3.5" />
-        </button>
-      </div>
+      <NoticeBar v-for="(warning, i) in host.warnings" :key="i" tone="warning" :message="warning" @close="host.dismissWarning(i)" />
 
       <!-- What the active repository's connection warned about when it opened (Windows Git over a
            \\wsl.localhost path, Linux Git for a Windows folder), until dismissed for that tab. -->
-      <div
+      <NoticeBar
         v-for="warning in repoWarnings"
         :key="warning"
-        class="flex shrink-0 items-center gap-2 border-b border-modified/40 bg-modified/10 px-[10px] py-[4px] text-base text-modified-fg"
-        role="status"
-      >
-        <TriangleAlertIcon class="size-3.5 shrink-0" />
-        <span class="truncate" :title="warning">{{ sessions.active?.info.displayName }}: {{ warning }}</span>
-        <button type="button" class="ml-auto rounded p-0.5 hover:bg-modified/20" aria-label="Dismiss" @click="dismissRepoWarning(warning)">
-          <XIcon class="size-3.5" />
-        </button>
-      </div>
+        tone="warning"
+        :message="`${sessions.active?.info.displayName}: ${warning}`"
+        @close="dismissRepoWarning(warning)"
+      />
 
       <div v-if="!ready" class="flex min-h-0 flex-1 items-center justify-center text-base text-muted-foreground">
         Loading…
