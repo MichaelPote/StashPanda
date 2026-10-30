@@ -96,14 +96,6 @@ const colourClass = computed(() => {
   }
 });
 
-const title = computed(() => {
-  const { label } = props;
-  const parts = [label.fullName];
-  if (label.ahead) parts.push(`↑${label.ahead}`);
-  if (label.behind) parts.push(`↓${label.behind}`);
-  return parts.join(" ") + (isCurrent.value ? " (checked out)" : "");
-});
-
 /**
  * A tag's tooltip shows its annotation: the message, and who tagged it when. It is loaded when
  * the pointer first reaches the pill, not with the graph, so the refs carry no messages.
@@ -136,8 +128,9 @@ const tagTip = computed(() => {
        the remote styled like a remote branch and the branch like a local one. The branch
        pill moves left by the chevron's depth plus 1px, so the remote pill's point sits in its
        notch with the edges overlapping instead of leaving a hairline between them. One button
-       holds both, so the context menu and tooltip cover the pair. -->
-  <Tip v-if="parityRemote" :content="title">
+       holds both, so the context menu covers the pair. Branch pills have no tooltip: it could
+       only repeat the ref's full name. -->
+  <template v-if="parityRemote">
     <button
       v-bind="$attrs"
       type="button"
@@ -159,8 +152,9 @@ const tagTip = computed(() => {
         <span class="pill-text">{{ text }}</span>
       </span>
     </button>
-  </Tip>
-  <Tip v-else :content="tagTip?.content ?? title" :heading="tagTip?.heading">
+  </template>
+  <!-- Only a tag's pill has a tooltip: its annotation, and which remotes have it. -->
+  <Tip v-else :content="tagTip?.content" :heading="tagTip?.heading">
     <button
       v-bind="$attrs"
       type="button"

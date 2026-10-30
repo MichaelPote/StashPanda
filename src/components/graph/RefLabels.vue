@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, inject } from "vue";
-import type { GraphRow, RefLabel } from "@/lib/bindings";
+import type { GraphRow, RefLabel, StashEntry } from "@/lib/bindings";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
 import RefPill, { type PillShape } from "@/components/graph/RefPill.vue";
 import RemoteTagContextMenu from "@/components/graph/RemoteTagContextMenu.vue";
+import StashContextMenu from "@/components/graph/StashContextMenu.vue";
+import StashPill from "@/components/graph/StashPill.vue";
 import { laneVars } from "@/lib/graph/paths";
 import { requestCheckout } from "@/lib/repoActions";
 import { localOnlyNote, remoteOnlyNote, type RemoteOnlyTag } from "@/lib/tagSync";
@@ -33,23 +35,34 @@ const sessionKey = ctx?.sessionKey ?? null;
  * One pill: a ref here, or a tag a remote has on this commit that is not here on it (`remote`).
  * `sync` and `note` mark a tag that is not on every remote compared.
  */
-interface Item {
+interface RefItem {
+  key: string;
   label: RefLabel;
   sync: "localOnly" | "remoteOnly" | null;
   note: string;
   remote: RemoteOnlyTag | null;
+  stash: null;
 }
+
+/** A stash made on this commit and switched on in the Branches panel. */
+interface StashItem {
+  key: string;
+  stash: StashEntry;
+}
+
+type Item = RefItem | StashItem;
 
 const items = computed<Item[]>(() => {
   const view = ctx?.tagSync.value ?? null;
   const out: Item[] = props.refs.map((label) => {
     const sync = label.kind.type === "tag" ? view?.local.get(label.short) : undefined;
     return sync?.state === "localOnly"
-      ? { label, sync: "localOnly", note: localOnlyNote(sync), remote: null }
-      : { label, sync: null, note: "", remote: null };
+      ? { key: label.fullName, label, sync: "localOnly", note: localOnlyNote(sync), remote: null, stash: null }
+      : { key: label.fullName, label, sync: null, note: "", remote: null, stash: null };
   });
   for (const tag of view?.remoteOnly.get(props.oid) ?? []) {
     out.push({
+      key: `remote:refs/tags/${tag.name}`,
       label: {
         // Not a ref here: the prefix keeps its key apart from a local tag of the same name.
         fullName: `remote:refs/tags/${tag.name}`,
@@ -64,10 +77,15 @@ const items = computed<Item[]>(() => {
       sync: "remoteOnly",
       note: remoteOnlyNote(tag, view?.local.has(tag.name) ?? false),
       remote: tag,
+      stash: null,
     });
   }
+  for (const stash of ctx?.stashesShown.value.get(props.oid) ?? []) out.push({ key: `stash:${stash.oid}`, stash });
   return out;
 });
+
+/** A stash's pill takes the lane colour of the commit it was made on. */
+const stashColour = computed(() => props.row?.colour ?? props.colour);
 
 const visible = computed(() => items.value.slice(0, MAX_VISIBLE));
 const hidden = computed(() => items.value.slice(MAX_VISIBLE));
@@ -111,8 +129,14 @@ function shapeFor(label: RefLabel): PillShape {
       <span class="pill-text">HEAD</span>
     </span>
   </Tip>
-  <template v-for="item in visible" :key="item.label.fullName">
-    <RemoteTagContextMenu v-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
+  <template v-for="item in visible" :key="item.key">
+    <template v-if="item.stash">
+      <StashContextMenu v-if="sessionKey" :session-key="sessionKey" :stash="item.stash">
+        <StashPill :stash="item.stash" :colour="stashColour" />
+      </StashContextMenu>
+      <StashPill v-else :stash="item.stash" :colour="stashColour" />
+    </template>
+    <RemoteTagContextMenu v-else-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
       <RefPill :label="item.label" :colour="item.label.colour" :oid="oid" sync="remoteOnly" :sync-note="item.note" />
     </RemoteTagContextMenu>
     <RefContextMenu
@@ -148,8 +172,14 @@ function shapeFor(label: RefLabel): PillShape {
     </PopoverTrigger>
     <PopoverContent align="start" class="w-auto max-w-xs p-2">
       <div class="flex flex-wrap gap-1">
-        <template v-for="item in hidden" :key="item.label.fullName">
-          <RemoteTagContextMenu v-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
+        <template v-for="item in hidden" :key="item.key">
+          <template v-if="item.stash">
+            <StashContextMenu v-if="sessionKey" :session-key="sessionKey" :stash="item.stash">
+              <StashPill :stash="item.stash" :colour="stashColour" />
+            </StashContextMenu>
+            <StashPill v-else :stash="item.stash" :colour="stashColour" />
+          </template>
+          <RemoteTagContextMenu v-else-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
             <RefPill :label="item.label" :colour="item.label.colour" :oid="oid" sync="remoteOnly" :sync-note="item.note" />
           </RemoteTagContextMenu>
           <RefContextMenu

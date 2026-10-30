@@ -85,10 +85,6 @@ Decisions to revisit:
 
 ## Settings
 
-- `appearance.showRemoteBranches` and `appearance.showStashesInGraph` in `settings.rs` are read by
-  nothing, and the Settings dialog leaves them out (`components/settings/sections.ts`). Delete
-  them, or draw stashes in the graph and give that a control on the Branches panel's Stashes
-  heading.
 - Add Repository: switching the connection to SSH does not fill Host and User from a
   `user@host:path` already typed in the path box.
 

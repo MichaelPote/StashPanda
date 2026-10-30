@@ -409,7 +409,7 @@ the console logs key operations with fingerprints only.
 | Probe on open | `--version`, then one `rev-parse --is-inside-work-tree --show-toplevel --absolute-git-dir --git-common-dir --is-bare-repository`. "dubious ownership" becomes `UnsafeRepository` |
 | Branches, tags, HEAD, upstreams | `for-each-ref --format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(upstream)%00%(upstream:track)%00%(HEAD)%00%(committerdate:unix)%00%(subject)%00%(worktreepath)`, then `rev-parse HEAD --symbolic-full-name HEAD`, `symbolic-ref -q HEAD` (for an unborn branch) and `config -z --get-regexp ^remote\..*\.(url\|pushurl)$` |
 | Commits for the graph | `log --branches --tags --remotes HEAD -z --format=%H%x1f%P%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ce%x1f%ct%x1f%s`, streamed. No `--topo-order` and no `--skip` (see "Commit graph") |
-| Stashes | `stash list -z --no-show-signature --format=%H%x1f%gd%x1f%gs%x1f%ct` |
+| Stashes | `stash list -z --no-show-signature --format=%H%x1f%gd%x1f%gs%x1f%ct%x1f%P` |
 | Files changed in a commit | `diff-tree -r -z -M -C --root --no-commit-id --raw --numstat <sha>`; for a merge, against the parent the user picks |
 | Working tree status | `status --porcelain=v2 -z --branch --untracked-files=all --ahead-behind` |
 | Diff of one file | `diff --no-ext-diff` against the parent, the index or HEAD, with `-w` and `--ignore-cr-at-eol` as the user's toggles. An untracked file is read and shown as all added |
@@ -678,10 +678,21 @@ the chip fill, a subtle tint, and an ink for text on a solid pill (`index.css`, 
 
 ### Hidden refs
 
-Each ref in the Branches panel has a show/hide tag. `GraphSnapshot::build` lays out only commits
+Each ref in the Branches panel has a show/hide tag, and the right-click menu of each heading,
+remote and branch folder, and of the Tags heading, has Show All and Hide All for every ref under
+it, closed folders included (`setRefsVisible`, one rebuild). With
+`appearance.showHideTrackedTogether` (on by default), a local branch and the remote branch it
+tracks are hidden and shown together (`withTrackedBranches`). `GraphSnapshot::build` lays out only commits
 reachable from the refs still shown, and HEAD counts as a tip only when detached.
 `graph_set_hidden_refs` rebuilds from the commits already in memory, with no Git command. The
 hidden set is saved as `perRepo[key].hiddenRefs`. The store and the cache keep every commit.
+
+Stashes are not refs the graph is built from. Each starts hidden; its show/hide tag in the
+Branches panel, or Show All on the Stashes heading, adds its commit ID to
+`perRepo[key].shownStashes`, and `CommitGraphView` then gives `RefLabels` a stash pill on the
+row of the stash's first parent (`StashEntry.parent`), in that row's lane colour. Nothing is
+rebuilt, so a stash on a commit that is hidden has no pill. Clicking a stash selects that commit.
+IDs of stashes that are gone are dropped from the list when the stashes reload.
 
 ### Loading and refreshing
 

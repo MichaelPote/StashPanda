@@ -13,13 +13,7 @@ import {
   TagIcon,
 } from "@lucide/vue";
 import type { RefEntry, StashEntry } from "@/lib/bindings";
-import {
-  ContextMenu,
-  ContextMenuContent,
-  ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuTrigger,
-} from "@/components/ui/context-menu";
+import { ContextMenuSeparator } from "@/components/ui/context-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import RefContextMenu from "@/components/graph/RefContextMenu.vue";
@@ -27,10 +21,11 @@ import AddBranchMenu from "@/components/shell/AddBranchMenu.vue";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import RefToggleTag from "@/components/shell/RefToggleTag.vue";
 import RemoteTagContextMenu from "@/components/graph/RemoteTagContextMenu.vue";
+import StashContextMenu from "@/components/graph/StashContextMenu.vue";
 import BranchName from "@/components/shell/BranchName.vue";
-import { branchTreeRows } from "@/lib/branchTree";
+import { branchTreeRows, nameParts } from "@/lib/branchTree";
 import { formatRelativeTime } from "@/lib/format";
-import { applyStash, dropStash, openRemoteDialog, popStash, pushTags, pushTagsReason, remoteReason, requestCheckout } from "@/lib/repoActions";
+import { openRemoteDialog, pushTags, pushTagsReason, remoteReason, requestCheckout } from "@/lib/repoActions";
 import ActionMenuItem from "@/components/graph/ActionMenuItem.vue";
 import { stashParts, stashTitle } from "@/lib/stash";
 import { laneColour } from "@/lib/graph/paths";
@@ -38,8 +33,10 @@ import { localOnlyNote, remoteOnlyNote } from "@/lib/tagSync";
 import { cn } from "@/lib/utils";
 import { useTagSync } from "@/stores/remoteTags";
 import { useSessionsStore } from "@/stores/sessions";
+import { useSettingsStore } from "@/stores/settings";
 
 const sessions = useSessionsStore();
+const settings = useSettingsStore();
 
 const active = computed(() => sessions.active);
 /** Key for the context menus; an empty string while no repository is open (the list is hidden then). */
@@ -85,6 +82,25 @@ const pushAllTagsReason = computed(() => pushTagsReason(active.value) ?? (tags.v
 const stashes = computed<StashEntry[]>(() => active.value?.stashes ?? []);
 /** The list's length once loaded; until then the count from status. */
 const stashCount = computed(() => active.value?.stashes?.length ?? active.value?.status?.stashCount ?? 0);
+const stashOids = computed(() => stashes.value.map((s) => s.oid));
+
+/** Stashes start hidden in the graph; their tag switches them on, shown on the commit each was made on. */
+function isStashShown(stash: StashEntry): boolean {
+  return active.value?.shownStashes.has(stash.oid) ?? false;
+}
+
+function toggleStashShown(stash: StashEntry): void {
+  const session = active.value;
+  if (session) sessions.setStashesShown(session.key, [stash.oid], !isStashShown(stash));
+}
+
+/** Clicking a stash selects the commit it was made on. */
+async function revealStash(stash: StashEntry): Promise<void> {
+  const session = active.value;
+  if (!session) return;
+  const found = await sessions.selectCommit(session.key, stash.parent);
+  if (!found) sessions.notify(`The commit ${stash.selector} was made on is not in the loaded graph.`);
+}
 
 
 /** Collapsed groups, keyed by section or `remote:<name>`. Remotes start collapsed. */
@@ -130,6 +146,25 @@ const remoteRows = computed(() =>
  */
 function indent(base: number, depth: number): Record<string, string> {
   return { paddingLeft: `calc(${base}px + ${depth * 1.125}rem)` };
+}
+
+/** Full names of the refs a heading's Show All and Hide All switch, which may include some in closed folders. */
+const fullNames = (entries: readonly RefEntry[]): string[] => entries.map((r) => r.fullName);
+const localFullNames = computed(() => fullNames(locals.value));
+const remoteFullNames = computed(() => fullNames(remoteGroups.value.flatMap((g) => g.branches)));
+const tagFullNames = computed(() => fullNames(tags.value));
+
+/** The branches in a folder, at any depth: those whose names start with its path. */
+function folderFullNames(entries: readonly RefEntry[], prefix: string, nameOf: (entry: RefEntry) => string): string[] {
+  return fullNames(entries.filter((e) => nameOf(e).startsWith(prefix)));
+}
+
+/**
+ * A branch's name in its row: the last part (`berry` in the `feature` folder), or with
+ * `appearance.fullBranchNames` the whole name (`feature/berry`). The tooltip has the whole name.
+ */
+function listName(name: string): string {
+  return settings.settings?.appearance?.fullBranchNames ? name : nameParts(name).last;
 }
 
 function remoteShort(entry: RefEntry): string {
@@ -216,7 +251,7 @@ async function reveal(entry: RefEntry): Promise<void> {
            drawn outside the row so the row keeps its height. -->
       <div class="py-[4px] text-base select-none">
         <!-- Local branches, in folders by the parts of their names. -->
-        <AddBranchMenu :session-key="activeKey">
+        <AddBranchMenu :session-key="activeKey" :refs="localFullNames">
           <button type="button" class="flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps hover:text-foreground" @click="onHeadingClick($event, 'local')">
             <component :is="isOpen('local') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
             <GitBranchIcon class="size-3.5" />
@@ -231,7 +266,7 @@ async function reveal(entry: RefEntry): Promise<void> {
                  row element: a menu trigger's attributes are lost on a component whose root is a
                  tooltip. -->
             <Tooltip v-if="row.kind === 'folder'">
-              <AddBranchMenu :session-key="activeKey" :prefix="row.prefix">
+              <AddBranchMenu :session-key="activeKey" :prefix="row.prefix" :refs="folderFullNames(locals, row.prefix, (b) => b.short)">
                 <TooltipTrigger as-child>
                   <button
                     type="button"
@@ -282,7 +317,7 @@ async function reveal(entry: RefEntry): Promise<void> {
                     </svg>
                     <span v-else class="size-[12px] shrink-0" />
                     <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
-                    <BranchName :name="row.entry.short" :class="cn(row.entry.isHead && 'font-semibold', !isShown(row.entry) && 'text-muted-foreground')" />
+                    <BranchName :name="listName(row.entry.short)" :class="cn(row.entry.isHead && 'font-semibold', !isShown(row.entry) && 'text-muted-foreground')" />
                     <!-- The tracked branch gives way first when the row is narrow. Its tooltip stops the
                          pointer reaching the row's, which would otherwise open last and close it. -->
                     <Tip v-if="upstreamName(row.entry)" :content="`Tracks ${upstreamName(row.entry)}`" side="right">
@@ -313,7 +348,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Remotes, each with its branches in folders by the parts of their names. -->
-        <AddBranchMenu :session-key="activeKey">
+        <AddBranchMenu :session-key="activeKey" :refs="remoteFullNames">
           <button type="button" class="relative mt-[5px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps before:pointer-events-none before:absolute before:inset-x-0 before:-top-[3px] before:h-px before:bg-border-soft hover:text-foreground" @click="onHeadingClick($event, 'remotes')">
             <component :is="isOpen('remotes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
             <CloudIcon class="size-3.5" />
@@ -328,7 +363,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         <template v-if="isOpen('remotes')">
           <p v-if="remoteGroups.length === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No remotes</p>
           <template v-for="group in remoteRows" :key="group.name">
-            <AddBranchMenu :session-key="activeKey">
+            <AddBranchMenu :session-key="activeKey" :refs="fullNames(group.branches)">
               <button type="button" class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-5 text-left hover:bg-row-hover" @click="onHeadingClick($event, `remote:${group.name}`)">
                 <component :is="isOpen(`remote:${group.name}`) ? ChevronDownIcon : ChevronRightIcon" class="size-3 text-muted-foreground" />
                 <span class="truncate font-medium">{{ group.name }}</span>
@@ -346,7 +381,7 @@ async function reveal(entry: RefEntry): Promise<void> {
             <template v-if="isOpen(`remote:${group.name}`)">
               <template v-for="row in group.rows" :key="row.key">
                 <Tooltip v-if="row.kind === 'folder'">
-                  <AddBranchMenu :session-key="activeKey" :prefix="row.prefix">
+                  <AddBranchMenu :session-key="activeKey" :prefix="row.prefix" :refs="folderFullNames(group.branches, row.prefix, remoteShort)">
                     <TooltipTrigger as-child>
                       <button
                         type="button"
@@ -384,7 +419,7 @@ async function reveal(entry: RefEntry): Promise<void> {
                         @keydown.enter="reveal(row.entry)"
                       >
                         <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
-                        <BranchName :name="remoteShort(row.entry)" class="text-muted-foreground" />
+                        <BranchName :name="listName(remoteShort(row.entry))" class="text-muted-foreground" />
                       </div>
                     </TooltipTrigger>
                   </RefContextMenu>
@@ -401,7 +436,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Tags -->
-        <AddBranchMenu :session-key="activeKey">
+        <AddBranchMenu :session-key="activeKey" :refs="tagFullNames" noun="Tags">
           <button type="button" class="relative mt-[5px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps before:pointer-events-none before:absolute before:inset-x-0 before:-top-[3px] before:h-px before:bg-border-soft hover:text-foreground" @click="onHeadingClick($event, 'tags')">
             <component :is="isOpen('tags') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
             <TagIcon class="size-3.5" />
@@ -462,7 +497,11 @@ async function reveal(entry: RefEntry): Promise<void> {
               <TooltipTrigger as-child>
                 <div role="button" tabindex="0" class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left text-muted-foreground hover:bg-row-hover">
                   <span class="size-3.5 shrink-0" />
-                  <TagIcon class="size-3 shrink-0" />
+                  <!-- RefToggleTag's outline as it looks for a hidden tag, but not a button: the tag
+                       is not here, so there is nothing to show or hide in the graph. -->
+                  <svg viewBox="0 0 15 12" class="h-3 w-[15px] shrink-0" aria-hidden="true">
+                    <path d="M1.5 1.5 H9.5 L13.5 6 L9.5 10.5 H1.5 Z" stroke-linejoin="round" class="fill-none stroke-muted-foreground" stroke-width="1" />
+                  </svg>
                   <span class="truncate">{{ t.name }}</span>
                   <ArrowDownIcon class="size-3 shrink-0" aria-label="not fetched" />
                   <span class="ml-auto text-[0.7rem]">{{ t.remotes.join(", ") }}</span>
@@ -479,7 +518,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         </template>
 
         <!-- Stashes -->
-        <AddBranchMenu :session-key="activeKey">
+        <AddBranchMenu :session-key="activeKey" :stashes="stashOids" noun="Stashes">
           <button type="button" class="relative mt-[5px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps before:pointer-events-none before:absolute before:inset-x-0 before:-top-[3px] before:h-px before:bg-border-soft hover:text-foreground" @click="onHeadingClick($event, 'stashes')">
             <component :is="isOpen('stashes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
             <ArchiveIcon class="size-3.5" />
@@ -489,28 +528,24 @@ async function reveal(entry: RefEntry): Promise<void> {
         </AddBranchMenu>
         <template v-if="isOpen('stashes')">
           <p v-if="stashCount === 0" class="h-(--row-h) px-7 leading-(--row-h) text-muted-foreground italic">No stashes</p>
-          <!-- Stash commits are not in the graph, so a click has nothing to reveal; the actions are
-               in the context menu. -->
+          <!-- A stash's own commit is not in the graph, so a click reveals the commit it was made on. -->
           <Tooltip v-for="s in stashes" :key="s.oid">
-            <ContextMenu>
-              <ContextMenuTrigger as-child>
-                <TooltipTrigger as-child>
-                  <div class="flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 hover:bg-row-hover">
-                    <span class="size-3.5 shrink-0" />
-                    <span class="truncate">{{ stashParts(s).text }}</span>
-                    <span class="ml-auto shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
-                  </div>
-                </TooltipTrigger>
-              </ContextMenuTrigger>
-              <ContextMenuContent class="min-w-52">
-                <ContextMenuItem class="text-base" @select="applyStash(activeKey, s)">Apply (keep the stash)</ContextMenuItem>
-                <ContextMenuItem class="text-base" @select="popStash(activeKey, s)">Pop (apply, then drop)</ContextMenuItem>
-                <ContextMenuSeparator />
-                <ContextMenuItem class="text-base" variant="destructive" @select="dropStash(activeKey, s, stashParts(s).text)">
-                  Drop…
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
+            <StashContextMenu :session-key="activeKey" :stash="s">
+              <TooltipTrigger as-child>
+                <div
+                  role="button"
+                  tabindex="0"
+                  :class="cn('flex h-(--row-h) w-full items-center gap-1.5 pr-2 pl-3 text-left', selectedOid === s.parent ? 'row-selected' : 'hover:bg-row-hover')"
+                  @click="revealStash(s)"
+                  @keydown.enter="revealStash(s)"
+                >
+                  <span class="size-3.5 shrink-0" />
+                  <RefToggleTag :colour="null" :visible="isStashShown(s)" :name="s.selector" @toggle="toggleStashShown(s)" />
+                  <span :class="cn('truncate', !isStashShown(s) && 'text-muted-foreground')">{{ stashParts(s).text }}</span>
+                  <span class="ml-auto shrink-0 text-[0.7rem] text-muted-foreground tabular-nums">{{ formatRelativeTime(s.time) }}</span>
+                </div>
+              </TooltipTrigger>
+            </StashContextMenu>
             <!-- The stash and its commit in bold, then where and when it was made, and its message. -->
             <TooltipContent side="right" class="max-w-sm">
               <div class="flex flex-col gap-0.5 whitespace-pre-line [overflow-wrap:anywhere]">

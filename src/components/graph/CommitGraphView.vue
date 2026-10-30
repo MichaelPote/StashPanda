@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, provide, ref, watch } from "vue";
 import { useElementSize, useEventListener } from "@vueuse/core";
-import type { DateFormat, GraphRow } from "@/lib/bindings";
+import type { DateFormat, GraphRow, StashEntry } from "@/lib/bindings";
 import PanelHeader from "@/components/shell/PanelHeader.vue";
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
 import CommitColumnsMenuItems from "@/components/graph/CommitColumnsMenuItems.vue";
@@ -68,7 +68,17 @@ const trackedRemotes = computed(() => {
 });
 const findText = computed(() => props.session.findText);
 const tagSync = useTagSync(() => props.session);
-provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes, findText, tagSync });
+const stashesShown = computed(() => {
+  const map = new Map<string, StashEntry[]>();
+  for (const stash of props.session.stashes ?? []) {
+    if (!props.session.shownStashes.has(stash.oid)) continue;
+    const list = map.get(stash.parent);
+    if (list) list.push(stash);
+    else map.set(stash.parent, [stash]);
+  }
+  return map;
+});
+provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes, findText, tagSync, stashesShown });
 
 // ---- Columns -------------------------------------------------------------------------------
 

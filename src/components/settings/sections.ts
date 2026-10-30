@@ -4,9 +4,7 @@
  * renders one field.
  *
  * Settings that only show or hide something are left out when the window already has a control
- * for it: `appearance.showRemoteBranches` (each branch's show/hide tag in the Branches panel) and
- * `appearance.showStashesInGraph` (belongs on the Branches panel's Stashes heading). The diff
- * viewer's header controls (layout, context lines, whitespace) are left out for the same reason.
+ * for it: the diff viewer's header controls (layout, context lines, whitespace).
  */
 import type { Component } from "vue";
 import { CpuIcon, FileDiffIcon, GitCommitHorizontalIcon, GitMergeIcon, KeyRoundIcon, PanelTopIcon, SlidersHorizontalIcon, WrenchIcon } from "@lucide/vue";
@@ -207,6 +205,20 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         key: "compareTagsAllRemotes",
         label: "Compare tags against all remotes",
         help: "A tag counts as pushed only when every remote has it on the same commit. Untick to compare against only the remote that tags are pushed to by default.",
+      },
+      {
+        kind: "toggle",
+        group: "appearance",
+        key: "showHideTrackedTogether",
+        label: "Show and hide tracked branches together",
+        help: "Hiding a local branch in the commit graph also hides the remote branch it tracks, and hiding a remote branch also hides the local branches that track it. Showing one shows the others the same way.",
+      },
+      {
+        kind: "toggle",
+        group: "appearance",
+        key: "fullBranchNames",
+        label: "Show full branch names in the branch list",
+        help: "List feature/berry by its whole name inside the feature folder in the Branches panel. Untick to list it as berry.",
       },
       {
         kind: "toggle",

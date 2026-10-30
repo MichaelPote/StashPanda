@@ -1,5 +1,5 @@
 import type { ComputedRef, InjectionKey } from "vue";
-import type { DateFormat } from "@/lib/bindings";
+import type { DateFormat, StashEntry } from "@/lib/bindings";
 import type { TagSyncView } from "@/lib/tagSync";
 
 /** Per-graph values every row needs, provided once by `CommitGraphView` instead of prop-drilling. */
@@ -15,6 +15,8 @@ export interface GraphContext {
   findText: ComputedRef<string>;
   /** Which tags are pushed, for the tag pills; null until the refs have loaded. */
   tagSync: ComputedRef<TagSyncView | null>;
+  /** The stashes switched on in the Branches panel, by the commit each was made on, newest first. */
+  stashesShown: ComputedRef<Map<string, StashEntry[]>>;
 }
 
 export const GRAPH_CONTEXT: InjectionKey<GraphContext> = Symbol("graph-context");

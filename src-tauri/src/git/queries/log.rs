@@ -290,11 +290,13 @@ pub struct StashEntry {
     pub message: String,
     pub time: i64,
     pub index: u32,
+    /// The commit the stash was made on: its first parent.
+    pub parent: String,
 }
 
 pub async fn get_stashes(client: &GitClient) -> Result<Vec<StashEntry>> {
     let out = client
-        .exec_allow_failure(GitReq::new("stash", ["stash", "list", "-z", "--no-show-signature", "--format=%H%x1f%gd%x1f%gs%x1f%ct"]))
+        .exec_allow_failure(GitReq::new("stash", ["stash", "list", "-z", "--no-show-signature", "--format=%H%x1f%gd%x1f%gs%x1f%ct%x1f%P"]))
         .await?;
     if !out.success() {
         return Ok(Vec::new());
@@ -304,7 +306,7 @@ pub async fn get_stashes(client: &GitClient) -> Result<Vec<StashEntry>> {
         .enumerate()
         .filter_map(|(i, rec)| {
             let f = split_us(rec);
-            if f.len() < 4 {
+            if f.len() < 5 {
                 return None;
             }
             Some(StashEntry {
@@ -313,6 +315,7 @@ pub async fn get_stashes(client: &GitClient) -> Result<Vec<StashEntry>> {
                 message: lossy(f[2]),
                 time: parse_i64(f[3]).unwrap_or(0),
                 index: i as u32,
+                parent: lossy(f[4]).split(' ').next().unwrap_or_default().to_string(),
             })
         })
         .collect())

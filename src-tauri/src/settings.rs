@@ -217,6 +217,13 @@ pub struct Appearance {
     /// Count a tag as pushed only when every remote has it on the same commit. Off compares
     /// against only the remote tags are pushed to by default. On by default.
     pub compare_tags_all_remotes: bool,
+    /// Hiding or showing a local branch in the commit graph does the same to the remote branch it
+    /// tracks, and hiding or showing a remote branch does the same to the local branches that
+    /// track it. On by default.
+    pub show_hide_tracked_together: bool,
+    /// List each branch in the Branches panel by its whole name (`feature/berry` in the `feature`
+    /// folder). Off (the default) lists it by its last part (`berry`).
+    pub full_branch_names: bool,
     /// Draw the commit graph's lanes at the start of the commit message column instead of in a
     /// column of their own, so each message starts just past the lanes drawn on its row and the
     /// messages indent as the number of lanes changes down the list.
@@ -237,8 +244,6 @@ pub struct Appearance {
     pub show_author_column: bool,
     pub show_date_column: bool,
     pub show_id_column: bool,
-    pub show_remote_branches: bool,
-    pub show_stashes_in_graph: bool,
     pub avatar_source: AvatarSource,
 }
 
@@ -252,6 +257,8 @@ impl Default for Appearance {
             commit_lane_colours: CommitLaneColours::KeepLane,
             solid_remote_pills: false,
             compare_tags_all_remotes: true,
+            show_hide_tracked_together: true,
+            full_branch_names: false,
             graph_in_message_column: false,
             show_column_headings: true,
             author_avatar_only: false,
@@ -260,8 +267,6 @@ impl Default for Appearance {
             show_author_column: true,
             show_date_column: true,
             show_id_column: true,
-            show_remote_branches: true,
-            show_stashes_in_graph: false,
             avatar_source: AvatarSource::Initials,
         }
     }

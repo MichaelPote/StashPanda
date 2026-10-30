@@ -2936,6 +2936,8 @@ mod e2e {
         let list = stashes().await;
         assert_eq!(list.len(), 2);
         let (second, first) = (list[0].clone(), list[1].clone());
+        let head = String::from_utf8(Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "HEAD"]).output().unwrap().stdout).unwrap();
+        assert_eq!((first.parent.as_str(), second.parent.as_str()), (head.trim(), head.trim()));
 
         // An index that no longer matches its commit is refused, and nothing is dropped.
         assert!(matches!(stash_drop(&client, 0, &first.oid).await, Err(GitError::InvalidPath { .. })));

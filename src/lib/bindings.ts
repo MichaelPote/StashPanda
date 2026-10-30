@@ -715,6 +715,17 @@ export type Appearance = {
 	 */
 	compareTagsAllRemotes?: boolean,
 	/**
+	 *  Hiding or showing a local branch in the commit graph does the same to the remote branch it
+	 *  tracks, and hiding or showing a remote branch does the same to the local branches that
+	 *  track it. On by default.
+	 */
+	showHideTrackedTogether?: boolean,
+	/**
+	 *  List each branch in the Branches panel by its whole name (`feature/berry` in the `feature`
+	 *  folder). Off (the default) lists it by its last part (`berry`).
+	 */
+	fullBranchNames?: boolean,
+	/**
 	 *  Draw the commit graph's lanes at the start of the commit message column instead of in a
 	 *  column of their own, so each message starts just past the lanes drawn on its row and the
 	 *  messages indent as the number of lanes changes down the list.
@@ -744,8 +755,6 @@ export type Appearance = {
 	showAuthorColumn?: boolean,
 	showDateColumn?: boolean,
 	showIdColumn?: boolean,
-	showRemoteBranches?: boolean,
-	showStashesInGraph?: boolean,
 	avatarSource?: AvatarSource,
 };
 
@@ -2044,6 +2053,8 @@ export type RepoUiState = {
 	lastSelectedOid?: string | null,
 	/**  Full names of the refs switched off in the commit graph. */
 	hiddenRefs?: string[],
+	/**  Commit IDs of the stashes switched on in the commit graph; a stash is hidden until then. */
+	shownStashes?: string[],
 	/**  Colours chosen for refs in the commit graph, by full name: a hue, palette index 0 to 11. */
 	refColours?: { [key in string]: number },
 	/**
@@ -2192,6 +2203,8 @@ export type StashEntry = {
 	message: string,
 	time: number,
 	index: number,
+	/**  The commit the stash was made on: its first parent. */
+	parent: string,
 };
 
 export type StatusEntry = {

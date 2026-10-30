@@ -6,6 +6,11 @@ release moves those lines under its version number.
 ## Unreleased
 
 - Mark tags that are only here with ↑ and tags only on a remote with ↓, in the local and remote pill styles, with a setting to compare against every remote or only the default one
+- Show or hide every branch at once from the right-click menu of the Local Branches and Remotes headings, each remote and each branch folder, and every tag from the Tags heading's
+- Show stashes in the commit graph as pills on the commit each was made on, switched on one at a time or all at once from the Branches panel, and select that commit when a stash is clicked
+- Hide or show a local branch and the remote branch it tracks together, with a setting to switch them separately
+- List branches in folders by the last part of their names, with a setting to show the whole name
+- Leave out the branch pills' tooltips in the commit graph, which only repeated the ref's full name
 
 ## 0.6.6 (2026-10-29)
 

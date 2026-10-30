@@ -27,6 +27,7 @@ import {
 import { DEFAULT_COMPARISON, type ConflictComparison } from "@/lib/conflicts";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { ROW_HEIGHT } from "@/lib/graph/paths";
+import { withTrackedBranches } from "@/lib/trackedBranches";
 import { rowAt } from "@/composables/useGraphPages";
 import { useRemoteTagsStore } from "@/stores/remoteTags";
 import { useSettingsStore } from "@/stores/settings";
@@ -147,6 +148,8 @@ export interface RepoSession {
   commitDraft: string;
   /** Full names of the refs switched off in the commit graph. Replaced, never mutated. */
   hiddenRefs: Set<string>;
+  /** Commit IDs of the stashes whose pills show in the commit graph; the rest are hidden. Replaced, never mutated. */
+  shownStashes: Set<string>;
   /** Colours chosen for refs, by full name: a hue, palette index 0 to 11 (see `setRefColour`). */
   refColours: Record<string, number>;
   /** Saved scroll offset of the commit list, so it survives tab switches and snapshot swaps. */
@@ -555,7 +558,11 @@ export const useSessionsStore = defineStore("sessions", () => {
   async function loadStashes(session: RepoSession): Promise<void> {
     const isLatest = startLoad("stashes", session);
     const stashes = await unwrap(commands.getRepoStashes(session.key));
-    if (isLatest()) session.stashes = stashes;
+    if (!isLatest()) return;
+    session.stashes = stashes;
+    // A dropped or popped stash no longer needs remembering as shown.
+    const kept = [...session.shownStashes].filter((oid) => stashes.some((s) => s.oid === oid));
+    if (kept.length !== session.shownStashes.size) saveShownStashes(session, new Set(kept));
   }
 
   function onRepoChanged(ev: RepoChangedEvent): void {
@@ -650,6 +657,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         commitDraft: "",
         // repo_open already gave the backend this list from ui-state.json.
         hiddenRefs: new Set(uiState.state?.perRepo?.[key]?.hiddenRefs ?? []),
+        shownStashes: new Set(uiState.state?.perRepo?.[key]?.shownStashes ?? []),
         refColours: { ...(uiState.state?.perRepo?.[key]?.refColours ?? {}) },
         scrollTop: 0,
         reveal: null,
@@ -738,10 +746,28 @@ export const useSessionsStore = defineStore("sessions", () => {
    */
   async function toggleRefVisible(key: string, fullName: string): Promise<void> {
     const session = sessions.get(key);
+    if (session) await setRefsVisible(key, [fullName], session.hiddenRefs.has(fullName));
+  }
+
+  /**
+   * Shows or hides several refs at once, such as every branch in a folder, with one graph rebuild.
+   * With `appearance.showHideTrackedTogether`, the branches they track or are tracked by go too.
+   */
+  async function setRefsVisible(key: string, fullNames: readonly string[], visible: boolean): Promise<void> {
+    const session = sessions.get(key);
     if (!session) return;
+    const together = settings.settings?.appearance?.showHideTrackedTogether ?? true;
+    const names = together ? withTrackedBranches(session.refs?.refs ?? [], fullNames) : fullNames;
     const next = new Set(session.hiddenRefs);
-    if (next.has(fullName)) next.delete(fullName);
-    else next.add(fullName);
+    for (const name of names) {
+      if (visible) next.delete(name);
+      else next.add(name);
+    }
+    await setHiddenRefs(session, next);
+  }
+
+  async function setHiddenRefs(session: RepoSession, next: Set<string>): Promise<void> {
+    const key = session.key;
     session.hiddenRefs = next;
     const list = [...next].sort();
     uiState.patchDebounced({ perRepo: { [key]: { hiddenRefs: list } } });
@@ -751,6 +777,26 @@ export const useSessionsStore = defineStore("sessions", () => {
     } catch (e) {
       notify(errorMessage(e));
     }
+  }
+
+  /**
+   * Shows or hides stashes' pills in the commit graph, on the commit each was made on. Stashes are
+   * not refs the graph is built from, so nothing is rebuilt; the list is saved per repository.
+   */
+  function setStashesShown(key: string, oids: readonly string[], shown: boolean): void {
+    const session = sessions.get(key);
+    if (!session) return;
+    const next = new Set(session.shownStashes);
+    for (const oid of oids) {
+      if (shown) next.add(oid);
+      else next.delete(oid);
+    }
+    saveShownStashes(session, next);
+  }
+
+  function saveShownStashes(session: RepoSession, next: Set<string>): void {
+    session.shownStashes = next;
+    uiState.patchDebounced({ perRepo: { [session.key]: { shownStashes: [...next].sort() } } });
   }
 
   /**
@@ -933,6 +979,8 @@ export const useSessionsStore = defineStore("sessions", () => {
     selectIndex,
     openFind,
     toggleRefVisible,
+    setRefsVisible,
+    setStashesShown,
     setRefColour,
     notify,
     dismissNotice,
