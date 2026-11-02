@@ -78,7 +78,11 @@ const stashesShown = computed(() => {
   }
   return map;
 });
-provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes, findText, tagSync, stashesShown });
+/** The grid's second column: what the rows have left after the graph, Author, Date and ID columns. */
+const messageWidth = computed(() =>
+  Math.max(0, rowsWidth.value - fitted.value.graph - fitted.value.author - fitted.value.date - fitted.value.id),
+);
+provide(GRAPH_CONTEXT, { sessionKey: props.session.key, dateFormat, upstreamRemotes, trackedRemotes, findText, tagSync, stashesShown, messageWidth });
 
 // ---- Columns -------------------------------------------------------------------------------
 

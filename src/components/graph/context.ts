@@ -17,6 +17,8 @@ export interface GraphContext {
   tagSync: ComputedRef<TagSyncView | null>;
   /** The stashes switched on in the Branches panel, by the commit each was made on, newest first. */
   stashesShown: ComputedRef<Map<string, StashEntry[]>>;
+  /** The commit message column's width in pixels, which each row fits its ref pills into. */
+  messageWidth: ComputedRef<number>;
 }
 
 export const GRAPH_CONTEXT: InjectionKey<GraphContext> = Symbol("graph-context");

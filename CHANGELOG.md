@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Show as many branch and tag pills on a commit row as fit beside its message, keeping 8rem for the message, instead of at most three before the +N pill
 - Run the GitHub build only for a version tag or a run started by hand, not for pushes to main or pull requests
 
 ## 0.6.8 (2026-11-02)

@@ -7,7 +7,7 @@ import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/to
 import { useCommitColumns } from "@/composables/useCommitColumns";
 import { formatAbsoluteTime, formatRelativeTime, hashString, initials, isoTime, shortOid } from "@/lib/format";
 import { matchSegments, oidSegments } from "@/lib/graph/find";
-import { laneColour, PALETTE_SIZE } from "@/lib/graph/paths";
+import { laneColour, PALETTE_SIZE, rootFontSizePx } from "@/lib/graph/paths";
 import { cn } from "@/lib/utils";
 import { gravatarMissing, gravatarUrl } from "@/lib/avatars";
 import { useSettingsStore } from "@/stores/settings";
@@ -24,6 +24,18 @@ const ctx = inject(GRAPH_CONTEXT, null);
 const remoteTagsHere = computed(() => (ctx?.tagSync.value?.remoteOnly.get(props.row.oid)?.length ?? 0) > 0);
 /** A stash switched on in the Branches panel was made on this commit. */
 const stashesHere = computed(() => ctx?.stashesShown.value.has(props.row.oid) ?? false);
+
+/** Room in rem the ref pills always leave for the commit message; past it they go into "+N". */
+const MESSAGE_ROOM = 8;
+/**
+ * What the ref pills may take of the message column: its width less the lanes' indent, the cell's
+ * `pr-2`, the `gap-1` before the message and the message's own room.
+ */
+const pillRoom = computed(() => {
+  const width = ctx?.messageWidth.value;
+  if (width === undefined) return undefined;
+  return width - (props.indent ?? 0) - (0.5 + 0.25 + MESSAGE_ROOM) * rootFontSizePx();
+});
 
 const avatarColour = computed(() => laneColour(hashString(props.row.authorEmail.toLowerCase()) % PALETTE_SIZE));
 const avatarText = computed(() => initials(props.row.authorName));
@@ -60,7 +72,7 @@ const dateText = computed(() =>
     <!-- Pills always show their whole name; the subject truncates. A column narrower than the
          pills clips them at its edge rather than letting them cover the next column. -->
     <div class="flex min-w-0 items-center gap-1 overflow-hidden pr-2 leading-(--row-h)" :style="indent != null ? { paddingLeft: `${indent}px` } : undefined">
-      <RefLabels v-if="row.refs.length > 0 || detachedHead || remoteTagsHere || stashesHere" :refs="row.refs" :oid="row.oid" :row="row" :colour="row.refColour" :detached-head="detachedHead" />
+      <RefLabels v-if="row.refs.length > 0 || detachedHead || remoteTagsHere || stashesHere" :refs="row.refs" :oid="row.oid" :row="row" :colour="row.refColour" :detached-head="detachedHead" :room="pillRoom" />
       <span class="min-w-0 truncate" :title="row.subject"><template v-for="(part, i) in subjectParts" :key="i"><mark v-if="part.match" class="find-match">{{ part.text }}</mark><template v-else>{{ part.text }}</template></template></span>
     </div>
     <!-- A size container, so the name can hide once the column is too narrow for even one letter
