@@ -57,16 +57,16 @@ base64 = "0.23.1"
 zeroize = "1.9.0"
 keyring = "4.2.0"
 fontdb = "0.24.0"
-tauri-plugin-updater = "~2.12"
-tauri-plugin-process = "~2.3"
+tauri-plugin-updater = "~2.14"
+tauri-plugin-process = "~2.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 # The WebView2 settings that Tauri does not expose (see src/webview.rs), at the versions wry uses.
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38"
-windows-core = "0.61"
+webview2-com = "0.39"
+windows-core = "0.62"
 
 
 # Debug builds keep line numbers for our own code (panics and backtraces still

@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Update Tauri to 2.12, with its updater, process and opener plugins, so Windows updates are unpacked with version 9 of the zip library instead of version 4
+
 ## 0.6.7 (2026-11-02)
 
 - Mark tags that are only here with ↑ and tags only on a remote with ↓, in the local and remote pill styles, with a setting to compare against every remote or only the default one

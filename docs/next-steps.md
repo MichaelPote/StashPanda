@@ -95,7 +95,8 @@ These were built and tested, but not tried where it matters:
 - **In the Windows window:** that Ctrl+F outside the commit list and F5 no longer act as a browser
   while the menu's F5 Refresh still works (`src-tauri/src/webview.rs`); the side-by-side diff's
   curves; passphrases saved in Windows Credential Manager; the WSL `.ssh` folders in the key list;
-  and the local transport's symlink check.
+  and the local transport's symlink check; and, since the move to Tauri 2.12 and updater plugin
+  2.14, that an installed build still finds, downloads and installs the next release.
 - **ClearType in Add Repository:** its Cancel and Add buttons draw grayscale text in the Windows
   app, because Chromium puts the dialog from the Advanced row down in a separate layer. Everything
   tried so far is listed under "Text rendering on Windows" in architecture.md.

@@ -7,6 +7,8 @@ use tauri::AppHandle;
 /// on Windows, has such shortcuts; the keys still reach the page, and the native menu's own
 /// shortcuts (F5 for Refresh, Ctrl+F for Find Commit) are unaffected. The browser's developer
 /// tools shortcuts go too: debug builds open them from View > Open Dev Inspector instead.
+/// wry has a setting for this (`with_browser_accelerator_keys`), but Tauri 2.12 does not pass it
+/// through, so it is made on WebView2 directly.
 pub fn disable_browser_shortcuts(app: &AppHandle) {
     #[cfg(windows)]
     {

@@ -199,8 +199,8 @@ ipc/                   thin #[tauri::command] wrappers: settings, repos, query, 
 | `which`, `dunce`, `shlex` | finding executables, plain Windows paths, quoting arguments for SSH |
 | `fontdb` | the list of monospaced fonts for the diff font setting |
 | `tauri-plugin-dialog`, `tauri-plugin-window-state`, `tauri-plugin-opener` | folder picker, window size and position, opening files |
-| `tauri-plugin-updater`, `tauri-plugin-process` | installing new versions from the GitHub releases, and restarting afterwards. Held at `~2.12` and `~2.3`, the last versions that work with Tauri 2.11: newer ones need Tauri 2.12, whose wry uses `webview2-com` 0.39 rather than the 0.38 pinned for `webview.rs` |
-| `webview2-com`, `windows-core` (Windows only) | WebView2 settings Tauri does not expose, at the versions `wry` uses |
+| `tauri-plugin-updater`, `tauri-plugin-process` | installing new versions from the GitHub releases, and restarting afterwards. Kept at `~2.14` and `~2.4`, because each minor version needs the Tauri minor version it was released with (2.12 for these); raising them means raising Tauri, and with it `webview2-com` and `windows-core` below |
+| `webview2-com`, `windows-core` (Windows only) | WebView2 settings Tauri does not expose, at the versions `wry` uses (0.39 and 0.62 with Tauri 2.12) |
 
 ### Running Git
 
