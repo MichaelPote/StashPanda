@@ -51,6 +51,7 @@ async fn exercise(h: &crate::repo::RepoHandle, file_on_disk: &dyn Fn(&str, &str)
 }
 
 /// Git's output for `args`, through the opened repository's own client.
+#[cfg(unix)]
 async fn git_out(h: &crate::repo::RepoHandle, args: &[&str]) -> String {
     let out = h.client.exec(GitReq::new("test", args.to_vec())).await.unwrap();
     String::from_utf8_lossy(&out.stdout).replace('\r', "").trim().to_string()
@@ -59,6 +60,7 @@ async fn git_out(h: &crate::repo::RepoHandle, args: &[&str]) -> String {
 /// A rename that changes only the letter case, committed while other files stay staged. Where
 /// the file system ignores case, `git commit --only` refuses the new name as an alias of the old
 /// one, so `ops::commit` sets the other files aside instead and stages them again afterwards.
+#[cfg(unix)]
 async fn commit_a_case_only_rename(h: &crate::repo::RepoHandle, file_on_disk: &dyn Fn(&str, &str)) {
     for (name, text) in [("Readme.md", "readme\n"), ("b.txt", "b\n"), ("gone.txt", "gone\n")] {
         file_on_disk(name, text);
@@ -135,6 +137,7 @@ async fn windows_git_from_wsl_gets_the_environment() {
 }
 
 /// Git's output for `args` through `client`.
+#[cfg(unix)]
 async fn git_out_of(client: &crate::git::GitClient, args: &[&str]) -> String {
     let out = client.exec(GitReq::new("test", args.to_vec())).await.unwrap();
     String::from_utf8_lossy(&out.stdout).replace('\r', "").trim().to_string()
