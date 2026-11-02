@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { ArchiveIcon } from "@lucide/vue";
+import { ShoppingBagIcon } from "@lucide/vue";
 import type { StashEntry } from "@/lib/bindings";
 import { Tip } from "@/components/ui/tooltip";
 import { laneVars } from "@/lib/graph/paths";
@@ -39,7 +39,7 @@ const tip = computed(() => {
       :style="laneVars(colour)"
       data-stash-pill
     >
-      <ArchiveIcon class="size-3 shrink-0" />
+      <ShoppingBagIcon class="size-3 shrink-0" />
       <span class="pill-text">{{ text }}</span>
     </button>
   </Tip>

@@ -10,6 +10,7 @@ release moves those lines under its version number.
 - Show stashes in the commit graph as pills on the commit each was made on, switched on one at a time or all at once from the Branches panel, and select that commit when a stash is clicked
 - Hide or show a local branch and the remote branch it tracks together, with a setting to switch them separately
 - List branches in folders by the last part of their names, with a setting to show the whole name
+- Draw stashes with a shopping bag: the Stash button, the Stashes heading and the stash pills in the commit graph
 - Leave out the branch pills' tooltips in the commit graph, which only repeated the ref's full name
 
 ## 0.6.6 (2026-10-29)

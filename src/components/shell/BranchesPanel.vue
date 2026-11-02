@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive } from "vue";
 import {
-  ArchiveIcon,
   ArrowDownIcon,
   ArrowUpIcon,
   ChevronDownIcon,
@@ -10,6 +9,7 @@ import {
   FolderIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  ShoppingBagIcon,
   TagIcon,
 } from "@lucide/vue";
 import type { RefEntry, StashEntry } from "@/lib/bindings";
@@ -521,7 +521,7 @@ async function reveal(entry: RefEntry): Promise<void> {
         <AddBranchMenu :session-key="activeKey" :stashes="stashOids" noun="Stashes">
           <button type="button" class="relative mt-[5px] flex h-(--row-h) w-full items-center gap-[5.5px] px-2 smallcaps before:pointer-events-none before:absolute before:inset-x-0 before:-top-[3px] before:h-px before:bg-border-soft hover:text-foreground" @click="onHeadingClick($event, 'stashes')">
             <component :is="isOpen('stashes') ? ChevronDownIcon : ChevronRightIcon" class="size-3" />
-            <ArchiveIcon class="size-3.5" />
+            <ShoppingBagIcon class="size-3.5" />
             Stashes
             <span class="ml-auto font-medium tracking-normal normal-case tabular-nums">{{ stashCount }}</span>
           </button>

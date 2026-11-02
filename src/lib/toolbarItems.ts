@@ -9,7 +9,6 @@
  */
 import type { Component } from "vue";
 import {
-  ArchiveIcon,
   ArchiveRestoreIcon,
   ArrowDownToLineIcon,
   ArrowDownUpIcon,
@@ -31,6 +30,7 @@ import {
   SearchIcon,
   SeparatorVerticalIcon,
   SettingsIcon,
+  ShoppingBagIcon,
   SlidersHorizontalIcon,
   TagIcon,
   Undo2Icon,
@@ -163,7 +163,7 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
     run: () => discardSelected(active()),
     reason: (s) => fileActionReason(s, "discard"),
   },
-  { id: "stash", label: "Stash Changes", description: "Set the uncommitted changes aside in a stash, leaving the files as they were at the last commit.", caption: "Stash", icon: ArchiveIcon, needsRepo: true, run: () => openStashDialog(active()) },
+  { id: "stash", label: "Stash Changes", description: "Set the uncommitted changes aside in a stash, leaving the files as they were at the last commit.", caption: "Stash", icon: ShoppingBagIcon, needsRepo: true, run: () => openStashDialog(active()) },
   {
     id: "applyStash",
     label: "Apply Stash…",
