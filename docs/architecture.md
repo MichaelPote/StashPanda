@@ -67,9 +67,10 @@ Decisions taken with Michael on 2026-09-18 that still shape the code:
   - It compiles for `aarch64-apple-darwin` (checked from Linux with a stand-in C compiler for
     `objc2-exception-helper`), but it has never run on a Mac. `tauri-driver` has no macOS
     support, so a Mac build has to be tested by hand.
-- **CI:** `.github/workflows/build.yml` runs the TypeScript check, the frontend tests and
-  `cargo test --lib` on Ubuntu 22.04 for every push to `main` and every pull request. Only for a
-  version tag, or a run started by hand from the Actions tab, does it then build `.deb`, `.rpm`
+- **CI:** `.github/workflows/build.yml` runs only for a version tag, or a run started by hand
+  from the Actions tab; pushing a branch, `main` included, or opening a pull request starts
+  nothing. It runs the TypeScript check, the frontend tests and `cargo test --lib` on Ubuntu
+  22.04, and only if they pass does it build `.deb`, `.rpm`
   and AppImage there (22.04 is the oldest supported release, for glibc) and the NSIS installer on
   `windows-latest`, and put them in a draft release for `v<package.json's version>`. A run by hand
   from a branch makes the draft for the commit it built, and GitHub makes the tag when the draft

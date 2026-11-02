@@ -14,7 +14,7 @@ Each item names the files it touches, so it can be picked up cold.
       fills them with blue, then run `npm run icons` (`tauri icon`) to write every size into
       `src-tauri/icons/`. `bundle.icon` in `src-tauri/tauri.conf.json` already names those files.
       Delete the `android/` and `ios/` folders it also creates.
-- [ ] **First run of GitHub Actions.** `.github/workflows/build.yml` tests on Ubuntu 22.04, then
+- [x] **First run of GitHub Actions.** `.github/workflows/build.yml` tests on Ubuntu 22.04, then
       builds `.deb`, `.rpm` and AppImage there and the NSIS installer on `windows-latest`. It has
       never run, because `main` has not been pushed since 2026-10-16.
 - [ ] **Release build check.** `[profile.release]` in `src-tauri/Cargo.toml` sets `lto = true`,

@@ -1,9 +1,9 @@
-# Runs the tests on every push to main and every pull request. The installers for each platform
-# are built only for a version tag (v0.7.0, as `npm version` makes), or when the workflow is run
-# by hand from the Actions tab. Either way the installers then go into a draft GitHub Release for
-# v<package.json's version>, to be read over and published by hand on the Releases page; run by
-# hand from a branch, the draft is for the commit that was built, and is refused when that
-# version is already published. The release also gets latest.json, which installed copies of the
+# Runs only for a version tag (v0.7.0, as `npm version` makes), or when the workflow is run by
+# hand from the Actions tab: a push to a branch, main included, or a pull request starts nothing.
+# It runs the tests, then builds the installers for each platform, which go into a draft GitHub
+# Release for v<package.json's version>, to be read over and published by hand on the Releases
+# page; run by hand from a branch, the draft is for the commit that was built, and is refused when
+# that version is already published. The release also gets latest.json, which installed copies of the
 # app read to update themselves; they only see it once the release is published.
 #
 # Linux builds on Ubuntu 22.04 on purpose: a binary only runs where the C library (glibc) is at
@@ -19,9 +19,7 @@ name: Build
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
 
 # Read-only unless a job asks for more; only the release job does.
@@ -67,9 +65,6 @@ jobs:
   build:
     name: Build (${{ matrix.name }})
     needs: test
-    # Installers take a while on two machines, so a push to main or a pull request only runs the
-    # tests. Run by hand, the workflow builds them and makes a draft release (see the release job).
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -118,8 +113,7 @@ jobs:
             libssl-dev libayatana-appindicator3-dev librsvg2-dev
       - run: npm ci
       # tauri.release.conf.json turns on the updater's .sig files, signed with the key in these
-      # secrets; its public half is in tauri.conf.json. A pull request from a fork gets no
-      # secrets, so it builds without them, unsigned.
+      # secrets; its public half is in tauri.conf.json.
       - name: Build the installers
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -140,7 +134,6 @@ jobs:
   release:
     name: Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # The only job that may write to the repository: it creates the release.
     permissions:
