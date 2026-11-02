@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+## 0.6.8 (2026-11-02)
+
 - Update Tauri to 2.12, with its updater, process and opener plugins, so Windows updates are unpacked with version 9 of the zip library instead of version 4
 
 ## 0.6.7 (2026-11-02)
