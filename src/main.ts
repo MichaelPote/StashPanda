@@ -27,6 +27,7 @@ import "@/assets/index.css";
 import App from "./App.vue";
 import { useSettingsStore } from "@/stores/settings";
 import { disableBrowserContextMenu } from "@/lib/browserDefaults";
+import { installWheelScroll } from "@/lib/wheelScroll";
 import { DIFF_COLORS, diffColorVars } from "@/lib/diff/colors";
 
 // Dark is the default, so paint dark before settings arrive to avoid a light flash.
@@ -74,5 +75,6 @@ watchEffect(() => {
 });
 
 disableBrowserContextMenu();
+installWheelScroll();
 
 app.mount("#app");

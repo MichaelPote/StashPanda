@@ -970,6 +970,10 @@ Things that were found the hard way, each with where it matters.
   downloading; whether WebView2 honours it is unconfirmed. Setting `additionalBrowserArgs`
   replaces wry's default `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`, so
   that switch is repeated there.
+- WebView2 scrolls 100px per mouse wheel notch, and no browser switch or WebView2 setting changes
+  it; the wheel never reaches Rust. `lib/wheelScroll.ts` takes over notched wheel scrolling in the
+  page and scrolls `WHEEL_SCALE` of that. A component that handles the wheel itself opts out with
+  a `data-native-wheel` attribute (the reka-ui scrollbar in `ui/scroll-area/ScrollBar.vue` does).
 
 ### Text rendering on Windows (WebView2)
 
