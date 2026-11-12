@@ -147,6 +147,16 @@ pub async fn get_merge_info(state: State<'_, AppState>, key: String, commit: Str
     })
 }
 
+/// The branch a commit belongs to in the graph, for a tag pill's tooltip: the nearest branch tip
+/// above it on its lane. Null when no branch tip reaches it, or the commit is not in the graph.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_commit_branch(state: State<'_, AppState>, key: String, commit: String) -> Result<Option<String>> {
+    let h = repo(&state, &key).await?;
+    let graph = h.graph.load_full();
+    Ok(graph.as_ref().and_then(|g| g.branch_of(&commit)).map(String::from))
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_file_diff(

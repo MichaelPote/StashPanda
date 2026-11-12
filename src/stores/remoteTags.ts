@@ -8,9 +8,17 @@ import { useSessionsStore, type RepoSession } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
 
 /**
+ * An ask begun this recently already covers a move of the remote-tracking branches: each fetch,
+ * pull or push here asks as it finishes, a moment before the refs reload shows the move.
+ */
+const RECENT_ASK_MS = 5000;
+
+/**
  * Each open repository's remotes' tags, from `git ls-remote --tags`, for marking which tags are
- * pushed. Asked once when a repository's graph first shows, and again after every fetch, pull and
- * push (`runOperation`), never on a plain refresh: each ask is a connection to every remote.
+ * pushed. Asked once when a repository's graph first shows, again after every fetch, pull and
+ * push (`runOperation`) and on the Refresh command. A refs reload from the file watcher asks only
+ * when the remote-tracking branches moved outside the app (`remoteBranchesMoved`): each ask is a
+ * connection to every remote.
  */
 export const useRemoteTagsStore = defineStore("remoteTags", () => {
   /** Repository key to remote name to its answer. A remote not in the map has not answered yet. */
@@ -18,6 +26,8 @@ export const useRemoteTagsStore = defineStore("remoteTags", () => {
   const running = new Set<string>();
   /** Repositories asked for again while their remotes were being asked. */
   const again = new Set<string>();
+  /** When each repository's remotes were last asked, by `performance.now()`. */
+  const askedAt = new Map<string, number>();
 
   /** Asks every remote of repository `key` for its tags, replacing each answer as it comes. */
   async function refresh(key: string): Promise<void> {
@@ -27,6 +37,7 @@ export const useRemoteTagsStore = defineStore("remoteTags", () => {
     }
     const remotes = useSessionsStore().sessions.get(key)?.refs?.remotes.map((r) => r.name) ?? [];
     running.add(key);
+    askedAt.set(key, performance.now());
     try {
       await Promise.all(
         remotes.map(async (remote) => {
@@ -53,11 +64,24 @@ export const useRemoteTagsStore = defineStore("remoteTags", () => {
     if (!answers.value.has(key) && !running.has(key)) void refresh(key);
   }
 
-  function forget(key: string): void {
-    answers.value.delete(key);
+  /**
+   * Repository `key`'s remote-tracking branches moved while no fetch, pull or push of the app's
+   * was running: a push or fetch from outside, such as `git push` in a terminal, which may have
+   * pushed tags along with the commits (`--follow-tags`, `push.followTags`). Asks the remotes
+   * again, unless they were never asked or an ask is running or has just begun.
+   */
+  function remoteBranchesMoved(key: string): void {
+    if (!answers.value.has(key) || running.has(key)) return;
+    if (performance.now() - (askedAt.get(key) ?? -Infinity) < RECENT_ASK_MS) return;
+    void refresh(key);
   }
 
-  return { answers, refresh, ensure, forget };
+  function forget(key: string): void {
+    answers.value.delete(key);
+    askedAt.delete(key);
+  }
+
+  return { answers, refresh, ensure, remoteBranchesMoved, forget };
 });
 
 /**
