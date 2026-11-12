@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+## 0.6.9 (2026-11-12)
+
 - Name the branch a tag's commit is on in the commit graph in the tag's tooltip
 - Stop marking tags as not pushed after a push from outside the app carried them, and ask the remotes about tags again on Refresh
 - Scroll about 55px per mouse wheel notch on Windows, like other Windows apps, instead of 100px, with a short animation
