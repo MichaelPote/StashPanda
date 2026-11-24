@@ -225,6 +225,9 @@ Each `ConsoleEvent` carries the command line as executed (wrapper included), a q
 line, `command` (just the Git arguments the caller asked for, without the common flags or the
 wrapper), `title` (what the command does, such as "Fetch" or "Abort rebase", from
 `command_title`), timing, exit code, and stdout and stderr truncated at `console.outputCapBytes`.
+The display line and `command` are always one line, because the Console draws each command on a
+row of fixed height: `display_command` cuts an argument with line breaks (the SSH check's script)
+to its first line and says how many lines it left out.
 
 Rules for Git output: everything is parsed as bytes; text is decoded lossily at the last moment,
 so a stray Latin-1 byte never aborts a parse. A file is binary when its first 8000 bytes hold a
@@ -393,6 +396,14 @@ out, because reading its files would start it. Actions: Copy Public Key, Use for
 Convert to OpenSSH (writes a new file, never overwrites), Export, Add to Agent, Change or Forget
 Passphrase, Reveal in Folder, Delete; plus Generate (ed25519 by default), Import (drop, choose or
 paste) and Add Folder. The Add Repository dialog's identity picker uses the same list.
+Copy to… opens a dialog of its own over Settings (`KeyCopyDialog.vue`), which names the place and
+the copy's file name and stays open when the name is taken; a key is never overwritten.
+
+A tooltip must not sit between a `DropdownMenu` and its `DropdownMenuTrigger`. reka-ui's tooltip
+and menu each create a `PopperRoot`, and a trigger registers as the anchor of the nearest one, so
+the button became the tooltip's anchor and the menu, left with none, stayed where reka-ui parks an
+unplaced menu, above the top of the window. That hid a key row's More Actions menu. `KeyRow.vue`
+puts the `Tip` around the whole `DropdownMenu`, on a `<span>`.
 
 **Passphrases** are asked for on first use. `keys_unlock` takes `PassphraseMemory`: `none`,
 `session` (in memory, wiped on exit) or `keychain` (`keys/keychain.rs`). A passphrase the keychain

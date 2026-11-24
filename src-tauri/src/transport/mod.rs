@@ -599,18 +599,32 @@ pub(crate) async fn check_symlinks(transport: &dyn Transport, dir: &std::path::P
     }
 }
 
+/// An argument with line breaks in it (the SSH check's shell script, passed as a Git alias) cut
+/// down to its first line that has text, with how many lines were left out.
+fn first_line(arg: &str) -> std::borrow::Cow<'_, str> {
+    if !arg.contains(['\n', '\r']) {
+        return std::borrow::Cow::Borrowed(arg);
+    }
+    let lines: Vec<&str> = arg.lines().collect();
+    let first = lines.iter().map(|l| l.trim_end()).find(|l| !l.trim().is_empty()).unwrap_or("");
+    let more = lines.len().saturating_sub(1);
+    std::borrow::Cow::Owned(format!("{first} … ({more} more {})", if more == 1 { "line" } else { "lines" }))
+}
+
 /// Shell-quote for display in the console (POSIX style, good enough on Windows
-/// for reading). Not used to execute anything.
+/// for reading). Not used to execute anything. Always a single line: the console draws each
+/// command on one row of fixed height, so an argument with line breaks is cut to its first line.
 pub fn display_command(argv: &[String]) -> String {
     argv.iter()
         .map(|a| {
+            let a = first_line(a);
             if a.is_empty() {
                 "''".to_string()
             } else if a
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,\\".contains(c))
             {
-                a.clone()
+                a.into_owned()
             } else {
                 format!("'{}'", a.replace('\'', "'\\''"))
             }
@@ -622,6 +636,17 @@ pub fn display_command(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_is_displayed_on_one_line() {
+        let argv = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        assert_eq!(display_command(&argv(&["git", "commit", "-m", "it's done", ""])), r"git commit -m 'it'\''s done' ''");
+        // A shell script as one argument, as the SSH check passes it: its first line with text.
+        let shown = display_command(&argv(&["git", "-c", "alias.check=!# What it is\r\nf() {\n  echo hi\n}\nf", "check", "setup"]));
+        assert_eq!(shown, "git -c 'alias.check=!# What it is … (4 more lines)' check setup");
+        assert_eq!(display_command(&argv(&["commit", "-m", "\nSubject\nBody"])), "commit -m 'Subject … (2 more lines)'");
+        assert_eq!(display_command(&argv(&["a\nb"])), "'a … (1 more line)'");
+    }
 
     #[test]
     fn progress_collapses_to_the_last_update_of_each_line() {

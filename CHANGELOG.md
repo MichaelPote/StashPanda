@@ -5,6 +5,9 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Open Copy to… for an SSH key in a dialog of its own, instead of a form above the list of keys that was easy to miss
+- Fix the More Actions menu of an SSH key never appearing: it was drawn above the top of the window
+- Fix the Console drawing the SSH check's shell script over the rows around it: a command line with line breaks now shows the first line of that argument and how many lines were left out
 - Show as many branch and tag pills on a commit row as fit beside its message, keeping 8rem for the message, instead of at most three before the +N pill
 - Run the GitHub build only for a version tag or a run started by hand, not for pushes to main or pull requests
 
