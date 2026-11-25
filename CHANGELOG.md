@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Fix a repository opened with a double-click in the Repositories list showing its commit history as it was when last open, without the checked-out branch or new commits, and never updating: the two clicks opened it twice. A repository can now only be opened once at a time
+- Check Git for changes again when a tab restored at start-up is shown for the first time
 - Add an "Also delete origin/feature" tick box to Delete Branch…, which deletes the remote branch of the same name that the branch tracks; when there is none, the box is greyed out and says why
 - Open Generate Key… and Import Key… for SSH keys each in a dialog of its own as well, so the SSH Keys page no longer has any form above the list of keys
 - Open Copy to…, Export… and Change passphrase… for an SSH key each in a dialog of its own, instead of a form above the list of keys that was easy to miss

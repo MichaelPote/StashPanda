@@ -736,6 +736,10 @@ graph_snapshot event -> the frontend keeps the selected and first visible commit
 graph_rows(version, start, count) -> a page of 200 rows; StaleVersion for an old version
 ```
 
+A tab restored at start-up is opened in the backend at once but loads only when first shown. By
+then its watcher may already have built a snapshot, so `graph_open` returns that one and runs
+`refresh_if_changed` in the background, in case the watcher missed something meanwhile.
+
 For a repository with no cache, `log::stream_log` parses `git log` as it arrives and swaps in a
 `complete: false` snapshot at the first 2,000 commits and then every 500 ms, so the graph visibly
 grows; on git.git the first rows show 221 ms into a 1.7 s load. With a cache, only the final
@@ -857,6 +861,16 @@ with the reason.
   running operation and saved scroll position. The store installs each event listener once and
   dispatches by repository, so background tabs keep receiving updates with no component mounted.
   Pinia stores are not created per repository, because dynamic stores leak unless disposed.
+  **One session and one backend handle for each repository:** a single click in the Repositories
+  list opens a repository, so a double-click calls `openTab` twice, and the second call arrives
+  while the first is still waiting for `repo_open`. Two opens once made two sessions under one
+  key and two handles: the commit graph went on reading the first session's rows (the cached
+  history, which no later snapshot reached) while the row count and the Branches panel showed the
+  second, and the first handle's watcher kept running outside `AppState::repos`. Now `openTab`
+  joins a call for a repository that is still opening (`lib/oncePerKey.ts`), `repo_open` holds
+  that repository's lock in `AppState::opening` from its check for an open handle until the new
+  one is stored, and `useGraphPages` asks for the session on every call instead of keeping the
+  one it was created with.
 - `dialogs.ts`: which dialog is open. A confirmation asked for while another dialog is open shows
   on top of it, and Add Repository does not open over another dialog.
 - `host.ts`: what the backend reports about the machine.

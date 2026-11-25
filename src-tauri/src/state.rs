@@ -42,6 +42,20 @@ impl PersistSource for Inner {
     }
 }
 
+/// One lock for each key, made the first time the key is asked for and kept from then on.
+/// `repo_open` holds a repository's lock from its check for an open handle until the new handle
+/// is stored, so two calls for one repository at the same time cannot both open it.
+#[derive(Default)]
+pub struct KeyLocks(std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
+
+impl KeyLocks {
+    /// Waits for `key`'s lock and holds it until the guard is dropped. Other keys are not held up.
+    pub async fn lock(&self, key: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self.0.lock().expect("key locks").entry(key.to_string()).or_default().clone();
+        lock.lock_owned().await
+    }
+}
+
 pub struct AppState {
     pub paths: AppPaths,
     pub inner: Arc<Inner>,
@@ -54,6 +68,8 @@ pub struct AppState {
     pub ssh: Arc<SshContext>,
     /// Open repositories by library key.
     pub repos: tokio::sync::RwLock<std::collections::HashMap<String, Arc<RepoHandle>>>,
+    /// Held by `repo_open` while it opens a repository, by library key.
+    pub opening: KeyLocks,
     /// Running clones, by the operation id the frontend gave. A clone has no `RepoHandle` yet.
     pub clones: OperationRegistry,
 }
@@ -112,6 +128,7 @@ impl AppState {
             passphrases: passphrases.clone(),
             ssh,
             repos: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            opening: KeyLocks::default(),
             clones: Default::default(),
         })
     }
@@ -235,5 +252,31 @@ mod tests {
         let again = load_ui_state(&db, &file, &mut warnings);
         assert_eq!(again.per_repo["r1"].hidden_refs, vec!["refs/heads/x"]);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// What `repo_open` relies on: of two callers with the same key, the second waits until the
+    /// first has let go, and a caller with another key does not wait at all.
+    #[tokio::test]
+    async fn key_locks_hold_up_the_same_key_only() {
+        use std::time::Duration;
+
+        let locks = Arc::new(KeyLocks::default());
+        let first = locks.lock("repo").await;
+
+        let (locks2, opened) = (locks.clone(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let opened2 = opened.clone();
+        let second = tokio::spawn(async move {
+            let _held = locks2.lock("repo").await;
+            opened2.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        // Another key is free while "repo" is held.
+        tokio::time::timeout(Duration::from_secs(5), locks.lock("other")).await.expect("another key does not wait");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!opened.load(std::sync::atomic::Ordering::SeqCst), "the second caller waits for the first");
+
+        drop(first);
+        tokio::time::timeout(Duration::from_secs(5), second).await.expect("the second caller gets the lock").unwrap();
+        assert!(opened.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

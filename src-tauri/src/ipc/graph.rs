@@ -5,7 +5,7 @@ use tauri::{AppHandle, State};
 use crate::error::{GitError, Result};
 use std::sync::Arc;
 
-use crate::graph::loader::{open_pipeline, rebuild_filtered, refresh_full, refresh_status_only, SnapshotReason};
+use crate::graph::loader::{open_pipeline, rebuild_filtered, refresh_full, refresh_if_changed, refresh_status_only, SnapshotReason};
 use crate::graph::snapshot::{GraphMeta, GraphRow, GraphSearchResult, SearchDirection};
 use crate::ipc::query::repo;
 use crate::state::AppState;
@@ -57,17 +57,31 @@ pub async fn graph_set_ref_colours(
 
 /// Current snapshot metadata. When none exists yet a live load starts in the
 /// background and `graph_snapshot` fires when it lands.
+///
+/// A repository can have a snapshot before its tab is first shown: a tab restored at start-up
+/// is opened at once, and its watcher builds a snapshot at the first change it sees. That
+/// snapshot is only as current as the watcher kept it, so Git is asked once more in the
+/// background (refs and status; nothing is rebuilt or emitted when both match).
 #[tauri::command]
 #[specta::specta]
 pub async fn graph_open(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<GraphMeta> {
     let h = repo(&state, &key).await?;
-    if let Some(snap) = h.graph.load_full() {
-        return Ok(snap.meta());
-    }
     let settings = state.settings();
     let handle = h.clone();
     let app2 = app.clone();
     let db = state.db.clone();
+    if let Some(snap) = h.graph.load_full() {
+        // An incomplete snapshot belongs to a load that is still running and will land by itself.
+        if snap.complete {
+            tauri::async_runtime::spawn(async move {
+                let options = settings.appearance.graph_options();
+                if let Err(e) = refresh_if_changed(Some(&app2), Some(&db), &handle, options, &settings.cache, true).await {
+                    tracing::warn!("check for changes on showing {} failed: {e}", handle.key);
+                }
+            });
+        }
+        return Ok(snap.meta());
+    }
     tauri::async_runtime::spawn(async move {
         open_pipeline(&app2, &db, &handle, settings.appearance.graph_options(), &settings.cache).await;
     });

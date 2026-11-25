@@ -923,6 +923,60 @@ mod e2e {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A repository that changed while it was closed: the cache paints what it was, and the live
+    /// load that follows shows what it is now, starting from the cached commits.
+    #[tokio::test]
+    async fn live_load_over_a_stale_cache_shows_the_repository_as_it_is_now() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let mut repo = Scratch::new("stale-cache");
+        for i in 0..3 {
+            repo.commit(&format!("main {i}"));
+        }
+        repo.git(&["tag", "v1"]);
+        repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        repo.git(&["checkout", "-qb", "dev"]);
+        let old_head = repo.commit("dev 1");
+
+        let settings = Settings::default();
+        let options = GraphOptions::default();
+        let db = Db::open_in_memory().unwrap();
+        let handle = repo.open().await;
+        refresh_full(None, Some(&db), &handle, options, &settings.cache, SnapshotReason::Live, false).await.unwrap();
+        handle.close().await;
+
+        // Meanwhile, outside the app: more commits, a branch merged, another branch checked out
+        // with a commit of its own, an amended commit, and the remote branch moved.
+        repo.commit("dev 2");
+        repo.git(&["checkout", "-qb", "topic"]);
+        repo.commit("topic 1");
+        repo.git(&["checkout", "-q", "dev"]);
+        repo.clock += 60;
+        repo.git(&["merge", "-q", "--no-ff", "-m", "merge topic", "topic"]);
+        repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+        repo.git(&["checkout", "-qb", "feature", "HEAD~1"]);
+        repo.commit("feature 1");
+        repo.clock += 60;
+        repo.git(&["commit", "-q", "--amend", "-m", "feature 1 amended"]);
+        let new_head = git_out(&repo.dir, &["rev-parse", "HEAD"]);
+
+        let handle = repo.open().await;
+        let cached = load_from_cache(None, &db, &handle, options).await.unwrap().expect("a cache to paint from");
+        assert_eq!(cached.refs.head.as_deref(), Some(old_head.as_str()), "the cache still has the old HEAD");
+        assert_eq!(cached.refs.head_ref.as_deref(), Some("refs/heads/dev"));
+
+        let live = refresh_full(None, Some(&db), &handle, options, &settings.cache, SnapshotReason::Live, false).await.unwrap();
+        assert!(live.version > cached.version);
+        assert_eq!(live.refs.head.as_deref(), Some(new_head.as_str()));
+        assert_eq!(live.refs.head_ref.as_deref(), Some("refs/heads/feature"));
+        assert_eq!(commit_rows(&live), full_rows(&handle, options).await, "the same rows as a load from nothing");
+        let rows = live.rows(0, 3);
+        assert_eq!(rows[0].kind, crate::graph::snapshot::RowKind::WorkingTree);
+        assert!(rows[1].is_head && rows[1].refs.iter().any(|l| l.short == "feature"), "the checked-out branch is on the first commit row");
+        handle.close().await;
+    }
+
     /// Timings on a large repository named by `STASHPANDA_TIMING_REPO` (for example a clone of
     /// git.git). Not part of the normal run: `cargo test --lib time_large_repository -- --ignored --nocapture`.
     #[tokio::test]

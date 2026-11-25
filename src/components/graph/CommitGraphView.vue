@@ -34,7 +34,7 @@ const props = defineProps<{
 const sessions = useSessionsStore();
 const settings = useSettingsStore();
 const uiState = useUiStateStore();
-const pages = useGraphPages(props.session);
+const pages = useGraphPages(() => props.session);
 
 /** Rows in one Shift-range at most, so a range over unloaded pages stays bounded. */
 const MAX_RANGE = 10_000;

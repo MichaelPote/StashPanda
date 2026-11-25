@@ -26,6 +26,7 @@ import {
 } from "@/lib/bindings";
 import { DEFAULT_COMPARISON, type ConflictComparison } from "@/lib/conflicts";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
+import { oncePerKey } from "@/lib/oncePerKey";
 import { ROW_HEIGHT } from "@/lib/graph/paths";
 import { remoteBranchesMoved } from "@/lib/tagSync";
 import { withTrackedBranches } from "@/lib/trackedBranches";
@@ -640,6 +641,11 @@ export const useSessionsStore = defineStore("sessions", () => {
   /**
    * Opens a tab. Throws when `repoOpen` fails and creates no tab, so callers decide how to show it.
    * With `show` false the tab is added behind the active one and loads when first shown.
+   *
+   * A call made while the same repository is still opening joins that open. A double-click in
+   * the Repositories list calls this twice, and a second `repoOpen` and a second session under
+   * the same key would leave the commit graph reading its rows from the first session, which
+   * no snapshot event reaches any more, so it would show the cached history for good.
    */
   async function openTab(key: string, show = true): Promise<RepoSession> {
     const existing = sessions.get(key);
@@ -647,6 +653,16 @@ export const useSessionsStore = defineStore("sessions", () => {
       setActive(key);
       return existing;
     }
+    const session = await openOnce(key, () => createSession(key, show));
+    // A call that joined an open started with `show` false still puts the tab on screen.
+    if (show) setActive(key);
+    return session;
+  }
+
+  const openOnce = oncePerKey<RepoSession>();
+
+  /** Opens the repository in the backend and makes its session. Only `openTab` calls this. */
+  async function createSession(key: string, show: boolean): Promise<RepoSession> {
     opening.add(key);
     try {
       const info = await unwrap(commands.repoOpen(key));
