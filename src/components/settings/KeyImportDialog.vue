@@ -5,7 +5,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { FileKeyIcon, FolderOpenIcon, LoaderCircleIcon } from "@lucide/vue";
-import { commands, type KeyInfo } from "@/lib/bindings";
+import { commands, type KeyInfo, type PassphraseMemory } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -140,6 +140,20 @@ function onOpenChange(open: boolean): void {
 }
 
 /**
+ * Remembers the imported key's passphrase as the passphrase dialog was asked to, and gives the
+ * key as it then reads. The key is written by now, so a keychain that refuses is not an error of
+ * the import.
+ */
+async function remembered(info: KeyInfo, passphrase: string | null, remember: PassphraseMemory): Promise<KeyInfo> {
+  if (passphrase === null || remember === "none") return info;
+  try {
+    return await unwrap(commands.keysUnlock(info.path, passphrase, remember));
+  } catch {
+    return info;
+  }
+}
+
+/**
  * Writes the key as a new OpenSSH file with a `.pub` beside it. An encrypted key asks for its
  * passphrase and stays encrypted with the same one.
  */
@@ -148,12 +162,14 @@ async function importKey(): Promise<void> {
   importing.value = true;
   error.value = null;
   let passphrase: string | null = null;
+  /** Where the passphrase dialog was asked to remember it, for the file the import writes. */
+  let remember: PassphraseMemory = "none";
   try {
     for (;;) {
       try {
         // Never over a file that is there: keyExists comes back instead, and the dialog stays open for another name.
         const info = await unwrap(commands.keysImport(text.value, outPath.value.trim(), passphrase, passphrase, false));
-        emit("imported", info);
+        emit("imported", await remembered(info, passphrase, remember));
         return;
       } catch (e) {
         const kind = e instanceof IpcError ? e.error.kind : null;
@@ -163,9 +179,11 @@ async function importKey(): Promise<void> {
           keyName: name.value,
           purpose: "to read the key and import it",
           wrong: kind === "sshWrongPassphrase",
+          chooseMemory: true,
         });
         if (!result) return;
         passphrase = result.passphrase;
+        remember = result.choice;
       }
     }
   } catch (e) {

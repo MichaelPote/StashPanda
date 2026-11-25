@@ -208,6 +208,14 @@ impl Transport for LocalTransport {
         if self.windows_git_from_linux && !cmd.env.is_empty() {
             c.env("WSLENV", wslenv(&cmd.env, std::env::var("WSLENV").ok()));
         }
+        // Not for Windows `git.exe` reached from Linux: its `ssh` cannot start a Linux program.
+        if let (Some(askpass), false) = (&cmd.askpass, self.windows_git_from_linux) {
+            let exe = crate::askpass::exe_for_env(&askpass.exe);
+            c.env("SSH_ASKPASS", &exe).env("GIT_ASKPASS", &exe);
+            // Without this, ssh only uses the helper when DISPLAY is set.
+            c.env("SSH_ASKPASS_REQUIRE", "force");
+            c.env(crate::askpass::ENDPOINT_ENV, &askpass.endpoint);
+        }
         apply_stdin(&mut c, &cmd.stdin);
         if cmd.own_session {
             set_own_session(&mut c);

@@ -285,6 +285,11 @@ export const commands = {
 	/**  Whether passphrases can be stored in the system keychain on this machine. */
 	keysKeychainStatus: () => typedError<KeychainStatus, GitError>(__TAURI_INVOKE("keys_keychain_status")),
 	/**
+	 *  The user's answer to an `AskpassRequest`: what they typed (`yes` for a question), or None when
+	 *  they cancelled the dialog. Nothing happens when the request is no longer waiting.
+	 */
+	askpassAnswer: (id: string, answer: string | null) => typedError<null, GitError>(__TAURI_INVOKE("askpass_answer", { id, answer })),
+	/**
 	 *  Delete a private key file, and its `.pub` when `include_public` is set, and forget its
 	 *  passphrase. Refuses a file that is not a private key.
 	 */
@@ -533,7 +538,7 @@ export const commands = {
 	 *  branches the remotes no longer have. `opId` works as for `opPull`; `opCancel` stops the fetch
 	 *  at any point, leaving the remote-tracking branches where they were.
 	 */
-	opFetch: (key: string, opId: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_fetch", { key, opId })),
+	opFetch: (key: string, opId: string, automatic: boolean) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_fetch", { key, opId, automatic })),
 	/**
 	 *  Push local `branch`. With no `target`, where plain `git push` would push it (failing with
 	 *  `invalidPath` when it has no upstream, or when Git would refuse: call `getPushTarget` first);
@@ -672,6 +677,8 @@ export const commands = {
 /** Events */
 export const events = {
 	appWarning: makeEvent<AppWarning>("app-warning"),
+	askpassClosed: makeEvent<AskpassClosed>("askpass-closed"),
+	askpassRequest: makeEvent<AskpassRequest>("askpass-request"),
 	cloneProgress: makeEvent<CloneProgress>("clone-progress"),
 	consoleEvent: makeEvent<ConsoleEvent>("console-event"),
 	graphBusyEvent: makeEvent<GraphBusyEvent>("graph-busy-event"),
@@ -767,6 +774,33 @@ export type Appearance = {
 	showDateColumn?: boolean,
 	showIdColumn?: boolean,
 	avatarSource?: AvatarSource,
+};
+
+/**  A request no longer needs an answer: its Git command ended or was stopped. */
+export type AskpassClosed = {
+	id: string,
+};
+
+/**  What the helper asked for, as the window shows it. */
+export type AskpassKind = 
+/**
+ *  The passphrase of the key file at `path`, a path this app can read. `wrong`: a remembered
+ *  passphrase did not fit the key and has been forgotten.
+ */
+{ type: "passphrase"; path: string; keyName: string; wrong: boolean } | 
+/**  Anything else that must not be shown while typed: a password. `prompt` is ssh's or Git's own text. */
+{ type: "secret"; prompt: string } | 
+/**  A user name, shown while typed. */
+{ type: "text"; prompt: string } | 
+/**  A question answered with yes: whether to trust a server's host key. */
+{ type: "confirm"; prompt: string };
+
+/**  The helper is waiting for the user. Answer with `askpass_answer`. */
+export type AskpassRequest = {
+	id: string,
+	/**  The Git command that is asking: `fetch`, `push`. */
+	command: string,
+	kind: AskpassKind,
 };
 
 /**

@@ -157,7 +157,7 @@ const findings = computed<string[]>(() => {
   if (t.outcome !== "authenticated") {
     if (locked.length > 0) {
       out.push(
-        `${locked.length === 1 ? `${locked[0].path} is` : `${locked.length} key files are`} encrypted in the old PEM format with no .pub file beside ${locked.length === 1 ? "it" : "them"}. ssh needs the passphrase to use such a key, and nothing can type it when StashPanda runs Git, so it is skipped. Load it into the SSH agent, or convert it in Settings › SSH Keys.`,
+        `${locked.length === 1 ? `${locked[0].path} is` : `${locked.length} key files are`} encrypted in the old PEM format with no .pub file beside ${locked.length === 1 ? "it" : "them"}. ssh needs the passphrase to use such a key, and this test never asks for one, so it was skipped here. When you fetch, pull or push, StashPanda asks for the passphrase. Loading the key into the SSH agent, or converting it in Settings › SSH Keys, avoids being asked.`,
       );
     }
     if (s.agent.state === "unavailable") out.push(`No SSH agent is reachable ${where.value}, so ssh only has the key files below.`);

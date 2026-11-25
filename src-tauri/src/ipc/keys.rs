@@ -86,6 +86,17 @@ pub async fn keys_inspect(state: State<'_, AppState>, path: String) -> Result<Ke
     .await
 }
 
+/// The user's answer to an `AskpassRequest`: what they typed (`yes` for a question), or None when
+/// they cancelled the dialog. Nothing happens when the request is no longer waiting.
+#[tauri::command]
+#[specta::specta]
+pub async fn askpass_answer(state: State<'_, AppState>, id: String, answer: Option<String>) -> Result<()> {
+    if let Some(server) = &state.askpass {
+        server.answer(&id, answer);
+    }
+    Ok(())
+}
+
 /// Whether passphrases can be stored in the system keychain on this machine.
 #[tauri::command]
 #[specta::specta]

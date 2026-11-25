@@ -450,12 +450,12 @@ export function pullOutcome(result: OpResult, from: string, into: string, mode: 
 
 /**
  * `opFailureText` for a command that talks to a remote, with the one failure that needs
- * explaining: GIT_TERMINAL_PROMPT=0 stops Git asking for a username and password on a terminal it
- * does not have.
+ * explaining: Git got no user name and password. It asks StashPanda for them through the askpass
+ * helper, so this is a dialog the user cancelled, or an automatic fetch, which opens none.
  */
 export function networkFailureText(result: OpResult, what: string): string {
   if (/terminal prompts disabled|could not read Username/i.test(`${result.stdout}\n${result.stderr}`)) {
-    return "Git needs a username and password for this remote, and StashPanda cannot ask for them yet. Set up a credential helper (Git Credential Manager on Windows), or use an SSH remote.";
+    return "Git needs a user name and password for this remote and was given none. StashPanda asks for them when you fetch, pull or push yourself, but does not remember them: set up a credential helper (Git Credential Manager on Windows) so that Git does, or use an SSH remote.";
   }
   return opFailureText(result, what);
 }
@@ -577,7 +577,7 @@ export async function fetchAll(session: RepoSession | null): Promise<void> {
   const from = remotes.length === 1 ? remotes[0] : `${remotes.length} remotes`;
   const key = session.key;
   try {
-    const result = await runOperation(key, `Fetching from ${from}`, (opId) => commands.opFetch(key, opId), "fetch");
+    const result = await runOperation(key, `Fetching from ${from}`, (opId) => commands.opFetch(key, opId, false), "fetch");
     session.lastFetchAt = Date.now();
     if (result.ok) {
       session.autoFetchFailed = false;
@@ -626,7 +626,8 @@ export async function autoFetchDue(): Promise<void> {
       }
     }, 5_000);
     try {
-      const result = await runOperation(key, `Fetching from ${from} (automatic)`, (opId) => commands.opFetch(key, opId), "fetch");
+      // Automatic: Git may use a passphrase StashPanda remembers, but no dialog opens for one.
+      const result = await runOperation(key, `Fetching from ${from} (automatic)`, (opId) => commands.opFetch(key, opId, true), "fetch");
       session.lastFetchAt = Date.now();
       if (result.ok) {
         session.autoFetchFailed = false;

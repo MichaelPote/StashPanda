@@ -3,13 +3,14 @@ import { computed, ref, watch } from "vue";
 import { join } from "@tauri-apps/api/path";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { LoaderCircleIcon } from "@lucide/vue";
-import { commands, type GenerateAlgorithm, type KeyInfo } from "@/lib/bindings";
+import { commands, type GenerateAlgorithm, type KeyInfo, type PassphraseMemory } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { errorMessage, unwrap } from "@/lib/ipc";
 import KeyPassphraseFields from "./KeyPassphraseFields.vue";
+import PassphraseMemoryChoice from "./PassphraseMemoryChoice.vue";
 
 const props = defineProps<{
   open: boolean;
@@ -33,6 +34,8 @@ const outPath = ref("");
 const outPathEdited = ref(false);
 const passphrase = ref("");
 const passphraseAgain = ref("");
+/** Where the new key's passphrase is remembered, so that the first fetch with it does not ask. */
+const remember = ref<PassphraseMemory>("none");
 const error = ref<string | null>(null);
 const submitting = ref(false);
 
@@ -45,6 +48,7 @@ watch(
     outPathEdited.value = false;
     passphrase.value = "";
     passphraseAgain.value = "";
+    remember.value = "none";
     error.value = null;
     submitting.value = false;
     if (comment.value === "") {
@@ -92,6 +96,20 @@ async function browse(): Promise<void> {
   }
 }
 
+/**
+ * Remembers the new key's passphrase as chosen, and gives the key as it then reads. The key is
+ * written by now, so a keychain that refuses is not an error of this dialog: the key row shows
+ * where the passphrase is remembered.
+ */
+async function remembered(info: KeyInfo): Promise<KeyInfo> {
+  if (passphrase.value === "" || remember.value === "none") return info;
+  try {
+    return await unwrap(commands.keysUnlock(info.path, passphrase.value, remember.value));
+  } catch {
+    return info;
+  }
+}
+
 async function submit(): Promise<void> {
   if (!props.open || !canSubmit.value) return;
   submitting.value = true;
@@ -100,7 +118,7 @@ async function submit(): Promise<void> {
     // Never over a file that is there, even one the save dialog offered to replace: keyExists
     // comes back instead, and the dialog stays open for another name.
     const info = await unwrap(commands.keysGenerate(algorithm.value, comment.value.trim(), outPath.value.trim(), passphrase.value || null, false));
-    emit("generated", info);
+    emit("generated", await remembered(info));
   } catch (e) {
     error.value = errorMessage(e);
   } finally {
@@ -155,6 +173,14 @@ const selectClass =
           </div>
         </div>
         <KeyPassphraseFields v-model:passphrase="passphrase" v-model:again="passphraseAgain" id-prefix="key-generate" optional :disabled="submitting" />
+        <PassphraseMemoryChoice
+          v-if="passphrase.length > 0"
+          v-model="remember"
+          name="key-generate-remember"
+          legend="Remember the passphrase"
+          none-label="Do not remember it: ask when the key is used"
+          :disabled="submitting"
+        />
 
         <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
           {{ error }}

@@ -9,6 +9,7 @@
 //! - `state`      AppState managed by Tauri
 //! - `ipc`        Tauri commands and typed events
 
+pub mod askpass;
 pub mod error;
 pub mod git;
 pub mod graph;
@@ -104,6 +105,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::keys::keys_agent_list,
             ipc::keys::keys_agent_add,
             ipc::keys::keys_keychain_status,
+            ipc::keys::askpass_answer,
             ipc::keys::keys_delete,
             ipc::keys::keys_read_file,
             ipc::keys::keys_default_comment,
@@ -185,6 +187,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             watch::RepoChangedEvent,
             watch::WatcherStateEvent,
             menu::MenuActionEvent,
+            askpass::AskpassRequest,
+            askpass::AskpassClosed,
         ])
         // u64 timestamps and sizes fit comfortably in a JS number.
         .dangerously_cast_bigints_to_number()

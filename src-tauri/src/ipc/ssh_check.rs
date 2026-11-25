@@ -296,7 +296,8 @@ fn check_destination(dest: &str) -> Result<()> {
 async fn run_check(client: &GitClient, mode: &str, dest: &str, port: Option<u16>, timeout: Duration) -> Result<String> {
     check_destination(dest)?;
     let port = port.map(|p| p.to_string()).unwrap_or_default();
-    let mut req = GitReq::new("ssh check", [ALIAS, mode, dest, port.as_str()]).user().own_session().timeout(Some(timeout));
+    // The check logs in with BatchMode, which never asks, so it gets no askpass helper either.
+    let mut req = GitReq::new("ssh check", [ALIAS, mode, dest, port.as_str()]).user().own_session().askpass(crate::askpass::AskMode::Never).timeout(Some(timeout));
     // Git appends ` "$@"` to a shell alias, so the script must end on the call to `f`.
     req.config.push((format!("alias.{ALIAS}"), format!("!{}", SCRIPT.trim_end())));
     let out = client.exec_allow_failure(req).await?;

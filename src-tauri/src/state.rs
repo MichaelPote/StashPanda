@@ -65,6 +65,9 @@ pub struct AppState {
     pub startup_warnings: Vec<String>,
     pub host: Host,
     pub passphrases: Arc<PassphraseCache>,
+    /// Answers Git and ssh when they ask for a passphrase or a password. None when it could
+    /// not start, in which case they fail as they do with nobody to ask.
+    pub askpass: Option<Arc<crate::askpass::Askpass>>,
     pub ssh: Arc<SshContext>,
     /// Open repositories by library key.
     pub repos: tokio::sync::RwLock<std::collections::HashMap<String, Arc<RepoHandle>>>,
@@ -118,6 +121,27 @@ impl AppState {
             use tauri_specta::Event;
             let _ = ev.emit(&events);
         }));
+        let askpass = {
+            use crate::askpass::{Askpass, UiEvent};
+            use tauri_specta::Event;
+            let events = app.clone();
+            let ui = Box::new(move |event: UiEvent| {
+                let _ = match event {
+                    UiEvent::Request(r) => r.emit(&events),
+                    UiEvent::Closed(c) => c.emit(&events),
+                };
+            });
+            match tauri::async_runtime::block_on(Askpass::start(passphrases.clone(), ui)) {
+                Ok(server) => {
+                    crate::askpass::install(server.clone());
+                    Some(server)
+                }
+                Err(e) => {
+                    tracing::warn!("the askpass helper could not start, so Git cannot ask for passphrases: {e}");
+                    None
+                }
+            }
+        };
         Ok(AppState {
             paths,
             inner,
@@ -126,6 +150,7 @@ impl AppState {
             startup_warnings: warnings,
             host: Host::detect(),
             passphrases: passphrases.clone(),
+            askpass,
             ssh,
             repos: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             opening: KeyLocks::default(),

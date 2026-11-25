@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { LoaderCircleIcon } from "@lucide/vue";
-import { commands, type KeychainStatus, type PassphraseMemory } from "@/lib/bindings";
+import { commands, type PassphraseMemory } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
-import { keychainStatus } from "@/lib/keys";
 import { useDialogsStore } from "@/stores/dialogs";
+import PassphraseMemoryChoice from "./PassphraseMemoryChoice.vue";
 
 const dialogs = useDialogsStore();
 
@@ -17,7 +17,6 @@ const request = computed(() => dialogs.current("passphrase"));
 
 const passphrase = ref("");
 const remember = ref<PassphraseMemory>("none");
-const keychain = ref<KeychainStatus | null>(null);
 /** The passphrase given in this dialog was wrong; `request.wrong` covers one given before it opened. */
 const wrong = ref(false);
 const error = ref<string | null>(null);
@@ -26,28 +25,10 @@ const submitting = ref(false);
 watch(request, (r) => {
   if (!r) return;
   passphrase.value = "";
-  remember.value = r.forConnection ? "session" : "none";
+  remember.value = r.remember ?? (r.forConnection ? "session" : "none");
   wrong.value = r.wrong ?? false;
   error.value = null;
   submitting.value = false;
-  keychainStatus()
-    .then((status) => (keychain.value = status))
-    .catch(() => (keychain.value = null));
-});
-
-const keychainAvailable = computed(() => keychain.value?.available ?? false);
-
-/** Where the passphrase can be remembered. A connection needs it for as long as it may reconnect. */
-const choices = computed(() => {
-  const list: { value: PassphraseMemory; label: string; disabled?: boolean }[] = [];
-  if (!request.value?.forConnection) list.push({ value: "none", label: "Only this time" });
-  list.push({ value: "session", label: "Until StashPanda closes" });
-  list.push({
-    value: "keychain",
-    label: keychain.value ? `In ${keychain.value.name}, so it is remembered after a restart` : "In the system keychain",
-    disabled: !keychainAvailable.value,
-  });
-  return list;
 });
 
 const canSubmit = computed(() => passphrase.value.length > 0 && !submitting.value);
@@ -61,15 +42,16 @@ async function submit(): Promise<void> {
   const r = request.value;
   if (!r || !canSubmit.value) return;
   if (r.path === null) {
-    // Key text with no file yet: the caller checks the passphrase.
-    dialogs.resolve("passphrase", { passphrase: passphrase.value, remembered: "none" });
+    // Key text with no file yet: the caller checks the passphrase, and remembers it as chosen
+    // once there is a file to remember it for.
+    dialogs.resolve("passphrase", { passphrase: passphrase.value, remembered: "none", choice: r.chooseMemory ? remember.value : "none" });
     return;
   }
   submitting.value = true;
   error.value = null;
   try {
     const info = await unwrap(commands.keysUnlock(r.path, passphrase.value, remember.value));
-    dialogs.resolve("passphrase", { passphrase: passphrase.value, remembered: info.passphraseRemembered });
+    dialogs.resolve("passphrase", { passphrase: passphrase.value, remembered: info.passphraseRemembered, choice: remember.value });
   } catch (e) {
     if (e instanceof IpcError && e.error.kind === "sshWrongPassphrase") {
       wrong.value = true;
@@ -111,27 +93,12 @@ async function submit(): Promise<void> {
           <p v-if="wrong" class="text-xs text-destructive">That passphrase is wrong. Try again.</p>
         </div>
 
-        <fieldset v-if="request.path" class="grid gap-1">
-          <legend class="mb-1 text-base">Remember it</legend>
-          <label
-            v-for="choice in choices"
-            :key="choice.value"
-            class="flex items-center gap-2 text-base select-none"
-            :class="choice.disabled && 'text-muted-foreground'"
-          >
-            <input v-model="remember" type="radio" name="passphrase-remember" class="size-3.5 accent-primary" :value="choice.value" :disabled="choice.disabled" />
-            {{ choice.label }}
-          </label>
-          <!-- The keychain's own error is for diagnosing, so it is the tooltip rather than the text. -->
-          <Tip v-if="keychain && !keychain.available" :content="keychain.detail">
-            <p class="text-xs text-muted-foreground">
-              No system keychain is available here, so a passphrase can only be remembered until StashPanda closes.
-            </p>
-          </Tip>
+        <!-- A connection needs the passphrase for as long as it may reconnect, so "only this time" is not offered for one. -->
+        <PassphraseMemoryChoice v-if="request.path || request.chooseMemory" v-model="remember" name="passphrase-remember" :allow-none="!request.forConnection">
           <p v-if="request.forConnection" class="text-xs text-muted-foreground">
             The connection needs it again if it drops and reconnects, so it is kept at least until StashPanda closes.
           </p>
-        </fieldset>
+        </PassphraseMemoryChoice>
 
         <p v-if="error" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
           {{ error }}

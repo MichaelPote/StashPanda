@@ -5,6 +5,12 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Comparing tags with the remotes, which happens when a repository opens and after each fetch, pull and push, uses a remembered passphrase and never opens a dialog: without one, tags are shown as not checked until a fetch, pull or push has asked for the passphrase
+- Ask once for an SSH key's passphrase when several Git commands need it at the same time, as when a tag dialog checks more than one remote, instead of once per command
+- Fetch, pull, push and clone with an encrypted SSH key now work: Git's own ssh asks StashPanda for the key's passphrase, which is taken from the passphrases StashPanda remembers or asked for in a dialog that can remember it until StashPanda closes or in the system keychain. This also works for a repository inside WSL opened from Windows
+- Ask in a dialog for the user name and password of an HTTPS remote, the password of an SSH server, and whether to connect to a server ssh has not seen before, instead of failing. These are passed on to Git and not remembered
+- An automatic fetch uses a remembered passphrase but never opens a dialog
+- Offer to remember the passphrase when generating or importing an SSH key
 - Show a spinner in place of a repository's tab icon while it is busy: during a fetch, pull, push or sync, during a commit, checkout or any other change that takes more than a moment, and while its commit graph has been loading or updating for more than two seconds. Tabs behind the active one show it too
 - Say "Updating the commit graph…" in the status bar when the commit graph has been busy for more than two seconds, so it is clear why hiding a branch or a new commit does not show at once
 - Fix the commit graph going back to an older state, without a branch or commit just made, when that was made while Refresh was still reading a long history: only one load of a repository's graph runs at a time now

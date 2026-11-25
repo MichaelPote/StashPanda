@@ -72,6 +72,8 @@ pub struct Cmd {
     /// terminal, so `ssh` cannot stop to ask for a passphrase on the terminal StashPanda was
     /// started from. On Windows its whole process tree is killed. Set for cancellable commands.
     pub own_session: bool,
+    /// The askpass helper this command may use, for the transport to put in its environment.
+    pub askpass: Option<crate::askpass::AskpassEnv>,
 }
 
 impl Cmd {
@@ -86,6 +88,7 @@ impl Cmd {
             timeout: Some(Duration::from_secs(120)),
             label,
             own_session: false,
+            askpass: None,
         }
     }
     pub fn category(mut self, c: Category) -> Cmd {

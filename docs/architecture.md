@@ -146,7 +146,8 @@ Measured on 2026-09-18 on Michael's machine, unless a date says otherwise.
 
 ```
 lib.rs                 Tauri builder, tauri-specta command and event lists, TypeScript export, tracing
-main.rs                entry point
+main.rs                entry point; first of all, the askpass helper when Git or ssh started it
+askpass.rs             the askpass helper and the server in the app that answers it
 error.rs               GitError and classify(): Git's stderr and exit code to an error kind
 platform.rs            which OS the app runs on, whether that Linux is WSL, the macOS login-shell PATH
 settings.rs            settings.json model, defaults, migrations of old field names
@@ -233,6 +234,63 @@ Rules for Git output: everything is parsed as bytes; text is decoded lossily at 
 so a stray Latin-1 byte never aborts a parse. A file is binary when its first 8000 bytes hold a
 NUL. CRLF is never rewritten in transit; the diff reports each side's line endings, and the
 viewer strips `\r` for display.
+
+### Passphrases and passwords for Git's own `ssh` (`askpass.rs`)
+
+Git runs with no terminal, so the `ssh` it starts for a fetch, pull or push cannot ask for the
+passphrase of an encrypted key. The commands that talk to a remote (the ones with
+`GitReq::own_session`) therefore get an askpass helper: `SSH_ASKPASS` and `GIT_ASKPASS` name
+StashPanda's own executable, `SSH_ASKPASS_REQUIRE=force` makes `ssh` use it without `DISPLAY`
+(OpenSSH 8.4 and later), and `STASHPANDA_ASKPASS` holds `127.0.0.1:<port>/<token>`. Started with
+that variable and the prompt as its one argument, the executable does nothing but send the
+prompt to the running app over that TCP connection and print the answer
+(`askpass::run_as_helper`, the first thing `main` does). TCP on 127.0.0.1 because it is the one
+channel that is the same on Linux and Windows, and that a Windows program started from inside
+WSL reaches. Each command has a token of its own (`askpass::Session`), which stops being valid
+when the command ends; the token travels in the environment, never on the command line, so the
+Console does not show it.
+
+The app (`Askpass::answer_prompt`) tells the prompts apart by their text:
+
+| Prompt | Answer |
+|---|---|
+| `Enter passphrase for key '<path>':` | the passphrase remembered for that key (memory, then the keychain), checked against the key file first, so `ssh` is never handed one that does not fit; one that does not fit is forgotten. Otherwise the passphrase dialog, which checks it with `keys_unlock` and remembers it as chosen |
+| `... (yes/no/[fingerprint])?` | a confirm dialog with ssh's own text; Connect answers `yes` |
+| `Username for '<url>':` | the askpass dialog, shown while typed |
+| anything else (`<user>@<host>'s password:`, `Password for '<url>':`) | the askpass dialog, hidden while typed. Never remembered: Git's credential helper does that for HTTPS |
+
+Commands that run at the same time each start an `ssh` of their own, and each `ssh` asks: a
+repository that opened asked every remote for its tags at once, which opened one passphrase
+dialog per remote, and a tag dialog still asks each remote at once whether it has the tag
+(`queryRemoteTag`). So there is a gate per key file (`Askpass::passphrase`): the
+first command asks the user, and the others wait and take its answer, also when the user chose
+"Only this time" or cancelled. The answer is kept only while a command waits for it.
+
+The path in a passphrase prompt is the one `ssh` uses, so it is mapped to the path the key
+manager uses for the same file, which is the name the passphrase is remembered under: through
+the transport's path mapper for a WSL distro reached from Windows (`\\wsl.localhost\<distro>\...`),
+and from Git for Windows' `/c/Users/...` to `C:\Users\...`. A key file the app cannot read is asked
+for as a plain password.
+
+`AskMode` says what a command may do: `Ask` (the default for `own_session`), `StoredOnly` for
+what the app starts by itself, which uses a remembered passphrase and opens no dialog (an
+automatic fetch, `opFetch` with `automatic`, and the comparison of tags with the remotes,
+`queryRemoteTags`, after which tags are drawn as unchecked when it fails), and `Never` for the SSH check, which logs in with `BatchMode`. A dialog is an
+`askpassRequest` event answered with `askpassAnswer`; `src/lib/askpass.ts` shows one at a time.
+When the command ends or is stopped while a dialog is open, `askpassClosed` closes it.
+
+Each transport puts the helper in the environment its own way (`Cmd::askpass`):
+
+- **Local:** the four variables, with forward slashes in the path on Windows, which Git for
+  Windows' `ssh` takes.
+- **WSL from Windows:** `SSH_ASKPASS` and `GIT_ASKPASS` are the Windows executable as the distro
+  names it (`/mnt/c/...`), which `ssh` there starts through WSL interop. `STASHPANDA_ASKPASS` is
+  set on `wsl.exe` and named in `WSLENV`, which carries it into the distro and back out to the
+  Windows helper. Measured 2026-11-25: a Windows program with no console, started from the
+  distro, gets the argument and the variable, and its output and exit code come back; without
+  `WSLENV` the variable does not arrive.
+- **Windows `git.exe` from Linux, and SSH:** no helper. A Windows `ssh` cannot start a Linux
+  program, and over SSH Git runs on the server.
 
 ### Transports
 
@@ -415,7 +473,10 @@ puts the `Tip` around the whole `DropdownMenu`, on a `<span>`.
 **Passphrases** are asked for on first use. `keys_unlock` takes `PassphraseMemory`: `none`,
 `session` (in memory, wiped on exit) or `keychain` (`keys/keychain.rs`). A passphrase the keychain
 refuses is still kept for the session. Inside WSL there is usually no Secret Service, so the
-dialog offers the session only and says why.
+dialog offers the session only and says why. The same choices (`PassphraseMemoryChoice.vue`) are in
+the Generate dialog, for the new key's passphrase, and in the passphrase dialog an import opens;
+both remember it with `keys_unlock` once the key file is written. A remembered passphrase is used
+by the app's own SSH connection and, through the askpass helper, by the `ssh` that Git starts.
 
 **Safety:** decrypted keys and passphrases are wiped from memory with `zeroize`; nothing is written
 to disk without an explicit Convert, Export or Generate; written private keys get mode 600 on Unix;
@@ -629,6 +690,7 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
 | `settingsChanged`, `uiStateChanged` | the whole new document and its revision |
 | `appWarning` | a warning to show |
 | `menuAction` | the id of the clicked native menu item, such as `repo.create_branch` |
+| `askpassRequest`, `askpassClosed` | what Git or its `ssh` asks the user for, and that the question no longer needs an answer |
 
 ### Errors (`error.rs`)
 
@@ -1110,7 +1172,9 @@ layer of its own turns it grayscale and soft:
   operation against throwaway repositories and remotes, stopping commands on each transport, the
   WSL batch and `cat-file` through `wsl.exe`, `inotifywait`, opening across the Windows and WSL
   boundary, the keychain against an in-memory store, the bindings export, and the SSH transport
-  against a private `sshd` (host keys, passphrases, refused passwords, reconnecting). Tests that
+  against a private `sshd` (host keys, passphrases, refused passwords, reconnecting), and
+  `tests/askpass_e2e.rs`: a `git fetch` over `ssh` with an encrypted key against a private `sshd`,
+  where `ssh` starts the built app as its askpass helper. Tests that
   need WSL interop or `inotifywait` skip themselves elsewhere. Three ignored tests need this
   machine or a large repository: `cargo test -- --ignored agrees_with_wslpath`,
   `cargo test -- --ignored probe_real_keys --nocapture`, and
