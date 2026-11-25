@@ -203,6 +203,11 @@ export const commands = {
 	/**
 	 *  Current snapshot metadata. When none exists yet a live load starts in the
 	 *  background and `graph_snapshot` fires when it lands.
+	 * 
+	 *  A repository can have a snapshot before its tab is first shown: a tab restored at start-up
+	 *  is opened at once, and its watcher builds a snapshot at the first change it sees. That
+	 *  snapshot is only as current as the watcher kept it, so Git is asked once more in the
+	 *  background (refs and status; nothing is rebuilt or emitted when both match).
 	 */
 	graphOpen: (key: string) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_open", { key })),
 	graphMeta: (key: string) => typedError<GraphMeta, GitError>(__TAURI_INVOKE("graph_meta", { key })),

@@ -240,6 +240,8 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            // First, as when Tauri created the window itself, before this hook ran.
+            webview::create_main_window(app.handle())?;
             builder.mount_events(app);
             let state = state::AppState::init(app.handle())?;
             app.manage(state);

@@ -34,14 +34,17 @@ export function findLoadedIndex(graph: GraphState, oid: string): number | null {
  * Page cache on top of `graph_rows` for one session. Pages are keyed by number, fetched once,
  * dropped wholesale when the snapshot version changes (the store does that), and dropped one by
  * one when the visible window moves far from them (`dropFarPages`).
+ *
+ * `session` is asked for the session on every call, like a prop, and never kept: a component
+ * that held on to the session it was created with would go on showing that one's rows if the
+ * store ever put another session under the same key, while everything else showed the new one.
  */
-export function useGraphPages(session: RepoSession) {
-  const graph = session.graph;
-
-  async function loadPage(page: number, version: number): Promise<void> {
+export function useGraphPages(session: () => RepoSession) {
+  async function loadPage(graph: GraphState, page: number, version: number): Promise<void> {
     const start = page * PAGE_SIZE;
+    const key = session().key;
     try {
-      const rows = await unwrap(commands.graphRows(session.key, version, start, PAGE_SIZE));
+      const rows = await unwrap(commands.graphRows(key, version, start, PAGE_SIZE));
       // A snapshot swap while the request was out makes this page worthless.
       if (graph.meta?.version !== version) return;
       graph.pages.set(page, rows);
@@ -51,7 +54,7 @@ export function useGraphPages(session: RepoSession) {
       // Someone else knows a newer version than we do; catch up. The snapshot event that
       // follows (or already fired) clears the pages and the visible window refetches.
       try {
-        const meta = await unwrap(commands.graphMeta(session.key));
+        const meta = await unwrap(commands.graphMeta(key));
         if (graph.meta === null || meta.version > graph.meta.version) {
           graph.meta = meta;
           graph.pages.clear();
@@ -63,10 +66,10 @@ export function useGraphPages(session: RepoSession) {
     }
   }
 
-  function fetchPage(page: number, version: number): Promise<void> {
+  function fetchPage(graph: GraphState, page: number, version: number): Promise<void> {
     const existing = graph.inflight.get(page);
     if (existing) return existing;
-    const task: Promise<void> = loadPage(page, version).finally(() => {
+    const task: Promise<void> = loadPage(graph, page, version).finally(() => {
       if (graph.inflight.get(page) === task) graph.inflight.delete(page);
     });
     graph.inflight.set(page, task);
@@ -78,6 +81,7 @@ export function useGraphPages(session: RepoSession) {
    * loaded or loading. Resolves when the pages for the exact range have arrived.
    */
   function ensureRange(start: number, end: number): Promise<void> {
+    const graph = session().graph;
     const meta = graph.meta;
     if (!meta || meta.version === 0 || meta.total === 0) return Promise.resolve();
     const lastPage = pageOf(Math.max(0, meta.total - 1));
@@ -85,10 +89,10 @@ export function useGraphPages(session: RepoSession) {
     const lastNeeded = Math.min(lastPage, pageOf(Math.max(0, end - 1)));
     const waits: Promise<void>[] = [];
     for (let p = firstNeeded; p <= lastNeeded; p += 1) {
-      if (!graph.pages.has(p)) waits.push(fetchPage(p, meta.version));
+      if (!graph.pages.has(p)) waits.push(fetchPage(graph, p, meta.version));
     }
     for (let p = Math.max(0, firstNeeded - PREFETCH_PAGES); p <= Math.min(lastPage, lastNeeded + PREFETCH_PAGES); p += 1) {
-      if (!graph.pages.has(p) && !graph.inflight.has(p)) void fetchPage(p, meta.version);
+      if (!graph.pages.has(p) && !graph.inflight.has(p)) void fetchPage(graph, p, meta.version);
     }
     return Promise.all(waits).then(() => undefined);
   }
@@ -100,6 +104,7 @@ export function useGraphPages(session: RepoSession) {
    * read them.
    */
   function dropFarPages(start: number, end: number): void {
+    const graph = session().graph;
     const drop = pagesToDrop(graph.pages.keys(), pageOf(Math.max(0, start)), pageOf(Math.max(0, end - 1)), PREFETCH_PAGES + KEEP_PAGES);
     if (drop.length === 0) return;
     for (const page of drop) graph.pages.delete(page);
@@ -108,12 +113,12 @@ export function useGraphPages(session: RepoSession) {
 
   /** True while the page holding `index` is being fetched. */
   function isLoading(index: number): boolean {
-    return graph.inflight.has(pageOf(index));
+    return session().graph.inflight.has(pageOf(index));
   }
 
   return {
-    rowAt: (index: number) => rowAt(graph, index),
-    findLoadedIndex: (oid: string) => findLoadedIndex(graph, oid),
+    rowAt: (index: number) => rowAt(session().graph, index),
+    findLoadedIndex: (oid: string) => findLoadedIndex(session().graph, oid),
     ensureRange,
     dropFarPages,
     isLoading,

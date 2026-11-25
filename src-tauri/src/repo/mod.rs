@@ -73,6 +73,11 @@ pub struct RepoHandle {
     /// Latest graph snapshot, swapped whole on every refresh.
     pub graph: ArcSwapOption<GraphSnapshot>,
     pub graph_version: AtomicU64,
+    /// Held by whatever is working out the next graph snapshot, from before it reads Git or the
+    /// current snapshot until the new one is stored, so snapshots are stored in the order their
+    /// information was read and a slow load cannot replace a newer one. Always taken before
+    /// `lock`, never while holding it.
+    pub graph_build: Mutex<()>,
     pub last_status: RwLock<Option<StatusSnapshot>>,
     pub watcher: std::sync::Mutex<Option<Box<dyn WatcherHandle>>>,
     /// The watcher state last announced, for a frontend that reloaded to hear again.

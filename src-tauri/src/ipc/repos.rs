@@ -284,7 +284,7 @@ pub async fn repo_set_colour(app: AppHandle, state: State<'_, AppState>, key: St
     SettingsChanged { revision, settings }.emit(&app)?;
     if let Some(h) = state.repos.read().await.get(&key).cloned() {
         h.set_first_colour(entry.colour);
-        crate::graph::loader::rebuild_filtered(Some(&app), &h, options);
+        crate::graph::loader::rebuild_filtered(Some(&app), &h, options).await;
     }
     Ok(entry)
 }
@@ -317,6 +317,11 @@ pub async fn repo_remove(app: AppHandle, state: State<'_, AppState>, key: String
 #[tauri::command]
 #[specta::specta]
 pub async fn repo_open(app: AppHandle, state: State<'_, AppState>, key: String) -> Result<RepoInfo> {
+    // Held until the handle is stored. A second call for the same repository made meanwhile
+    // waits here and then finds that handle below; without it, both calls would open the
+    // repository, and the first handle would be left out of `repos` with its watcher still
+    // running and sending events under the same key.
+    let _opening = state.opening.lock(&key).await;
     if let Some(existing) = state.repos.read().await.get(&key) {
         // A frontend that reloaded has lost the watcher state; announce it again.
         let last = existing.watcher_state.lock().ok().and_then(|s| s.clone());

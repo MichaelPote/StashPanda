@@ -156,7 +156,7 @@ state.rs               AppState: paths, settings, UI state, database, open repos
 persist.rs             debounced writer for settings.json and the UI state rows; flushed on exit
 shutdown.rs            closing the window waits while Git is changing a repository
 menu.rs                native menu bar; clicks go to the frontend as menu_action events
-webview.rs             turns off WebView2's browser shortcuts on Windows
+webview.rs             creates the main window with its WebView2 data folder; turns off WebView2's browser shortcuts on Windows
 storage/               SQLite connection, schema.sql (cache), schema_v2.sql (UI state), repo_cache.rs, ui_prefs.rs
 transport/mod.rs       Transport and Process traits, Cmd, Output, run, run_batch, run_streaming
 transport/local.rs     run an executable directly (git, git.exe, or /mnt/c/.../git.exe through interop)
@@ -796,6 +796,10 @@ graph_snapshot event -> the frontend keeps the selected and first visible commit
 graph_rows(version, start, count) -> a page of 200 rows; StaleVersion for an old version
 ```
 
+A tab restored at start-up is opened in the backend at once but loads only when first shown. By
+then its watcher may already have built a snapshot, so `graph_open` returns that one and runs
+`refresh_if_changed` in the background, in case the watcher missed something meanwhile.
+
 For a repository with no cache, `log::stream_log` parses `git log` as it arrives and swaps in a
 `complete: false` snapshot at the first 2,000 commits and then every 500 ms, so the graph visibly
 grows; on git.git the first rows show 221 ms into a 1.7 s load. With a cache, only the final
@@ -809,6 +813,16 @@ holds and old tips that `cat-file` still finds stop the walk, and `retain_reacha
 commits that no tip reaches. It falls back to a full load for more than 20,000 new commits, any
 Git failure, an incomplete snapshot, or a result over the commit cap. The toolbar's Refresh
 always reads everything (`graph_refresh`, `force_full`).
+
+**One snapshot is worked out at a time** (`RepoHandle::graph_build`). Everything that stores a
+snapshot holds this lock from before it reads Git, or the current snapshot, until the new one is
+stored: the live loads, the cache paint, a status-only rebuild, and a rebuild from memory after a
+ref is hidden or given a colour. Without it two loads ran side by side, and the one that read the
+refs first could store last. A Refresh still reading the whole history then replaced the snapshot
+of a quick refresh made meanwhile with its own older one, under a higher version number, and a
+new branch or commit vanished from the graph until the next change. The lock is always taken
+before `RepoHandle::lock`, and never while holding it. Hiding a ref during a long load therefore
+waits for that load.
 
 **Search:** `graph_search` finds the next or previous row whose subject, author or email contains
 the text, or whose id starts with it, wrapping at the ends; 3.5 to 4.7 ms on git.git. The search
@@ -917,6 +931,16 @@ with the reason.
   running operation and saved scroll position. The store installs each event listener once and
   dispatches by repository, so background tabs keep receiving updates with no component mounted.
   Pinia stores are not created per repository, because dynamic stores leak unless disposed.
+  **One session and one backend handle for each repository:** a single click in the Repositories
+  list opens a repository, so a double-click calls `openTab` twice, and the second call arrives
+  while the first is still waiting for `repo_open`. Two opens once made two sessions under one
+  key and two handles: the commit graph went on reading the first session's rows (the cached
+  history, which no later snapshot reached) while the row count and the Branches panel showed the
+  second, and the first handle's watcher kept running outside `AppState::repos`. Now `openTab`
+  joins a call for a repository that is still opening (`lib/oncePerKey.ts`), `repo_open` holds
+  that repository's lock in `AppState::opening` from its check for an open handle until the new
+  one is stored, and `useGraphPages` asks for the session on every call instead of keeping the
+  one it was created with.
 - `dialogs.ts`: which dialog is open. A confirmation asked for while another dialog is open shows
   on top of it, and Add Repository does not open over another dialog.
 - `host.ts`: what the backend reports about the machine.
@@ -1052,8 +1076,26 @@ Things that were found the hard way, each with where it matters.
 - Killing `wsl.exe` ends the Linux processes it started directly, but abruptly, and not ones in a
   session of their own.
 - Without the Windows 11 SDK, Rust cannot find the MSVC linker and falls back to Git's `link.exe`.
-- WebView2 shares its runtime between apps but gives each app its own profile folder,
-  `%LOCALAPPDATA%\<identifier>\EBWebView`. Development grew it to 480 MB: 7,203 cached entries
+- Several processes can share one WebView2 data folder only when they all run the same version of
+  the WebView2 runtime with the same browser arguments. The runtime updates itself about once a
+  month, and a copy of StashPanda left open keeps running the old version. A second copy started
+  after an update gets the new one, and in the shared folder its web view could not be created:
+  the app ended before its window showed, with `failed to create webview: WebView2 error` and
+  `0x80010108` (seen 2026-11-25, with an installed copy open since before the update and a debug
+  build started after it). So the main window has `"create": false` in `tauri.conf.json` and
+  `webview::create_main_window` creates it, first thing in the setup hook, with a data folder
+  named after the runtime version: `%LOCALAPPDATA%\<identifier>\webview\<version>`, and
+  `webview\dev-<version>` for a debug build, which so never shares one with an installed copy.
+  When the window still cannot be created, it is tried once more with a folder this process has
+  to itself (`webview\<version>-<process id>`). Folders no running copy uses are removed at
+  start-up, in the background: those of earlier versions, the single-process ones, and
+  `EBWebView` directly under the identifier's folder, where the data was before. A folder is
+  renamed before it is deleted, because Windows refuses to rename a folder while any file in it
+  is open (measured 2026-11-25, whatever sharing the file was opened with), so a folder in use
+  is left whole. Nothing the app needs is in these folders. Linux and macOS keep the folder Tauri
+  chooses.
+- WebView2 shares its runtime between apps but gives each app its own profile folder (see the
+  item above for where). Development grew it to 480 MB: 7,203 cached entries
   from the Vite dev server and their compiled code, and none from the installed app, whose files
   come through Tauri's own protocol. Debug builds therefore clear it at start-up
   (`webview::clear_dev_browsing_data`). `additionalBrowserArgs` in `tauri.conf.json` adds

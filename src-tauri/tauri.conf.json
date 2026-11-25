@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "StashPanda",
         "width": 1400,
         "height": 900,
