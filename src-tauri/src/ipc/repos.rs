@@ -284,7 +284,7 @@ pub async fn repo_set_colour(app: AppHandle, state: State<'_, AppState>, key: St
     SettingsChanged { revision, settings }.emit(&app)?;
     if let Some(h) = state.repos.read().await.get(&key).cloned() {
         h.set_first_colour(entry.colour);
-        crate::graph::loader::rebuild_filtered(Some(&app), &h, options);
+        crate::graph::loader::rebuild_filtered(Some(&app), &h, options).await;
     }
     Ok(entry)
 }

@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Fix the commit graph going back to an older state, without a branch or commit just made, when that was made while Refresh was still reading a long history: only one load of a repository's graph runs at a time now
 - Fix StashPanda on Windows ending before its window showed when another copy had been left open across an update of the WebView2 runtime: each runtime version now has a data folder of its own, a debug build has its own too, and folders no running copy uses are removed at start-up
 - Fix a repository opened with a double-click in the Repositories list showing its commit history as it was when last open, without the checked-out branch or new commits, and never updating: the two clicks opened it twice. A repository can now only be opened once at a time
 - Check Git for changes again when a tab restored at start-up is shown for the first time

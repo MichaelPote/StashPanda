@@ -167,6 +167,7 @@ pub async fn open_repo(
         cancel: CancellationToken::new(),
         graph: arc_swap::ArcSwapOption::from(None),
         graph_version: std::sync::atomic::AtomicU64::new(0),
+        graph_build: Default::default(),
         last_status: RwLock::new(None),
         watcher: std::sync::Mutex::new(None),
         activity: tokio::sync::watch::Sender::new(crate::watch::Activity::Focused),

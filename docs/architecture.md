@@ -754,6 +754,16 @@ commits that no tip reaches. It falls back to a full load for more than 20,000 n
 Git failure, an incomplete snapshot, or a result over the commit cap. The toolbar's Refresh
 always reads everything (`graph_refresh`, `force_full`).
 
+**One snapshot is worked out at a time** (`RepoHandle::graph_build`). Everything that stores a
+snapshot holds this lock from before it reads Git, or the current snapshot, until the new one is
+stored: the live loads, the cache paint, a status-only rebuild, and a rebuild from memory after a
+ref is hidden or given a colour. Without it two loads ran side by side, and the one that read the
+refs first could store last. A Refresh still reading the whole history then replaced the snapshot
+of a quick refresh made meanwhile with its own older one, under a higher version number, and a
+new branch or commit vanished from the graph until the next change. The lock is always taken
+before `RepoHandle::lock`, and never while holding it. Hiding a ref during a long load therefore
+waits for that load.
+
 **Search:** `graph_search` finds the next or previous row whose subject, author or email contains
 the text, or whose id starts with it, wrapping at the ends; 3.5 to 4.7 ms on git.git. The search
 box is in the Commits panel's header (`GraphSearchField.vue`).

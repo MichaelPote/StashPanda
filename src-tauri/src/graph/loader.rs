@@ -111,6 +111,11 @@ pub fn worktree_summary(handle: &RepoHandle, s: &status::StatusSnapshot) -> Opti
 /// Live load: refs and status, then the commits, then a fresh snapshot. The commits come
 /// incrementally from the current snapshot when there is a complete one (see `incremental_store`),
 /// otherwise from a full `git log`; `force_full` always reads the whole history.
+///
+/// Like everything here that stores a snapshot, it holds `RepoHandle::graph_build` from before
+/// it reads Git until the snapshot is stored. Two loads at once would otherwise each read the
+/// refs and store when done, and the one that read first could store last: a slow load of the
+/// whole history would put its older refs on top of what a quick refresh had just stored.
 #[allow(clippy::too_many_arguments)]
 pub async fn refresh_full(
     app: Option<&AppHandle>,
@@ -121,10 +126,23 @@ pub async fn refresh_full(
     reason: SnapshotReason,
     force_full: bool,
 ) -> Result<Arc<GraphSnapshot>> {
-    let client = &handle.client;
+    let _building = handle.graph_build.lock().await;
     let _shared = handle.lock.read().await;
+    load_live(app, db, handle, options, cache, reason, force_full).await
+}
 
-    let (refs_res, status_res) = crate::git::queries::refs_and_status(client, &handle.info.git_dir).await;
+/// `refresh_full` for a caller that already holds `graph_build` and `lock`.
+#[allow(clippy::too_many_arguments)]
+async fn load_live(
+    app: Option<&AppHandle>,
+    db: Option<&Arc<Db>>,
+    handle: &Arc<RepoHandle>,
+    options: GraphOptions,
+    cache: &CacheSettings,
+    reason: SnapshotReason,
+    force_full: bool,
+) -> Result<Arc<GraphSnapshot>> {
+    let (refs_res, status_res) = crate::git::queries::refs_and_status(&handle.client, &handle.info.git_dir).await;
     rebuild(app, db, handle, options, cache, reason, refs_res?, status_res?, force_full).await
 }
 
@@ -156,6 +174,7 @@ pub async fn refresh_if_changed(
     check_refs: bool,
 ) -> Result<Changes> {
     let client = &handle.client;
+    let _building = handle.graph_build.lock().await;
     let _shared = handle.lock.read().await;
 
     let (refs_snap, status_snap) = if check_refs {
@@ -192,7 +211,7 @@ pub async fn refresh_if_changed(
     Ok(Changes { status: status_changed, refs: false })
 }
 
-/// Log, build, swap, emit and persist. The caller holds the shared lock.
+/// Log, build, swap, emit and persist. The caller holds `graph_build` and the shared lock.
 #[allow(clippy::too_many_arguments)]
 async fn rebuild(
     app: Option<&AppHandle>,
@@ -435,6 +454,8 @@ pub async fn load_from_cache(
     handle: &Arc<RepoHandle>,
     options: GraphOptions,
 ) -> Result<Option<Arc<GraphSnapshot>>> {
+    // A refresh the watcher asks for meanwhile waits for the paint, then starts from the cache.
+    let _building = handle.graph_build.lock().await;
     let started = Instant::now();
     let hidden = handle.hidden_refs();
     let colours = handle.ref_colours();
@@ -514,24 +535,28 @@ pub async fn refresh_status_only(
     options: GraphOptions,
     cache: &CacheSettings,
 ) -> Result<Arc<GraphSnapshot>> {
+    // Taken before `current` is read: the status call below takes a while, and a snapshot stored
+    // during it would be replaced by one built from the older `current`.
+    let _building = handle.graph_build.lock().await;
+    let _shared = handle.lock.read().await;
     let Some(current) = handle.graph.load_full() else {
-        return refresh_full(app, None, handle, options, cache, SnapshotReason::Status, false).await;
+        return load_live(app, None, handle, options, cache, SnapshotReason::Status, false).await;
     };
-    let status_snap = {
-        let _shared = handle.lock.read().await;
-        crate::git::queries::full_status(&handle.client, &handle.info.git_dir).await?
-    };
+    let status_snap = crate::git::queries::full_status(&handle.client, &handle.info.git_dir).await?;
     if status_snap.head_oid.as_deref() != current.refs.head.as_deref() {
         // HEAD moved: refs are stale too.
-        return refresh_full(app, None, handle, options, cache, SnapshotReason::Refresh, false).await;
+        return load_live(app, None, handle, options, cache, SnapshotReason::Refresh, false).await;
     }
     Ok(apply_status(app, handle, &current, status_snap, options).await)
 }
 
 /// Rebuild the current snapshot with the handle's hidden refs, from the commits already loaded:
 /// no Git command runs and nothing is persisted. None when there is no snapshot yet; the first
-/// load then uses the hidden refs by itself.
-pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, options: GraphOptions) -> Option<Arc<GraphSnapshot>> {
+/// load then uses the hidden refs by itself. It waits for a load that is running, and then
+/// rebuilds what that load stored; rebuilding the snapshot from before it would drop the load's
+/// new commits.
+pub async fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, options: GraphOptions) -> Option<Arc<GraphSnapshot>> {
+    let _building = handle.graph_build.lock().await;
     let current = handle.graph.load_full()?;
     let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
     let snap = Arc::new(GraphSnapshot::build_coloured(
@@ -553,7 +578,7 @@ pub fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, optio
 }
 
 /// Store the new status, and swap in a snapshot when the Working Tree row's
-/// counts changed.
+/// counts changed. The caller holds `graph_build`, and read `current` while holding it.
 async fn apply_status(
     app: Option<&AppHandle>,
     handle: &Arc<RepoHandle>,
@@ -974,6 +999,106 @@ mod e2e {
         let rows = live.rows(0, 3);
         assert_eq!(rows[0].kind, crate::graph::snapshot::RowKind::WorkingTree);
         assert!(rows[1].is_head && rows[1].refs.iter().any(|l| l.short == "feature"), "the checked-out branch is on the first commit row");
+        handle.close().await;
+    }
+
+    /// `count` commits on main, one on top of the other, written by `git fast-import` so that a
+    /// history long enough to take a while to read is made in about a second.
+    fn import_commits(dir: &PathBuf, count: u32) {
+        use std::io::Write;
+        let mut stream = String::new();
+        for i in 1..=count {
+            let message = format!("imported {i}");
+            stream.push_str(&format!(
+                "commit refs/heads/main\nmark :{i}\ncommitter T <t@t> {} +0000\ndata {}\n{message}\n",
+                1_600_000_000 + i64::from(i) * 60,
+                message.len(),
+            ));
+            if i > 1 {
+                stream.push_str(&format!("from :{}\n", i - 1));
+            }
+            stream.push('\n');
+        }
+        let mut child = Command::new("git")
+            .arg("-C").arg(dir)
+            .args(["fast-import", "--quiet"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("git fast-import runs");
+        child.stdin.take().unwrap().write_all(stream.as_bytes()).unwrap();
+        assert!(child.wait().unwrap().success(), "git fast-import failed");
+    }
+
+    /// Two loads at once: a slow one that reads the whole history again (the toolbar's Refresh)
+    /// and, started while it is still reading, a quick one for a branch made meanwhile (the
+    /// watcher's). The slow one read the refs before the branch existed and finishes last, so
+    /// without something to put the two in order it would store its older picture on top of
+    /// the newer one, and the branch would be missing until the next change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_slow_load_never_replaces_a_newer_snapshot() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let repo = Scratch::new("slow-load");
+        import_commits(&repo.dir, 30_000);
+        let handle = repo.open().await;
+        let settings = Settings::default();
+        let options = GraphOptions::default();
+        refresh_full(None, None, &handle, options, &settings.cache, SnapshotReason::Live, false).await.unwrap();
+
+        for round in 0..3 {
+            let branch = format!("made-meanwhile-{round}");
+            let slow = {
+                let (handle, cache) = (handle.clone(), settings.cache.clone());
+                tokio::spawn(async move { refresh_full(None, None, &handle, options, &cache, SnapshotReason::Refresh, true).await.map(|_| ()) })
+            };
+            // Long enough for the slow load to have read the refs and be reading the log.
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            repo.git(&["branch", &branch, "HEAD~3"]);
+            refresh_if_changed(None, None, &handle, options, &settings.cache, true).await.unwrap();
+            slow.await.unwrap().unwrap();
+
+            let snap = handle.graph.load_full().unwrap();
+            assert!(snap.refs.refs.iter().any(|r| r.short == branch), "round {round}: the snapshot kept has the branch made during the slow load");
+            assert_eq!(snap.version, handle.graph_version.load(Ordering::Relaxed), "round {round}: the snapshot kept is the one numbered last");
+        }
+        handle.close().await;
+    }
+
+    /// A rebuild from the commits in memory (a ref hidden or shown, a ref's colour) asked for
+    /// while a load is running waits for it, and then rebuilds what the load stored. Rebuilding
+    /// the snapshot from before the load would put that one back, without the load's commits.
+    #[tokio::test]
+    async fn a_rebuild_from_memory_waits_for_a_running_load() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let mut repo = Scratch::new("rebuild-waits");
+        repo.commit("main 1");
+        let handle = repo.open().await;
+        let settings = Settings::default();
+        let options = GraphOptions::default();
+        refresh_full(None, None, &handle, options, &settings.cache, SnapshotReason::Live, false).await.unwrap();
+
+        // The test plays the load: it holds the lock a load holds, and stores only further down.
+        let building = handle.graph_build.lock().await;
+        let newer = repo.commit("main 2");
+        let rebuilt = {
+            let handle = handle.clone();
+            tokio::spawn(async move { rebuild_filtered(None, &handle, options).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!rebuilt.is_finished(), "the rebuild waits while a load holds the lock");
+        {
+            let _shared = handle.lock.read().await;
+            load_live(None, None, &handle, options, &settings.cache, SnapshotReason::Refresh, false).await.unwrap();
+        }
+        drop(building);
+
+        let snap = rebuilt.await.unwrap().expect("a snapshot to rebuild");
+        assert!(snap.find(&newer).is_some(), "the rebuild starts from what the load stored");
+        assert_eq!(handle.graph.load_full().unwrap().version, snap.version);
+        assert_eq!(snap.version, handle.graph_version.load(Ordering::Relaxed), "the snapshot kept is the one numbered last");
         handle.close().await;
     }
 

@@ -35,7 +35,7 @@ pub async fn graph_set_hidden_refs(app: AppHandle, state: State<'_, AppState>, k
     let h = repo(&state, &key).await?;
     *h.hidden.write().expect("hidden refs lock") = Arc::new(hidden.into_iter().collect());
     let options = state.settings().appearance.graph_options();
-    Ok(rebuild_filtered(Some(&app), &h, options).map(|s| s.meta()).unwrap_or_else(empty_meta))
+    Ok(rebuild_filtered(Some(&app), &h, options).await.map(|s| s.meta()).unwrap_or_else(empty_meta))
 }
 
 /// Sets the colours chosen for refs (full name to hue, palette index 0 to 11) and rebuilds the
@@ -52,7 +52,7 @@ pub async fn graph_set_ref_colours(
     let h = repo(&state, &key).await?;
     *h.colours.write().expect("ref colours lock") = Arc::new(colours.into_iter().collect());
     let options = state.settings().appearance.graph_options();
-    Ok(rebuild_filtered(Some(&app), &h, options).map(|s| s.meta()).unwrap_or_else(empty_meta))
+    Ok(rebuild_filtered(Some(&app), &h, options).await.map(|s| s.meta()).unwrap_or_else(empty_meta))
 }
 
 /// Current snapshot metadata. When none exists yet a live load starts in the
