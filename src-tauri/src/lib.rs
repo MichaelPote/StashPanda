@@ -181,6 +181,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             git::console::ConsoleEvent,
             graph::loader::GraphSnapshotEvent,
             graph::loader::GraphProgressEvent,
+            graph::loader::GraphBusyEvent,
             watch::RepoChangedEvent,
             watch::WatcherStateEvent,
             menu::MenuActionEvent,

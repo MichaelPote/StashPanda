@@ -8,6 +8,7 @@ import {
   type ConsoleEvent,
   type DiffTarget,
   type GitError,
+  type GraphBusyEvent,
   type GraphMeta,
   type GraphProgressEvent,
   type GraphRow,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/bindings";
 import { DEFAULT_COMPARISON, type ConflictComparison } from "@/lib/conflicts";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
+import { busyAfter } from "@/lib/busyAfter";
 import { oncePerKey } from "@/lib/oncePerKey";
 import { ROW_HEIGHT } from "@/lib/graph/paths";
 import { remoteBranchesMoved } from "@/lib/tagSync";
@@ -74,6 +76,12 @@ export interface GraphState {
   loading: boolean;
   /** Commits loaded so far, from `graph-progress-event`. */
   progress: number;
+  /**
+   * True while the backend has been working out this repository's graph for longer than two
+   * seconds (`graph-busy-event`): a load or refresh that is running, or a rebuild that waits for
+   * one. Whatever is asked of the graph meanwhile waits its turn, so it may not follow at once.
+   */
+  busy: boolean;
 }
 
 export interface Selection {
@@ -185,6 +193,11 @@ export interface RepoSession {
   stashConflict: string | null;
   /** The fetch, pull or push running in this repository, shown in the status bar. */
   operation: RunningOperation | null;
+  /**
+   * True while a write to this repository (a commit, a checkout, staging, a fetch, pull or push,
+   * anything that goes through `runOp`) has been running for longer than `WORKING_AFTER_MS`.
+   */
+  working: boolean;
   /** Which two versions of a conflicted file the diff panel compares; kept from one file to the next. */
   conflictComparison: ConflictComparison;
 }
@@ -221,7 +234,20 @@ function createGraphState(): GraphState {
     inflight: markRaw(new Map<number, Promise<void>>()),
     loading: false,
     progress: 0,
+    busy: false,
   });
+}
+
+/** A write shorter than this shows no spinner on its repository's tab; it would only flicker. */
+const WORKING_AFTER_MS = 150;
+
+/**
+ * Whether a repository's tab shows a spinner in place of its icon: a fetch, pull or push is
+ * running, another write has been running for a moment, or its commit graph has been busy for
+ * longer than two seconds.
+ */
+export function sessionIsBusy(session: RepoSession): boolean {
+  return session.operation !== null || session.working || session.graph.busy;
 }
 
 /** Drops every cached page and tells readers to re-read. */
@@ -445,6 +471,32 @@ export const useSessionsStore = defineStore("sessions", () => {
     session.graph.loading = true;
   }
 
+  function onGraphBusy(ev: GraphBusyEvent): void {
+    const session = sessions.get(ev.repoId);
+    if (session) session.graph.busy = ev.busy;
+  }
+
+  /** For each open repository, the function that counts one more write in; see `startWork`. */
+  const workCounters = new Map<string, () => () => void>();
+
+  /**
+   * Called when a write to a repository starts; returns the function to call when it ends.
+   * `session.working` is true from `WORKING_AFTER_MS` into the work until the last write ends.
+   */
+  function startWork(key: string): () => void {
+    const session = sessions.get(key);
+    if (!session) return () => undefined;
+    let count = workCounters.get(key);
+    if (!count) {
+      // The session is looked up again each time: a tab closed meanwhile has nothing to show.
+      count = busyAfter(WORKING_AFTER_MS, (working) => {
+        if (sessions.get(key) === session) session.working = working;
+      });
+      workCounters.set(key, count);
+    }
+    return count();
+  }
+
   /**
    * Watcher states that arrived before their session existed: `repo_open` starts the watcher and
    * announces it before it returns, so the first state always comes early. The session takes it
@@ -595,6 +647,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         events.consoleEvent.listen((event) => onConsoleEvent(event.payload)),
         events.graphSnapshotEvent.listen((event) => onGraphSnapshot(event.payload)),
         events.graphProgressEvent.listen((event) => onGraphProgress(event.payload)),
+        events.graphBusyEvent.listen((event) => onGraphBusy(event.payload)),
         events.repoChangedEvent.listen((event) => onRepoChanged(event.payload)),
         events.watcherStateEvent.listen((event) => onWatcherState(event.payload)),
         events.transportState.listen((event) => onTransportState(event.payload)),
@@ -696,6 +749,7 @@ export const useSessionsStore = defineStore("sessions", () => {
         autoFetchFailed: false,
         stashConflict: null,
         operation: null,
+        working: false,
         conflictComparison: DEFAULT_COMPARISON,
       });
       sessions.set(key, session);
@@ -719,6 +773,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     sessions.delete(key);
     unloaded.delete(key);
     consoleBuffers.delete(key);
+    workCounters.delete(key);
     useRemoteTagsStore().forget(key);
     if (activeKey.value === key) {
       activeKey.value = keys[idx + 1] ?? keys[idx - 1] ?? null;
@@ -1002,6 +1057,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     setActive,
     restore,
     refreshSession,
+    startWork,
     refetchRefsAndStatus,
     selectRow,
     selectCommit,

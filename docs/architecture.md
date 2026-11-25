@@ -764,6 +764,24 @@ new branch or commit vanished from the graph until the next change. The lock is 
 before `RepoHandle::lock`, and never while holding it. Hiding a ref during a long load therefore
 waits for that load.
 
+**Saying that the graph is busy** (`GraphBusyEvent`, `graph-busy-event`). Because requests now
+wait their turn, the backend tells the frontend when a repository's graph has been worked on for
+longer than two seconds (`BUSY_AFTER`), counted from when a load, refresh or rebuild started or
+started to wait, and tells it again when none is running or waiting any more
+(`RepoHandle::graph_busy`, `Working` in `graph/loader.rs`). The frontend keeps it as
+`session.graph.busy`. The status bar then shows "Updating the commit graph…", unless "Loading N
+commits…" is already there, and the repository's tab shows a spinner in place of its icon. Only
+the backend can say this: a refresh it starts by itself (the watcher, the refresh after a write)
+sends nothing else until its snapshot is ready. Writing the cache counts as busy too, since it
+happens before the lock is let go; on the first load of a long history "Updating the commit
+graph…" can therefore show for a moment after the rows are in.
+
+**The tab's spinner** (`sessionIsBusy` in `stores/sessions.ts`) shows for any of three things: a
+fetch, pull, push or sync is running (`session.operation`), the graph is busy as above, or
+another write (a commit, a checkout, staging: everything goes through `runOp`) has been running
+for longer than 150 ms (`session.working`, counted by `lib/busyAfter.ts`). The 150 ms keep the
+icon from flickering on writes that are over at once. Tabs behind the active one show it too.
+
 **Search:** `graph_search` finds the next or previous row whose subject, author or email contains
 the text, or whose id starts with it, wrapping at the ends; 3.5 to 4.7 ms on git.git. The search
 box is in the Commits panel's header (`GraphSearchField.vue`).

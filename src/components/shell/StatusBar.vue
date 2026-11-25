@@ -24,6 +24,13 @@ const graphLoading = computed(() => {
   // Only the loading flag: a load that failed leaves no snapshot (version 0) and is not loading.
   return graph.loading;
 });
+/**
+ * True while the backend has been working out the active repository's commit graph for longer
+ * than two seconds and "Loading N commits…" is not already saying so: a refresh the backend
+ * started by itself over a slow connection, or a hidden ref or a ref's colour that waits for a
+ * load to finish. The graph may not follow a click at once meanwhile.
+ */
+const graphBusy = computed(() => (active.value?.graph.busy ?? false) && !graphLoading.value);
 /** Commits loaded so far: the backend's progress count, or the previous snapshot's total if that is larger. */
 const loadedCount = computed(() => {
   const graph = active.value?.graph;
@@ -149,9 +156,16 @@ const watcherText = computed(() => {
           Loading {{ loadedCount.toLocaleString() }} commits…
         </span>
       </template>
+      <template v-else-if="graphBusy">
+        <Separator v-if="successMessage" orientation="vertical" class="h-3" />
+        <span class="inline-flex shrink-0 items-center gap-1" role="status">
+          <LoaderCircleIcon class="size-3 shrink-0 animate-spin" />
+          Updating the commit graph…
+        </span>
+      </template>
       <!-- The running fetch, pull or push: what it is, Git's latest progress line, and Stop. -->
       <template v-if="active && operation">
-        <Separator v-if="successMessage || graphLoading" orientation="vertical" class="h-3" />
+        <Separator v-if="successMessage || graphLoading || graphBusy" orientation="vertical" class="h-3" />
         <div class="flex min-w-0 items-center gap-1.5" role="status" aria-live="polite">
           <LoaderCircleIcon class="size-3 shrink-0 animate-spin" />
           <span class="shrink-0 text-foreground">{{ operation.title }}</span>

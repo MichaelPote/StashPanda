@@ -1,12 +1,18 @@
 <script setup lang="ts">
-import { FolderRootIcon, XIcon } from "@lucide/vue";
+import { FolderRootIcon, LoaderCircleIcon, XIcon } from "@lucide/vue";
 import { vPixelSnap } from "@/lib/pixelSnap";
 import { cn } from "@/lib/utils";
 import { useLibraryStore } from "@/stores/library";
-import { useSessionsStore } from "@/stores/sessions";
+import { sessionIsBusy, useSessionsStore, type RepoSession } from "@/stores/sessions";
 
 const sessions = useSessionsStore();
 const library = useLibraryStore();
+
+/** The icon's colour in a tab that is not the active one: its repository's own colour, if it has one. */
+function iconStyle(session: RepoSession): { color: string } | undefined {
+  const colour = library.repoByKey.get(session.key)?.colour;
+  return session.key !== sessions.activeKey && colour != null ? { color: `var(--graph-lane-${colour})` } : undefined;
+}
 
 function onAuxClick(event: MouseEvent, key: string): void {
   // Button 1 is the middle button; closing on it matches browser and IDE tab strips.
@@ -69,12 +75,19 @@ function onKeydown(event: KeyboardEvent, key: string): void {
       @keydown="onKeydown($event, session.key)"
     >
       <!-- The active tab's icon is the accent, which is its repository's colour when it has one.
-           Snapped to whole pixels: each tab starts wherever the text of the one before it ends. -->
+           Snapped to whole pixels: each tab starts wherever the text of the one before it ends.
+           While the repository is busy (a fetch, pull, push, commit or other write is running,
+           or its commit graph has been busy for more than two seconds) a spinner of the same
+           size and colour stands in for the icon, in the tabs behind the active one too. -->
       <span v-pixel-snap class="inline-flex shrink-0">
-        <FolderRootIcon
-          :class="cn('size-3.5 shrink-0', session.key === sessions.activeKey && 'text-primary')"
-          :style="session.key !== sessions.activeKey && library.repoByKey.get(session.key)?.colour != null ? { color: `var(--graph-lane-${library.repoByKey.get(session.key)?.colour})` } : undefined"
+        <LoaderCircleIcon
+          v-if="sessionIsBusy(session)"
+          :class="cn('size-3.5 shrink-0 animate-spin', session.key === sessions.activeKey && 'text-primary')"
+          :style="iconStyle(session)"
+          role="status"
+          :aria-label="`${session.info.displayName} is busy`"
         />
+        <FolderRootIcon v-else :class="cn('size-3.5 shrink-0', session.key === sessions.activeKey && 'text-primary')" :style="iconStyle(session)" />
       </span>
       <span class="truncate">{{ session.info.displayName }}</span>
       <button

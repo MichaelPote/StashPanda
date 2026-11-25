@@ -674,6 +674,7 @@ export const events = {
 	appWarning: makeEvent<AppWarning>("app-warning"),
 	cloneProgress: makeEvent<CloneProgress>("clone-progress"),
 	consoleEvent: makeEvent<ConsoleEvent>("console-event"),
+	graphBusyEvent: makeEvent<GraphBusyEvent>("graph-busy-event"),
 	graphLoadFailedEvent: makeEvent<GraphLoadFailedEvent>("graph-load-failed-event"),
 	graphProgressEvent: makeEvent<GraphProgressEvent>("graph-progress-event"),
 	graphSnapshotEvent: makeEvent<GraphSnapshotEvent>("graph-snapshot-event"),
@@ -1489,6 +1490,18 @@ export type GitSettings = {
 	wslDefaultDistro?: string | null,
 	/**  Automount root inside WSL (`/mnt` unless `/etc/wsl.conf` changes it). */
 	wslAutomountRoot?: string,
+};
+
+/**
+ *  Sent with `busy: true` once working out a repository's graph has taken longer than two
+ *  seconds, counted from when a load, refresh or rebuild started, or started to wait for another
+ *  one, and with `busy: false` when none is running or waiting any more. Whatever is asked for
+ *  meanwhile (a refresh, a hidden ref, a ref's colour) waits its turn for
+ *  `RepoHandle::graph_build`, so the frontend shows that the graph may not follow at once.
+ */
+export type GraphBusyEvent = {
+	repoId: string,
+	busy: boolean,
 };
 
 /**

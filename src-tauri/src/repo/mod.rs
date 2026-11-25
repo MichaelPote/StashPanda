@@ -78,6 +78,8 @@ pub struct RepoHandle {
     /// information was read and a slow load cannot replace a newer one. Always taken before
     /// `lock`, never while holding it.
     pub graph_build: Mutex<()>,
+    /// What holds or waits for `graph_build`, and whether the frontend was told the graph is busy.
+    pub graph_busy: std::sync::Mutex<crate::graph::loader::GraphBusy>,
     pub last_status: RwLock<Option<StatusSnapshot>>,
     pub watcher: std::sync::Mutex<Option<Box<dyn WatcherHandle>>>,
     /// The watcher state last announced, for a frontend that reloaded to hear again.

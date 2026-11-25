@@ -35,6 +35,7 @@ vi.mock("@/stores/sessions", () => ({
     notify: (message: string, action: { label: string } | null = null) => notices.push({ message, action }),
     notifySuccess: (message: string) => notices.push({ message, action: null }),
     refetchRefsAndStatus: vi.fn(),
+    startWork: () => () => undefined,
   }),
 }));
 

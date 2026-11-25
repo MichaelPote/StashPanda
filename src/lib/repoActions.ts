@@ -58,6 +58,8 @@ export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResu
     waiting = `Waiting for “${running.title}” to finish first.`;
     sessions.notify(waiting, running.cancellable ? { label: "Stop", run: () => stopOperation(key) } : null);
   }, 700);
+  // The repository's tab shows a spinner while this runs, if it takes more than a moment.
+  const endWork = sessions.startWork(key);
   try {
     try {
       return await unwrap(op());
@@ -69,6 +71,7 @@ export async function runOp<T = OpResult>(key: string, op: () => Promise<IpcResu
       return await unwrap(op());
     }
   } finally {
+    endWork();
     clearTimeout(waitTimer);
     if (waiting !== null && sessions.notice === waiting) sessions.dismissNotice();
     void sessions.refetchRefsAndStatus(key);

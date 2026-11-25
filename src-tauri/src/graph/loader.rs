@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::AppHandle;
 use tauri_specta::Event;
+use tokio_util::sync::CancellationToken;
 
 use super::oid::Oid;
 use super::snapshot::{GraphSnapshot, WorktreeSummary};
@@ -94,6 +95,93 @@ pub struct GraphLoadFailedEvent {
     pub error: GitError,
 }
 
+/// How long a repository's graph may be worked on before the frontend is told that it is busy.
+const BUSY_AFTER: Duration = Duration::from_secs(2);
+
+/// Sent with `busy: true` once working out a repository's graph has taken longer than two
+/// seconds, counted from when a load, refresh or rebuild started, or started to wait for another
+/// one, and with `busy: false` when none is running or waiting any more. Whatever is asked for
+/// meanwhile (a refresh, a hidden ref, a ref's colour) waits its turn for
+/// `RepoHandle::graph_build`, so the frontend shows that the graph may not follow at once.
+#[derive(Debug, Clone, Serialize, Deserialize, Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphBusyEvent {
+    pub repo_id: String,
+    pub busy: bool,
+}
+
+/// How many loads, refreshes and rebuilds of a repository's graph are running or waiting, and
+/// whether the frontend has been told that it is busy (`GraphBusyEvent`).
+#[derive(Debug, Default)]
+pub struct GraphBusy {
+    pub working: u32,
+    pub announced: bool,
+}
+
+/// One load, refresh or rebuild, counted in `RepoHandle::graph_busy` from when it starts, or
+/// starts to wait, until it is dropped.
+struct Working {
+    handle: Arc<RepoHandle>,
+    app: Option<AppHandle>,
+    done: CancellationToken,
+}
+
+impl Working {
+    /// Counts the work in, and announces the repository as busy if the work is still there
+    /// after `delay`.
+    fn start(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, delay: Duration) -> Working {
+        handle.graph_busy.lock().expect("graph busy lock").working += 1;
+        let work = Working { handle: handle.clone(), app: app.cloned(), done: CancellationToken::new() };
+        let (handle, app, done) = (work.handle.clone(), work.app.clone(), work.done.clone());
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = done.cancelled() => return,
+                _ = tokio::time::sleep(delay) => {}
+            }
+            let mut busy = handle.graph_busy.lock().expect("graph busy lock");
+            // `drop` cancels under this lock, so work that ended this instant announces nothing.
+            if done.is_cancelled() || busy.announced {
+                return;
+            }
+            busy.announced = true;
+            announce_busy(app.as_ref(), &handle, true);
+        });
+        work
+    }
+}
+
+impl Drop for Working {
+    fn drop(&mut self) {
+        let mut busy = self.handle.graph_busy.lock().expect("graph busy lock");
+        self.done.cancel();
+        busy.working -= 1;
+        if busy.working == 0 && busy.announced {
+            busy.announced = false;
+            announce_busy(self.app.as_ref(), &self.handle, false);
+        }
+    }
+}
+
+fn announce_busy(app: Option<&AppHandle>, handle: &RepoHandle, busy: bool) {
+    if let Some(app) = app {
+        let _ = GraphBusyEvent { repo_id: handle.key.clone(), busy }.emit(app);
+    }
+}
+
+/// What everything that stores a snapshot holds while it works: `RepoHandle::graph_build`, and
+/// its count in `RepoHandle::graph_busy`.
+struct Building<'a> {
+    _lock: tokio::sync::MutexGuard<'a, ()>,
+    _work: Working,
+}
+
+/// Waits for `graph_build`. The two seconds before the repository is announced as busy start
+/// here, before the wait, so a click that waits behind a long load counts its own waiting.
+async fn start_building<'a>(app: Option<&AppHandle>, handle: &'a Arc<RepoHandle>) -> Building<'a> {
+    let work = Working::start(app, handle, BUSY_AFTER);
+    Building { _lock: handle.graph_build.lock().await, _work: work }
+}
+
 /// The Working Tree row's counts. Every repository with a working tree gets the row, clean or not
 /// (all counts zero), so it can always be selected; a bare repository has none.
 pub fn worktree_summary(handle: &RepoHandle, s: &status::StatusSnapshot) -> Option<WorktreeSummary> {
@@ -126,7 +214,7 @@ pub async fn refresh_full(
     reason: SnapshotReason,
     force_full: bool,
 ) -> Result<Arc<GraphSnapshot>> {
-    let _building = handle.graph_build.lock().await;
+    let _building = start_building(app, handle).await;
     let _shared = handle.lock.read().await;
     load_live(app, db, handle, options, cache, reason, force_full).await
 }
@@ -174,7 +262,7 @@ pub async fn refresh_if_changed(
     check_refs: bool,
 ) -> Result<Changes> {
     let client = &handle.client;
-    let _building = handle.graph_build.lock().await;
+    let _building = start_building(app, handle).await;
     let _shared = handle.lock.read().await;
 
     let (refs_snap, status_snap) = if check_refs {
@@ -455,7 +543,7 @@ pub async fn load_from_cache(
     options: GraphOptions,
 ) -> Result<Option<Arc<GraphSnapshot>>> {
     // A refresh the watcher asks for meanwhile waits for the paint, then starts from the cache.
-    let _building = handle.graph_build.lock().await;
+    let _building = start_building(app, handle).await;
     let started = Instant::now();
     let hidden = handle.hidden_refs();
     let colours = handle.ref_colours();
@@ -537,7 +625,7 @@ pub async fn refresh_status_only(
 ) -> Result<Arc<GraphSnapshot>> {
     // Taken before `current` is read: the status call below takes a while, and a snapshot stored
     // during it would be replaced by one built from the older `current`.
-    let _building = handle.graph_build.lock().await;
+    let _building = start_building(app, handle).await;
     let _shared = handle.lock.read().await;
     let Some(current) = handle.graph.load_full() else {
         return load_live(app, None, handle, options, cache, SnapshotReason::Status, false).await;
@@ -556,7 +644,7 @@ pub async fn refresh_status_only(
 /// rebuilds what that load stored; rebuilding the snapshot from before it would drop the load's
 /// new commits.
 pub async fn rebuild_filtered(app: Option<&AppHandle>, handle: &Arc<RepoHandle>, options: GraphOptions) -> Option<Arc<GraphSnapshot>> {
-    let _building = handle.graph_build.lock().await;
+    let _building = start_building(app, handle).await;
     let current = handle.graph.load_full()?;
     let version = handle.graph_version.fetch_add(1, Ordering::Relaxed) + 1;
     let snap = Arc::new(GraphSnapshot::build_coloured(
@@ -1099,6 +1187,48 @@ mod e2e {
         assert!(snap.find(&newer).is_some(), "the rebuild starts from what the load stored");
         assert_eq!(handle.graph.load_full().unwrap().version, snap.version);
         assert_eq!(snap.version, handle.graph_version.load(Ordering::Relaxed), "the snapshot kept is the one numbered last");
+        handle.close().await;
+    }
+
+    /// The busy state the frontend is told about: nothing for work that ends before the delay,
+    /// busy once work has lasted longer, and clear again only when the last piece of work that
+    /// was running or waiting has ended.
+    #[tokio::test]
+    async fn a_graph_worked_on_for_long_is_announced_as_busy_until_all_work_ends() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let mut repo = Scratch::new("busy");
+        repo.commit("main 1");
+        let handle = repo.open().await;
+        let delay = Duration::from_millis(60);
+        let state = |handle: &RepoHandle| {
+            let busy = handle.graph_busy.lock().unwrap();
+            (busy.working, busy.announced)
+        };
+
+        // Quick work: over before the delay, and never announced, not even once the delay has passed.
+        let quick = Working::start(None, &handle, delay);
+        assert_eq!(state(&handle), (1, false));
+        drop(quick);
+        tokio::time::sleep(delay * 2).await;
+        assert_eq!(state(&handle), (0, false));
+
+        // Long work is announced after the delay. A second piece that starts meanwhile (in the
+        // app it would be waiting for the lock) keeps the repository busy after the first ends.
+        let long = Working::start(None, &handle, delay);
+        tokio::time::sleep(delay * 2).await;
+        assert_eq!(state(&handle), (1, true));
+        let waiting = Working::start(None, &handle, delay);
+        drop(long);
+        assert_eq!(state(&handle), (1, true));
+        drop(waiting);
+        assert_eq!(state(&handle), (0, false));
+
+        // A real refresh counts itself in and out.
+        let settings = Settings::default();
+        refresh_full(None, None, &handle, GraphOptions::default(), &settings.cache, SnapshotReason::Live, false).await.unwrap();
+        assert_eq!(state(&handle), (0, false));
         handle.close().await;
     }
 

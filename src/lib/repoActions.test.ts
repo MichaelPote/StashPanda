@@ -16,7 +16,7 @@ vi.mock("@/stores/library", () => ({ repoDisplayName: vi.fn(), useLibraryStore: 
 vi.mock("@/stores/settings", () => ({ useSettingsStore: vi.fn() }));
 vi.mock("@/stores/uiState", () => ({ useUiStateStore: vi.fn() }));
 vi.mock("@/stores/sessions", () => ({
-  useSessionsStore: () => ({ sessions: mocks.sessions, notify: vi.fn(), notifySuccess: vi.fn(), refetchRefsAndStatus: vi.fn() }),
+  useSessionsStore: () => ({ sessions: mocks.sessions, notify: vi.fn(), notifySuccess: vi.fn(), refetchRefsAndStatus: vi.fn(), startWork: () => () => undefined }),
 }));
 
 const { checkoutTargetOf, continueOutcome, openMergeDialog, rebaseOutcome, requestCheckout, resetReason, revisionOf, tagPushOutcome, trackRemoteBranch } =
