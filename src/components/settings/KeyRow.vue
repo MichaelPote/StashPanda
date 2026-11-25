@@ -105,55 +105,60 @@ const rememberedLabel = computed(() => {
           <CopyIcon />
           Copy public key
         </Button>
-        <DropdownMenu v-if="!remote">
-          <Tip content="More actions">
-            <DropdownMenuTrigger as-child>
-              <Button type="button" variant="ghost" size="icon-sm" :disabled="busy" :aria-label="`Actions for ${info.fileName}`">
-                <EllipsisVerticalIcon />
-              </Button>
-            </DropdownMenuTrigger>
-          </Tip>
-          <DropdownMenuContent align="end" class="min-w-56">
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger :disabled="info.error !== null">Use for repository</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent class="max-w-80">
-                <DropdownMenuItem v-if="sshRepos.length === 0" disabled>No SSH repositories in the library</DropdownMenuItem>
-                <DropdownMenuItem v-for="repo in sshRepos" :key="repo.key ?? repo.path" @select="emit('useFor', repo)">
-                  <span class="truncate">{{ repoDisplayName(repo) }}</span>
+        <!-- The tooltip goes around the whole menu, on a span, never between DropdownMenu and its
+             trigger: there the button became the tooltip's anchor instead of the menu's, and the
+             menu, with no anchor to open beside, stayed where reka-ui parks it above the window. -->
+        <Tip v-if="!remote" content="More actions">
+          <span class="inline-flex">
+            <DropdownMenu>
+              <DropdownMenuTrigger as-child>
+                <Button type="button" variant="ghost" size="icon-sm" :disabled="busy" :aria-label="`Actions for ${info.fileName}`">
+                  <EllipsisVerticalIcon />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" class="min-w-56">
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger :disabled="info.error !== null">Use for repository</DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent class="max-w-80">
+                    <DropdownMenuItem v-if="sshRepos.length === 0" disabled>No SSH repositories in the library</DropdownMenuItem>
+                    <DropdownMenuItem v-for="repo in sshRepos" :key="repo.key ?? repo.path" @select="emit('useFor', repo)">
+                      <span class="truncate">{{ repoDisplayName(repo) }}</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <Tip :content="convertReason" side="right">
+                  <DropdownMenuItem :disabled="convertReason !== null" :class="REASON_CLASS" @select="emit('action', 'convert')">
+                    Convert to OpenSSH
+                  </DropdownMenuItem>
+                </Tip>
+                <DropdownMenuItem :disabled="info.error !== null" @select="emit('action', 'export')">Export…</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <Tip :content="agentReason" side="right">
+                  <DropdownMenuItem :disabled="agentReason !== null" :class="REASON_CLASS" @select="emit('action', 'addToAgent')">
+                    Add to agent
+                  </DropdownMenuItem>
+                </Tip>
+                <Tip :content="agentReason" side="right">
+                  <DropdownMenuItem :disabled="agentReason !== null" :class="REASON_CLASS" @select="emit('action', 'addToAgentForHours')">
+                    Add to agent for 8 hours
+                  </DropdownMenuItem>
+                </Tip>
+                <DropdownMenuSeparator />
+                <Tip :content="passphraseReason" side="right">
+                  <DropdownMenuItem :disabled="passphraseReason !== null" :class="REASON_CLASS" @select="emit('action', 'changePassphrase')">
+                    Change passphrase…
+                  </DropdownMenuItem>
+                </Tip>
+                <DropdownMenuItem v-if="info.passphraseRemembered !== 'none'" @select="emit('action', 'forgetPassphrase')">
+                  Forget passphrase
                 </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <Tip :content="convertReason" side="right">
-              <DropdownMenuItem :disabled="convertReason !== null" :class="REASON_CLASS" @select="emit('action', 'convert')">
-                Convert to OpenSSH
-              </DropdownMenuItem>
-            </Tip>
-            <DropdownMenuItem :disabled="info.error !== null" @select="emit('action', 'export')">Export…</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <Tip :content="agentReason" side="right">
-              <DropdownMenuItem :disabled="agentReason !== null" :class="REASON_CLASS" @select="emit('action', 'addToAgent')">
-                Add to agent
-              </DropdownMenuItem>
-            </Tip>
-            <Tip :content="agentReason" side="right">
-              <DropdownMenuItem :disabled="agentReason !== null" :class="REASON_CLASS" @select="emit('action', 'addToAgentForHours')">
-                Add to agent for 8 hours
-              </DropdownMenuItem>
-            </Tip>
-            <DropdownMenuSeparator />
-            <Tip :content="passphraseReason" side="right">
-              <DropdownMenuItem :disabled="passphraseReason !== null" :class="REASON_CLASS" @select="emit('action', 'changePassphrase')">
-                Change passphrase…
-              </DropdownMenuItem>
-            </Tip>
-            <DropdownMenuItem v-if="info.passphraseRemembered !== 'none'" @select="emit('action', 'forgetPassphrase')">
-              Forget passphrase
-            </DropdownMenuItem>
-            <DropdownMenuItem @select="emit('action', 'reveal')">Reveal in folder</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem variant="destructive" @select="emit('action', 'delete')">Delete…</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+                <DropdownMenuItem @select="emit('action', 'reveal')">Reveal in folder</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" @select="emit('action', 'delete')">Delete…</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </span>
+        </Tip>
       </div>
     </div>
 

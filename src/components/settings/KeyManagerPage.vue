@@ -19,7 +19,11 @@ import { useDialogsStore } from "@/stores/dialogs";
 import { repoDisplayName, useLibraryStore } from "@/stores/library";
 import { useSessionsStore } from "@/stores/sessions";
 import { useSettingsStore } from "@/stores/settings";
+import KeyChangePassphraseDialog from "./KeyChangePassphraseDialog.vue";
+import KeyCopyDialog, { type KeyCopyRequest, type KeyCopyTarget } from "./KeyCopyDialog.vue";
+import KeyExportDialog from "./KeyExportDialog.vue";
 import KeyImportDropzone from "./KeyImportDropzone.vue";
+import KeyPassphraseFields from "./KeyPassphraseFields.vue";
 import KeyRow, { type KeyAction } from "./KeyRow.vue";
 
 const dialogs = useDialogsStore();
@@ -42,14 +46,15 @@ const busyPath = ref<string | null>(null);
 /** The outcome of the last action. The page sits in a dialog, so the window's notices would be hidden behind it. */
 const message = ref<{ kind: "success" | "error"; text: string } | null>(null);
 
-/** The form shown above the list, if any. */
-type Panel =
-  | { kind: "generate" }
-  | { kind: "import" }
-  | { kind: "export"; key: KeyInfo }
-  | { kind: "changePassphrase"; key: KeyInfo }
-  | { kind: "copy"; key: KeyInfo };
+/** The form shown above the list, if any: the two that make a new key. What is done to one key opens a dialog. */
+type Panel = "generate" | "import";
 const panel = ref<Panel | null>(null);
+/** The key the Copy dialog is open for, with the places it can go. */
+const copyRequest = ref<KeyCopyRequest | null>(null);
+/** The key the Export dialog is open for. */
+const exportKey = ref<KeyInfo | null>(null);
+/** The key the Change Passphrase dialog is open for. */
+const changePassphraseKey = ref<KeyInfo | null>(null);
 
 const sshRepos = computed<RepoEntry[]>(() => library.repos.filter(isSshEntry));
 
@@ -190,10 +195,12 @@ async function onKey(info: KeyInfo, run: () => Promise<void>): Promise<void> {
 function onAction(info: KeyInfo, action: KeyAction): void {
   switch (action) {
     case "export":
-      openPanel({ kind: "export", key: info });
+      message.value = null;
+      exportKey.value = info;
       return;
     case "changePassphrase":
-      openPanel({ kind: "changePassphrase", key: info });
+      message.value = null;
+      changePassphraseKey.value = info;
       return;
     case "convert":
       void onKey(info, async () => {
@@ -230,7 +237,8 @@ function onAction(info: KeyInfo, action: KeyAction): void {
       });
       return;
     case "copyTo":
-      openPanel({ kind: "copy", key: info });
+      message.value = null;
+      copyRequest.value = { key: info, targets: copyTargets(info) };
       return;
     case "reveal":
       void onKey(info, () => revealItemInDir(info.path));
@@ -272,7 +280,7 @@ function useFor(info: KeyInfo, entry: RepoEntry): void {
   });
 }
 
-// The forms. Each one is filled in when it opens.
+// The Generate form, filled in when it opens. Import has a component of its own.
 
 const form = ref({
   algorithm: "ed25519" as GenerateAlgorithm,
@@ -281,13 +289,6 @@ const form = ref({
   outPathEdited: false,
   passphrase: "",
   passphraseAgain: "",
-  /** Export and Change Passphrase: keep the passphrase, remove it, or set a new one. */
-  protection: "same" as "same" | "none" | "new",
-  format: "openSsh" as ExportFormat,
-  current: "",
-  /** Copy To: the tab id of the place to copy to, and the name to give the copy. */
-  copyTarget: "",
-  copyName: "",
 });
 const formError = ref<string | null>(null);
 const formBusy = ref(false);
@@ -296,20 +297,8 @@ function openPanel(p: Panel): void {
   panel.value = p;
   message.value = null;
   formError.value = null;
-  form.value = {
-    algorithm: "ed25519",
-    comment: form.value.comment,
-    outPath: "",
-    outPathEdited: false,
-    passphrase: "",
-    passphraseAgain: "",
-    protection: p.kind === "changePassphrase" ? "new" : "same",
-    format: "openSsh",
-    current: "",
-    copyTarget: p.kind === "copy" ? (copyTargets(p.key)[0]?.id ?? "") : "",
-    copyName: p.kind === "copy" ? p.key.fileName : "",
-  };
-  if (p.kind === "generate" && form.value.comment === "") {
+  form.value = { algorithm: "ed25519", comment: form.value.comment, outPath: "", outPathEdited: false, passphrase: "", passphraseAgain: "" };
+  if (p === "generate" && form.value.comment === "") {
     unwrap(commands.keysDefaultComment())
       .then((c) => (form.value.comment = c))
       .catch(() => undefined);
@@ -326,7 +315,7 @@ function freeKeyName(base: string): string {
 
 // Generate: the file name follows the algorithm until the user edits the path.
 watch(
-  () => [panel.value?.kind, form.value.algorithm, firstFolder.value] as const,
+  () => [panel.value, form.value.algorithm, firstFolder.value] as const,
   async ([kind, algorithm, folder]) => {
     if (kind !== "generate" || form.value.outPathEdited) return;
     const name = freeKeyName(algorithm === "ed25519" ? "id_ed25519" : "id_rsa");
@@ -334,30 +323,10 @@ watch(
   },
 );
 
-const passphraseMismatch = computed(() => form.value.passphrase !== form.value.passphraseAgain);
-
-/** The new passphrase as the commands take it: null keeps the current one, "" removes it. */
-function chosenPassphrase(): string | null {
-  switch (form.value.protection) {
-    case "same":
-      return null;
-    case "none":
-      return "";
-    case "new":
-      return form.value.passphrase;
-  }
-}
-
-const formReady = computed(() => {
-  const p = panel.value;
-  if (!p || formBusy.value) return false;
-  const needsNew = p.kind === "generate" || form.value.protection === "new";
-  if (needsNew && passphraseMismatch.value) return false;
-  if (p.kind !== "generate" && form.value.protection === "new" && form.value.passphrase.length === 0) return false;
-  if (p.kind === "generate") return form.value.outPath.trim().length > 0;
-  if (p.kind === "copy") return form.value.copyTarget !== "" && form.value.copyName.trim().length > 0;
-  return true;
-});
+/** An empty passphrase is allowed: the key is then written unencrypted. */
+const formReady = computed(
+  () => panel.value === "generate" && !formBusy.value && form.value.passphrase === form.value.passphraseAgain && form.value.outPath.trim().length > 0,
+);
 
 async function browseGeneratePath(): Promise<void> {
   try {
@@ -372,60 +341,42 @@ async function browseGeneratePath(): Promise<void> {
 }
 
 async function submitForm(): Promise<void> {
-  const p = panel.value;
-  if (!p || !formReady.value) return;
+  if (!formReady.value) return;
   formBusy.value = true;
   formError.value = null;
   try {
-    if (p.kind === "generate") {
-      const info = await unwrap(
-        commands.keysGenerate(form.value.algorithm, form.value.comment.trim(), form.value.outPath.trim(), form.value.passphrase || null, false),
-      );
-      panel.value = null;
-      await refresh();
-      succeed(`Generated ${info.fileName}, with ${info.fileName}.pub beside it. Use Copy public key to put it on a server.`);
-    } else if (p.kind === "export") {
-      const formatName = form.value.format === "pkcs8" ? "PKCS#8" : "OpenSSH";
-      const defaultPath = p.key.path.replace(/\.(ppk|pem|key)$/i, "") + (form.value.format === "pkcs8" ? ".pem" : "_openssh");
-      const outPath = await saveDialog({ title: `Export ${p.key.fileName}`, defaultPath });
-      if (typeof outPath !== "string" || outPath.length === 0) return;
-      if (outPath === p.key.path) {
-        formError.value = "Choose a different file: exporting over the original key would replace it.";
-        return;
-      }
-      const newPassphrase = chosenPassphrase();
-      // Never over a file that is there, even one the save dialog offered to replace: keyExists
-      // comes back instead, and the form stays open for another name.
-      const written = await withPassphrase(p.key, "to export it", (pass) =>
-        unwrap(commands.keysConvert(p.key.path, form.value.format, outPath, pass, newPassphrase, false)),
-      );
-      if (written === undefined) return;
-      panel.value = null;
-      await refresh();
-      succeed(`Exported ${p.key.fileName} in ${formatName} format as ${written}, with a .pub file beside it.`);
-    } else if (p.kind === "copy") {
-      const target = tabs.value.find((t) => t.id === form.value.copyTarget);
-      if (!target) return;
-      const name = form.value.copyName.trim();
-      // Never overwrites: a name that is taken comes back as keyExists, and the form stays open.
-      const written = await unwrap(commands.keysCopy(p.key.path, p.key.place, target.place, target.writeFolder, name));
-      panel.value = null;
-      await refresh();
-      succeed(`Copied ${p.key.fileName} to ${target.label} as ${written}${p.key.publicKeyFile ? ", with its .pub file" : ""}.`);
-    } else if (p.kind === "changePassphrase") {
-      const current = form.value.current || null;
-      const next = form.value.protection === "none" ? null : form.value.passphrase;
-      const info = await withPassphrase(p.key, "to change it", (pass) => unwrap(commands.keysChangePassphrase(p.key.path, pass ?? current, next)));
-      if (info === undefined) return;
-      panel.value = null;
-      await refresh();
-      succeed(next ? `Changed the passphrase of ${info.fileName}.` : `Removed the passphrase of ${info.fileName}. Anyone who can read the file can now use the key.`);
-    }
+    const info = await unwrap(
+      commands.keysGenerate(form.value.algorithm, form.value.comment.trim(), form.value.outPath.trim(), form.value.passphrase || null, false),
+    );
+    panel.value = null;
+    await refresh();
+    succeed(`Generated ${info.fileName}, with ${info.fileName}.pub beside it. Use Copy public key to put it on a server.`);
   } catch (e) {
     formError.value = errorMessage(e);
   } finally {
     formBusy.value = false;
   }
+}
+
+/** The Export dialog wrote the file: close it, read the keys again and say where the export went. */
+async function onExported(key: KeyInfo, written: string, format: ExportFormat): Promise<void> {
+  exportKey.value = null;
+  await refresh();
+  succeed(`Exported ${key.fileName} in ${format === "pkcs8" ? "PKCS#8" : "OpenSSH"} format as ${written}, with a .pub file beside it.`);
+}
+
+/** The Change Passphrase dialog wrote the key file again: close it and read the keys again. */
+async function onPassphraseChanged(info: KeyInfo, removed: boolean): Promise<void> {
+  changePassphraseKey.value = null;
+  await refresh();
+  succeed(removed ? `Removed the passphrase of ${info.fileName}. Anyone who can read the file can now use the key.` : `Changed the passphrase of ${info.fileName}.`);
+}
+
+/** The Copy dialog wrote the copy: close it, read the keys again and say where the copy went. */
+async function onCopied(key: KeyInfo, target: KeyCopyTarget, written: string): Promise<void> {
+  copyRequest.value = null;
+  await refresh();
+  succeed(`Copied ${key.fileName} to ${target.label} as ${written}${key.publicKeyFile ? ", with its .pub file" : ""}.`);
 }
 
 async function onImported(info: KeyInfo): Promise<void> {
@@ -441,11 +392,11 @@ const selectClass =
 <template>
   <div class="grid gap-4">
     <div class="flex flex-wrap items-center gap-2">
-      <Button type="button" variant="outline" size="sm" @click="openPanel({ kind: 'generate' })">
+      <Button type="button" variant="outline" size="sm" @click="openPanel('generate')">
         <KeyRoundIcon />
         Generate Key…
       </Button>
-      <Button type="button" variant="outline" size="sm" @click="openPanel({ kind: 'import' })">
+      <Button type="button" variant="outline" size="sm" @click="openPanel('import')">
         <UploadIcon />
         Import Key…
       </Button>
@@ -498,109 +449,31 @@ const selectClass =
       {{ message.text }}
     </p>
 
-    <KeyImportDropzone v-if="panel?.kind === 'import'" :folder="firstFolder" @imported="onImported" @cancel="panel = null" />
+    <KeyImportDropzone v-if="panel === 'import'" :folder="firstFolder" @imported="onImported" @cancel="panel = null" />
 
-    <form v-else-if="panel" class="grid gap-3 rounded-lg border border-border p-3" @submit.prevent="submitForm">
-      <template v-if="panel.kind === 'generate'">
-        <h4 class="text-base font-medium">Generate a key</h4>
-        <div class="grid grid-cols-2 gap-3">
-          <div class="grid gap-1.5">
-            <Label for="key-generate-algorithm" class="text-base">Type</Label>
-            <select id="key-generate-algorithm" v-model="form.algorithm" :class="selectClass">
-              <option value="ed25519">Ed25519 (recommended)</option>
-              <option value="rsa4096">RSA 4096, for servers that do not take Ed25519</option>
-            </select>
-          </div>
-          <div class="grid gap-1.5">
-            <Label for="key-generate-comment" class="text-base">Comment</Label>
-            <Input id="key-generate-comment" v-model="form.comment" class="text-base" autocomplete="off" spellcheck="false" />
-          </div>
-        </div>
+    <form v-else-if="panel === 'generate'" class="grid gap-3 rounded-lg border border-border p-3" @submit.prevent="submitForm">
+      <h4 class="text-base font-medium">Generate a key</h4>
+      <div class="grid grid-cols-2 gap-3">
         <div class="grid gap-1.5">
-          <Label for="key-generate-path" class="text-base">Save as</Label>
-          <div class="flex gap-2">
-            <Input id="key-generate-path" v-model="form.outPath" class="font-mono text-base" autocomplete="off" spellcheck="false" @input="form.outPathEdited = true" />
-            <Button type="button" variant="outline" size="sm" class="h-8 shrink-0" @click="browseGeneratePath">Browse…</Button>
-          </div>
-        </div>
-      </template>
-
-      <template v-else-if="panel.kind === 'export'">
-        <h4 class="text-base font-medium">Export {{ panel.key.fileName }}</h4>
-        <div class="grid gap-1.5">
-          <Label for="key-export-format" class="text-base">Format</Label>
-          <select id="key-export-format" v-model="form.format" :class="selectClass">
-            <option value="openSsh">OpenSSH (for ssh, Git and most tools)</option>
-            <option value="pkcs8">PKCS#8 PEM (for tools built on OpenSSL)</option>
+          <Label for="key-generate-algorithm" class="text-base">Type</Label>
+          <select id="key-generate-algorithm" v-model="form.algorithm" :class="selectClass">
+            <option value="ed25519">Ed25519 (recommended)</option>
+            <option value="rsa4096">RSA 4096, for servers that do not take Ed25519</option>
           </select>
         </div>
-      </template>
-
-      <template v-else-if="panel.kind === 'copy'">
-        <h4 class="text-base font-medium">Copy {{ panel.key.fileName }}</h4>
-        <p class="text-xs text-muted-foreground">
-          Copies the private key{{ panel.key.publicKeyFile ? " and its .pub file" : "" }} as they are, passphrase included. Into WSL or onto a server it goes in ~/.ssh,
-          readable only by you. A key that is already there is never replaced: if the name is taken, choose another.
-        </p>
-        <p v-if="copyTargets(panel.key).length === 0" class="text-base text-muted-foreground">There is nowhere else to copy it to. Open a repository on a server, or start a WSL distro, to copy it there.</p>
-        <div v-else class="grid grid-cols-2 gap-3">
-          <div class="grid gap-1.5">
-            <Label for="key-copy-target" class="text-base">Copy to</Label>
-            <select id="key-copy-target" v-model="form.copyTarget" :class="selectClass">
-              <option v-for="t in copyTargets(panel.key)" :key="t.id" :value="t.id">{{ t.label }}{{ t.writeFolder ? ` (${t.writeFolder})` : " (~/.ssh)" }}</option>
-            </select>
-          </div>
-          <div class="grid gap-1.5">
-            <Label for="key-copy-name" class="text-base">Name</Label>
-            <Input id="key-copy-name" v-model="form.copyName" class="font-mono text-base" autocomplete="off" spellcheck="false" />
-          </div>
-        </div>
-      </template>
-
-      <template v-else-if="panel.kind === 'changePassphrase'">
-        <h4 class="text-base font-medium">Change the passphrase of {{ panel.key.fileName }}</h4>
-        <div v-if="panel.key.encrypted && panel.key.passphraseRemembered === 'none'" class="grid gap-1.5">
-          <Label for="key-change-current" class="text-base">Current passphrase</Label>
-          <Input id="key-change-current" v-model="form.current" type="password" class="text-base" autocomplete="off" />
-        </div>
-      </template>
-
-      <!-- The new file's passphrase: Generate always asks; Export and Change Passphrase offer a choice. -->
-      <fieldset v-if="panel.kind === 'export' || panel.kind === 'changePassphrase'" class="grid gap-1">
-        <legend class="mb-1 text-base">{{ panel.kind === "export" ? "Passphrase of the exported file" : "New passphrase" }}</legend>
-        <label v-if="panel.kind === 'export'" class="flex items-center gap-2 text-base select-none">
-          <input v-model="form.protection" type="radio" name="key-protection" value="same" class="size-3.5 accent-primary" />
-          {{ panel.key.encrypted ? "The same passphrase as now" : "None, as now" }}
-        </label>
-        <label class="flex items-center gap-2 text-base select-none">
-          <input v-model="form.protection" type="radio" name="key-protection" value="new" class="size-3.5 accent-primary" />
-          A new passphrase
-        </label>
-        <label v-if="panel.kind === 'changePassphrase' || panel.key.encrypted" class="flex items-center gap-2 text-base select-none">
-          <input v-model="form.protection" type="radio" name="key-protection" value="none" class="size-3.5 accent-primary" />
-          No passphrase (anyone who can read the file can use the key)
-        </label>
-      </fieldset>
-      <div v-if="panel.kind === 'generate' || (panel.kind !== 'copy' && form.protection === 'new')" class="grid grid-cols-2 gap-3">
         <div class="grid gap-1.5">
-          <Label for="key-form-passphrase" class="text-base">
-            Passphrase <span v-if="panel.kind === 'generate'" class="text-muted-foreground">(optional)</span>
-          </Label>
-          <Input id="key-form-passphrase" v-model="form.passphrase" type="password" class="text-base" autocomplete="new-password" />
+          <Label for="key-generate-comment" class="text-base">Comment</Label>
+          <Input id="key-generate-comment" v-model="form.comment" class="text-base" autocomplete="off" spellcheck="false" />
         </div>
-        <div class="grid gap-1.5">
-          <Label for="key-form-passphrase-again" class="text-base">Passphrase again</Label>
-          <Input
-            id="key-form-passphrase-again"
-            v-model="form.passphraseAgain"
-            type="password"
-            class="text-base"
-            autocomplete="new-password"
-            :aria-invalid="passphraseMismatch || undefined"
-          />
-        </div>
-        <p v-if="passphraseMismatch && form.passphraseAgain.length > 0" class="col-span-2 text-xs text-destructive">The two passphrases differ.</p>
       </div>
+      <div class="grid gap-1.5">
+        <Label for="key-generate-path" class="text-base">Save as</Label>
+        <div class="flex gap-2">
+          <Input id="key-generate-path" v-model="form.outPath" class="font-mono text-base" autocomplete="off" spellcheck="false" @input="form.outPathEdited = true" />
+          <Button type="button" variant="outline" size="sm" class="h-8 shrink-0" @click="browseGeneratePath">Browse…</Button>
+        </div>
+      </div>
+      <KeyPassphraseFields v-model:passphrase="form.passphrase" v-model:again="form.passphraseAgain" id-prefix="key-generate" optional />
 
       <p v-if="formError" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
         {{ formError }}
@@ -610,7 +483,7 @@ const selectClass =
         <Button type="button" variant="outline" @click="panel = null">Cancel</Button>
         <Button type="submit" :disabled="!formReady">
           <LoaderCircleIcon v-if="formBusy" class="animate-spin" />
-          {{ panel.kind === "generate" ? "Generate" : panel.kind === "export" ? "Export As…" : panel.kind === "copy" ? "Copy" : "Change Passphrase" }}
+          Generate
         </Button>
       </div>
     </form>
@@ -642,5 +515,9 @@ const selectClass =
       </template>
       <template v-if="!agentAvailable"> No SSH agent answered, so keys cannot be added to one.</template>
     </p>
+
+    <KeyCopyDialog :request="copyRequest" @close="copyRequest = null" @copied="onCopied" />
+    <KeyExportDialog :key-info="exportKey" @close="exportKey = null" @exported="onExported" />
+    <KeyChangePassphraseDialog :key-info="changePassphraseKey" @close="changePassphraseKey = null" @changed="onPassphraseChanged" />
   </div>
 </template>

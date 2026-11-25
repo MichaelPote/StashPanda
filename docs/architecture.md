@@ -396,8 +396,14 @@ out, because reading its files would start it. Actions: Copy Public Key, Use for
 Convert to OpenSSH (writes a new file, never overwrites), Export, Add to Agent, Change or Forget
 Passphrase, Reveal in Folder, Delete; plus Generate (ed25519 by default), Import (drop, choose or
 paste) and Add Folder. The Add Repository dialog's identity picker uses the same list.
-Copy to… opens a dialog of its own over Settings (`KeyCopyDialog.vue`), which names the place and
-the copy's file name and stays open when the name is taken; a key is never overwritten.
+What is done to one key and needs a form opens a dialog of its own over Settings: Copy to…
+(`KeyCopyDialog.vue`), Export… (`KeyExportDialog.vue`) and Change passphrase…
+(`KeyChangePassphraseDialog.vue`). Each runs its command itself, stays open when that fails (a
+name that is taken, since a key is never overwritten), and tells the page when it is done, which
+reads the keys again and shows the message. The passphrase dialog opens on top of them when the
+key needs unlocking. Only Generate and Import, which make a new key, are forms on the page, under
+the buttons that open them. `KeyPassphraseFields.vue` is the new passphrase typed twice, shared
+by Generate, Export and Change passphrase.
 
 A tooltip must not sit between a `DropdownMenu` and its `DropdownMenuTrigger`. reka-ui's tooltip
 and menu each create a `PopperRoot`, and a trigger registers as the anchor of the nearest one, so

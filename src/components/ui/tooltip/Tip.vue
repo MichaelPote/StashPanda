@@ -12,6 +12,10 @@ import TooltipTrigger from "./TooltipTrigger.vue";
  *
  * The slot must be a single element, which becomes the trigger. A disabled button lets no pointer
  * events through, so put a disabled one inside a span and give the span the tooltip.
+ *
+ * Never put it between a DropdownMenu or Popover and that one's trigger: the trigger would become
+ * this tooltip's anchor instead of the menu's, and the menu then never appears. Put it around the
+ * whole menu, on a span, as KeyRow.vue does.
  */
 withDefaults(
   defineProps<{
