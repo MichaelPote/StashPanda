@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+## 0.6.10 (2026-11-25)
+
 - Comparing tags with the remotes, which happens when a repository opens and after each fetch, pull and push, uses a remembered passphrase and never opens a dialog: without one, tags are shown as not checked until a fetch, pull or push has asked for the passphrase
 - Ask once for an SSH key's passphrase when several Git commands need it at the same time, as when a tag dialog checks more than one remote, instead of once per command
 - Fetch, pull, push and clone with an encrypted SSH key now work: Git's own ssh asks StashPanda for the key's passphrase, which is taken from the passphrases StashPanda remembers or asked for in a dialog that can remember it until StashPanda closes or in the system keychain. This also works for a repository inside WSL opened from Windows
