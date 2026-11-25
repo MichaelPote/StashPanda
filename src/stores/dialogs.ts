@@ -55,6 +55,31 @@ export interface RenameBranchResult {
   renameRemote: boolean;
 }
 
+export interface DeleteBranchPayload {
+  /** The local branch to delete. */
+  name: string;
+  /**
+   * The remote branch of the same name that the branch tracks, which the dialog offers to delete
+   * as well; null when there is none to offer, and `trackedReason` then says why.
+   */
+  tracked: PushTarget | null;
+  /** The remote branch it tracks (`origin/main`), named in the tick box's label even when it cannot be deleted; null when it tracks none. */
+  trackedShort: string | null;
+  /** Why no tracked branch can be deleted along with the branch, shown under the greyed-out tick box; null when `tracked` is set. */
+  trackedReason: string | null;
+  /**
+   * True when `trackedReason` leaves the user something to do (the tracked branch has another name
+   * and stays on the remote), so the dialog shows it in red; false when it only says there is
+   * nothing to delete, which is shown in the usual grey.
+   */
+  trackedReasonIsWarning: boolean;
+}
+
+/** Whether the Delete Branch dialog's tick box for the tracked branch was ticked. */
+export interface DeleteBranchResult {
+  deleteTracked: boolean;
+}
+
 export interface CreateTagPayload {
   key: string;
   target: string;
@@ -410,6 +435,8 @@ export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
   renameBranch: { payload: RenameBranchPayload; result: RenameBranchResult | null };
+  /** Resolves with the tick box's state once Delete branch is pressed; `deleteBranch` does the work. */
+  deleteBranch: { payload: DeleteBranchPayload; result: DeleteBranchResult | null };
   removeTag: { payload: TagPayload; result: RemoveTagResult | null };
   renameTag: { payload: TagPayload; result: RenameTagResult | null };
   moveTag: { payload: TagPayload; result: MoveTagResult | null };
@@ -452,6 +479,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createBranch: null,
   createTag: null,
   renameBranch: null,
+  deleteBranch: null,
   removeTag: null,
   renameTag: null,
   moveTag: null,

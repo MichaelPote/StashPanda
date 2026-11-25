@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Add an "Also delete origin/feature" tick box to Delete Branch…, which deletes the remote branch of the same name that the branch tracks; when there is none, the box is greyed out and says why
+
 ## 0.6.9 (2026-11-12)
 
 - Name the branch a tag's commit is on in the commit graph in the tag's tooltip

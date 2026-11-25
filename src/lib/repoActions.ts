@@ -1973,19 +1973,51 @@ export async function pushTags(key: string, remote: string, tags: TagsToPush, wh
 }
 
 /**
- * Asks for confirmation, then runs `git branch -d <name>`. When Git refuses because the branch
- * is not fully merged, offers `git branch -D <name>` in a second confirmation.
+ * The remote branch that the Delete Branch dialog offers to delete along with local branch
+ * `name`: the one it tracks, when that has the same name. Otherwise `tracked` is null and `reason`
+ * says why, for the dialog to show under its greyed-out tick box. A tracked branch of another
+ * name is never offered: `git checkout -b fix origin/main` leaves `fix` tracking `origin/main`.
+ * `trackedShort` is the remote branch it tracks (`origin/main`) for the tick box's label, whether
+ * or not it can be deleted; null when it tracks no remote branch. `reasonIsWarning` is true when
+ * the reason leaves the user something to do (a tracked branch of another name stays on the
+ * remote), and false when it only says there is nothing to delete; the dialog draws a warning red.
+ */
+export function trackedBranchToDelete(
+  session: RepoSession | null | undefined,
+  name: string,
+): { tracked: PushTarget | null; trackedShort: string | null; reason: string | null; reasonIsWarning: boolean } {
+  const no = (reason: string, trackedShort: string | null = null, reasonIsWarning = false) => ({ tracked: null, trackedShort, reason, reasonIsWarning });
+  const ref = session?.refs?.refs.find((r) => r.kind.type === "localBranch" && r.short === name);
+  const upstream = ref?.upstream ?? null;
+  if (!ref || upstream === null) return no(`${name} does not track a remote branch, so there is no other branch to delete.`);
+  const REMOTES = "refs/remotes/";
+  if (!upstream.startsWith(REMOTES)) {
+    return no(`${name} tracks ${upstream.replace(/^refs\/heads\//, "")}, a local branch and not a branch on a remote, so it is not deleted along with ${name}.`);
+  }
+  const short = upstream.slice(REMOTES.length);
+  if (ref.upstreamGone) {
+    return no(`${name} tracks ${short}, which is no longer in this repository, most likely because it was already deleted on the remote. There is nothing left to delete.`, short);
+  }
+  const remote = session?.refs?.remotes.find((r) => upstream === `${REMOTES}${r.name}/${name}`);
+  if (!remote) {
+    return no(`${name} tracks a different branch on the remote, which might be used elsewhere. You need to delete ${short} separately.`, short, true);
+  }
+  return { tracked: { remote: remote.name, branch: name }, trackedShort: short, reason: null, reasonIsWarning: false };
+}
+
+/**
+ * Opens the Delete Branch dialog, then runs `git branch -d <name>`. When Git refuses because the
+ * branch is not fully merged, offers `git branch -D <name>` in a second confirmation. With the
+ * dialog's tick box ticked, the remote branch it tracks is deleted afterwards (`deleteOnRemote`),
+ * and only once the local branch is really gone: not when Git refused, or the force was declined.
  */
 export async function deleteBranch(key: string, name: string): Promise<void> {
   const dialogs = useDialogsStore();
   const sessions = useSessionsStore();
-  const confirmed = await dialogs.open("confirm", {
-    title: `Delete branch ${name}?`,
-    message: `The local branch ${name} is deleted. Git refuses if it has commits that are not merged yet; you can force it then.`,
-    confirmLabel: "Delete branch",
-    destructive: true,
-  });
-  if (!confirmed) return;
+  const { tracked, trackedShort, reason, reasonIsWarning } = trackedBranchToDelete(sessions.sessions.get(key), name);
+  const choice = await dialogs.open("deleteBranch", { name, tracked, trackedShort, trackedReason: reason, trackedReasonIsWarning: reasonIsWarning });
+  if (!choice) return;
+  const remoteToo = choice.deleteTracked ? tracked : null;
   try {
     let result = await runOp(key, () => commands.opBranchDelete(key, name, false));
     if (!result.ok && /not fully merged/i.test(result.stderr)) {
@@ -1998,11 +2030,20 @@ export async function deleteBranch(key: string, name: string): Promise<void> {
       if (!force) return;
       result = await runOp(key, () => commands.opBranchDelete(key, name, true));
     }
-    if (result.ok) sessions.notifySuccess(`Deleted branch ${name}.`);
-    else sessions.notify(opFailureText(result, `Deleting branch ${name}`));
+    if (!result.ok) {
+      const kept = remoteToo ? ` ${remoteToo.remote}/${remoteToo.branch} was not deleted either.` : "";
+      sessions.notify(`${opFailureText(result, `Deleting branch ${name}`)}${kept}`);
+      return;
+    }
+    if (!remoteToo) {
+      sessions.notifySuccess(`Deleted branch ${name}.`);
+      return;
+    }
   } catch (e) {
     sessions.notify(errorMessage(e));
+    return;
   }
+  await deleteOnRemote(key, remoteToo.remote, remoteToo.branch, name);
 }
 
 /**
@@ -2067,26 +2108,47 @@ export async function deleteRemoteBranch(key: string, short: string, remote: str
     destructive: true,
   });
   if (!confirmed) return;
+  await deleteOnRemote(key, remote, branch, null);
+}
+
+/**
+ * Deletes `branch` on `remote` (see `deleteRemoteBranch`) and says how it went. `deletedLocal` is
+ * the local branch Delete Branch… has just deleted, when this is its tick box's second half: each
+ * notice then starts by saying that branch is gone, and a failure offers Delete Remote Branch….
+ */
+async function deleteOnRemote(key: string, remote: string, branch: string, deletedLocal: string | null): Promise<void> {
+  const sessions = useSessionsStore();
+  const short = `${remote}/${branch}`;
   const what = `Deleting ${branch} on ${remote}`;
+  const first = deletedLocal === null ? "" : `Deleted branch ${deletedLocal}. `;
+  const again: NoticeAction | null = deletedLocal === null ? null : { label: "Delete Remote Branch…", run: () => deleteRemoteBranch(key, short, remote) };
   try {
     const result = await runOperation(key, what, (opId) => commands.opDeleteRemoteBranch(key, opId, remote, branch));
     const missing = REMOTE_BRANCH_MISSING.test(`${result.stdout}\n${result.stderr}`);
     if (result.ok && missing) {
-      sessions.notifySuccess(`${remote} no longer had a branch ${branch}, so there was nothing to delete there. ${short} has been removed from this repository.`);
+      sessions.notifySuccess(`${first}${remote} no longer had a branch ${branch}, so there was nothing to delete there. ${short} has been removed from this repository.`);
     } else if (result.ok) {
-      sessions.notifySuccess(`Deleted ${branch} on ${remote}.`);
+      sessions.notifySuccess(deletedLocal === null ? `Deleted ${branch} on ${remote}.` : `Deleted branch ${deletedLocal}, and ${branch} on ${remote}.`);
     } else if (missing) {
-      sessions.notify(`${remote} has no branch ${branch}, so there is nothing to delete. Fetch to bring the remote branches here up to date.`);
+      sessions.notify(`${first}${remote} has no branch ${branch}, so there is nothing to delete. Fetch to bring the remote branches here up to date.`);
+    } else if (/refusing to delete the current branch/i.test(result.stderr)) {
+      sessions.notify(
+        `${first}${remote} will not delete ${branch} because it is the remote's default branch. ` +
+          `To delete it, make another branch the default in the repository's settings on the server first.`,
+        again,
+      );
     } else if (result.stderr.includes("(stale info)")) {
       sessions.notify(
-        `${branch} on ${remote} has commits that this repository has not fetched, so it was not deleted. ` +
+        `${first}${branch} on ${remote} has commits that this repository has not fetched, so it was not deleted. ` +
           `Fetch, look at what is new on ${short}, then delete it again if it is still not needed.`,
+        again,
       );
     } else {
-      sessions.notify(networkFailureText(result, what), sshDiagnoseAction(key, result));
+      sessions.notify(`${first}${networkFailureText(result, what)}`, sshDiagnoseAction(key, result) ?? again);
     }
   } catch (e) {
-    sessions.notify(isCancelled(e) ? `The deletion was stopped. ${remote} may already have deleted ${branch}; the next fetch shows whether it did.` : errorMessage(e));
+    const stopped = `The deletion was stopped. ${remote} may already have deleted ${branch}; the next fetch shows whether it did.`;
+    sessions.notify(`${first}${isCancelled(e) ? stopped : errorMessage(e)}`, isCancelled(e) ? null : again);
   }
 }
 

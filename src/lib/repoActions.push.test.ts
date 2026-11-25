@@ -10,6 +10,7 @@ const commands = vi.hoisted(() => ({
   opPush: vi.fn(),
   opPushTo: vi.fn(),
   opDeleteRemoteBranch: vi.fn(),
+  opBranchDelete: vi.fn(),
   opMerge: vi.fn(),
   opBranchFastForwardToUpstream: vi.fn(),
   opSync: vi.fn(),
@@ -39,6 +40,8 @@ vi.mock("@/stores/sessions", () => ({
 
 import {
   busyReason,
+  deleteBranch,
+  deleteRemoteBranch,
   fastForwardToUpstream,
   mergeInto,
   mergeOutcome,
@@ -55,6 +58,7 @@ import {
   sshDiagnoseAction,
   syncCurrentBranch,
   syncOutcome,
+  trackedBranchToDelete,
   updateRefsLeftBehind,
   upstreamFastForward,
 } from "./repoActions";
@@ -480,6 +484,159 @@ describe("renaming a branch on its remote too", () => {
         "origin will not delete main because it is the remote's default branch. Make dev the default branch in the repository's settings on the server, then delete origin/main.",
     );
     expect(notices[0]!.action?.label).toBe("Delete Remote Branch…");
+  });
+});
+
+describe("deleting a branch and the remote branch it tracks", () => {
+  const failed = (stderr: string) => ok({ ok: false, exitCode: 1, stdout: "", stderr, conflicts: false });
+  type Refs = { refs: { refs: { kind: { type: string }; short: string; upstream: string | null; upstreamGone?: boolean }[] } };
+  /** `feature` and `main` track `origin/main`; `old`'s remote branch has gone; `local` tracks a local branch; `alone` tracks nothing. */
+  function branches() {
+    const s = session() as unknown as Refs;
+    s.refs.refs.push(
+      { kind: { type: "localBranch" }, short: "main", upstream: "refs/remotes/origin/main" },
+      { kind: { type: "localBranch" }, short: "old", upstream: "refs/remotes/origin/old", upstreamGone: true },
+      { kind: { type: "localBranch" }, short: "local", upstream: "refs/heads/main" },
+      { kind: { type: "localBranch" }, short: "alone", upstream: null },
+    );
+    return s as never;
+  }
+  beforeEach(() => {
+    branches();
+    commands.opBranchDelete.mockReturnValue(ok(pushed));
+    commands.opDeleteRemoteBranch.mockReturnValue(ok(pushed));
+  });
+
+  it("offers the tracked branch only when it has the branch's own name, and says why otherwise", () => {
+    const s = branches();
+    expect(trackedBranchToDelete(s, "main")).toEqual({
+      tracked: { remote: "origin", branch: "main" },
+      trackedShort: "origin/main",
+      reason: null,
+      reasonIsWarning: false,
+    });
+    // A warning: origin/main stays on the remote, and the user may have meant it to go.
+    expect(trackedBranchToDelete(s, "feature")).toEqual({
+      tracked: null,
+      trackedShort: "origin/main",
+      reason: "feature tracks a different branch on the remote, which might be used elsewhere. You need to delete origin/main separately.",
+      reasonIsWarning: true,
+    });
+    expect(trackedBranchToDelete(s, "old")).toEqual({
+      tracked: null,
+      trackedShort: "origin/old",
+      reason: "old tracks origin/old, which is no longer in this repository, most likely because it was already deleted on the remote. There is nothing left to delete.",
+      reasonIsWarning: false,
+    });
+    // Nothing to delete is not a warning.
+    for (const name of ["old", "local", "alone", "missing"]) expect(trackedBranchToDelete(s, name).reasonIsWarning).toBe(false);
+    expect(trackedBranchToDelete(s, "local").reason).toBe("local tracks main, a local branch and not a branch on a remote, so it is not deleted along with local.");
+    expect(trackedBranchToDelete(s, "alone").reason).toBe("alone does not track a remote branch, so there is no other branch to delete.");
+    // The label names a branch only when it is one on a remote.
+    for (const name of ["local", "alone", "missing"]) expect(trackedBranchToDelete(s, name).trackedShort).toBeNull();
+    for (const name of ["feature", "old", "local", "alone", "missing"]) expect(trackedBranchToDelete(s, name).tracked).toBeNull();
+  });
+
+  it("opens the dialog with what can be deleted, and deletes nothing when it is cancelled", async () => {
+    dialogs.open.mockResolvedValue(null);
+    await deleteBranch("repo", "main");
+    expect(dialogs.open).toHaveBeenLastCalledWith("deleteBranch", {
+      name: "main",
+      tracked: { remote: "origin", branch: "main" },
+      trackedShort: "origin/main",
+      trackedReason: null,
+      trackedReasonIsWarning: false,
+    });
+    await deleteBranch("repo", "feature");
+    expect(dialogs.open).toHaveBeenLastCalledWith("deleteBranch", {
+      name: "feature",
+      tracked: null,
+      trackedShort: "origin/main",
+      trackedReason: expect.stringContaining("a different branch on the remote"),
+      trackedReasonIsWarning: true,
+    });
+    expect(commands.opBranchDelete).not.toHaveBeenCalled();
+    expect(commands.opDeleteRemoteBranch).not.toHaveBeenCalled();
+  });
+
+  it("deletes only the local branch when the box is not ticked", async () => {
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: false });
+    await deleteBranch("repo", "main");
+    expect(commands.opBranchDelete).toHaveBeenCalledWith("repo", "main", false);
+    expect(commands.opDeleteRemoteBranch).not.toHaveBeenCalled();
+    expect(notices.map((n) => n.message)).toEqual(["Deleted branch main."]);
+  });
+
+  it("deletes the local branch, then the tracked branch, when the box is ticked", async () => {
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: true });
+    await deleteBranch("repo", "main");
+    expect(commands.opDeleteRemoteBranch).toHaveBeenCalledWith("repo", expect.any(String), "origin", "main");
+    expect(commands.opBranchDelete.mock.invocationCallOrder[0]!).toBeLessThan(commands.opDeleteRemoteBranch.mock.invocationCallOrder[0]!);
+    expect(notices.map((n) => n.message)).toEqual(["Deleted branch main, and main on origin."]);
+  });
+
+  it("never deletes a tracked branch of another name, even if the dialog said to", async () => {
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: true });
+    await deleteBranch("repo", "feature");
+    expect(commands.opBranchDelete).toHaveBeenCalledWith("repo", "feature", false);
+    expect(commands.opDeleteRemoteBranch).not.toHaveBeenCalled();
+    expect(notices.map((n) => n.message)).toEqual(["Deleted branch feature."]);
+  });
+
+  it("leaves the tracked branch alone when the local branch is not deleted", async () => {
+    // Git refuses, and the force is declined.
+    commands.opBranchDelete.mockReturnValueOnce(failed("error: the branch 'main' is not fully merged."));
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: true }).mockResolvedValueOnce(false);
+    await deleteBranch("repo", "main");
+    expect(dialogs.open).toHaveBeenLastCalledWith("confirm", expect.objectContaining({ title: "Force delete main?" }));
+    expect(commands.opBranchDelete).toHaveBeenCalledTimes(1);
+    expect(notices).toEqual([]);
+    // Git fails for another reason.
+    commands.opBranchDelete.mockReturnValueOnce(failed("error: cannot delete branch 'main' used by worktree at '/home/me/code/other'"));
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: true });
+    await deleteBranch("repo", "main");
+    expect(notices[0]!.message.endsWith(" origin/main was not deleted either.")).toBe(true);
+    expect(commands.opDeleteRemoteBranch).not.toHaveBeenCalled();
+  });
+
+  it("deletes the tracked branch after a forced delete", async () => {
+    commands.opBranchDelete.mockReturnValueOnce(failed("error: the branch 'main' is not fully merged."));
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: true }).mockResolvedValueOnce(true);
+    await deleteBranch("repo", "main");
+    expect(commands.opBranchDelete).toHaveBeenLastCalledWith("repo", "main", true);
+    expect(commands.opDeleteRemoteBranch).toHaveBeenCalledWith("repo", expect.any(String), "origin", "main");
+  });
+
+  it("says the local branch is gone when the remote keeps its branch, and offers to try again", async () => {
+    commands.opDeleteRemoteBranch.mockReturnValueOnce(failed(" ! [rejected]        main (stale info)"));
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: true });
+    await deleteBranch("repo", "main");
+    expect(notices[0]!.message).toBe(
+      "Deleted branch main. main on origin has commits that this repository has not fetched, so it was not deleted. " +
+        "Fetch, look at what is new on origin/main, then delete it again if it is still not needed.",
+    );
+    expect(notices[0]!.action?.label).toBe("Delete Remote Branch…");
+
+    notices.length = 0;
+    commands.opDeleteRemoteBranch.mockReturnValueOnce(failed(" ! [remote rejected] main (refusing to delete the current branch: refs/heads/main)"));
+    dialogs.open.mockResolvedValueOnce({ deleteTracked: true });
+    await deleteBranch("repo", "main");
+    expect(notices[0]!.message).toBe(
+      "Deleted branch main. origin will not delete main because it is the remote's default branch. " +
+        "To delete it, make another branch the default in the repository's settings on the server first.",
+    );
+  });
+
+  it("keeps the notices of Delete Remote Branch… without the local branch in them", async () => {
+    dialogs.open.mockResolvedValueOnce(true);
+    await deleteRemoteBranch("repo", "origin/main", "origin");
+    expect(notices).toEqual([{ message: "Deleted main on origin.", action: null }]);
+    notices.length = 0;
+    commands.opDeleteRemoteBranch.mockReturnValueOnce(failed(" ! [rejected]        main (stale info)"));
+    dialogs.open.mockResolvedValueOnce(true);
+    await deleteRemoteBranch("repo", "origin/main", "origin");
+    expect(notices[0]!.message.startsWith("main on origin has commits that this repository has not fetched")).toBe(true);
+    expect(notices[0]!.action).toBeNull();
   });
 });
 

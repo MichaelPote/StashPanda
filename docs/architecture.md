@@ -546,6 +546,13 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   never touch `.git/config`; the upstream is set afterwards (`trackAfter` in `repoActions.ts`),
   because with a `config.lock` in place `git push --set-upstream` pushes, fails to record the
   upstream, and still exits 0.
+- **Delete Branch…** has a dialog of its own (`DeleteBranchDialog.vue`) with a tick box, "Also
+  delete origin/feature", naming the remote branch it tracks. It is offered only when the branch
+  tracks a remote branch of its own name (`trackedBranchToDelete` in `repoActions.ts`); otherwise
+  it is greyed out, with the reason under it. A tracked branch of another name is never deleted this way, because
+  `git checkout -b fix origin/main` leaves `fix` tracking `origin/main`. The local branch is
+  deleted first, and the remote branch only once that worked, with the same command and lease as
+  Delete Remote Branch… (`deleteOnRemote`).
 - **Sync** is pull, then push, as one operation under the write gate. Nothing is pushed when the
   pull fails or stops on conflicts.
 - **Clone** (`repo/clone.rs`): a missing or empty folder gets a plain `git clone --progress`. A
