@@ -8,6 +8,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { TooltipProvider } from "@/components/ui/tooltip";
 import AboutDialog from "@/components/dialogs/AboutDialog.vue";
 import ApplyStashDialog from "@/components/dialogs/ApplyStashDialog.vue";
+import AskpassDialog from "@/components/dialogs/AskpassDialog.vue";
 import BlameDialog from "@/components/dialogs/BlameDialog.vue";
 import ChoiceDialog from "@/components/dialogs/ChoiceDialog.vue";
 import CommitDialog from "@/components/dialogs/CommitDialog.vue";
@@ -48,6 +49,7 @@ import StatusBar from "@/components/shell/StatusBar.vue";
 import { watchForConflicts } from "@/lib/autoResolveFiles";
 import { isEditableTarget, isSelectAllKey } from "@/lib/files";
 import { errorMessage } from "@/lib/ipc";
+import { installAskpass } from "@/lib/askpass";
 import { installMenuActions } from "@/lib/menuActions";
 import { autoFetchDue } from "@/lib/repoActions";
 import { checkForUpdates } from "@/lib/updates";
@@ -79,6 +81,7 @@ const MergeEditorDialog = defineAsyncComponent(() => import("@/components/merge/
 
 const ready = ref(false);
 let unlistenMenu: UnlistenFn | null = null;
+let unlistenAskpass: UnlistenFn | null = null;
 
 // Automatic fetching, when `polling.autoFetchMinutes` is set: every half minute, fetch the tabs that are due.
 const autoFetchTimer = setInterval(() => void autoFetchDue(), 30_000);
@@ -88,6 +91,8 @@ onMounted(async () => {
   // The console listener must be live before the first repoOpen emits probe commands.
   await sessions.init();
   unlistenMenu = await installMenuActions();
+  // Before a tab is restored: opening one can start a fetch, which may ask for a passphrase.
+  unlistenAskpass = await installAskpass();
   const results = await Promise.allSettled([settings.load(), uiState.load(), host.load()]);
   for (const r of results) {
     if (r.status === "rejected") sessions.notify(errorMessage(r.reason));
@@ -108,6 +113,8 @@ useEventListener(window, "keydown", (event: KeyboardEvent) => {
 onBeforeUnmount(() => {
   unlistenMenu?.();
   unlistenMenu = null;
+  unlistenAskpass?.();
+  unlistenAskpass = null;
 });
 
 // Splitter sizes are read once when the shell first renders; drags write them back.
@@ -280,6 +287,7 @@ function dismissRepoWarning(warning: string): void {
     <ChoiceDialog />
     <SettingsDialog />
     <PassphraseDialog />
+    <AskpassDialog />
     <HostKeyDialog />
     <SshPasswordDialog />
     <SshDiagnoseDialog />

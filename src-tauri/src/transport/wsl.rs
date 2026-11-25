@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::local::{apply_stdin, base_command, TokioProcess};
-use super::paths::{NativePath, PathMapper, WslMapper};
+use super::paths::{HostPath, NativePath, PathMapper, WslMapper};
 use super::{Cmd, Output, PidLine, Process, Program, Transport, TransportInfo, TransportKind};
 use crate::error::{GitError, Result};
 use crate::git::versions::{GitVersion, MIN_GIT};
@@ -102,10 +102,17 @@ impl WslTransport {
             // `$0` for the script.
             v.push("sh".into());
         }
-        if !cmd.env.is_empty() {
+        let askpass = self.askpass_exe(cmd);
+        if !cmd.env.is_empty() || askpass.is_some() {
             v.push("env".into());
             for (k, val) in &cmd.env {
                 v.push(format!("{k}={val}"));
+            }
+            if let Some(exe) = askpass {
+                v.push(format!("SSH_ASKPASS={exe}"));
+                v.push(format!("GIT_ASKPASS={exe}"));
+                // Without this, ssh only uses the helper when DISPLAY is set.
+                v.push("SSH_ASKPASS_REQUIRE=force".into());
             }
         }
         v.push(match &cmd.program {
@@ -114,6 +121,15 @@ impl WslTransport {
         });
         v.extend(cmd.args.iter().cloned());
         v
+    }
+
+    /// The askpass helper as the distro names it: this Windows executable under the distro's
+    /// mount of its drive (`/mnt/c/...`), which `ssh` and Git there start through WSL interop.
+    /// None when the command has no helper, or the executable is somewhere the distro cannot
+    /// name.
+    fn askpass_exe(&self, cmd: &Cmd) -> Option<String> {
+        let exe = &cmd.askpass.as_ref()?.exe;
+        self.mapper.to_native(&HostPath(exe.to_string_lossy().into_owned())).ok().map(|p| p.0)
     }
 }
 
@@ -134,6 +150,14 @@ impl Transport for WslTransport {
         let argv = self.argv(&cmd);
         let mut c = base_command(&argv[0]);
         c.args(&argv[1..]);
+        if let (Some(askpass), Some(_)) = (&cmd.askpass, self.askpass_exe(&cmd)) {
+            // Where the helper finds the app goes in through the environment, not the command
+            // line, so the console never shows it. `WSLENV` names it so that it crosses into
+            // the distro, and crosses back out when `ssh` there starts the Windows helper.
+            c.env(crate::askpass::ENDPOINT_ENV, &askpass.endpoint);
+            let names = [Some(crate::askpass::ENDPOINT_ENV.to_string()), std::env::var("WSLENV").ok().filter(|e| !e.is_empty())];
+            c.env("WSLENV", names.into_iter().flatten().collect::<Vec<_>>().join(":"));
+        }
         apply_stdin(&mut c, &cmd.stdin);
         let child = c.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -401,6 +425,28 @@ mod tests {
         assert_eq!((outs[2].stdout.as_slice(), outs[2].stderr.as_slice()), (&b"xy"[..], &b"z"[..]));
         assert!(parse_batch(b"0 9 0\nshort", 1).is_err());
         assert!(parse_batch(b"", 1).is_err());
+    }
+
+    /// A command with an askpass helper, run through `wsl.exe`: the distro gets the helper's path
+    /// in `SSH_ASKPASS` and `GIT_ASKPASS`, and where the helper finds the app in its environment,
+    /// named in `WSLENV` so that it is handed on to a Windows program started from the distro.
+    /// The command line, which the console shows, does not carry it. Only inside WSL with interop.
+    #[tokio::test]
+    async fn the_askpass_helper_reaches_a_command_in_the_distro() {
+        let Ok(distro) = std::env::var("WSL_DISTRO_NAME") else { return };
+        if !std::path::Path::new("/mnt/c/Windows/System32/wsl.exe").exists() {
+            return;
+        }
+        let t = WslTransport { distro: distro.clone(), git: "git".into(), mapper: WslMapper { distro, automount_root: "/mnt/".into() } };
+        let mut cmd = Cmd::git("t", vec!["-c".into(), r#"echo "$SSH_ASKPASS|$GIT_ASKPASS|$SSH_ASKPASS_REQUIRE|$STASHPANDA_ASKPASS|$WSLENV""#.into()]);
+        cmd.program = Program::Other("sh".into());
+        cmd.askpass = Some(crate::askpass::AskpassEnv { exe: r"C:\Program Files\StashPanda\stashpanda.exe".into(), endpoint: "127.0.0.1:9/token".into() });
+        assert!(!t.render(&cmd).iter().any(|a| a.contains("token")), "the token stays out of the command line");
+        let out = t.run(cmd).await.unwrap();
+        let line = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let parts: Vec<&str> = line.split('|').collect();
+        assert_eq!(parts[..4], ["/mnt/c/Program Files/StashPanda/stashpanda.exe", "/mnt/c/Program Files/StashPanda/stashpanda.exe", "force", "127.0.0.1:9/token"], "{line}");
+        assert!(parts[4].split(':').any(|n| n == "STASHPANDA_ASKPASS"), "{line}");
     }
 
     /// One batch through `wsl.exe` gives each command the same output as running it on its own.

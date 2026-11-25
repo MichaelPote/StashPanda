@@ -338,12 +338,29 @@ export interface PassphrasePayload {
    * because the connection reconnects by itself, so "only this time" is not offered.
    */
   forConnection?: boolean;
+  /** The choice selected under "Remember it" when the dialog opens. "none" when left out. */
+  remember?: PassphraseMemory;
+  /**
+   * With no `path`: still offer "Remember it". The dialog cannot remember anything without a file,
+   * so the caller does, from `choice` in the result, once the file is written.
+   */
+  chooseMemory?: boolean;
 }
 
-/** The passphrase given, and where `keysUnlock` remembered it. */
+/** The passphrase given, where `keysUnlock` remembered it, and where the user asked for it to be. */
 export interface PassphraseResult {
   passphrase: string;
   remembered: PassphraseMemory;
+  choice: PassphraseMemory;
+}
+
+/** A question Git or the `ssh` it started asks through the askpass helper, in their own words. */
+export interface AskpassPayload {
+  prompt: string;
+  /** A password, hidden while typed; false for a user name. */
+  secret: boolean;
+  /** The Git command that is asking: `fetch`, `push`. */
+  command: string;
 }
 
 export interface SshHostKeyPayload {
@@ -433,6 +450,8 @@ export interface DialogSpecs {
   blame: { payload: BlamePayload; result: null };
   mergeEditor: { payload: MergeEditorPayload; result: null };
   passphrase: { payload: PassphrasePayload; result: PassphraseResult | null };
+  /** Resolves with what was typed, or null when cancelled. */
+  askpass: { payload: AskpassPayload; result: string | null };
   /** Resolves true once the host key has been recorded in known_hosts. */
   sshHostKey: { payload: SshHostKeyPayload; result: boolean };
   /** Resolves true once the password has been handed to `sshSetPassword`. */
@@ -473,6 +492,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   blame: null,
   mergeEditor: null,
   passphrase: null,
+  askpass: null,
   sshHostKey: false,
   sshPassword: false,
   sshDiagnose: null,
@@ -485,7 +505,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
  * Dialogs that open on top of another open dialog rather than replacing it: a confirmation, and
  * the SSH prompts, which the SSH Keys page in Settings and an open started from a dialog need.
  */
-const STACKED: ReadonlySet<DialogKind> = new Set<DialogKind>(["confirm", "choice", "passphrase", "sshHostKey", "sshPassword"]);
+const STACKED: ReadonlySet<DialogKind> = new Set<DialogKind>(["confirm", "choice", "passphrase", "askpass", "sshHostKey", "sshPassword"]);
 
 interface ActiveDialog<K extends DialogKind = DialogKind> {
   kind: K;

@@ -42,9 +42,11 @@ Each item names the files it touches, so it can be picked up cold.
       channel of the first. An alternative to tier 2 for the jump-host case.
 - [ ] **Writing PPK files.** `keys::export_private` writes OpenSSH and PKCS#8 only: the `ssh-key`
       crate reads PPK but cannot write it. Left until a tool that still needs PPK turns up.
-- [ ] **A `GIT_ASKPASS` helper.** Every command runs with `GIT_TERMINAL_PROMPT=0`, so a remote
-      that asks for a password or a passphrase fails, and `networkFailureText` in
-      `lib/repoActions.ts` explains why. A helper would let the app ask instead.
+- [ ] **Remembering HTTPS passwords.** The askpass helper asks for a user name and password each
+      time Git wants them and remembers neither; only a Git credential helper does. An automatic
+      fetch opens no dialog, so without a credential helper it fails for such a remote.
+- [ ] **The askpass helper for Windows `git.exe` run from the Linux build.** Its `ssh` is a
+      Windows program and cannot start the Linux executable, so it gets no helper.
 
 ## Git behaviour
 

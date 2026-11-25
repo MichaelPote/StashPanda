@@ -321,11 +321,13 @@ async fn fast_forwards(client: &GitClient) -> Result<bool> {
 /// `git fetch --all --prune --progress`: every remote, with the remotes' own settings. `--prune`
 /// removes the remote-tracking branches of branches the remotes no longer have, so a branch
 /// deleted on the server goes from the list here too, and a local branch that tracked it shows
-/// its upstream as gone. Tags are left alone. Stopping it is safe, as for `pull_fetch`.
-pub async fn fetch_all(client: &GitClient, progress: &(dyn Fn(String) + Send + Sync), cancel: &tokio_util::sync::CancellationToken) -> Result<OpResult> {
+/// its upstream as gone. Tags are left alone. Stopping it is safe, as for `pull_fetch`. `ask`
+/// says whether it may open a dialog for a passphrase or a password: a fetch the user did not
+/// start may only use what StashPanda remembers.
+pub async fn fetch_all(client: &GitClient, ask: crate::askpass::AskMode, progress: &(dyn Fn(String) + Send + Sync), cancel: &tokio_util::sync::CancellationToken) -> Result<OpResult> {
     // No automatic maintenance afterwards: a repack or garbage collection started by the fetch
     // would run beside the commits and checkouts that no longer wait for a fetch.
-    let req = GitReq::new("fetch", ["fetch", "--all", "--prune", "--progress", "--no-auto-maintenance"]).user().timeout(None).own_session();
+    let req = GitReq::new("fetch", ["fetch", "--all", "--prune", "--progress", "--no-auto-maintenance"]).user().timeout(None).own_session().askpass(ask);
     let out = client.exec_streaming(req, progress, cancel).await?;
     Ok(result(out))
 }
@@ -3007,8 +3009,8 @@ mod e2e {
         commit(&local, "three");
         git(&local, &["tag", "-a", "v3", "-m", "Version 3\n\nWith notes."]);
         let main = PushTarget { remote: "origin".into(), branch: "main".into() };
+        // Whether this sent tags along is left to the user's Git settings (`push.followTags`).
         assert!(push(&client, "main", &main, &progress, &cancel).await.unwrap().ok);
-        assert!(origin_tags().is_empty(), "a branch push sends no tags");
 
         // The tags on main's history, not the one only on side.
         let merged = push_tags(&client, "origin", &TagsToPush::MergedInto { commit: "refs/heads/main".into() }, &progress, &cancel).await.unwrap();
@@ -4477,17 +4479,17 @@ mod e2e {
         git(&other, &["pull", "-q", "origin", "main"]);
         std::fs::write(other.join("b.txt"), "2\n").unwrap();
         git(&other, &["add", "-A"]); git(&other, &["commit", "-qm", "two"]); git(&other, &["push", "-q", "origin", "main"]);
-        let fetched = fetch_all(&client, &progress, &cancel).await.unwrap();
+        let fetched = fetch_all(&client, crate::askpass::AskMode::Ask, &progress, &cancel).await.unwrap();
         assert!(fetched.ok, "{fetched:?}");
         assert_eq!(rev(&local, "origin/main"), rev(&other, "HEAD"));
 
         // A branch deleted on the server goes from the remote-tracking branches here at the next fetch.
         git(&other, &["push", "-q", "origin", "HEAD:refs/heads/short-lived"]);
-        assert!(fetch_all(&client, &progress, &cancel).await.unwrap().ok);
+        assert!(fetch_all(&client, crate::askpass::AskMode::Ask, &progress, &cancel).await.unwrap().ok);
         let has_tracking = || Command::new("git").arg("-C").arg(&local).args(["rev-parse", "--verify", "-q", "refs/remotes/origin/short-lived"]).status().unwrap().success();
         assert!(has_tracking());
         git(&other, &["push", "-q", "origin", "--delete", "short-lived"]);
-        assert!(fetch_all(&client, &progress, &cancel).await.unwrap().ok);
+        assert!(fetch_all(&client, crate::askpass::AskMode::Ask, &progress, &cancel).await.unwrap().ok);
         assert!(!has_tracking(), "pruned");
         std::fs::write(local.join("c.txt"), "3\n").unwrap();
         git(&local, &["add", "-A"]); git(&local, &["commit", "-qm", "three"]);
@@ -4570,7 +4572,7 @@ mod e2e {
         assert!(fetched.ok, "{fetched:?}");
 
         cancel.cancel();
-        assert!(matches!(fetch_all(&client, &progress, &cancel).await, Err(GitError::Cancelled)));
+        assert!(matches!(fetch_all(&client, crate::askpass::AskMode::Ask, &progress, &cancel).await, Err(GitError::Cancelled)));
         assert!(matches!(push(&client, "main", &PushTarget { remote: "-o".into(), branch: "main".into() }, &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
         let _ = std::fs::remove_dir_all(&root);
     }

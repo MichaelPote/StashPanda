@@ -491,7 +491,7 @@ macro_rules! network_op {
 /// at any point, leaving the remote-tracking branches where they were.
 #[tauri::command]
 #[specta::specta]
-pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String) -> Result<OpResult> {
+pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, op_id: String, automatic: bool) -> Result<OpResult> {
     // Only the network gate: a fetch changes remote-tracking branches, `FETCH_HEAD` and the object
     // store, none of which staging, committing or checking out writes, so those go ahead meanwhile.
     let h = repo(&state, &key).await?;
@@ -500,7 +500,10 @@ pub async fn op_fetch(app: AppHandle, state: State<'_, AppState>, key: String, o
         let op = h.start_operation(&op_id)?;
         let _network = lock_or_cancel(&h.network_gate, &op.token).await?;
         let progress = |line: String| emit(line, true);
-        ops::fetch_all(&h.client, &progress, &op.token).await
+        // A fetch the user did not start opens no dialog: it uses a passphrase StashPanda
+        // remembers, and fails like any other fetch when that is not enough.
+        let ask = if automatic { crate::askpass::AskMode::StoredOnly } else { crate::askpass::AskMode::Ask };
+        ops::fetch_all(&h.client, ask, &progress, &op.token).await
     };
     after_write(&app, &state, &key).await;
     out

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::askpass::AskMode;
 use crate::error::{classify_git_failure, GitError, Result};
 use crate::transport::paths::NativePath;
 use crate::transport::{Category, Cmd, Output, SharedTransport};
@@ -31,6 +32,8 @@ pub struct GitReq {
     pub own_session: bool,
     /// Environment variables for this call only, after the ones every call carries.
     pub env: Vec<(String, String)>,
+    /// Whether Git and the `ssh` it starts may ask StashPanda for a passphrase or a password.
+    pub askpass: AskMode,
 }
 
 impl GitReq {
@@ -48,11 +51,19 @@ impl GitReq {
             config: Vec::new(),
             own_session: false,
             env: Vec::new(),
+            askpass: AskMode::Never,
         }
     }
     /// Run in a session of its own, so cancelling reaches Git's children and Git has no terminal.
+    /// These are the commands that talk to a remote, and with no terminal the askpass helper is
+    /// the only way they can ask for anything, so they may ask unless `askpass` says otherwise.
     pub fn own_session(mut self) -> GitReq {
         self.own_session = true;
+        self.askpass = AskMode::Ask;
+        self
+    }
+    pub fn askpass(mut self, mode: AskMode) -> GitReq {
+        self.askpass = mode;
         self
     }
     pub fn user(mut self) -> GitReq {
@@ -127,9 +138,17 @@ impl GitClient {
         cmd
     }
 
+    /// `build_cmd`, with the askpass helper when the request may ask. The session must be kept
+    /// until the command has ended: dropping it takes the helper's permission away.
+    fn prepare(&self, req: &GitReq) -> (Cmd, Option<crate::askpass::Session>) {
+        let mut cmd = self.build_cmd(req);
+        let session = crate::askpass::attach(&self.transport, req.askpass, req.label, &mut cmd);
+        (cmd, session)
+    }
+
     /// Run to completion. A non-zero exit becomes a classified `GitError`.
     pub async fn exec(&self, req: GitReq) -> Result<Output> {
-        let cmd = self.build_cmd(&req);
+        let (cmd, _askpass) = self.prepare(&req);
         let argv = self.transport.render(&cmd);
         let ticket = self.console.start(&cmd, argv.clone());
         match self.transport.run(cmd).await {
@@ -158,7 +177,7 @@ impl GitClient {
     /// Like `exec` but a non-zero exit is returned as data, for commands where
     /// exit 1 is a normal answer (`diff --quiet`, `rev-parse --verify`).
     pub async fn exec_allow_failure(&self, req: GitReq) -> Result<Output> {
-        let cmd = self.build_cmd(&req);
+        let (cmd, _askpass) = self.prepare(&req);
         let argv = self.transport.render(&cmd);
         let ticket = self.console.start(&cmd, argv);
         match self.transport.run(cmd).await {
@@ -199,7 +218,7 @@ impl GitClient {
     /// to `progress` as it arrives, and cancelling `cancel` kills the process (see
     /// `Transport::run_streaming`).
     pub async fn exec_streaming(&self, req: GitReq, progress: &(dyn Fn(String) + Send + Sync), cancel: &CancellationToken) -> Result<Output> {
-        let cmd = self.build_cmd(&req);
+        let (cmd, _askpass) = self.prepare(&req);
         let argv = self.transport.render(&cmd);
         let ticket = self.console.start(&cmd, argv);
         match self.transport.run_streaming(cmd, progress, cancel).await {
@@ -219,7 +238,7 @@ impl GitClient {
     /// `git log` while Git is still walking. The returned `Output` holds no standard output.
     /// (`exec_streaming` is the other way round: it streams standard error, for progress.)
     pub async fn exec_reading_stdout(&self, req: GitReq, on_stdout: &mut (dyn FnMut(&[u8]) + Send)) -> Result<Output> {
-        let cmd = self.build_cmd(&req);
+        let (cmd, _askpass) = self.prepare(&req);
         let argv = self.transport.render(&cmd);
         let ticket = self.console.start(&cmd, argv);
         let mut stdout_bytes = 0u64;

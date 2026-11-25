@@ -5,6 +5,10 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Fetch, pull, push and clone with an encrypted SSH key now work: Git's own ssh asks StashPanda for the key's passphrase, which is taken from the passphrases StashPanda remembers or asked for in a dialog that can remember it until StashPanda closes or in the system keychain. This also works for a repository inside WSL opened from Windows
+- Ask in a dialog for the user name and password of an HTTPS remote, the password of an SSH server, and whether to connect to a server ssh has not seen before, instead of failing. These are passed on to Git and not remembered
+- An automatic fetch uses a remembered passphrase but never opens a dialog
+- Offer to remember the passphrase when generating or importing an SSH key
 - Open Generate Key… and Import Key… for SSH keys each in a dialog of its own as well, so the SSH Keys page no longer has any form above the list of keys
 - Open Copy to…, Export… and Change passphrase… for an SSH key each in a dialog of its own, instead of a form above the list of keys that was easy to miss
 - Fix the More Actions menu of an SSH key never appearing: it was drawn above the top of the window
