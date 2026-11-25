@@ -165,7 +165,18 @@ pub struct Askpass {
     sessions: Mutex<HashMap<String, SessionInfo>>,
     /// The requests a dialog is open for, by request id.
     pending: Mutex<HashMap<String, Pending>>,
+    /// One per key file a passphrase was asked for, by the file's path. Commands that run at the
+    /// same time each start an `ssh` of their own, and each `ssh` asks; the gate lets one of them
+    /// ask the user while the others wait for its answer.
+    key_gates: Mutex<HashMap<String, Arc<tokio::sync::Mutex<KeyGate>>>>,
     ui: Box<dyn Fn(UiEvent) + Send + Sync>,
+}
+
+/// What the user last answered for one key, kept only while other commands wait for it.
+#[derive(Default)]
+struct KeyGate {
+    /// The passphrase typed, or None when the dialog was cancelled, and when.
+    last: Option<(Option<zeroize::Zeroizing<String>>, std::time::Instant)>,
 }
 
 /// One Git command's permission to ask. Dropping it, when the command has ended, makes its token
@@ -223,6 +234,7 @@ impl Askpass {
             passphrases,
             sessions: Mutex::default(),
             pending: Mutex::default(),
+            key_gates: Mutex::default(),
             ui,
         });
         let accepting = server.clone();
@@ -299,14 +311,7 @@ impl Askpass {
             Prompt::Passphrase { path } => {
                 let host_path = key_file_on_host(&transport, &path);
                 match tokio::fs::read(&host_path).await {
-                    Ok(bytes) => {
-                        let wrong = match self.remembered(&host_path, bytes).await {
-                            Remembered::Fits(passphrase) => return Some(passphrase),
-                            Remembered::Wrong => true,
-                            Remembered::Nothing => false,
-                        };
-                        AskpassKind::Passphrase { key_name: file_name(&host_path).to_string(), path: host_path, wrong }
-                    }
+                    Ok(bytes) => return self.passphrase(token, mode, label, host_path, bytes, helper).await,
                     // A key file this app cannot read: the passphrase cannot be checked or
                     // remembered, only passed on.
                     Err(_) => AskpassKind::Secret { prompt: prompt.trim().to_string() },
@@ -320,6 +325,52 @@ impl Askpass {
             return None;
         }
         self.ask_user(token, label, kind, helper).await
+    }
+
+    /// The passphrase of the key file at `path`, whose contents are `bytes`: the one remembered,
+    /// or the one the user types. Commands that ask for the same key at the same time (a
+    /// repository that opens asks each of its remotes for its tags at once) share one dialog:
+    /// the first asks, and the others wait and take its answer, also when the user chose not to
+    /// have it remembered or cancelled.
+    async fn passphrase(
+        &self,
+        token: &str,
+        mode: AskMode,
+        label: &'static str,
+        path: String,
+        bytes: Vec<u8>,
+        helper: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> Option<String> {
+        let arrived = std::time::Instant::now();
+        let gate = self.key_gates.lock().ok()?.entry(path.clone()).or_default().clone();
+        let mut state = gate.lock().await;
+        // The map holds the gate once and each command at it once: more than that, and others wait.
+        let others_wait = || Arc::strong_count(&gate) > 2;
+        if let Some((answer, answered)) = &state.last {
+            if *answered >= arrived {
+                // Answered while this command waited: the answer is for it too.
+                let answer = answer.as_ref().map(|p| p.to_string());
+                if !others_wait() {
+                    state.last = None;
+                }
+                return answer;
+            }
+            state.last = None;
+        }
+        let wrong = match self.remembered(&path, bytes).await {
+            Remembered::Fits(passphrase) => return Some(passphrase),
+            Remembered::Wrong => true,
+            Remembered::Nothing => false,
+        };
+        if mode != AskMode::Ask {
+            return None;
+        }
+        let kind = AskpassKind::Passphrase { key_name: file_name(&path).to_string(), path, wrong };
+        let answer = self.ask_user(token, label, kind, helper).await;
+        if others_wait() {
+            state.last = Some((answer.clone().map(zeroize::Zeroizing::new), std::time::Instant::now()));
+        }
+        answer
     }
 
     /// The passphrase remembered for the key at `path`, checked against the key itself, so that
@@ -571,6 +622,59 @@ mod tests {
         assert_eq!(seen.len(), 5, "{seen:?}");
         assert!(seen[0].contains("Passphrase") && seen[0].contains("wrong: true") && seen[0].contains("id_ed25519"), "{seen:?}");
         assert!(seen[1].starts_with("Confirm") && seen[2].starts_with("Text") && seen[3].starts_with("Secret") && seen[4].starts_with("Secret"), "{seen:?}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A server whose passphrase dialog is answered with `typed` after a moment, long enough for
+    /// every helper of a test to have asked, and the number of dialogs it opened.
+    async fn slow_server(typed: Option<&'static str>) -> (Arc<Askpass>, Arc<Mutex<usize>>) {
+        let cache = Arc::new(PassphraseCache::with_keychain(Arc::new(MemoryStore::default())));
+        let opened = Arc::new(Mutex::new(0usize));
+        let slot: Arc<OnceLock<Arc<Askpass>>> = Arc::new(OnceLock::new());
+        let (opened2, slot2) = (opened.clone(), slot.clone());
+        let ui = Box::new(move |event: UiEvent| {
+            let UiEvent::Request(r) = event else { return };
+            *opened2.lock().unwrap() += 1;
+            let server = slot2.get().unwrap().clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                server.answer(&r.id, typed.map(str::to_string))
+            });
+        });
+        let server = Askpass::start(cache, ui).await.unwrap();
+        let _ = slot.set(server.clone());
+        (server, opened)
+    }
+
+    /// Three commands at once, as when a repository with three remotes opens: one dialog.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn commands_that_ask_for_one_key_at_once_share_one_dialog() {
+        let (dir, key) = encrypted_key();
+        let prompt = format!("Enter passphrase for key '{key}': ");
+        for typed in [Some("typed"), None] {
+            let (server, opened) = slow_server(typed).await;
+            let mut sessions = Vec::new();
+            let mut helpers = Vec::new();
+            for _ in 0..3 {
+                let mut cmd = Cmd::git("ls-remote", vec![]);
+                sessions.push(server.clone().attach(&local_transport(), AskMode::Ask, "ls-remote", &mut cmd).unwrap());
+                let (endpoint, prompt) = (cmd.askpass.clone().unwrap().endpoint, prompt.clone());
+                helpers.push(tokio::spawn(async move { helper(endpoint, &prompt).await }));
+            }
+            for h in helpers {
+                assert_eq!(h.await.unwrap().as_deref(), typed, "every command gets the one answer");
+            }
+            assert_eq!(*opened.lock().unwrap(), 1, "answer {typed:?}");
+
+            // A command that asks afterwards is asked again: nothing was remembered, and the
+            // answer was kept only for the commands that were waiting.
+            let mut cmd = Cmd::git("fetch", vec![]);
+            let _later = server.clone().attach(&local_transport(), AskMode::Ask, "fetch", &mut cmd).unwrap();
+            assert_eq!(helper(cmd.askpass.clone().unwrap().endpoint, &prompt).await.as_deref(), typed);
+            assert_eq!(*opened.lock().unwrap(), 2);
+            let gates = server.key_gates.lock().unwrap();
+            assert!(gates.values().all(|g| g.try_lock().unwrap().last.is_none()), "no typed passphrase is kept once nobody waits");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

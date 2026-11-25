@@ -259,6 +259,12 @@ The app (`Askpass::answer_prompt`) tells the prompts apart by their text:
 | `Username for '<url>':` | the askpass dialog, shown while typed |
 | anything else (`<user>@<host>'s password:`, `Password for '<url>':`) | the askpass dialog, hidden while typed. Never remembered: Git's credential helper does that for HTTPS |
 
+Commands that run at the same time each start an `ssh` of their own, and each `ssh` asks: a
+repository that opens asks every remote for its tags at once (`queryRemoteTags`), which opened
+one passphrase dialog per remote. So there is a gate per key file (`Askpass::passphrase`): the
+first command asks the user, and the others wait and take its answer, also when the user chose
+"Only this time" or cancelled. The answer is kept only while a command waits for it.
+
 The path in a passphrase prompt is the one `ssh` uses, so it is mapped to the path the key
 manager uses for the same file, which is the name the passphrase is remembered under: through
 the transport's path mapper for a WSL distro reached from Windows (`\\wsl.localhost\<distro>\...`),

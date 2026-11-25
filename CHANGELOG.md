@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Ask once for an SSH key's passphrase when several Git commands need it at the same time, as when a repository with more than one remote opens, instead of once per command
 - Fetch, pull, push and clone with an encrypted SSH key now work: Git's own ssh asks StashPanda for the key's passphrase, which is taken from the passphrases StashPanda remembers or asked for in a dialog that can remember it until StashPanda closes or in the system keychain. This also works for a repository inside WSL opened from Windows
 - Ask in a dialog for the user name and password of an HTTPS remote, the password of an SSH server, and whether to connect to a server ssh has not seen before, instead of failing. These are passed on to Git and not remembered
 - An automatic fetch uses a remembered passphrase but never opens a dialog
