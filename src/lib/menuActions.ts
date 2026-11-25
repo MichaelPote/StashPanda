@@ -79,7 +79,7 @@ export async function dispatch(id: string): Promise<void> {
       return;
     case "view.refresh":
     case "repo.refresh":
-      if (sessions.activeKey !== null) await sessions.refreshSession(sessions.activeKey);
+      if (sessions.activeKey !== null) await sessions.refreshSession(sessions.activeKey, { askRemotes: true });
       return;
     case "view.toggle_console":
       uiState.setConsoleCollapsed(!uiState.consoleCollapsed);

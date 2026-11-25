@@ -3,6 +3,7 @@
  * Git keeps no record of a remote's tags (there is no `refs/remotes/origin/tags/…`), so the only
  * way to know is to ask the remote.
  */
+import type { RefEntry } from "@/lib/bindings";
 
 /** One remote's tags, name to the commit each ends at; null when the remote could not be reached. */
 export type RemoteTagAnswer = Map<string, string> | null;
@@ -86,6 +87,19 @@ export function tagSyncView(localTags: Map<string, string>, answers: Map<string,
   }
   notHere.sort((a, b) => a.name.localeCompare(b.name) || a.commit.localeCompare(b.commit));
   return { local, remoteOnly, notHere };
+}
+
+/**
+ * Whether a remote-tracking branch was added, removed or moved between two reads of the refs:
+ * the mark of a push or fetch, which may have carried tags with it.
+ */
+export function remoteBranchesMoved(before: readonly RefEntry[], after: readonly RefEntry[]): boolean {
+  const tips = (refs: readonly RefEntry[]) => new Map(refs.filter((r) => r.kind.type === "remoteBranch").map((r) => [r.fullName, r.target]));
+  const was = tips(before);
+  const now = tips(after);
+  if (was.size !== now.size) return true;
+  for (const [name, target] of was) if (now.get(name) !== target) return true;
+  return false;
 }
 
 /** "origin", "origin and backup", "origin, backup and github". */

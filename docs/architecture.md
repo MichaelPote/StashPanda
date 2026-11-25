@@ -504,12 +504,17 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   (`refs/tags/<name>`), never forced: a tag the remote has on another commit is refused and left
   as it is there. The one exception is Move Tag (below). Tag annotations are loaded one tag at a
   time when a pill is first hovered (`get_tag_annotation`), so the refs snapshot carries no tag
-  messages.
+  messages. The tooltip also names the branch the tag's commit is on in the graph, the nearest
+  branch tip above it on its lane (`get_commit_branch`), asked on every hover since branches move.
 - **Which tags are pushed.** Git keeps no record of a remote's tags (there is no
   `refs/remotes/<remote>/tags/`; a fetch puts the tags it brings straight into `refs/tags`), so
   the app asks: `query_remote_tags` runs `git ls-remote --tags <remote>` for each remote, with no
-  gate, when a repository's graph first shows and again after every fetch, pull and push
-  (`runOperation` with a toolbar command), never on a plain refresh. The answers live in
+  gate, when a repository's graph first shows, after every fetch, pull and push (`runOperation`
+  with a toolbar command), and on the Refresh command. A refs reload from the file watcher asks
+  only when a remote-tracking branch moved while no operation of the app's was running (a push
+  from a terminal, which may carry tags with `--follow-tags` or `push.followTags`) and no ask
+  began in the last 5 seconds; a tag pushed on its own from outside moves nothing, so it stays
+  marked ↑ until the next fetch or Refresh. The answers live in
   `stores/remoteTags.ts`, and `lib/tagSync.ts` compares them with the tags here, against every
   remote or only the default tag remote (`appearance.compareTagsAllRemotes`). A tag every remote
   compared has on the same commit is solid; one a remote lacks or has on another commit takes the
@@ -560,6 +565,13 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   never touch `.git/config`; the upstream is set afterwards (`trackAfter` in `repoActions.ts`),
   because with a `config.lock` in place `git push --set-upstream` pushes, fails to record the
   upstream, and still exits 0.
+- **Delete Branch…** has a dialog of its own (`DeleteBranchDialog.vue`) with a tick box, "Also
+  delete origin/feature", naming the remote branch it tracks. It is offered only when the branch
+  tracks a remote branch of its own name (`trackedBranchToDelete` in `repoActions.ts`); otherwise
+  it is greyed out, with the reason under it. A tracked branch of another name is never deleted this way, because
+  `git checkout -b fix origin/main` leaves `fix` tracking `origin/main`. The local branch is
+  deleted first, and the remote branch only once that worked, with the same command and lease as
+  Delete Remote Branch… (`deleteOnRemote`).
 - **Sync** is pull, then push, as one operation under the write gate. Nothing is pushed when the
   pull fails or stops on conflicts.
 - **Clone** (`repo/clone.rs`): a missing or empty folder gets a plain `git clone --progress`. A
@@ -989,6 +1001,10 @@ Things that were found the hard way, each with where it matters.
   downloading; whether WebView2 honours it is unconfirmed. Setting `additionalBrowserArgs`
   replaces wry's default `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection`, so
   that switch is repeated there.
+- WebView2 scrolls 100px per mouse wheel notch, and no browser switch or WebView2 setting changes
+  it; the wheel never reaches Rust. `lib/wheelScroll.ts` takes over notched wheel scrolling in the
+  page and scrolls `WHEEL_SCALE` of that. A component that handles the wheel itself opts out with
+  a `data-native-wheel` attribute (the reka-ui scrollbar in `ui/scroll-area/ScrollBar.vue` does).
 
 ### Text rendering on Windows (WebView2)
 

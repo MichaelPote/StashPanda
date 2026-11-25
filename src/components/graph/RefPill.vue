@@ -5,7 +5,7 @@ import { Tip } from "@/components/ui/tooltip";
 import type { RefLabel, TagAnnotation } from "@/lib/bindings";
 import { GRAPH_CONTEXT } from "@/components/graph/context";
 import { laneVars } from "@/lib/graph/paths";
-import { loadTagAnnotation, tagTooltip } from "@/lib/tagAnnotations";
+import { branchNote, loadCommitBranch, loadTagAnnotation, tagTooltip } from "@/lib/tagAnnotations";
 import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/stores/settings";
 
@@ -97,29 +97,43 @@ const colourClass = computed(() => {
 });
 
 /**
- * A tag's tooltip shows its annotation: the message, and who tagged it when. It is loaded when
- * the pointer first reaches the pill, not with the graph, so the refs carry no messages.
+ * A tag's tooltip shows its annotation (the message, and who tagged it when) and the branch its
+ * commit is on in the graph. Both are loaded when the pointer reaches the pill, not with the
+ * graph, so the refs carry no messages; the branch is asked again on every hover.
  */
 const ctx = inject(GRAPH_CONTEXT, null);
 const annotation = ref<TagAnnotation | null | undefined>(undefined);
+const branch = ref<string | null>(null);
 // A pill reused for another tag, or a tag moved to another commit, loads afresh on the next hover.
 watch(
   () => [props.label.fullName, props.oid],
-  () => (annotation.value = undefined),
+  () => {
+    annotation.value = undefined;
+    branch.value = null;
+  },
 );
 function loadAnnotation(): void {
-  const { label } = props;
+  const { label, oid } = props;
+  if (label.kind.type !== "tag" || !ctx) return;
+  if (oid) {
+    void loadCommitBranch(ctx.sessionKey, oid).then((b) => {
+      if (props.label.fullName === label.fullName && props.oid === oid) branch.value = b;
+    });
+  }
   // A remote-only tag is not here to read.
-  if (label.kind.type !== "tag" || props.sync === "remoteOnly" || !ctx || annotation.value !== undefined) return;
-  void loadTagAnnotation(ctx.sessionKey, label.short, props.oid ?? "").then((a) => {
+  if (props.sync === "remoteOnly" || annotation.value !== undefined) return;
+  void loadTagAnnotation(ctx.sessionKey, label.short, oid ?? "").then((a) => {
     if (props.label.fullName === label.fullName) annotation.value = a;
   });
 }
 const tagTip = computed(() => {
   if (props.label.kind.type !== "tag") return null;
-  if (props.sync === "remoteOnly") return { heading: props.label.short, content: props.syncNote ?? "" };
+  const onBranch = branch.value ? branchNote(branch.value) : null;
+  if (props.sync === "remoteOnly") {
+    return { heading: props.label.short, content: [onBranch, props.syncNote].filter(Boolean).join("\n\n") };
+  }
   const tip = tagTooltip(props.label.fullName, props.label.short, annotation.value);
-  return props.syncNote ? { ...tip, content: `${tip.content}\n\n${props.syncNote}` } : tip;
+  return { ...tip, content: [tip.content, onBranch, props.syncNote].filter(Boolean).join("\n\n") };
 });
 </script>
 

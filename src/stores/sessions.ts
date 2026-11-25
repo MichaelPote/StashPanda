@@ -27,6 +27,7 @@ import {
 import { DEFAULT_COMPARISON, type ConflictComparison } from "@/lib/conflicts";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { ROW_HEIGHT } from "@/lib/graph/paths";
+import { remoteBranchesMoved } from "@/lib/tagSync";
 import { withTrackedBranches } from "@/lib/trackedBranches";
 import { rowAt } from "@/composables/useGraphPages";
 import { useRemoteTagsStore } from "@/stores/remoteTags";
@@ -549,7 +550,14 @@ export const useSessionsStore = defineStore("sessions", () => {
       (async () => {
         const isLatest = startLoad("refs", session);
         const refs = await unwrap(commands.getRepoRefs(session.key));
-        if (isLatest()) session.refs = refs;
+        if (!isLatest()) return;
+        const before = session.refs;
+        session.refs = refs;
+        // A push or fetch from outside the app may have pushed tags too. The app's own fetch,
+        // pull and push ask the remotes when they finish (`runOperation`).
+        if (before && !session.operation && remoteBranchesMoved(before.refs, refs.refs)) {
+          useRemoteTagsStore().remoteBranchesMoved(session.key);
+        }
       })(),
       loadStashes(session),
     ]);
@@ -706,11 +714,16 @@ export const useSessionsStore = defineStore("sessions", () => {
     }
   }
 
-  /** Full graph refresh plus fresh status and refs for one session (the toolbar Refresh button). */
-  async function refreshSession(key: string): Promise<void> {
+  /**
+   * Full graph refresh plus fresh status and refs for one session. The Refresh command passes
+   * `askRemotes` to ask the remotes for their tags again too, which nothing else would do after a
+   * tag pushed from outside the app.
+   */
+  async function refreshSession(key: string, options: { askRemotes?: boolean } = {}): Promise<void> {
     const session = sessions.get(key);
     // A tab not shown yet loads afresh when it is.
     if (!session || unloaded.has(key)) return;
+    if (options.askRemotes) void useRemoteTagsStore().refresh(key);
     session.graph.loading = true;
     const graph = unwrap(commands.graphRefresh(session.key, true)).then((meta) => {
       // The snapshot event usually lands first; only move forward, never back.

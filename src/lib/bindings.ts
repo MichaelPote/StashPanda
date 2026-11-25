@@ -120,6 +120,11 @@ export const commands = {
 	getCommitMessage: (key: string, commit: string) => typedError<string, GitError>(__TAURI_INVOKE("get_commit_message", { key, commit })),
 	/**  A merge commit's branch in the graph, and its parents in parent order. */
 	getMergeInfo: (key: string, commit: string) => typedError<MergeInfo, GitError>(__TAURI_INVOKE("get_merge_info", { key, commit })),
+	/**
+	 *  The branch a commit belongs to in the graph, for a tag pill's tooltip: the nearest branch tip
+	 *  above it on its lane. Null when no branch tip reaches it, or the commit is not in the graph.
+	 */
+	getCommitBranch: (key: string, commit: string) => typedError<string | null, GitError>(__TAURI_INVOKE("get_commit_branch", { key, commit })),
 	getFileDiff: (key: string, target: DiffTarget, path: string, oldPath: string | null, options: {
 	context: number,
 	ignoreWhitespace: boolean,

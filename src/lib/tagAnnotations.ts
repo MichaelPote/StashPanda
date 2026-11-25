@@ -23,6 +23,20 @@ export function loadTagAnnotation(key: string, name: string, target: string): Pr
 }
 
 /**
+ * The branch commit `oid` belongs to in the graph (the nearest branch tip above it on its lane),
+ * for a tag pill's tooltip. Asked on every hover, not kept, since branches move; null when no
+ * branch reaches it or the ask failed.
+ */
+export function loadCommitBranch(key: string, oid: string): Promise<string | null> {
+  return unwrap(commands.getCommitBranch(key, oid)).catch(() => null);
+}
+
+/** The line a tag pill's tooltip adds for the branch its commit is on. */
+export function branchNote(branch: string): string {
+  return `On branch ${branch}.`;
+}
+
+/**
  * A tag pill's tooltip: the tag's name as the heading, then its whole message and who tagged it
  * when. A lightweight tag says it has none of those; one not loaded yet, or gone, shows its ref name.
  */

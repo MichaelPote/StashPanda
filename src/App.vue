@@ -14,6 +14,7 @@ import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
 import CreateBranchDialog from "@/components/dialogs/CreateBranchDialog.vue";
 import CreateTagDialog from "@/components/dialogs/CreateTagDialog.vue";
+import DeleteBranchDialog from "@/components/dialogs/DeleteBranchDialog.vue";
 import FileHistoryDialog from "@/components/dialogs/FileHistoryDialog.vue";
 import HostKeyDialog from "@/components/dialogs/HostKeyDialog.vue";
 import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
@@ -258,6 +259,7 @@ function dismissRepoWarning(warning: string): void {
     <CreateBranchDialog />
     <CreateTagDialog />
     <RenameBranchDialog />
+    <DeleteBranchDialog />
     <RemoveTagDialog />
     <RenameTagDialog />
     <MoveTagDialog />

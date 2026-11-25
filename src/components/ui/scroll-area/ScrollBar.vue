@@ -13,8 +13,11 @@ const delegatedProps = reactiveOmit(props, 'class')
 </script>
 
 <template>
+  <!-- data-native-wheel: reka-ui scrolls the viewport itself for a wheel over this bar
+       (lib/wheelScroll.ts would scroll it a second time, or the wrong element). -->
   <ScrollAreaScrollbar
     data-slot="scroll-area-scrollbar"
+    data-native-wheel
     :data-orientation="orientation"
     v-bind="delegatedProps"
     :class="cn('data-horizontal:h-2.5 data-horizontal:flex-col data-horizontal:border-t data-horizontal:border-t-transparent data-vertical:h-full data-vertical:w-2.5 data-vertical:border-l data-vertical:border-l-transparent flex touch-none p-px transition-colors select-none', props.class)"
