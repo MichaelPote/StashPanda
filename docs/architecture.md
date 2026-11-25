@@ -260,8 +260,9 @@ The app (`Askpass::answer_prompt`) tells the prompts apart by their text:
 | anything else (`<user>@<host>'s password:`, `Password for '<url>':`) | the askpass dialog, hidden while typed. Never remembered: Git's credential helper does that for HTTPS |
 
 Commands that run at the same time each start an `ssh` of their own, and each `ssh` asks: a
-repository that opens asks every remote for its tags at once (`queryRemoteTags`), which opened
-one passphrase dialog per remote. So there is a gate per key file (`Askpass::passphrase`): the
+repository that opened asked every remote for its tags at once, which opened one passphrase
+dialog per remote, and a tag dialog still asks each remote at once whether it has the tag
+(`queryRemoteTag`). So there is a gate per key file (`Askpass::passphrase`): the
 first command asks the user, and the others wait and take its answer, also when the user chose
 "Only this time" or cancelled. The answer is kept only while a command waits for it.
 
@@ -271,9 +272,10 @@ the transport's path mapper for a WSL distro reached from Windows (`\\wsl.localh
 and from Git for Windows' `/c/Users/...` to `C:\Users\...`. A key file the app cannot read is asked
 for as a plain password.
 
-`AskMode` says what a command may do: `Ask` (the default for `own_session`), `StoredOnly` for an
-automatic fetch (`opFetch` with `automatic`), which uses a remembered passphrase and opens no
-dialog, and `Never` for the SSH check, which logs in with `BatchMode`. A dialog is an
+`AskMode` says what a command may do: `Ask` (the default for `own_session`), `StoredOnly` for
+what the app starts by itself, which uses a remembered passphrase and opens no dialog (an
+automatic fetch, `opFetch` with `automatic`, and the comparison of tags with the remotes,
+`queryRemoteTags`, after which tags are drawn as unchecked when it fails), and `Never` for the SSH check, which logs in with `BatchMode`. A dialog is an
 `askpassRequest` event answered with `askpassAnswer`; `src/lib/askpass.ts` shows one at a time.
 When the command ends or is stopped while a dialog is open, `askpassClosed` closes it.
 

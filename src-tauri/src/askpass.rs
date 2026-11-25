@@ -91,7 +91,7 @@ pub enum AskMode {
     #[default]
     Never,
     /// A passphrase StashPanda remembers is given; nothing is asked of the user. For commands
-    /// the user did not start, such as an automatic fetch.
+    /// the user did not start: an automatic fetch, and comparing tags with the remotes.
     StoredOnly,
     /// A remembered passphrase is given, and anything else is asked in a dialog.
     Ask,
@@ -328,8 +328,8 @@ impl Askpass {
     }
 
     /// The passphrase of the key file at `path`, whose contents are `bytes`: the one remembered,
-    /// or the one the user types. Commands that ask for the same key at the same time (a
-    /// repository that opens asks each of its remotes for its tags at once) share one dialog:
+    /// or the one the user types. Commands that ask for the same key at the same time (a tag
+    /// dialog asks each remote at once whether it has the tag) share one dialog:
     /// the first asks, and the others wait and take its answer, also when the user chose not to
     /// have it remembered or cancelled.
     async fn passphrase(
@@ -646,7 +646,7 @@ mod tests {
         (server, opened)
     }
 
-    /// Three commands at once, as when a repository with three remotes opens: one dialog.
+    /// Three commands at once, as when a tag dialog asks three remotes about a tag: one dialog.
     #[tokio::test(flavor = "multi_thread")]
     async fn commands_that_ask_for_one_key_at_once_share_one_dialog() {
         let (dir, key) = encrypted_key();

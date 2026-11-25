@@ -1204,10 +1204,13 @@ pub struct RemoteTagList {
 }
 
 /// Every tag on `remote`, with `git ls-remote --tags <remote>`, for comparing with the tags here.
-/// It reads only, so it takes no gate and refreshes nothing.
+/// It reads only, so it takes no gate and refreshes nothing. The app runs it by itself, when a
+/// repository opens and after each fetch, pull and push, so it never opens a dialog: it uses a
+/// passphrase StashPanda remembers, and without one it fails and the tags are drawn as unchecked.
 pub async fn remote_tags(client: &GitClient, remote: &str, cancel: &tokio_util::sync::CancellationToken) -> Result<RemoteTagList> {
     valid_remote(remote)?;
-    let out = result(client.exec_streaming(GitReq::new("ls-remote", ["ls-remote", "--tags", remote]).own_session(), &|_| {}, cancel).await?);
+    let req = GitReq::new("ls-remote", ["ls-remote", "--tags", remote]).own_session().askpass(crate::askpass::AskMode::StoredOnly);
+    let out = result(client.exec_streaming(req, &|_| {}, cancel).await?);
     let tags = if out.ok { parse_remote_tags(&out.stdout) } else { Vec::new() };
     Ok(RemoteTagList { result: out, tags })
 }
