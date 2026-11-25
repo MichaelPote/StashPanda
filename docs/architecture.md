@@ -155,7 +155,7 @@ state.rs               AppState: paths, settings, UI state, database, open repos
 persist.rs             debounced writer for settings.json and the UI state rows; flushed on exit
 shutdown.rs            closing the window waits while Git is changing a repository
 menu.rs                native menu bar; clicks go to the frontend as menu_action events
-webview.rs             turns off WebView2's browser shortcuts on Windows
+webview.rs             creates the main window with its WebView2 data folder; turns off WebView2's browser shortcuts on Windows
 storage/               SQLite connection, schema.sql (cache), schema_v2.sql (UI state), repo_cache.rs, ui_prefs.rs
 transport/mod.rs       Transport and Process traits, Cmd, Output, run, run_batch, run_streaming
 transport/local.rs     run an executable directly (git, git.exe, or /mnt/c/.../git.exe through interop)
@@ -1006,8 +1006,26 @@ Things that were found the hard way, each with where it matters.
 - Killing `wsl.exe` ends the Linux processes it started directly, but abruptly, and not ones in a
   session of their own.
 - Without the Windows 11 SDK, Rust cannot find the MSVC linker and falls back to Git's `link.exe`.
-- WebView2 shares its runtime between apps but gives each app its own profile folder,
-  `%LOCALAPPDATA%\<identifier>\EBWebView`. Development grew it to 480 MB: 7,203 cached entries
+- Several processes can share one WebView2 data folder only when they all run the same version of
+  the WebView2 runtime with the same browser arguments. The runtime updates itself about once a
+  month, and a copy of StashPanda left open keeps running the old version. A second copy started
+  after an update gets the new one, and in the shared folder its web view could not be created:
+  the app ended before its window showed, with `failed to create webview: WebView2 error` and
+  `0x80010108` (seen 2026-11-25, with an installed copy open since before the update and a debug
+  build started after it). So the main window has `"create": false` in `tauri.conf.json` and
+  `webview::create_main_window` creates it, first thing in the setup hook, with a data folder
+  named after the runtime version: `%LOCALAPPDATA%\<identifier>\webview\<version>`, and
+  `webview\dev-<version>` for a debug build, which so never shares one with an installed copy.
+  When the window still cannot be created, it is tried once more with a folder this process has
+  to itself (`webview\<version>-<process id>`). Folders no running copy uses are removed at
+  start-up, in the background: those of earlier versions, the single-process ones, and
+  `EBWebView` directly under the identifier's folder, where the data was before. A folder is
+  renamed before it is deleted, because Windows refuses to rename a folder while any file in it
+  is open (measured 2026-11-25, whatever sharing the file was opened with), so a folder in use
+  is left whole. Nothing the app needs is in these folders. Linux and macOS keep the folder Tauri
+  chooses.
+- WebView2 shares its runtime between apps but gives each app its own profile folder (see the
+  item above for where). Development grew it to 480 MB: 7,203 cached entries
   from the Vite dev server and their compiled code, and none from the installed app, whose files
   come through Tauri's own protocol. Debug builds therefore clear it at start-up
   (`webview::clear_dev_browsing_data`). `additionalBrowserArgs` in `tauri.conf.json` adds
