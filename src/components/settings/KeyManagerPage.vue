@@ -1,13 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { join } from "@tauri-apps/api/path";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { FolderPlusIcon, KeyRoundIcon, LoaderCircleIcon, RefreshCwIcon, UploadIcon, XIcon } from "@lucide/vue";
-import { commands, type ExportFormat, type GenerateAlgorithm, type KeychainStatus, type KeyFolder, type KeyInfo, type KeyPlace, type RemoteKeys, type RepoEntry } from "@/lib/bindings";
+import { commands, type ExportFormat, type KeychainStatus, type KeyFolder, type KeyInfo, type KeyPlace, type RemoteKeys, type RepoEntry } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tip } from "@/components/ui/tooltip";
 import { pathBasename } from "@/lib/format";
@@ -22,8 +19,8 @@ import { useSettingsStore } from "@/stores/settings";
 import KeyChangePassphraseDialog from "./KeyChangePassphraseDialog.vue";
 import KeyCopyDialog, { type KeyCopyRequest, type KeyCopyTarget } from "./KeyCopyDialog.vue";
 import KeyExportDialog from "./KeyExportDialog.vue";
-import KeyImportDropzone from "./KeyImportDropzone.vue";
-import KeyPassphraseFields from "./KeyPassphraseFields.vue";
+import KeyGenerateDialog from "./KeyGenerateDialog.vue";
+import KeyImportDialog from "./KeyImportDialog.vue";
 import KeyRow, { type KeyAction } from "./KeyRow.vue";
 
 const dialogs = useDialogsStore();
@@ -46,9 +43,9 @@ const busyPath = ref<string | null>(null);
 /** The outcome of the last action. The page sits in a dialog, so the window's notices would be hidden behind it. */
 const message = ref<{ kind: "success" | "error"; text: string } | null>(null);
 
-/** The form shown above the list, if any: the two that make a new key. What is done to one key opens a dialog. */
-type Panel = "generate" | "import";
-const panel = ref<Panel | null>(null);
+// Everything that needs more than a click opens a dialog over Settings; each is open while its ref is set.
+const generateOpen = ref(false);
+const importOpen = ref(false);
 /** The key the Copy dialog is open for, with the places it can go. */
 const copyRequest = ref<KeyCopyRequest | null>(null);
 /** The key the Export dialog is open for. */
@@ -116,6 +113,11 @@ function copyTargets(key: KeyInfo): PlaceTab[] {
 
 /** The folder new keys go in: the first default one (`~/.ssh`). */
 const firstFolder = computed(() => defaultDirs.value[0] ?? extraDirs.value[0] ?? null);
+/** The file names of the keys in that folder, so the Generate dialog offers a name that is free. */
+const firstFolderKeyNames = computed(() => {
+  const folder = firstFolder.value;
+  return folder ? (keys.value ?? []).filter((k) => k.path.startsWith(folder)).map((k) => k.fileName) : [];
+});
 
 function succeed(text: string): void {
   message.value = { kind: "success", text };
@@ -280,82 +282,21 @@ function useFor(info: KeyInfo, entry: RepoEntry): void {
   });
 }
 
-// The Generate form, filled in when it opens. Import has a component of its own.
-
-const form = ref({
-  algorithm: "ed25519" as GenerateAlgorithm,
-  comment: "",
-  outPath: "",
-  outPathEdited: false,
-  passphrase: "",
-  passphraseAgain: "",
-});
-const formError = ref<string | null>(null);
-const formBusy = ref(false);
-
-function openPanel(p: Panel): void {
-  panel.value = p;
+function openGenerate(): void {
   message.value = null;
-  formError.value = null;
-  form.value = { algorithm: "ed25519", comment: form.value.comment, outPath: "", outPathEdited: false, passphrase: "", passphraseAgain: "" };
-  if (p === "generate" && form.value.comment === "") {
-    unwrap(commands.keysDefaultComment())
-      .then((c) => (form.value.comment = c))
-      .catch(() => undefined);
-  }
+  generateOpen.value = true;
 }
 
-/** `id_ed25519`, or `id_ed25519_2` and so on when a scanned key in that folder has the name. */
-function freeKeyName(base: string): string {
-  const folder = firstFolder.value;
-  const taken = new Set((keys.value ?? []).filter((k) => folder && k.path.startsWith(folder)).map((k) => k.fileName));
-  if (!taken.has(base)) return base;
-  for (let n = 2; ; n++) if (!taken.has(`${base}_${n}`)) return `${base}_${n}`;
+function openImport(): void {
+  message.value = null;
+  importOpen.value = true;
 }
 
-// Generate: the file name follows the algorithm until the user edits the path.
-watch(
-  () => [panel.value, form.value.algorithm, firstFolder.value] as const,
-  async ([kind, algorithm, folder]) => {
-    if (kind !== "generate" || form.value.outPathEdited) return;
-    const name = freeKeyName(algorithm === "ed25519" ? "id_ed25519" : "id_rsa");
-    form.value.outPath = folder ? await join(folder, name).catch(() => name) : name;
-  },
-);
-
-/** An empty passphrase is allowed: the key is then written unencrypted. */
-const formReady = computed(
-  () => panel.value === "generate" && !formBusy.value && form.value.passphrase === form.value.passphraseAgain && form.value.outPath.trim().length > 0,
-);
-
-async function browseGeneratePath(): Promise<void> {
-  try {
-    const picked = await saveDialog({ title: "Save the new key as", defaultPath: form.value.outPath || undefined });
-    if (typeof picked === "string" && picked.length > 0) {
-      form.value.outPath = picked;
-      form.value.outPathEdited = true;
-    }
-  } catch (e) {
-    formError.value = errorMessage(e);
-  }
-}
-
-async function submitForm(): Promise<void> {
-  if (!formReady.value) return;
-  formBusy.value = true;
-  formError.value = null;
-  try {
-    const info = await unwrap(
-      commands.keysGenerate(form.value.algorithm, form.value.comment.trim(), form.value.outPath.trim(), form.value.passphrase || null, false),
-    );
-    panel.value = null;
-    await refresh();
-    succeed(`Generated ${info.fileName}, with ${info.fileName}.pub beside it. Use Copy public key to put it on a server.`);
-  } catch (e) {
-    formError.value = errorMessage(e);
-  } finally {
-    formBusy.value = false;
-  }
+/** The Generate dialog wrote the key: close it and read the keys again. */
+async function onGenerated(info: KeyInfo): Promise<void> {
+  generateOpen.value = false;
+  await refresh();
+  succeed(`Generated ${info.fileName}, with ${info.fileName}.pub beside it. Use Copy public key to put it on a server.`);
 }
 
 /** The Export dialog wrote the file: close it, read the keys again and say where the export went. */
@@ -379,24 +320,22 @@ async function onCopied(key: KeyInfo, target: KeyCopyTarget, written: string): P
   succeed(`Copied ${key.fileName} to ${target.label} as ${written}${key.publicKeyFile ? ", with its .pub file" : ""}.`);
 }
 
+/** The Import dialog wrote the key: close it and read the keys again. */
 async function onImported(info: KeyInfo): Promise<void> {
-  panel.value = null;
+  importOpen.value = false;
   await refresh();
   succeed(`Imported the key as ${info.path}.`);
 }
-
-const selectClass =
-  "well h-8 w-full rounded-lg border px-2.5 text-base outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
 </script>
 
 <template>
   <div class="grid gap-4">
     <div class="flex flex-wrap items-center gap-2">
-      <Button type="button" variant="outline" size="sm" @click="openPanel('generate')">
+      <Button type="button" variant="outline" size="sm" @click="openGenerate">
         <KeyRoundIcon />
         Generate Key…
       </Button>
-      <Button type="button" variant="outline" size="sm" @click="openPanel('import')">
+      <Button type="button" variant="outline" size="sm" @click="openImport">
         <UploadIcon />
         Import Key…
       </Button>
@@ -449,45 +388,6 @@ const selectClass =
       {{ message.text }}
     </p>
 
-    <KeyImportDropzone v-if="panel === 'import'" :folder="firstFolder" @imported="onImported" @cancel="panel = null" />
-
-    <form v-else-if="panel === 'generate'" class="grid gap-3 rounded-lg border border-border p-3" @submit.prevent="submitForm">
-      <h4 class="text-base font-medium">Generate a key</h4>
-      <div class="grid grid-cols-2 gap-3">
-        <div class="grid gap-1.5">
-          <Label for="key-generate-algorithm" class="text-base">Type</Label>
-          <select id="key-generate-algorithm" v-model="form.algorithm" :class="selectClass">
-            <option value="ed25519">Ed25519 (recommended)</option>
-            <option value="rsa4096">RSA 4096, for servers that do not take Ed25519</option>
-          </select>
-        </div>
-        <div class="grid gap-1.5">
-          <Label for="key-generate-comment" class="text-base">Comment</Label>
-          <Input id="key-generate-comment" v-model="form.comment" class="text-base" autocomplete="off" spellcheck="false" />
-        </div>
-      </div>
-      <div class="grid gap-1.5">
-        <Label for="key-generate-path" class="text-base">Save as</Label>
-        <div class="flex gap-2">
-          <Input id="key-generate-path" v-model="form.outPath" class="font-mono text-base" autocomplete="off" spellcheck="false" @input="form.outPathEdited = true" />
-          <Button type="button" variant="outline" size="sm" class="h-8 shrink-0" @click="browseGeneratePath">Browse…</Button>
-        </div>
-      </div>
-      <KeyPassphraseFields v-model:passphrase="form.passphrase" v-model:again="form.passphraseAgain" id-prefix="key-generate" optional />
-
-      <p v-if="formError" class="rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-1.5 text-base break-words text-destructive">
-        {{ formError }}
-      </p>
-
-      <div class="flex justify-end gap-2">
-        <Button type="button" variant="outline" @click="panel = null">Cancel</Button>
-        <Button type="submit" :disabled="!formReady">
-          <LoaderCircleIcon v-if="formBusy" class="animate-spin" />
-          Generate
-        </Button>
-      </div>
-    </form>
-
     <div v-if="keys === null" class="flex items-center gap-2 text-base text-muted-foreground">
       <LoaderCircleIcon class="size-3.5 animate-spin" />
       Looking for keys…
@@ -516,6 +416,8 @@ const selectClass =
       <template v-if="!agentAvailable"> No SSH agent answered, so keys cannot be added to one.</template>
     </p>
 
+    <KeyGenerateDialog :open="generateOpen" :folder="firstFolder" :taken-names="firstFolderKeyNames" @close="generateOpen = false" @generated="onGenerated" />
+    <KeyImportDialog :open="importOpen" :folder="firstFolder" @close="importOpen = false" @imported="onImported" />
     <KeyCopyDialog :request="copyRequest" @close="copyRequest = null" @copied="onCopied" />
     <KeyExportDialog :key-info="exportKey" @close="exportKey = null" @exported="onExported" />
     <KeyChangePassphraseDialog :key-info="changePassphraseKey" @close="changePassphraseKey = null" @changed="onPassphraseChanged" />

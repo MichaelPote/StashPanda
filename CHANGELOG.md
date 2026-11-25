@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Open Generate Key… and Import Key… for SSH keys each in a dialog of its own as well, so the SSH Keys page no longer has any form above the list of keys
 - Open Copy to…, Export… and Change passphrase… for an SSH key each in a dialog of its own, instead of a form above the list of keys that was easy to miss
 - Fix the More Actions menu of an SSH key never appearing: it was drawn above the top of the window
 - Fix the Console drawing the SSH check's shell script over the rows around it: a command line with line breaks now shows the first line of that argument and how many lines were left out
