@@ -69,6 +69,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::query::get_commit_changes,
             ipc::query::get_commit_message,
             ipc::query::get_merge_info,
+            ipc::query::get_commit_branch,
             ipc::query::get_file_diff,
             ipc::query::get_modified_times,
             ipc::graph::graph_set_hidden_refs,

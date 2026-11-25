@@ -9,12 +9,19 @@ release moves those lines under its version number.
 - Ask in a dialog for the user name and password of an HTTPS remote, the password of an SSH server, and whether to connect to a server ssh has not seen before, instead of failing. These are passed on to Git and not remembered
 - An automatic fetch uses a remembered passphrase but never opens a dialog
 - Offer to remember the passphrase when generating or importing an SSH key
+- Add an "Also delete origin/feature" tick box to Delete Branch…, which deletes the remote branch of the same name that the branch tracks; when there is none, the box is greyed out and says why
 - Open Generate Key… and Import Key… for SSH keys each in a dialog of its own as well, so the SSH Keys page no longer has any form above the list of keys
 - Open Copy to…, Export… and Change passphrase… for an SSH key each in a dialog of its own, instead of a form above the list of keys that was easy to miss
 - Fix the More Actions menu of an SSH key never appearing: it was drawn above the top of the window
 - Fix the Console drawing the SSH check's shell script over the rows around it: a command line with line breaks now shows the first line of that argument and how many lines were left out
 - Show as many branch and tag pills on a commit row as fit beside its message, keeping 8rem for the message, instead of at most three before the +N pill
 - Run the GitHub build only for a version tag or a run started by hand, not for pushes to main or pull requests
+
+## 0.6.9 (2026-11-12)
+
+- Name the branch a tag's commit is on in the commit graph in the tag's tooltip
+- Stop marking tags as not pushed after a push from outside the app carried them, and ask the remotes about tags again on Refresh
+- Scroll about 55px per mouse wheel notch on Windows, like other Windows apps, instead of 100px, with a short animation
 
 ## 0.6.8 (2026-11-02)
 

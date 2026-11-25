@@ -107,13 +107,13 @@ export const TOOLBAR_COMMANDS: readonly ToolbarCommand[] = [
   {
     id: "refresh",
     label: "Refresh",
-    description: "Read the open repository's history, branches and working tree again.",
+    description: "Read the open repository's history, branches and working tree again, and ask the remotes which tags they have.",
     caption: "Refresh",
     icon: RefreshCwIcon,
     needsRepo: false,
     run: () => {
       const sessions = useSessionsStore();
-      if (sessions.activeKey !== null) return sessions.refreshSession(sessions.activeKey);
+      if (sessions.activeKey !== null) return sessions.refreshSession(sessions.activeKey, { askRemotes: true });
     },
   },
   // Greyed out while any fetch, pull or push runs, which would refuse a second; the one running

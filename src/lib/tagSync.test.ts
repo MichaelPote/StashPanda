@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { localOnlyNote, remoteOnlyNote, tagSyncView, type RemoteTagAnswer } from "@/lib/tagSync";
+import type { RefEntry, RefKind } from "@/lib/bindings";
+import { localOnlyNote, remoteBranchesMoved, remoteOnlyNote, tagSyncView, type RemoteTagAnswer } from "@/lib/tagSync";
 
 const local = new Map([
   ["v1", "c1"],
@@ -59,5 +60,28 @@ describe("tag sync notes", () => {
       "Not on origin and backup. On another commit on github.",
     );
     expect(remoteOnlyNote({ name: "v1", commit: "c", remotes: ["origin"] }, false)).toBe("On origin only; not fetched into this repository.");
+  });
+});
+
+describe("remoteBranchesMoved", () => {
+  function ref(fullName: string, target: string, kind: RefKind): RefEntry {
+    return { fullName, target, kind } as RefEntry;
+  }
+  const remote: RefKind = { type: "remoteBranch", remote: "origin" };
+  const before = [
+    ref("refs/heads/main", "c1", { type: "localBranch" }),
+    ref("refs/remotes/origin/main", "c1", remote),
+    ref("refs/tags/v1", "c1", { type: "tag", annotated: true }),
+  ];
+
+  it("is false when only local branches or tags change", () => {
+    const after = [ref("refs/heads/main", "c2", { type: "localBranch" }), ref("refs/remotes/origin/main", "c1", remote), ref("refs/tags/v2", "c2", { type: "tag", annotated: false })];
+    expect(remoteBranchesMoved(before, after)).toBe(false);
+  });
+
+  it("is true when a remote-tracking branch moves, appears or goes", () => {
+    expect(remoteBranchesMoved(before, [ref("refs/remotes/origin/main", "c2", remote)])).toBe(true);
+    expect(remoteBranchesMoved(before, [...before, ref("refs/remotes/origin/dev", "c1", remote)])).toBe(true);
+    expect(remoteBranchesMoved(before, before.slice(0, 1))).toBe(true);
   });
 });
