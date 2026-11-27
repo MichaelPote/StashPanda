@@ -15,7 +15,8 @@ import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, noDiffMessage, parseUnified, type DiffLine, type HighlightedPair, type Segment } from "@/lib/diff/parseUnified";
 import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
-import { pairBudget, pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
+import { pairBudget, pairByPosition, pairQuickly, type LinePair, type PendingBlock } from "@/lib/diff/pairLines";
+import { matchBlocks } from "@/lib/diff/pairLinesAsync";
 import { BandBuilder, bandEdges, bandPath, GAP_PX, sideEdges, sideFill, sideOffsets, type Band } from "@/lib/diff/sideLayout";
 import { highlightRuns, insertGaps, maxLineLengthFor, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
@@ -195,11 +196,22 @@ interface Built {
   sideRows: number;
   sideHunks: number[];
   pairs: Pair[];
+  /** Blocks paired only by position for now, which the worker is to match; see `matched`. */
+  pending: PendingBlock[];
   maxLen: number;
   /** Longest line on each side of the side-by-side view, in characters with tabs expanded. */
   leftMax: number;
   rightMax: number;
 }
+
+/**
+ * The worker's pairs for the blocks of the diff on screen that were put off, by block number;
+ * null for a block that stays paired by position. Laying a diff out compares each removed line
+ * of a block with each added one, which for a large diff takes seconds. So the diff is drawn at
+ * once with what is quick (`pairQuickly`), the rest is matched off this thread
+ * (`lib/diff/pairLines.worker.ts`), and `built` runs again when the pairs arrive.
+ */
+const matched = shallowRef<{ file: object; pairs: Map<number, LinePair[] | null> } | null>(null);
 
 const built = computed<Built>(() => {
   const unified: UnifiedRow[] = [];
@@ -208,16 +220,30 @@ const built = computed<Built>(() => {
   const bands = new BandBuilder();
   const sideHunks: number[] = [];
   const pairs: Pair[] = [];
+  const pending: PendingBlock[] = [];
   let maxLen = 0;
   let leftMax = 0;
   let rightMax = 0;
-  const done = (): Built => ({ unified, left, right, bands: bands.bands, sideRows: bands.rows, sideHunks, pairs, maxLen, leftMax, rightMax });
+  const done = (): Built => ({ unified, left, right, bands: bands.bands, sideRows: bands.rows, sideHunks, pairs, pending, maxLen, leftMax, rightMax });
   const f = file.value;
   if (!f) return done();
   const tab = font.value.tabWidth;
   const matchSimilar = settings.settings?.diff?.matchSimilarLines !== false;
-  // What this diff's blocks may spend on matching between them; see `pairBudget`.
+  // What this diff's blocks may spend on matching between them on this thread; see `pairBudget`.
   const budget = pairBudget();
+  const fromWorker = matched.value?.file === f ? matched.value.pairs : null;
+  // Blocks are numbered in the order they come, which is how the worker's answer names them.
+  let block = 0;
+  const pairBlock = (oldLines: string[], newLines: string[]): LinePair[] => {
+    const number = block;
+    block += 1;
+    const answered = fromWorker?.get(number);
+    if (answered) return answered;
+    const quick = pairQuickly(oldLines, newLines, budget);
+    // A block the worker answered with null stays as it is, and is not asked about again.
+    if (!quick.settled && !fromWorker?.has(number)) pending.push({ block: number, old: oldLines, new: newLines });
+    return quick.pairs;
+  };
 
   f.hunks.forEach((hunk, h) => {
     unified.push({ kind: "hunk", hunk: h, header: hunk.header });
@@ -237,12 +263,12 @@ const built = computed<Built>(() => {
     let rightMetas: SideItem[] = [];
     let previous: DiffLine["kind"] | null = null;
     const flush = (): void => {
-      const matched = matchSimilar
-        ? pairBySimilarity(dels.map((d) => d.text), adds.map((a) => a.text), budget)
+      const linePairs = matchSimilar
+        ? pairBlock(dels.map((d) => d.text), adds.map((a) => a.text))
         : pairByPosition(dels.length, adds.length);
       const delPair: (number | undefined)[] = [];
       const addPair: (number | undefined)[] = [];
-      for (const [i, j] of matched) {
+      for (const [i, j] of linePairs) {
         delPair[i] = addPair[j] = pairs.length;
         pairs.push({ old: (dels[i] as DiffLine).text, new: (adds[j] as DiffLine).text });
       }
@@ -270,7 +296,7 @@ const built = computed<Built>(() => {
           if (run > 0) stretches.push([run, run, true]);
           run = 0;
         };
-        for (const [i, j] of matched) {
+        for (const [i, j] of linePairs) {
           if (i > di || j > ai) {
             endRun();
             unmatched(i, j);
@@ -353,6 +379,51 @@ const rowCount = computed(() => (mode.value === "unified" ? built.value.unified.
 
 const segmentCache = new Map<number, HighlightedPair>();
 watch([built, ignoreWhitespace], () => segmentCache.clear());
+
+// The blocks that were put off go to the worker, once for each diff. Its answer names every
+// block asked about, so laying the diff out again leaves none pending and nothing is asked twice.
+watch(
+  () => built.value.pending,
+  async (pending) => {
+    const f = file.value;
+    if (!f || pending.length === 0) return;
+    const pairs = await matchBlocks(pending);
+    // Null: another diff's request took over. A different file: this answer came too late.
+    if (pairs === null || file.value !== f) return;
+    const keep = mode.value === "side" ? leftLineAtTop() : null;
+    matched.value = { file: f, pairs };
+    // Side by side, a block takes as many rows as its longer side, so matching can change how
+    // many rows the diff has above the view. The left side's line at the top stays where it is.
+    if (keep !== null) void nextTick(() => showLeftLineAtTop(keep));
+  },
+);
+
+/** The left side's line at the top of the view, as a fraction, side by side. */
+function leftLineAtTop(): number {
+  return (virtual.scrollTop.value - offsets.value.left) / rowPx.value;
+}
+
+/**
+ * Scrolls so the left side's line `line` (a fraction, as `leftLineAtTop` gives it) is at the top
+ * of the view. The line under a scroll position only ever grows with it, so halving finds it.
+ */
+function showLeftLineAtTop(line: number): void {
+  const el = scroller.value;
+  if (!el) return;
+  const px = rowPx.value;
+  const view = virtual.viewportHeight.value;
+  const b = built.value;
+  const lineAt = (top: number): number => (top - sideOffsets(b.bands, b.sideRows, px, top, view).left) / px;
+  let lo = 0;
+  let hi = Math.max(0, b.sideRows * px - view);
+  for (let i = 0; i < 40 && hi - lo > 0.5; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (lineAt(mid) < line) lo = mid;
+    else hi = mid;
+  }
+  const top = Math.round(hi);
+  if (Math.abs(el.scrollTop - top) >= 1) el.scrollTop = top;
+}
 
 /** A changed pair's highlights, or undefined when the line has no pair or highlighting is off. */
 function highlighted(pair: number | undefined): HighlightedPair | undefined {

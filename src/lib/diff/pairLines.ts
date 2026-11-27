@@ -3,6 +3,12 @@
  * block's removed lines and then its added lines; it does not say which old line each new one
  * came from. The changed-word highlights compare a removed line with the added line paired with
  * it, and the side-by-side view lines the two up.
+ *
+ * Matching compares every removed line of a block with every added one, so it is done in two
+ * places. The diff viewer's own thread does what is quick (`pairQuickly`) and draws the diff at
+ * once; the blocks it put off go to a worker (`pairLines.worker.ts`), which matches them in
+ * full (`pairThoroughly`) while the window stays free, and the diff is laid out again when the
+ * answer comes back.
  */
 
 /** A removed line's index in its block and the added line's index it is paired with. */
@@ -10,30 +16,41 @@ export type LinePair = [oldIndex: number, newIndex: number];
 
 /** Lines this similar or more are paired; less similar lines count as removed and added. */
 const MIN_SIMILARITY = 0.4;
-/** Blocks larger than this many removed × added lines fall back to pairing by position. */
-const MAX_CELLS = 40_000;
-/**
- * Blocks whose comparisons would take more than this many lookups fall back too. Comparing two
- * lines looks up each distinct piece of the shorter one, so a few hundred long minified lines stay
- * under `MAX_CELLS` and would still keep the window busy for seconds.
- */
-const MAX_LOOKUPS = 2_000_000;
-/**
- * What all the blocks of one diff may spend together. The two limits above are for one block,
- * and a diff can have hundreds of blocks that each stay under them: 188 blocks of 150 changed
- * lines took 3.3 seconds, with the window frozen. This many lookups take between a tenth and a
- * fifth of a second; once they are spent, the blocks that are left are paired by position.
- */
-const MAX_LOOKUPS_PER_DIFF = 6_000_000;
 
-/** How many lookups the blocks of one diff may still spend on pairing by similarity. */
+/** How much comparing one block may take: removed × added lines, and lookups (see `countLookups`). */
+interface Limits {
+  cells: number;
+  lookups: number;
+}
+
+/**
+ * On the diff viewer's own thread: a block past either limit is put off. Comparing two lines
+ * looks up each distinct piece of the shorter one, so a few hundred long minified lines stay
+ * under the cell limit and would still keep the window busy for seconds; hence the second limit.
+ */
+const QUICK: Limits = { cells: 40_000, lookups: 2_000_000 };
+/**
+ * In the worker: a block of up to 1,000 by 1,000 lines, and about a second of comparing. Past
+ * that the block stays paired by position; its two tables alone would take 16 MB per million cells.
+ */
+const THOROUGH: Limits = { cells: 1_000_000, lookups: 60_000_000 };
+
+/**
+ * What all the blocks of one diff may spend together on the viewer's own thread, in lookups:
+ * about a twentieth of a second. The limits above are for one block, and a diff can have
+ * hundreds of blocks that each stay under them: 188 blocks of 150 changed lines took 3.3
+ * seconds, with the window frozen. Once this is spent, the blocks that are left are put off.
+ */
+const MAX_QUICK_LOOKUPS_PER_DIFF = 2_000_000;
+
+/** How many lookups the blocks of one diff may still spend on the viewer's own thread. */
 export interface PairBudget {
   lookups: number;
 }
 
-/** A full budget, for one diff: pass the same one to `pairBySimilarity` for each of its blocks. */
+/** A full budget, for one diff: pass the same one to `pairQuickly` for each of its blocks. */
 export function pairBudget(): PairBudget {
-  return { lookups: MAX_LOOKUPS_PER_DIFF };
+  return { lookups: MAX_QUICK_LOOKUPS_PER_DIFF };
 }
 
 /** Pairs the first removed line with the first added line, and so on: what Git's order gives. */
@@ -111,31 +128,20 @@ function alikeInPosition(oldLines: string[], newLines: string[]): boolean {
   return true;
 }
 
-/**
- * Pairs removed lines with added lines by how alike they are, keeping both in their order: the
- * pairing with the highest total similarity, where only lines at least `MIN_SIMILARITY` alike
- * can pair. A very large block is paired by position instead, which is fast, and so is every
- * block once `budget`, shared by the blocks of one diff, is spent.
- */
-export function pairBySimilarity(oldLines: string[], newLines: string[], budget: PairBudget = pairBudget()): LinePair[] {
-  const n = oldLines.length;
-  const m = newLines.length;
-  if (n === 0 || m === 0) return [];
-  if (n * m > MAX_CELLS || budget.lookups <= 0) return pairByPosition(n, m);
-  if (alikeInPosition(oldLines, newLines)) return pairByPosition(n, m);
-
-  const oldGrams = oldLines.map(bigrams);
-  const newGrams = newLines.map(bigrams);
+/** How many lookups comparing every removed line with every added one would take. */
+function countLookups(oldGrams: Map<string, number>[], newGrams: Map<string, number>[]): number {
   let lookups = 0;
   for (const a of oldGrams) for (const b of newGrams) lookups += Math.min(a.size, b.size);
-  if (lookups > MAX_LOOKUPS) return pairByPosition(n, m);
-  if (lookups > budget.lookups) {
-    // What is left is not spent on a smaller block further down: the diff would be matched,
-    // then not, then matched again, depending on each block's size.
-    budget.lookups = 0;
-    return pairByPosition(n, m);
-  }
-  budget.lookups -= lookups;
+  return lookups;
+}
+
+/**
+ * The pairing with the highest total similarity that keeps both sides in their order, where
+ * only lines at least `MIN_SIMILARITY` alike can pair.
+ */
+function bestPairing(oldLines: string[], newLines: string[], oldGrams: Map<string, number>[], newGrams: Map<string, number>[]): LinePair[] {
+  const n = oldLines.length;
+  const m = newLines.length;
   const oldSizes = oldGrams.map(sizeOf);
   const newSizes = newGrams.map(sizeOf);
 
@@ -178,4 +184,87 @@ export function pairBySimilarity(oldLines: string[], newLines: string[], budget:
     }
   }
   return pairs.reverse();
+}
+
+/** A block's pairs from the viewer's own thread, and whether they are the final ones. */
+export interface QuickPairing {
+  pairs: LinePair[];
+  /**
+   * False when the pairs are only by position because matching the block was put off: it is
+   * past the limits for one block, or the diff's budget is spent. The worker then matches it.
+   */
+  settled: boolean;
+}
+
+/**
+ * Pairs one block on the diff viewer's own thread, as far as that is quick. `budget` is shared
+ * by the blocks of one diff. A block whose lines are alike in position is settled without
+ * spending any of it.
+ */
+export function pairQuickly(oldLines: string[], newLines: string[], budget: PairBudget): QuickPairing {
+  const n = oldLines.length;
+  const m = newLines.length;
+  if (n === 0 || m === 0) return { pairs: [], settled: true };
+  if (alikeInPosition(oldLines, newLines)) return { pairs: pairByPosition(n, m), settled: true };
+  const putOff: QuickPairing = { pairs: pairByPosition(n, m), settled: false };
+  if (n * m > QUICK.cells || budget.lookups <= 0) return putOff;
+
+  const oldGrams = oldLines.map(bigrams);
+  const newGrams = newLines.map(bigrams);
+  const lookups = countLookups(oldGrams, newGrams);
+  if (lookups > QUICK.lookups) return putOff;
+  if (lookups > budget.lookups) {
+    // What is left is not spent on a smaller block further down: until the worker answers, the
+    // diff would be matched, then not, then matched again, depending on each block's size.
+    budget.lookups = 0;
+    return putOff;
+  }
+  budget.lookups -= lookups;
+  return { pairs: bestPairing(oldLines, newLines, oldGrams, newGrams), settled: true };
+}
+
+/**
+ * Pairs one block in full, however long it takes within the worker's limits. Null for a block
+ * past those: it stays paired by position.
+ */
+export function pairThoroughly(oldLines: string[], newLines: string[]): LinePair[] | null {
+  const n = oldLines.length;
+  const m = newLines.length;
+  if (n === 0 || m === 0) return [];
+  if (alikeInPosition(oldLines, newLines)) return pairByPosition(n, m);
+  if (n * m > THOROUGH.cells) return null;
+  const oldGrams = oldLines.map(bigrams);
+  const newGrams = newLines.map(bigrams);
+  if (countLookups(oldGrams, newGrams) > THOROUGH.lookups) return null;
+  return bestPairing(oldLines, newLines, oldGrams, newGrams);
+}
+
+/**
+ * Pairs removed lines with added lines by how alike they are, as far as is quick; see
+ * `pairQuickly`, whose pairs these are. For callers with one block and no worker to finish it.
+ */
+export function pairBySimilarity(oldLines: string[], newLines: string[], budget: PairBudget = pairBudget()): LinePair[] {
+  return pairQuickly(oldLines, newLines, budget).pairs;
+}
+
+/** One block the viewer put off, for the worker: its number in the diff and its lines. */
+export interface PendingBlock {
+  block: number;
+  old: string[];
+  new: string[];
+}
+
+/** What the worker is asked: the blocks of one diff that were put off. */
+export interface PairRequest {
+  id: number;
+  blocks: PendingBlock[];
+}
+
+/**
+ * The worker's answer: for each block asked about, its pairs, or null to leave it paired by
+ * position (the block is past the worker's limits too, or the worker ran out of time).
+ */
+export interface PairResponse {
+  id: number;
+  pairs: [block: number, pairs: LinePair[] | null][];
 }

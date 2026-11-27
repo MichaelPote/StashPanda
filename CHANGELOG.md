@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Match removed lines to added lines in the background for a large diff, so every block is matched properly however large the diff is: the diff shows at once, and its changed-word marks and side-by-side curves settle a moment later
 - Offer Diagnose… on a fetch, pull or push that Azure DevOps refused with "Public key authentication failed": the button only appeared for the wording other servers use
 - Stop a repository counting as busy, and its changes waiting, while its commit history is saved for the next start: after the first load of a long history, "Updating the commit graph…" stayed for a moment with the commits already on screen
 - Fix the window freezing for seconds when a commit with a large diff is selected: matching removed lines to added lines is now bounded for the whole diff, and a run of lines changed in the same way is matched at once

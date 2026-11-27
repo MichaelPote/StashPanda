@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pairBudget, pairByPosition, pairBySimilarity } from "./pairLines";
+import { pairBudget, pairByPosition, pairBySimilarity, pairQuickly, pairThoroughly } from "./pairLines";
 
 describe("pairBySimilarity", () => {
   it("pairs re-indented lines past an added line, where position would pair them wrongly", () => {
@@ -99,5 +99,49 @@ describe("pairBySimilarity", () => {
     expect(byPosition).toBeGreaterThan(100);
     // Without the budget this takes several seconds; with it, well under one.
     expect(performance.now() - started).toBeLessThan(1500);
+  });
+});
+
+describe("pairQuickly and pairThoroughly", () => {
+  // 100 removed and 110 added lines of random words: not alike in position.
+  let state = 7;
+  const random = () => (state = (state * 48271) % 2147483647);
+  const line = () => Array.from({ length: 12 }, () => `w${random() % 500}`).join(" ");
+  const removed = Array.from({ length: 100 }, line);
+  const added = [...Array.from({ length: 10 }, line), ...removed.map((l) => `${l} changed`)];
+
+  it("settles a small block at once, with the same pairs the worker would find", () => {
+    const quick = pairQuickly(removed, added, pairBudget());
+    expect(quick.settled).toBe(true);
+    expect(quick.pairs).toEqual(pairThoroughly(removed, added));
+    // Each removed line is the added line ten places further down.
+    expect(quick.pairs).toEqual(removed.map((_, i) => [i, i + 10]));
+  });
+
+  it("puts a block off when the diff's budget is spent, which the worker then matches in full", () => {
+    const quick = pairQuickly(removed, added, { lookups: 0 });
+    expect(quick.settled).toBe(false);
+    expect(quick.pairs).toEqual(pairByPosition(100, 110));
+    expect(pairThoroughly(removed, added)).toEqual(removed.map((_, i) => [i, i + 10]));
+  });
+
+  it("puts off a block past the limit for one block, which the worker still matches", () => {
+    const manyRemoved = Array.from({ length: 250 }, line);
+    const manyAdded = [line(), ...manyRemoved.map((l) => `${l} changed`)];
+    const quick = pairQuickly(manyRemoved, manyAdded, pairBudget());
+    expect(quick.settled).toBe(false);
+    expect(pairThoroughly(manyRemoved, manyAdded)).toEqual(manyRemoved.map((_, i) => [i, i + 1]));
+  });
+
+  it("settles a block whose lines are alike in position without spending the budget", () => {
+    const renamed = removed.map((l) => `${l} renamed`);
+    const budget = { lookups: 0 };
+    expect(pairQuickly(removed, renamed, budget)).toEqual({ pairs: pairByPosition(100, 100), settled: true });
+  });
+
+  it("leaves a block too large even for the worker paired by position", () => {
+    const huge = Array.from({ length: 1001 }, (_, i) => `row ${i}`);
+    const other = Array.from({ length: 1000 }, (_, i) => `${i} entirely different text here`);
+    expect(pairThoroughly(huge, other)).toBeNull();
   });
 });
