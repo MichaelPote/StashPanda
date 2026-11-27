@@ -1,13 +1,13 @@
 # The changelog
 
-`CHANGELOG.md` at the root of the repository lists every change to StashPanda, newest first. It is
-also where each GitHub release's notes come from, so it has to be kept up to date as work is
-committed, not written at release time.
+`CHANGELOG.md` at the root of the repository lists every change to StashPanda that someone using
+it would notice, newest first. It is also where each GitHub release's notes come from, so it has to
+be kept up to date as work is committed, not written at release time.
 
-## The rule: every commit adds a line under `## Unreleased`
+## The rule: a commit that changes what the app does adds a line under `## Unreleased`
 
-The top section of `CHANGELOG.md` is always `## Unreleased`. Every commit that changes what the
-app does, or how it is built or released, adds one line there, in the same commit:
+The top section of `CHANGELOG.md` is always `## Unreleased`. Every commit that changes something a
+user of the app would notice adds one line there, in the same commit:
 
 ```markdown
 ## Unreleased
@@ -24,8 +24,9 @@ app does, or how it is built or released, adds one line there, in the same commi
   feature can share a line: update it rather than adding a second one.
 - **Never rename or remove `## Unreleased` by hand,** and never write a version heading yourself.
   `npm version` does both (see below). If `## Unreleased` is missing, `npm version` stops.
-- **Changes nobody would notice** (a refactor with no change in behaviour, a test on its own, a
-  typo in a comment) need no line.
+- **Changes nobody using the app would notice need no line:** a refactor with no change in
+  behaviour, a test on its own, a typo in a comment, documentation for developers, and a change to
+  how the app is built or released. The release notes are read by the people who use the app.
 - **No private details:** like everything committed here, the lines must not name client or test
   repositories, folders on a developer's own machine, people, or other Git GUIs.
 
