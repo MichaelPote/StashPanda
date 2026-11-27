@@ -204,6 +204,8 @@ pub fn worktree_summary(handle: &RepoHandle, s: &status::StatusSnapshot) -> Opti
 /// it reads Git until the snapshot is stored. Two loads at once would otherwise each read the
 /// refs and store when done, and the one that read first could store last: a slow load of the
 /// whole history would put its older refs on top of what a quick refresh had just stored.
+///
+/// The cache is written last, with both locks released (`save_to_cache`).
 #[allow(clippy::too_many_arguments)]
 pub async fn refresh_full(
     app: Option<&AppHandle>,
@@ -214,16 +216,19 @@ pub async fn refresh_full(
     reason: SnapshotReason,
     force_full: bool,
 ) -> Result<Arc<GraphSnapshot>> {
-    let _building = start_building(app, handle).await;
-    let _shared = handle.lock.read().await;
-    load_live(app, db, handle, options, cache, reason, force_full).await
+    let snap = {
+        let _building = start_building(app, handle).await;
+        let _shared = handle.lock.read().await;
+        load_live(app, handle, options, cache, reason, force_full).await?
+    };
+    save_to_cache(db, handle, &snap).await;
+    Ok(snap)
 }
 
-/// `refresh_full` for a caller that already holds `graph_build` and `lock`.
-#[allow(clippy::too_many_arguments)]
+/// The live load itself, for a caller that already holds `graph_build` and `lock`. It writes
+/// nothing to the cache.
 async fn load_live(
     app: Option<&AppHandle>,
-    db: Option<&Arc<Db>>,
     handle: &Arc<RepoHandle>,
     options: GraphOptions,
     cache: &CacheSettings,
@@ -231,7 +236,32 @@ async fn load_live(
     force_full: bool,
 ) -> Result<Arc<GraphSnapshot>> {
     let (refs_res, status_res) = crate::git::queries::refs_and_status(&handle.client, &handle.info.git_dir).await;
-    rebuild(app, db, handle, options, cache, reason, refs_res?, status_res?, force_full).await
+    rebuild(app, handle, options, cache, reason, refs_res?, status_res?, force_full).await
+}
+
+/// Writes `snap` to the cache, so the next start paints it before Git answers. Called once the
+/// snapshot is stored and shown, with `graph_build` and `lock` released: the first write for a
+/// long history takes seconds, and held under those locks it kept the repository marked as busy,
+/// a hidden ref waiting and every write to the repository blocked, all for a file nothing reads
+/// until the next start. Writes go one at a time (`RepoHandle::cache_saved`), and an older
+/// snapshot is never written after a newer one: versions are given out under `graph_build`, so
+/// the higher one is the later picture.
+async fn save_to_cache(db: Option<&Arc<Db>>, handle: &Arc<RepoHandle>, snap: &Arc<GraphSnapshot>) {
+    let Some(db) = db else { return };
+    let mut saved = handle.cache_saved.lock().await;
+    if snap.version <= *saved {
+        return;
+    }
+    let key = handle.key.clone();
+    let to_save = snap.clone();
+    let started = std::time::Instant::now();
+    match db.run(move |c| repo_cache::persist(c, &key, &to_save)).await {
+        Ok(()) => {
+            *saved = snap.version;
+            tracing::debug!("persisted {} commits for {} in {:?}", snap.store.len(), handle.key, started.elapsed());
+        }
+        Err(e) => tracing::warn!("could not persist graph cache for {}: {e}", handle.key),
+    }
 }
 
 /// What a change-driven refresh found different from the current snapshot.
@@ -261,10 +291,27 @@ pub async fn refresh_if_changed(
     cache: &CacheSettings,
     check_refs: bool,
 ) -> Result<Changes> {
-    let client = &handle.client;
-    let _building = start_building(app, handle).await;
-    let _shared = handle.lock.read().await;
+    let (changes, rebuilt) = {
+        let _building = start_building(app, handle).await;
+        let _shared = handle.lock.read().await;
+        changed_parts(app, handle, options, cache, check_refs).await?
+    };
+    if let Some(snap) = rebuilt {
+        save_to_cache(db, handle, &snap).await;
+    }
+    Ok(changes)
+}
 
+/// `refresh_if_changed` for a caller that holds `graph_build` and `lock`: what changed, and the
+/// snapshot to write to the cache when the commits or refs did.
+async fn changed_parts(
+    app: Option<&AppHandle>,
+    handle: &Arc<RepoHandle>,
+    options: GraphOptions,
+    cache: &CacheSettings,
+    check_refs: bool,
+) -> Result<(Changes, Option<Arc<GraphSnapshot>>)> {
+    let client = &handle.client;
     let (refs_snap, status_snap) = if check_refs {
         let (r, s) = crate::git::queries::refs_and_status(client, &handle.info.git_dir).await;
         (Some(r?), s?)
@@ -288,22 +335,22 @@ pub async fn refresh_if_changed(
             Some(r) => r,
             None => refs::get_refs(client).await?,
         };
-        rebuild(app, db, handle, options, cache, SnapshotReason::Refresh, refs_snap, status_snap, false).await?;
-        return Ok(Changes { status: status_changed, refs: true });
+        let snap = rebuild(app, handle, options, cache, SnapshotReason::Refresh, refs_snap, status_snap, false).await?;
+        return Ok((Changes { status: status_changed, refs: true }, Some(snap)));
     }
     if status_changed {
         if let Some(c) = &current {
             apply_status(app, handle, c, status_snap, options).await;
         }
     }
-    Ok(Changes { status: status_changed, refs: false })
+    Ok((Changes { status: status_changed, refs: false }, None))
 }
 
-/// Log, build, swap, emit and persist. The caller holds `graph_build` and the shared lock.
+/// Log, build, swap and emit. The caller holds `graph_build` and the shared lock, and writes
+/// the snapshot to the cache once it has released them (`save_to_cache`).
 #[allow(clippy::too_many_arguments)]
 async fn rebuild(
     app: Option<&AppHandle>,
-    db: Option<&Arc<Db>>,
     handle: &Arc<RepoHandle>,
     options: GraphOptions,
     cache: &CacheSettings,
@@ -351,16 +398,6 @@ async fn rebuild(
 
     if let Some(app) = app {
         let _ = GraphSnapshotEvent::from_snapshot(&handle.key, &snap, reason).emit(app);
-    }
-    if let Some(db) = db {
-        let key = handle.key.clone();
-        let to_save = snap.clone();
-        let started = std::time::Instant::now();
-        if let Err(e) = db.run(move |c| repo_cache::persist(c, &key, &to_save)).await {
-            tracing::warn!("could not persist graph cache for {}: {e}", handle.key);
-        } else {
-            tracing::debug!("persisted {} commits for {} in {:?}", snap.store.len(), handle.key, started.elapsed());
-        }
     }
     Ok(snap)
 }
@@ -628,12 +665,12 @@ pub async fn refresh_status_only(
     let _building = start_building(app, handle).await;
     let _shared = handle.lock.read().await;
     let Some(current) = handle.graph.load_full() else {
-        return load_live(app, None, handle, options, cache, SnapshotReason::Status, false).await;
+        return load_live(app, handle, options, cache, SnapshotReason::Status, false).await;
     };
     let status_snap = crate::git::queries::full_status(&handle.client, &handle.info.git_dir).await?;
     if status_snap.head_oid.as_deref() != current.refs.head.as_deref() {
         // HEAD moved: refs are stale too.
-        return load_live(app, None, handle, options, cache, SnapshotReason::Refresh, false).await;
+        return load_live(app, handle, options, cache, SnapshotReason::Refresh, false).await;
     }
     Ok(apply_status(app, handle, &current, status_snap, options).await)
 }
@@ -1179,7 +1216,7 @@ mod e2e {
         assert!(!rebuilt.is_finished(), "the rebuild waits while a load holds the lock");
         {
             let _shared = handle.lock.read().await;
-            load_live(None, None, &handle, options, &settings.cache, SnapshotReason::Refresh, false).await.unwrap();
+            load_live(None, &handle, options, &settings.cache, SnapshotReason::Refresh, false).await.unwrap();
         }
         drop(building);
 
@@ -1229,6 +1266,76 @@ mod e2e {
         let settings = Settings::default();
         refresh_full(None, None, &handle, GraphOptions::default(), &settings.cache, SnapshotReason::Live, false).await.unwrap();
         assert_eq!(state(&handle), (0, false));
+        handle.close().await;
+    }
+
+    /// The cache is written after the snapshot is stored and with nothing held: while a write
+    /// is under way the graph can be rebuilt, the repository written to, and it is not busy.
+    #[tokio::test]
+    async fn the_cache_is_written_with_the_graph_and_the_repository_free() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let mut repo = Scratch::new("cache-outside");
+        repo.commit("main 1");
+        let handle = repo.open().await;
+        let settings = Settings::default();
+        let options = GraphOptions::default();
+        let db = Db::open_in_memory().unwrap();
+
+        // The test holds what a cache write holds, so the refresh below stops just before its own.
+        let writing = handle.cache_saved.lock().await;
+        let refresh = {
+            let (handle, db, cache) = (handle.clone(), db.clone(), settings.cache.clone());
+            tokio::spawn(async move { refresh_full(None, Some(&db), &handle, options, &cache, SnapshotReason::Live, false).await.map(|s| s.version) })
+        };
+        for _ in 0..200 {
+            if handle.graph.load_full().is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(handle.graph.load_full().is_some_and(|s| s.complete), "the snapshot is stored before the cache is written");
+        assert!(!refresh.is_finished(), "the refresh is waiting to write the cache");
+        assert!(handle.graph_build.try_lock().is_ok(), "the graph can be rebuilt meanwhile");
+        assert!(handle.lock.try_write().is_ok(), "the repository can be written to meanwhile");
+        assert_eq!(handle.graph_busy.lock().unwrap().working, 0, "and it does not count as busy");
+        let key = handle.key.clone();
+        assert!(db.run(move |c| repo_cache::load(c, &key)).await.unwrap().is_none(), "nothing is in the cache yet");
+
+        drop(writing);
+        let version = refresh.await.unwrap().unwrap();
+        assert_eq!(*handle.cache_saved.lock().await, version);
+        let key = handle.key.clone();
+        assert_eq!(db.run(move |c| repo_cache::load(c, &key)).await.unwrap().unwrap().store.len(), 1);
+        handle.close().await;
+    }
+
+    /// Two cache writes can be waiting at once, in either order. The older snapshot is not
+    /// written over the newer one.
+    #[tokio::test]
+    async fn an_older_snapshot_is_never_written_to_the_cache_after_a_newer_one() {
+        if which::which("git").is_err() {
+            return;
+        }
+        let mut repo = Scratch::new("cache-order");
+        repo.commit("main 1");
+        let handle = repo.open().await;
+        let settings = Settings::default();
+        let options = GraphOptions::default();
+        let db = Db::open_in_memory().unwrap();
+        let older = refresh_full(None, None, &handle, options, &settings.cache, SnapshotReason::Live, false).await.unwrap();
+        repo.commit("main 2");
+        let newer = refresh_full(None, None, &handle, options, &settings.cache, SnapshotReason::Refresh, false).await.unwrap();
+        assert!(newer.version > older.version);
+
+        save_to_cache(Some(&db), &handle, &newer).await;
+        save_to_cache(Some(&db), &handle, &older).await;
+        assert_eq!(*handle.cache_saved.lock().await, newer.version);
+        let key = handle.key.clone();
+        let cached = db.run(move |c| repo_cache::load(c, &key)).await.unwrap().unwrap();
+        assert_eq!(cached.store.len(), 2, "the cache holds the newer snapshot's two commits");
         handle.close().await;
     }
 

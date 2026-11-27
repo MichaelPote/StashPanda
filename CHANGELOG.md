@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Stop a repository counting as busy, and its changes waiting, while its commit history is saved for the next start: after the first load of a long history, "Updating the commit graph…" stayed for a moment with the commits already on screen
 - Fix the window freezing for seconds when a commit with a large diff is selected: matching removed lines to added lines is now bounded for the whole diff, and a run of lines changed in the same way is matched at once
 - Give a commit, a branch and a tag the same operations in their right-click menus. A tag now has Merge, which only branches and the commit's own row had. A branch or tag in the Branches panel now has Cherry-pick, Revert and Reset, as its pill in the commit graph has. The pill of a tag that only a remote has now also has the commit's operations (Checkout, Create Branch Here, Merge and the rest), beside Fetch and Remove
 - Add Rename Remote Branch… to the right-click menu of a remote branch, in the Branches panel and on its pill in the commit graph. One push creates the new name and deletes the old one together, and local branches that tracked the old name then track the new one. Nothing is renamed when the remote already has the new name, or has commits on the branch that have not been fetched

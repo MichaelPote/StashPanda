@@ -78,6 +78,11 @@ pub struct RepoHandle {
     /// information was read and a slow load cannot replace a newer one. Always taken before
     /// `lock`, never while holding it.
     pub graph_build: Mutex<()>,
+    /// The version of the snapshot last written to the cache, held while one is being written.
+    /// The cache is written after `graph_build` and `lock` are released, so two writes can be
+    /// waiting at once; each takes this in turn, and one that finds a newer snapshot already
+    /// written writes nothing.
+    pub cache_saved: Mutex<u64>,
     /// What holds or waits for `graph_build`, and whether the frontend was told the graph is busy.
     pub graph_busy: std::sync::Mutex<crate::graph::loader::GraphBusy>,
     pub last_status: RwLock<Option<StatusSnapshot>>,

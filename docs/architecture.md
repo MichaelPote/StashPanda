@@ -848,9 +848,16 @@ started to wait, and tells it again when none is running or waiting any more
 `session.graph.busy`. The status bar then shows "Updating the commit graph…", unless "Loading N
 commits…" is already there, and the repository's tab shows a spinner in place of its icon. Only
 the backend can say this: a refresh it starts by itself (the watcher, the refresh after a write)
-sends nothing else until its snapshot is ready. Writing the cache counts as busy too, since it
-happens before the lock is let go; on the first load of a long history "Updating the commit
-graph…" can therefore show for a moment after the rows are in.
+sends nothing else until its snapshot is ready.
+
+**The cache is written after the locks are released** (`save_to_cache`). It used to be written
+inside `rebuild`, under `graph_build` and the shared `RepoHandle::lock`. The first write for a
+long history takes seconds, and for that time the repository stayed marked as busy after its
+rows were on screen, a hidden ref waited, and every write to the repository was held up, for a
+file nothing reads until the next start. Now each refresh stores and shows its snapshot, lets
+both locks go, and then writes. Two writes can be waiting at once, so they take turns on
+`RepoHandle::cache_saved`, which holds the version last written: one that finds a newer
+snapshot already written writes nothing, so the cache never goes back to an older picture.
 
 **The tab's spinner** (`sessionIsBusy` in `stores/sessions.ts`) shows for any of three things: a
 fetch, pull, push or sync is running (`session.operation`), the graph is busy as above, or
