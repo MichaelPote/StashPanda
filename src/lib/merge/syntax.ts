@@ -52,11 +52,11 @@ function decorationsFor(doc: Text, lines: RawToken[][]): DecorationSet {
 }
 
 /**
- * Colours the pane's text by the language of `path` in `theme`. The document as it was when the
- * colours were asked for must still be the document when they arrive; otherwise they are
- * dropped and asked for again.
+ * Colours the pane's text by the language of `path` in `theme`, leaving a line longer than
+ * `maxLineLength` characters plain. The document as it was when the colours were asked for must
+ * still be the document when they arrive; otherwise they are dropped and asked for again.
  */
-export function syntaxColours(path: string, theme: SyntaxTheme): Extension {
+export function syntaxColours(path: string, theme: SyntaxTheme, maxLineLength: number): Extension {
   const plugin = ViewPlugin.fromClass(
     class {
       private timer: ReturnType<typeof setTimeout> | null = null;
@@ -79,7 +79,7 @@ export function syntaxColours(path: string, theme: SyntaxTheme): Extension {
         if (doc.lines > MAX_SYNTAX_LINES) return;
         const ticket = (this.ticket += 1);
         const lines = doc.toString().split("\n");
-        highlightRuns(path, theme, [lines])
+        highlightRuns(path, theme, [lines], maxLineLength)
           .then((tokens) => {
             if (ticket !== this.ticket || this.view.state.doc !== doc || !tokens) return;
             this.view.dispatch({ effects: setColours.of(decorationsFor(doc, tokens[0] ?? [])) });

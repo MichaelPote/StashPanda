@@ -1826,6 +1826,77 @@ pub async fn delete_remote_branch(
     Ok(if gone.ok { gone } else { first })
 }
 
+/// Rename on `remote` the branch whose remote-tracking branch here is `<remote>/<branch>` to
+/// `new_name`. Git has no command for this, so it is one push that creates the new name at the
+/// commit `<remote>/<branch>` has here and deletes the old name: `git push --progress --atomic
+/// <remote> <commit>:<new ref> :<old ref>`. `--atomic` makes the remote take both changes or
+/// neither, so the branch is never left under two names or under none. Git then moves the
+/// remote-tracking branch here as well. The names on the remote come from the remote's fetch
+/// refspecs, as for `delete_remote_branch`.
+///
+/// Two leases guard it. `--force-with-lease=<old ref>:<commit>` refuses when someone has pushed
+/// to the branch since the last fetch, since the new name would lack those commits and the old
+/// one, with them, would be deleted. `--force-with-lease=<new ref>:` (nothing after the colon)
+/// refuses when the remote already has a branch of the new name. Both refusals come back as
+/// `(stale info)` in stderr (see `push_stale`), naming the ref. A remote can also refuse to
+/// delete the old name (its default branch, a protected branch, no permission), which comes back
+/// as `[remote rejected]`; nothing has changed then either.
+///
+/// Local branches that track the old name are left as they are: their upstream is gone
+/// afterwards, and the frontend points them at the new name with `branch_set_upstream`.
+pub async fn rename_remote_branch(
+    client: &GitClient,
+    remote: &str,
+    branch: &str,
+    new_name: &str,
+    progress: &(dyn Fn(String) + Send + Sync),
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<OpResult> {
+    valid_ref_name(remote)?;
+    valid_ref_name(branch)?;
+    valid_ref_name(new_name)?;
+    if branch == new_name {
+        return Err(GitError::InvalidPath { path: new_name.to_string(), reason: "the new name is the name the branch already has".into() });
+    }
+    let tracking = format!("refs/remotes/{remote}/{branch}");
+    let new_tracking = format!("refs/remotes/{remote}/{new_name}");
+    let config = client
+        .exec_allow_failure(GitReq::new("config", ["config".to_string(), "--get-all".into(), format!("remote.{remote}.fetch")]))
+        .await?;
+    let refspecs = String::from_utf8_lossy(&config.stdout).into_owned();
+    let unmapped = |path: String| GitError::InvalidPath { path, reason: format!("no fetch refspec of {remote} maps a remote branch to it") };
+    let Some(old_ref) = remote_ref_for(refspecs.lines(), &tracking) else {
+        return Err(unmapped(tracking));
+    };
+    let Some(new_ref) = remote_ref_for(refspecs.lines(), &new_tracking) else {
+        return Err(unmapped(new_tracking));
+    };
+    let seen = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", &format!("{tracking}^{{commit}}")])).await?;
+    let seen = String::from_utf8_lossy(&seen.stdout).trim().to_string();
+    if seen.is_empty() {
+        return Err(GitError::InvalidPath { path: tracking, reason: "this repository has no such remote branch; fetch first".into() });
+    }
+    // The lease below cannot be relied on for a name this repository already knows there: when
+    // that branch is at the same commit, Git has nothing to push for it, never checks the lease,
+    // and only deletes the old name.
+    let taken = client.exec_allow_failure(GitReq::new("rev-parse", ["rev-parse", "--verify", "-q", &new_tracking])).await?;
+    if taken.success() {
+        return Err(GitError::InvalidPath { path: new_tracking, reason: format!("{remote} already has a branch of that name") });
+    }
+    let args = [
+        "push".to_string(),
+        "--progress".into(),
+        "--atomic".into(),
+        format!("--force-with-lease={old_ref}:{seen}"),
+        format!("--force-with-lease={new_ref}:"),
+        remote.into(),
+        format!("{seen}:{new_ref}"),
+        format!(":{old_ref}"),
+    ];
+    let out = client.exec_streaming(GitReq::new("push", args).user().timeout(None).own_session(), progress, cancel).await?;
+    Ok(result(out))
+}
+
 /// True when a push with `--force-with-lease` was refused because the remote's branch is not
 /// where the lease expected: `! [rejected] dev (stale info)`.
 pub fn push_stale(res: &OpResult) -> bool {
@@ -5288,6 +5359,77 @@ mod e2e {
         assert!(matches!(delete_remote_branch(&client, "origin", "--all", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
         cancel.cancel();
         assert!(matches!(delete_remote_branch(&client, "origin", "main", &progress, &cancel).await, Err(GitError::Cancelled)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn rename_a_remote_branch_in_one_push() {
+        if which::which("git").is_err() { return; }
+        let root = std::env::temp_dir().join(format!("stashpanda-remote-rename-{}", uuid::Uuid::new_v4().simple()));
+        let (origin, local) = (root.join("origin.git"), root.join("local"));
+        std::fs::create_dir_all(&root).unwrap();
+        let run = |args: &[&std::ffi::OsStr]| assert!(Command::new("git").args(args).status().unwrap().success());
+        run(&["init".as_ref(), "-q".as_ref(), "--bare".as_ref(), "-b".as_ref(), "main".as_ref(), origin.as_os_str()]);
+        run(&["clone".as_ref(), "-q".as_ref(), origin.as_os_str(), local.as_os_str()]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        git(&local, &["push", "-q", "origin", "main", "main:refs/heads/feature/x", "main:refs/heads/taken"]);
+        git(&local, &["fetch", "-q"]);
+        let client = client_for(&local);
+        let progress = |_: String| {};
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let heads = || {
+            let mut names: Vec<String> = out(&local, &["ls-remote", "--heads", "origin"]).lines().filter_map(|l| l.split('\t').nth(1).map(String::from)).collect();
+            names.sort();
+            names
+        };
+        let tracked = |name: &str| Command::new("git").arg("-C").arg(&local).args(["rev-parse", "--verify", "-q", &format!("refs/remotes/origin/{name}")]).status().unwrap().success();
+        let commit = out(&local, &["rev-parse", "refs/remotes/origin/feature/x"]);
+
+        // The new name appears at the same commit and the old one goes, on the remote and here.
+        let renamed = rename_remote_branch(&client, "origin", "feature/x", "feature/y", &progress, &cancel).await.unwrap();
+        assert!(renamed.ok, "{renamed:?}");
+        assert_eq!(heads(), ["refs/heads/feature/y", "refs/heads/main", "refs/heads/taken"]);
+        assert!(tracked("feature/y") && !tracked("feature/x"));
+        assert_eq!(out(&local, &["rev-parse", "refs/remotes/origin/feature/y"]), commit);
+
+        // A name this repository knows the remote already has: refused before anything is
+        // pushed, even though the two branches are at the same commit.
+        assert!(matches!(rename_remote_branch(&client, "origin", "feature/y", "taken", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        assert_eq!(heads(), ["refs/heads/feature/y", "refs/heads/main", "refs/heads/taken"]);
+        assert!(tracked("feature/y"));
+
+        // A name the remote has that this repository has not fetched yet, at another commit:
+        // the remote refuses, and nothing changes on either side.
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "elsewhere"]);
+        git(&local, &["push", "-q", "origin", "HEAD:refs/heads/unfetched"]);
+        git(&local, &["update-ref", "-d", "refs/remotes/origin/unfetched"]);
+        let exists = rename_remote_branch(&client, "origin", "feature/y", "unfetched", &progress, &cancel).await.unwrap();
+        assert!(push_stale(&exists), "{exists:?}");
+        assert_eq!(heads(), ["refs/heads/feature/y", "refs/heads/main", "refs/heads/taken", "refs/heads/unfetched"]);
+        assert!(tracked("feature/y"));
+        git(&local, &["push", "-q", "origin", "--delete", "refs/heads/unfetched"]);
+
+        // Someone pushed to the branch after this repository last fetched it: refused, so the
+        // commit this repository has never seen is not left behind under a deleted name.
+        let seen = out(&local, &["rev-parse", "refs/remotes/origin/feature/y"]);
+        git(&local, &["commit", "-q", "--allow-empty", "-m", "unseen"]);
+        git(&local, &["push", "-q", "origin", "HEAD:refs/heads/feature/y"]);
+        git(&local, &["update-ref", "refs/remotes/origin/feature/y", &seen]);
+        let moved = rename_remote_branch(&client, "origin", "feature/y", "feature/z", &progress, &cancel).await.unwrap();
+        assert!(push_stale(&moved), "{moved:?}");
+        assert_eq!(heads(), ["refs/heads/feature/y", "refs/heads/main", "refs/heads/taken"]);
+
+        // The remote refuses to delete the branch its HEAD points at, so the new name is not
+        // made either: the push is all or nothing.
+        let refused = rename_remote_branch(&client, "origin", "main", "trunk", &progress, &cancel).await.unwrap();
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(heads(), ["refs/heads/feature/y", "refs/heads/main", "refs/heads/taken"]);
+        assert!(!tracked("trunk"));
+
+        // The same name, a remote branch this repository does not have, and option-like names.
+        assert!(matches!(rename_remote_branch(&client, "origin", "taken", "taken", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        assert!(matches!(rename_remote_branch(&client, "origin", "nope", "other", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
+        assert!(matches!(rename_remote_branch(&client, "origin", "taken", "--delete", &progress, &cancel).await, Err(GitError::InvalidPath { .. })));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

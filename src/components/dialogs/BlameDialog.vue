@@ -16,7 +16,7 @@ import { useVirtualRows } from "@/composables/useVirtualRows";
 import { layoutBlame, revisionLabel } from "@/lib/blame";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
-import { highlightRuns, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
+import { highlightRuns, maxLineLengthFor, mergeSpans, spanStyle, themeFor, type Span } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { openFileHistory, showCommitInGraph } from "@/lib/fileViews";
 import { splitPath } from "@/lib/files";
@@ -125,6 +125,8 @@ const preferredDark = usePreferredDark();
 const dark = computed(() => settings.theme === "dark" || (settings.theme === "system" && preferredDark.value));
 const syntaxOn = computed(() => settings.settings?.diff?.syntaxHighlight !== false);
 const syntaxTheme = computed(() => themeFor(dark.value, settings.settings?.diff));
+/** A line longer than this many characters stays plain, as in the diff viewer. */
+const syntaxMaxLineLength = computed(() => maxLineLengthFor(settings.settings?.diff));
 /** Past this many lines a file stays plain, as in the diff viewer. */
 const MAX_SYNTAX_LINES = 20_000;
 /** Each line's tokens, by line index, once the worker has answered for the version shown. */
@@ -132,7 +134,7 @@ const lineTokens = shallowRef<RawToken[][] | null>(null);
 let syntaxRequest = 0;
 
 watch(
-  [blame, syntaxTheme, syntaxOn],
+  [blame, syntaxTheme, syntaxOn, syntaxMaxLineLength],
   async () => {
     const id = (syntaxRequest += 1);
     lineTokens.value = null;
@@ -140,7 +142,7 @@ watch(
     const path = view.value?.path;
     if (!syntaxOn.value || !b || b.content !== "lines" || !path || b.lines.length === 0 || b.lines.length > MAX_SYNTAX_LINES) return;
     try {
-      const tokens = await highlightRuns(path, syntaxTheme.value, [b.lines]);
+      const tokens = await highlightRuns(path, syntaxTheme.value, [b.lines], syntaxMaxLineLength.value);
       if (id === syntaxRequest) lineTokens.value = tokens?.[0] ?? null;
     } catch {
       // A language that fails to load leaves the text plain.

@@ -32,7 +32,7 @@ import { findInText } from "@/lib/diff/find";
 import { operationNames, takeAllChoices, takeAllText, type TakeAll } from "@/lib/conflicts";
 import { diffRowPx, diffTextStyle, resolveDiffFont } from "@/lib/diff/font";
 import { bandPath } from "@/lib/diff/sideLayout";
-import { themeFor } from "@/lib/diff/syntax";
+import { maxLineLengthFor, themeFor } from "@/lib/diff/syntax";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { resolveSimpleBlocks } from "@/lib/merge/autoResolve";
 import { blocksField, dismissedChunks, initialBlocks, placeholders, saveText, setChunkDismissed, setDismissed, setTaken, type MergeBlock } from "@/lib/merge/blocks";
@@ -217,7 +217,7 @@ function paneExtensions(readOnly: boolean): Extension[] {
     paneTheme(),
     EditorState.tabSize.of(font.value.tabWidth),
     EditorState.readOnly.of(readOnly),
-    syntaxOn.value ? syntaxColours(p, themeFor(dark.value, settings.settings?.diff)) : [],
+    syntaxOn.value ? syntaxColours(p, themeFor(dark.value, settings.settings?.diff), maxLineLengthFor(settings.settings?.diff)) : [],
     lineMarks(),
     folds(),
     findMarks(),

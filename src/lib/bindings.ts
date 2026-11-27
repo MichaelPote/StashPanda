@@ -572,6 +572,17 @@ export const commands = {
 	 */
 	opDeleteRemoteBranch: (key: string, opId: string, remote: string, branch: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_delete_remote_branch", { key, opId, remote, branch })),
 	/**
+	 *  Rename `branch` (the name on the remote, `feature/x`) on `remote` to `newName`, for everyone
+	 *  who uses that remote, in one push that creates the new name and deletes the old one together
+	 *  (`git push --atomic`). The remote-tracking branch here moves with it. Returns `ok: false`
+	 *  with `(stale info)` in stderr, and changes nothing, when the remote already has a branch
+	 *  called `newName` or when its `branch` has commits the remote-tracking branch here does not;
+	 *  and with `[remote rejected]` when the remote refuses to delete the old name (its default
+	 *  branch, a protected branch). Local branches that tracked the old name are not touched: point
+	 *  them at the new one with `opBranchSetUpstream`. `opId` works as for `opPull`.
+	 */
+	opRenameRemoteBranch: (key: string, opId: string, remote: string, branch: string, newName: string) => typedError<OpResult, GitError>(__TAURI_INVOKE("op_rename_remote_branch", { key, opId, remote, branch, newName })),
+	/**
 	 *  Push tags to `remote`: every tag, the named ones, or those on a commit's history (what a push
 	 *  of a branch at that commit carries). Never forces: a tag the remote already has on another
 	 *  commit comes back with `ok: false`, `[rejected]` and "(already exists)" in stderr, and the
@@ -1282,6 +1293,11 @@ export type DiffSettings = {
 	/**  The Shiki theme that colours code while the app uses its light theme, as for `syntax_theme_dark`. */
 	syntaxThemeLight?: string,
 	/**
+	 *  The longest line that gets syntax colours, in characters. A longer one is shown plain: a
+	 *  very long line (minified code) becomes thousands of coloured pieces and slows the window.
+	 */
+	syntaxMaxLineLength?: number,
+	/**
 	 *  Inside a block of changed lines, pair each removed line with the added line most like it,
 	 *  rather than with the one in the same position.
 	 */
@@ -1328,6 +1344,12 @@ export type DiffTarget =
 { type: "unstaged" } | 
 /**  Working tree vs HEAD. */
 { type: "worktreeVsHead" } | 
+/**
+ *  Working tree vs a commit: the file as it is in `commit` on the old side, and as it is on
+ *  disk now on the new side. The path is the commit's: a file renamed since then shows as
+ *  deleted, and a file the commit does not have shows the working tree's file as all added.
+ */
+{ type: "commitVsWorktree"; commit: string } | 
 /**  A file Git does not know yet; rendered as all added. */
 { type: "untracked" } | 
 /**

@@ -33,6 +33,22 @@ export function openBlame(key: string, path: string, rev: string | null, line?: 
   void useDialogsStore().open("blame", { key, path, rev, line });
 }
 
+/**
+ * Why a file in a commit's list cannot be compared with the working tree, or null when it can:
+ * the diff is of a commit's file, and the repository has a working tree to compare it with.
+ */
+export function compareWorktreeReason(target: DiffTarget | null, isBare: boolean): string | null {
+  if (!target) return "Right-click a file.";
+  if (target.type !== "commit") return "This is the working tree's own version already.";
+  if (isBare) return "This repository is bare: it has no working tree to compare with.";
+  return null;
+}
+
+/** Opens the dialog that compares `path` as it is in `commit` with the file in the working tree. */
+export function openCompareWithWorktree(key: string, path: string, commit: string): void {
+  void useDialogsStore().open("compareWorktree", { key, path, commit });
+}
+
 /** Conflict letters of a file both sides still have, which the merge editor can open. */
 const MERGEABLE = new Set(["UU", "AA"]);
 

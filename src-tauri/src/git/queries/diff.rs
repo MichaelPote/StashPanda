@@ -22,6 +22,10 @@ pub enum DiffTarget {
     Unstaged,
     /// Working tree vs HEAD.
     WorktreeVsHead,
+    /// Working tree vs a commit: the file as it is in `commit` on the old side, and as it is on
+    /// disk now on the new side. The path is the commit's: a file renamed since then shows as
+    /// deleted, and a file the commit does not have shows the working tree's file as all added.
+    CommitVsWorktree { commit: String },
     /// A file Git does not know yet; rendered as all added.
     Untracked,
     /// A conflicted file: one of its versions against another. A version the conflict lacks (the
@@ -360,6 +364,13 @@ pub async fn get_diff(
         DiffTarget::WorktreeVsHead => {
             args.push("diff".into());
             args.push("HEAD".into());
+            args.extend(common_flags(opts));
+        }
+        DiffTarget::CommitVsWorktree { commit } => {
+            // The frontend sends a commit ID; anything that could be read as an option is refused.
+            crate::git::ops::valid_revision(commit)?;
+            args.push("diff".into());
+            args.push(commit.clone());
             args.extend(common_flags(opts));
         }
         DiffTarget::Untracked => {

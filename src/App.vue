@@ -10,6 +10,7 @@ import AboutDialog from "@/components/dialogs/AboutDialog.vue";
 import ApplyStashDialog from "@/components/dialogs/ApplyStashDialog.vue";
 import AskpassDialog from "@/components/dialogs/AskpassDialog.vue";
 import BlameDialog from "@/components/dialogs/BlameDialog.vue";
+import CompareWorktreeDialog from "@/components/dialogs/CompareWorktreeDialog.vue";
 import ChoiceDialog from "@/components/dialogs/ChoiceDialog.vue";
 import CommitDialog from "@/components/dialogs/CommitDialog.vue";
 import ConfirmDialog from "@/components/dialogs/ConfirmDialog.vue";
@@ -19,6 +20,7 @@ import DeleteBranchDialog from "@/components/dialogs/DeleteBranchDialog.vue";
 import FileHistoryDialog from "@/components/dialogs/FileHistoryDialog.vue";
 import HostKeyDialog from "@/components/dialogs/HostKeyDialog.vue";
 import RenameBranchDialog from "@/components/dialogs/RenameBranchDialog.vue";
+import RenameRemoteBranchDialog from "@/components/dialogs/RenameRemoteBranchDialog.vue";
 import RemoveTagDialog from "@/components/dialogs/RemoveTagDialog.vue";
 import RenameTagDialog from "@/components/dialogs/RenameTagDialog.vue";
 import MoveTagDialog from "@/components/dialogs/MoveTagDialog.vue";
@@ -266,6 +268,7 @@ function dismissRepoWarning(warning: string): void {
     <CreateBranchDialog />
     <CreateTagDialog />
     <RenameBranchDialog />
+    <RenameRemoteBranchDialog />
     <DeleteBranchDialog />
     <RemoveTagDialog />
     <RenameTagDialog />
@@ -281,6 +284,7 @@ function dismissRepoWarning(warning: string): void {
     <PushDefaultDialog />
     <FileHistoryDialog />
     <BlameDialog />
+    <CompareWorktreeDialog />
     <MergeEditorDialog v-if="dialogs.current('mergeEditor')" />
     <MergeDialog />
     <RebaseDialog />

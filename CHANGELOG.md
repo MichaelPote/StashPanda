@@ -5,7 +5,10 @@ release moves those lines under its version number.
 
 ## Unreleased
 
-- Stop one very long line, such as minified code, slowing the whole window down: a line over 256 characters is now shown without syntax colours in the diff, in Blame and in the merge editor
+- Add Rename Remote Branch… to the right-click menu of a remote branch, in the Branches panel and on its pill in the commit graph. One push creates the new name and deletes the old one together, and local branches that tracked the old name then track the new one. Nothing is renamed when the remote already has the new name, or has commits on the branch that have not been fetched
+- Add Compare with Working Tree to the right-click menu of a file in a commit's list: a dialog shows that commit's version of the file against the file as it is on disk now
+- Fix a remote branch inside a folder in the Branches panel not being indented under its folder, as a local branch is
+- Stop one very long line, such as minified code, slowing the whole window down: a line over 500 characters is now shown without syntax colours in the diff, in Blame and in the merge editor. "Longest line with syntax colours" on the Diff page of Settings changes the length
 
 ## 0.6.10 (2026-11-25)
 

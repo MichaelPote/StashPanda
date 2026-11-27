@@ -25,6 +25,14 @@ export interface RenameBranchPayload {
   remoteCopy: PushTarget | null;
 }
 
+export interface RenameRemoteBranchPayload {
+  key: string;
+  /** The remote the branch is on. */
+  remote: string;
+  /** The branch's name on that remote, without the remote's name: `feature/x` for `origin/feature/x`. */
+  branch: string;
+}
+
 /** What the Remote dialog does: add a remote, change its URLs, rename it, or remove it. */
 export type RemoteDialogMode = "add" | "edit" | "rename" | "remove";
 
@@ -433,6 +441,14 @@ export interface BlamePayload {
   line?: number;
 }
 
+export interface CompareWorktreePayload {
+  key: string;
+  /** The file's path in `commit`. */
+  path: string;
+  /** The commit whose version of the file is compared with the one in the working tree. */
+  commit: string;
+}
+
 export interface MergeEditorPayload {
   key: string;
   /** The conflicted file to resolve. */
@@ -452,6 +468,8 @@ export interface DialogSpecs {
   createBranch: { payload: CreateBranchPayload; result: OpResult | null };
   createTag: { payload: CreateTagPayload; result: OpResult | null };
   renameBranch: { payload: RenameBranchPayload; result: RenameBranchResult | null };
+  /** The dialog does the rename and says how it went; it resolves with nothing. */
+  renameRemoteBranch: { payload: RenameRemoteBranchPayload; result: null };
   /** Resolves with the tick box's state once Delete branch is pressed; `deleteBranch` does the work. */
   deleteBranch: { payload: DeleteBranchPayload; result: DeleteBranchResult | null };
   removeTag: { payload: TagPayload; result: RemoveTagResult | null };
@@ -475,6 +493,7 @@ export interface DialogSpecs {
   choice: { payload: ChoicePayload; result: string | null };
   fileHistory: { payload: FileHistoryPayload; result: null };
   blame: { payload: BlamePayload; result: null };
+  compareWorktree: { payload: CompareWorktreePayload; result: null };
   mergeEditor: { payload: MergeEditorPayload; result: null };
   passphrase: { payload: PassphrasePayload; result: PassphraseResult | null };
   /** Resolves with what was typed, or null when cancelled. */
@@ -498,6 +517,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   createBranch: null,
   createTag: null,
   renameBranch: null,
+  renameRemoteBranch: null,
   deleteBranch: null,
   removeTag: null,
   renameTag: null,
@@ -518,6 +538,7 @@ const CANCEL_RESULTS: { [K in DialogKind]: DialogSpecs[K]["result"] } = {
   choice: null,
   fileHistory: null,
   blame: null,
+  compareWorktree: null,
   mergeEditor: null,
   passphrase: null,
   askpass: null,

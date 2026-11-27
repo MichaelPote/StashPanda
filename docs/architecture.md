@@ -633,6 +633,20 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   `git checkout -b fix origin/main` leaves `fix` tracking `origin/main`. The local branch is
   deleted first, and the remote branch only once that worked, with the same command and lease as
   Delete Remote Branch… (`deleteOnRemote`).
+- **Rename Remote Branch…** (`rename_remote_branch` in `git/ops/mod.rs`,
+  `RenameRemoteBranchDialog.vue`), in the right-click menu of a remote branch in the Branches
+  panel and of its pill in the graph. Git has no command for it, so it is one push that creates
+  the new name at the commit the remote-tracking branch has here and deletes the old name:
+  `git push --atomic <remote> <commit>:<new ref> :<old ref>`. `--atomic` means the remote takes
+  both changes or neither. Two leases guard it: the old name must still be at that commit (or
+  someone's unfetched commits would be dropped with it), and the new name must not exist.
+  **The second lease is not enough by itself:** when the remote already has the new name at the
+  same commit, Git has nothing to push for it, never checks the lease, and only deletes the old
+  name. So a new name this repository already knows on that remote is refused before any push.
+  A remote refuses to delete its default branch, which refuses the whole rename
+  (`remoteRenameRefusal` in `lib/remoteBranchRename.ts` turns each refusal into words). Local
+  branches that tracked the old name are pointed at the new one afterwards with
+  `op_branch_set_upstream`, since Git leaves them tracking a branch that has gone.
 - **Sync** is pull, then push, as one operation under the write gate. Nothing is pushed when the
   pull fails or stops on conflicts.
 - **Clone** (`repo/clone.rs`): a missing or empty folder gets a plain `git clone --progress`. A
@@ -1010,12 +1024,20 @@ status bar, and each clears the other.
 - **Syntax colours:** Shiki in a Web Worker (`lib/diff/syntax.worker.ts`) with its JavaScript
   regex engine, so no WebAssembly. 62 chosen languages, each grammar loaded the first time it is
   needed. Each hunk's old and new side go to the worker as whole runs, so a comment spanning lines
-  colours correctly. Diffs over 20,000 lines stay plain. So does any one line over 256 characters
-  (`MAX_SYNTAX_LINE_LENGTH` in `lib/diff/tokenizeRun.ts`, through Shiki's
-  `tokenizeMaxLineLength`): a minified line became thousands of coloured elements in one row
+  colours correctly. Diffs over 20,000 lines stay plain. So does any one line over 500 characters, or
+  whatever `diff.syntaxMaxLineLength` is set to on the Diff page of Settings (`maxLineLengthFor`
+  in `lib/diff/syntax.ts`, `tokenizeRun.ts`, through Shiki's `tokenizeMaxLineLength`): a minified
+  line became thousands of coloured elements in one row
   (2,388 for a 20,000-character line of minified JavaScript), and laying them out slowed the whole
   window. The lines after it keep their colours. The Blame dialog and the merge editor use the
   same worker, so the limit holds there too.
+- **Compare with Working Tree** (`CompareWorktreeDialog.vue`): the right-click menu of a file in
+  a commit's list opens a dialog, modelled on File History, with the same `DiffViewer` showing
+  `DiffTarget::CommitVsWorktree` (`git diff <commit> -- <path>`): the commit's version on the old
+  side and the file on disk on the new one. It is read-only. Like every working tree diff it
+  reloads when the repository's status changes, which a further edit to a file that is already
+  modified does not do. The item is not offered in the Working Tree row's own list. The path is
+  the commit's, so a file renamed since shows as deleted.
 - **Find** (`composables/useFind.ts`, `FindBox.vue`, `lib/diff/find.ts`): Ctrl+F in a diff, the
   File History dialog or Blame. Past 10,000 matches the rest are neither drawn nor counted.
 

@@ -418,6 +418,10 @@ async function reveal(entry: RefEntry): Promise<void> {
                         @dblclick="checkoutOnDoubleClick(row.entry)"
                         @keydown.enter="reveal(row.entry)"
                       >
+                        <!-- The same empty 12 pixels a local branch row has where its checked-out
+                             dot goes: the tag then lines up with the icons of the folders beside
+                             it, and a branch in a folder sits in under the folder's name. -->
+                        <span class="size-[12px] shrink-0" />
                         <RefToggleTag :colour="colourOf(row.entry)" :visible="isShown(row.entry)" :name="row.entry.short" @toggle="toggleShown(row.entry)" />
                         <BranchName :name="listName(remoteShort(row.entry))" class="text-muted-foreground" />
                       </div>

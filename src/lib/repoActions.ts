@@ -2082,10 +2082,24 @@ export async function trackRemoteBranch(key: string, name: string): Promise<void
  */
 const REMOTE_BRANCH_MISSING = /deleting a non-existent ref|remote ref does not exist/i;
 
-/** Why a remote branch cannot be deleted right now, or null when it can. */
+/** Why a remote branch cannot be deleted or renamed right now, or null when it can. */
 export function deleteRemoteBranchReason(session: RepoSession | null | undefined): string | null {
   if (!session) return "Open a repository first.";
   return busyReason(session);
+}
+
+/**
+ * Opens the dialog that renames remote branch `short` (`origin/feature/x`) on `remote`, for
+ * everyone who uses that remote. Not while a fetch, pull or push is running: it is a push itself.
+ */
+export function renameRemoteBranch(key: string, short: string, remote: string): void {
+  const sessions = useSessionsStore();
+  const reason = deleteRemoteBranchReason(sessions.sessions.get(key));
+  if (reason) {
+    sessions.notify(reason);
+    return;
+  }
+  void useDialogsStore().open("renameRemoteBranch", { key, remote, branch: stripRemote(short, remote) });
 }
 
 /**

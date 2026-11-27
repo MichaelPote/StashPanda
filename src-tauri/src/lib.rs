@@ -158,6 +158,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ops::op_push,
             ipc::ops::op_push_all,
             ipc::ops::op_delete_remote_branch,
+            ipc::ops::op_rename_remote_branch,
             ipc::ops::op_push_tags,
             ipc::ops::op_remote_add,
             ipc::ops::op_remote_set_url,

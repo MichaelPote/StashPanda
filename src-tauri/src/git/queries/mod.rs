@@ -201,6 +201,54 @@ mod e2e {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A file as it is in an older commit against the file on disk: the commit's lines are the
+    /// old side, whatever has been committed, staged or only edited since is the new side.
+    #[tokio::test]
+    async fn diff_of_a_commit_against_the_working_tree() {
+        use super::diff::{get_diff, DiffOptions, DiffTarget};
+        if which::which("git").is_err() {
+            return;
+        }
+        let dir = scratch("commit-vs-worktree");
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "here\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "first"]);
+        let head = Command::new("git").arg("-C").arg(&dir).args(["rev-parse", "HEAD"]).output().expect("git runs");
+        let first = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        // Since then: one change committed, one staged, one only on disk; a file deleted; a file added.
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.join("new.txt"), "new\n").unwrap();
+        git(&dir, &["rm", "-q", "gone.txt"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-qm", "second"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        git(&dir, &["add", "-A"]);
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+
+        let client = client_for(&dir).await;
+        let opts = DiffOptions::default();
+        let target = DiffTarget::CommitVsWorktree { commit: first.clone() };
+        let d = get_diff(&client, &target, "a.txt", None, &opts).await.unwrap();
+        assert_eq!(diff_files(&d.text), ["diff --git a/a.txt b/a.txt"]);
+        let added: Vec<&str> = d.text.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).collect();
+        assert_eq!(added, ["+two", "+three", "+four"], "{}", d.text);
+        assert!(!d.text.lines().any(|l| l.starts_with('-') && !l.starts_with("---")), "{}", d.text);
+
+        // Deleted since the commit: every line removed. Not in the commit: every line added.
+        let gone = get_diff(&client, &target, "gone.txt", None, &opts).await.unwrap();
+        assert!(gone.text.contains("deleted file mode") && gone.text.contains("-here"), "{}", gone.text);
+        let new = get_diff(&client, &target, "new.txt", None, &opts).await.unwrap();
+        assert!(new.text.contains("new file mode") && new.text.contains("+new"), "{}", new.text);
+
+        // The same on both sides: nothing to show. Something that is not a revision: refused.
+        let head = DiffTarget::CommitVsWorktree { commit: "HEAD".into() };
+        assert_eq!(get_diff(&client, &head, "new.txt", None, &opts).await.unwrap().text, "");
+        let option = DiffTarget::CommitVsWorktree { commit: "--output=x".into() };
+        assert!(matches!(get_diff(&client, &option, "a.txt", None, &opts).await, Err(crate::error::GitError::InvalidPath { .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A copy's diff is the copy's alone, not its source's changes too.
     #[tokio::test]
     async fn diff_of_a_copy_leaves_out_the_source() {

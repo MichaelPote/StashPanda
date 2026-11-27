@@ -5,6 +5,7 @@
 import type { Segment } from "@/lib/diff/parseUnified";
 import type { RawToken, SyntaxRequest, SyntaxResponse } from "@/lib/diff/syntax.worker";
 import { DARK_SYNTAX_THEMES, LIGHT_SYNTAX_THEMES, type SyntaxTheme } from "@/lib/diff/syntaxThemes";
+import { DEFAULT_SYNTAX_MAX_LINE_LENGTH } from "@/lib/diff/tokenizeRun";
 
 /**
  * The syntax colour theme for the app's dark or light theme: the one chosen on the Diff page of
@@ -15,6 +16,16 @@ export function themeFor(dark: boolean, chosen?: { syntaxThemeDark?: string; syn
   const list = dark ? DARK_SYNTAX_THEMES : LIGHT_SYNTAX_THEMES;
   const id = dark ? chosen?.syntaxThemeDark : chosen?.syntaxThemeLight;
   return list.find((t) => t.id === id)?.id ?? list[0].id;
+}
+
+/**
+ * The longest line that gets syntax colours, in characters: the one set on the Diff page of
+ * Settings (`diff.syntaxMaxLineLength`), or 500 when the settings have not loaded or hold
+ * something that is not a whole number above zero.
+ */
+export function maxLineLengthFor(chosen?: { syntaxMaxLineLength?: number } | null): number {
+  const n = chosen?.syntaxMaxLineLength;
+  return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : DEFAULT_SYNTAX_MAX_LINE_LENGTH;
 }
 
 let worker: Worker | null = null;
@@ -37,13 +48,19 @@ function getWorker(): Worker {
 
 /**
  * The tokens of every line of every run, coloured with `theme` in the language of `path` (from
- * its file name or extension). Null when the language is not known: the text stays plain.
+ * its file name or extension). Null when the language is not known: the text stays plain. A
+ * line longer than `maxLineLength` characters comes back as one plain token (`maxLineLengthFor`).
  */
-export function highlightRuns(path: string, theme: SyntaxTheme, runs: string[][]): Promise<RawToken[][][] | null> {
+export function highlightRuns(
+  path: string,
+  theme: SyntaxTheme,
+  runs: string[][],
+  maxLineLength: number = DEFAULT_SYNTAX_MAX_LINE_LENGTH,
+): Promise<RawToken[][][] | null> {
   const id = nextId++;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    getWorker().postMessage({ id, path, theme, runs } satisfies SyntaxRequest);
+    getWorker().postMessage({ id, path, theme, runs, maxLineLength } satisfies SyntaxRequest);
   });
 }
 

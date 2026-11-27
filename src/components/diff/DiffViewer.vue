@@ -17,7 +17,7 @@ import { highlightPair, noDiffMessage, parseUnified, type DiffLine, type Highlig
 import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
 import { pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
 import { BandBuilder, bandEdges, bandPath, GAP_PX, sideEdges, sideFill, sideOffsets, type Band } from "@/lib/diff/sideLayout";
-import { highlightRuns, insertGaps, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
+import { highlightRuns, insertGaps, maxLineLengthFor, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
 import { errorMessage, IpcError, unwrap } from "@/lib/ipc";
 import { conflictComparisons, conflictStages, conflictSummary, missingVersionNote, operationNames, shortSideNames, takeLabel, type ConflictComparison } from "@/lib/conflicts";
@@ -382,6 +382,8 @@ const dark = computed(() => settings.theme === "dark" || (settings.theme === "sy
 const syntaxTheme = computed(() => themeFor(dark.value, settings.settings?.diff));
 /** The path whose language colours the diff, or null when colouring is switched off. */
 const syntaxPath = computed(() => (settings.settings?.diff?.syntaxHighlight === false ? null : diffPath.value));
+/** A line longer than this many characters stays plain (the Diff page of Settings). */
+const syntaxMaxLineLength = computed(() => maxLineLengthFor(settings.settings?.diff));
 /** Past this many lines a diff stays plain: colouring it would take longer than it is worth. */
 const MAX_SYNTAX_LINES = 20_000;
 /** Each line's tokens, filled in when the worker answers for the diff on screen. */
@@ -389,7 +391,7 @@ const lineTokens = shallowRef(new WeakMap<DiffLine, RawToken[]>());
 let syntaxRequest = 0;
 
 watch(
-  [file, syntaxPath, syntaxTheme],
+  [file, syntaxPath, syntaxTheme, syntaxMaxLineLength],
   async () => {
     const id = (syntaxRequest += 1);
     lineTokens.value = new WeakMap();
@@ -411,7 +413,7 @@ watch(
     }
     if (total === 0 || total > MAX_SYNTAX_LINES) return;
     try {
-      const tokens = await highlightRuns(path, syntaxTheme.value, runs);
+      const tokens = await highlightRuns(path, syntaxTheme.value, runs, syntaxMaxLineLength.value);
       if (id !== syntaxRequest || tokens === null) return;
       const map = new WeakMap<DiffLine, RawToken[]>();
       tokens.forEach((run, r) =>

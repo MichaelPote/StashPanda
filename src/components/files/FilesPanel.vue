@@ -26,7 +26,7 @@ import {
   takeVersion,
   unstageSelected,
 } from "@/lib/repoActions";
-import { fileViewReason, fileViewRev, mergeEditorReason, openBlame, openFileHistory, openMergeEditor } from "@/lib/fileViews";
+import { compareWorktreeReason, fileViewReason, fileViewRev, mergeEditorReason, openBlame, openCompareWithWorktree, openFileHistory, openMergeEditor } from "@/lib/fileViews";
 import { conflictStages, operationNames, takeAllChoices } from "@/lib/conflicts";
 import { formatAbsoluteTime, formatRelativeTime, isoTime, shortOid } from "@/lib/format";
 import { errorMessage, unwrap } from "@/lib/ipc";
@@ -506,6 +506,13 @@ const openReason = computed(() => {
   return openFileReason(props.session);
 });
 
+/** Compare with Working Tree, for a file in a commit's list. */
+const compareReason = computed(() => compareWorktreeReason(menuItem.value?.target ?? null, props.session.info.isBare));
+function compareWithWorktree(): void {
+  const item = menuItem.value;
+  if (item && item.target.type === "commit") openCompareWithWorktree(props.session.key, item.path, item.target.commit);
+}
+
 /** Show History and Blame: from the commit for a commit's file, from the working tree otherwise. */
 const fileViewMenuReason = computed(() => (menuItem.value ? fileViewReason(menuItem.value.target) : "Right-click a file."));
 
@@ -795,6 +802,11 @@ function pathText(item: FileItem): string {
             {{ mode === "commit" ? "Open the Working Tree Version" : "Open" }}
           </ActionMenuItem>
           <ActionMenuItem :reason="openReason" @select="menuItem && revealWorktreeFile(session.key, menuItem.path)">Show in Folder</ActionMenuItem>
+          <!-- Only in a commit's list: the Working Tree row's files are the working tree's version already. -->
+          <template v-if="mode === 'commit'">
+            <ContextMenuSeparator />
+            <ActionMenuItem :reason="compareReason" @select="compareWithWorktree">Compare with Working Tree</ActionMenuItem>
+          </template>
           <ContextMenuSeparator />
           <ActionMenuItem :reason="fileViewMenuReason" @select="menuItem && openFileHistory(session.key, menuItem.path, fileViewRev(menuItem.target))">Show History</ActionMenuItem>
           <ActionMenuItem :reason="fileViewMenuReason" @select="menuItem && openBlame(session.key, menuItem.path, fileViewRev(menuItem.target))">Blame</ActionMenuItem>

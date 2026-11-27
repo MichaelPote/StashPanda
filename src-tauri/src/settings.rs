@@ -303,6 +303,9 @@ pub struct DiffSettings {
     pub syntax_theme_dark: String,
     /// The Shiki theme that colours code while the app uses its light theme, as for `syntax_theme_dark`.
     pub syntax_theme_light: String,
+    /// The longest line that gets syntax colours, in characters. A longer one is shown plain: a
+    /// very long line (minified code) becomes thousands of coloured pieces and slows the window.
+    pub syntax_max_line_length: u32,
     /// Inside a block of changed lines, pair each removed line with the added line most like it,
     /// rather than with the one in the same position.
     pub match_similar_lines: bool,
@@ -359,6 +362,7 @@ impl Default for DiffSettings {
             syntax_highlight: true,
             syntax_theme_dark: "github-dark-default".into(),
             syntax_theme_light: "github-light-default".into(),
+            syntax_max_line_length: 500,
             match_similar_lines: true,
             font_smoothing: FontSmoothing::ClearType,
             mod_left_as_removed: false,

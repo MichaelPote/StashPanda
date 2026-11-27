@@ -567,6 +567,28 @@ pub async fn op_delete_remote_branch(app: AppHandle, state: State<'_, AppState>,
     network_op!(app, state, key, op_id, |h, progress, cancel| ops::delete_remote_branch(&h.client, &remote, &branch, &progress, cancel).await)
 }
 
+/// Rename `branch` (the name on the remote, `feature/x`) on `remote` to `newName`, for everyone
+/// who uses that remote, in one push that creates the new name and deletes the old one together
+/// (`git push --atomic`). The remote-tracking branch here moves with it. Returns `ok: false`
+/// with `(stale info)` in stderr, and changes nothing, when the remote already has a branch
+/// called `newName` or when its `branch` has commits the remote-tracking branch here does not;
+/// and with `[remote rejected]` when the remote refuses to delete the old name (its default
+/// branch, a protected branch). Local branches that tracked the old name are not touched: point
+/// them at the new one with `opBranchSetUpstream`. `opId` works as for `opPull`.
+#[tauri::command]
+#[specta::specta]
+pub async fn op_rename_remote_branch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    key: String,
+    op_id: String,
+    remote: String,
+    branch: String,
+    new_name: String,
+) -> Result<OpResult> {
+    network_op!(app, state, key, op_id, |h, progress, cancel| ops::rename_remote_branch(&h.client, &remote, &branch, &new_name, &progress, cancel).await)
+}
+
 /// Push tags to `remote`: every tag, the named ones, or those on a commit's history (what a push
 /// of a branch at that commit carries). Never forces: a tag the remote already has on another
 /// commit comes back with `ok: false`, `[rejected]` and "(already exists)" in stderr, and the

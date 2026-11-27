@@ -416,6 +416,16 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
         options: LIGHT_SYNTAX_THEMES.map((t) => ({ value: t.id, label: t.label })),
       },
       {
+        kind: "number",
+        group: "diff",
+        key: "syntaxMaxLineLength",
+        label: "Longest line with syntax colours",
+        help: "A line longer than this is shown without syntax colours, in the diff, Blame and the Merge editor. One very long line, such as minified code, otherwise becomes thousands of coloured pieces and slows the whole window down.",
+        unit: "characters",
+        min: 80,
+        max: 100_000,
+      },
+      {
         kind: "toggle",
         group: "diff",
         key: "matchSimilarLines",

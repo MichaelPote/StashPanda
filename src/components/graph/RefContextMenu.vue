@@ -27,6 +27,7 @@ import {
   pushTags,
   pushTagsReason,
   renameBranch,
+  renameRemoteBranch,
   renameTag,
   requestCheckout,
   revisionOf,
@@ -137,7 +138,7 @@ const pushUpstream = computed(() => {
   return up?.startsWith("refs/remotes/") ? up.slice("refs/remotes/".length) : null;
 });
 const pushReason = computed(() => pushBranchReason(session.value, props.short));
-/** A fetch, pull or push already running would have to finish first. */
+/** A fetch, pull or push already running would have to finish first; the same holds for renaming it. */
 const deleteRemoteReason = computed(() => deleteRemoteBranchReason(session.value));
 
 /** The remote of a remote branch, for the delete; empty for any other kind of ref. */
@@ -194,6 +195,9 @@ function chooseColour(colour: number | null): void {
       </template>
       <template v-else-if="kind.type === 'remoteBranch'">
         <ContextMenuSeparator />
+        <ActionMenuItem :reason="deleteRemoteReason" @select="renameRemoteBranch(sessionKey, short, remoteName)">
+          Rename Remote Branch…
+        </ActionMenuItem>
         <ActionMenuItem destructive :reason="deleteRemoteReason" @select="deleteRemoteBranch(sessionKey, short, remoteName)">
           Delete Remote Branch…
         </ActionMenuItem>
