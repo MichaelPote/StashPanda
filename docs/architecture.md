@@ -995,6 +995,16 @@ status bar, and each clears the other.
 - **One SVG for the visible rows** (`GraphLanesSvg.vue`), inside the same translated block as the
   row elements, so the dot for row i sits at exactly the height of its text. Straight runs of one
   lane collapse into one `<path>`. The SVG ignores the pointer; the rows beneath handle clicks.
+- **The right-click menus of a commit, a branch and a tag offer the same operations on the
+  commit** (Checkout, Create Branch Here, Merge, Cherry-pick, Revert, Reset, Add Tag, Remove Tag,
+  the three Copy items); a branch's and a tag's add their own (Push, Rename, Delete, Colour). The
+  parts are shared so they cannot drift apart: `CommitMenuItems.vue` (Cherry-pick onwards) is in
+  all of them, and `CommitActionItems.vue` (Checkout, Create Branch Here, Merge, by commit ID or
+  by the row's branch) is in the commit row's menu and in the menu of a tag only a remote has;
+  `RefContextMenu.vue` has its own three, which name the branch or tag. Cherry-pick, Revert and
+  Reset need the commit's row. A pill has it; for the Branches panel the menu asks the graph for
+  it as it opens (`locateCommit` in the sessions store), and leaves the three out when the graph
+  does not show the commit.
 - Ref pills (`RefPill.vue`): local branches solid and remote branches outlined, or the other way
   round with `appearance.solidRemotePills`. A local branch level with its upstream is two pills
   joined at a chevron; when they are on different commits, the local pill has a notch on its left

@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Give a commit, a branch and a tag the same operations in their right-click menus. A tag now has Merge, which only branches and the commit's own row had. A branch or tag in the Branches panel now has Cherry-pick, Revert and Reset, as its pill in the commit graph has. The pill of a tag that only a remote has now also has the commit's operations (Checkout, Create Branch Here, Merge and the rest), beside Fetch and Remove
 - Add Rename Remote Branch… to the right-click menu of a remote branch, in the Branches panel and on its pill in the commit graph. One push creates the new name and deletes the old one together, and local branches that tracked the old name then track the new one. Nothing is renamed when the remote already has the new name, or has commits on the branch that have not been fetched
 - Add Compare with Working Tree to the right-click menu of a file in a commit's list: a dialog shows that commit's version of the file against the file as it is on disk now
 - Fix a remote branch inside a folder in the Branches panel not being indented under its folder, as a local branch is

@@ -920,21 +920,31 @@ export const useSessionsStore = defineStore("sessions", () => {
   }
 
   /**
+   * The row of commit `oid` in the graph as it is now, and where it is, or null when the graph
+   * does not show that commit (its branch is hidden, or the graph has not loaded). Fails as the
+   * backend does, with `staleVersion` when a newer snapshot has taken over meanwhile.
+   */
+  async function locateCommit(key: string, oid: string): Promise<{ row: GraphRow; index: number } | null> {
+    const meta = sessions.get(key)?.graph.meta;
+    if (!meta || meta.version === 0) return null;
+    const [index] = await unwrap(commands.graphFind(key, meta.version, [oid]));
+    if (index === null || index === undefined) return null;
+    const row = (await unwrap(commands.graphRows(key, meta.version, index, 1)))[0];
+    return row ? { row, index } : null;
+  }
+
+  /**
    * Selects the commit a ref points at and asks the graph view to scroll to it.
    * Returns false when the commit is not in the current snapshot.
    */
   async function selectCommit(key: string, oid: string): Promise<boolean> {
     const session = sessions.get(key);
-    const meta = session?.graph.meta;
-    if (!session || !meta || meta.version === 0) return false;
+    if (!session) return false;
     try {
-      const [index] = await unwrap(commands.graphFind(key, meta.version, [oid]));
-      if (index === null || index === undefined) return false;
-      const rows = await unwrap(commands.graphRows(key, meta.version, index, 1));
-      const row = rows[0];
-      if (!row) return false;
-      selectRow(session, row);
-      session.reveal = { index };
+      const found = await locateCommit(key, oid);
+      if (!found) return false;
+      selectRow(session, found.row);
+      session.reveal = { index: found.index };
       return true;
     } catch (e) {
       if (!(e instanceof IpcError && e.error.kind === "staleVersion")) notify(errorMessage(e));
@@ -1061,6 +1071,7 @@ export const useSessionsStore = defineStore("sessions", () => {
     refetchRefsAndStatus,
     selectRow,
     selectCommit,
+    locateCommit,
     selectIndex,
     openFind,
     toggleRefVisible,

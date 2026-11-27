@@ -181,7 +181,7 @@ function shapeFor(label: RefLabel): PillShape {
         </StashContextMenu>
         <StashPill v-else :stash="item.stash" :colour="stashColour" />
       </template>
-      <RemoteTagContextMenu v-else-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
+      <RemoteTagContextMenu v-else-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes" :row="row">
         <RefPill :label="item.label" :colour="item.label.colour" :oid="oid" sync="remoteOnly" :sync-note="item.note" />
       </RemoteTagContextMenu>
       <RefContextMenu
@@ -231,7 +231,7 @@ function shapeFor(label: RefLabel): PillShape {
               </StashContextMenu>
               <StashPill v-else :stash="item.stash" :colour="stashColour" />
             </template>
-            <RemoteTagContextMenu v-else-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes">
+            <RemoteTagContextMenu v-else-if="sessionKey && item.remote" :session-key="sessionKey" :name="item.remote.name" :remotes="item.remote.remotes" :row="row">
               <RefPill :label="item.label" :colour="item.label.colour" :oid="oid" sync="remoteOnly" :sync-note="item.note" />
             </RemoteTagContextMenu>
             <RefContextMenu

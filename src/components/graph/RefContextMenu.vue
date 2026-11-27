@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, shallowRef } from "vue";
 import { commands, type GraphRow, type RefKind } from "@/lib/bindings";
 import { unwrap } from "@/lib/ipc";
 import { ContextMenu, ContextMenuContent, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -53,8 +53,9 @@ const props = defineProps<{
   /** True for the checked-out local branch. */
   isCurrent: boolean;
   /**
-   * The commit's row, for a pill in the graph; it adds Cherry-pick, Revert and Reset. The Branches
-   * panel passes none, since its branch may not be among the loaded rows.
+   * The commit's row, for a pill in the graph; Cherry-pick, Revert and Reset need it. The
+   * Branches panel passes none, since its branch may not be among the loaded rows: the row is
+   * then looked up as the menu opens (`menuRow`).
    */
   row?: GraphRow | null;
 }>();
@@ -120,9 +121,29 @@ const upstreamTarget = computed(() => {
   const entry = (session.value?.refs?.refs ?? []).find((r) => r.fullName === props.fullName);
   return entry ? upstreamFastForward(entry) : null;
 });
+/**
+ * The commit's row when the caller gave none: asked of the graph each time the menu opens, so
+ * that a branch or tag in the Branches panel offers Cherry-pick, Revert and Reset as its pill
+ * does. It stays null, and those three stay out, when the graph does not show the commit.
+ */
+const foundRow = shallowRef<GraphRow | null>(null);
+const menuRow = computed(() => props.row ?? foundRow.value);
+async function findRow(): Promise<void> {
+  foundRow.value = null;
+  if (props.row) return;
+  const oid = props.target;
+  try {
+    const found = await sessions.locateCommit(props.sessionKey, oid);
+    if (props.target === oid) foundRow.value = found?.row ?? null;
+  } catch {
+    // Not offered.
+  }
+}
+
 async function onOpenChange(open: boolean): Promise<void> {
   if (!open) return;
   fastForwards.value = false;
+  void findRow();
   if (props.kind.type !== "localBranch" || props.isCurrent || branch.value === null) return;
   try {
     fastForwards.value = await unwrap(commands.getFastForwardsToHead(props.sessionKey, props.short));
@@ -167,7 +188,9 @@ function chooseColour(colour: number | null): void {
           <template v-if="createsLocal">(tracking <LaneBranchName :session="session" :full-name="fullName" :name="short" />)…</template>
         </span>
       </ActionMenuItem>
-      <ActionMenuItem v-if="kind.type !== 'tag'" :reason="mergeReason" @select="mergeInto(sessionKey, revisionOf(props, session?.refs?.refs ?? []), short)">
+      <!-- For a tag as well as a branch: Git merges the commit the tag is on, and names the tag
+           in the merge commit's message ("Merge tag 'v1.2'") when it has to make one. -->
+      <ActionMenuItem :reason="mergeReason" @select="mergeInto(sessionKey, revisionOf(props, session?.refs?.refs ?? []), short)">
         <span>
           Merge <LaneBranchName :session="session" :full-name="fullName" :name="short" /> into
           <LaneBranchName v-if="branch" :session="session" :full-name="branchFullName" :name="branch" />
@@ -222,7 +245,7 @@ function chooseColour(colour: number | null): void {
       <HueSubmenu :chosen="chosenColour" @choose="chooseColour" />
       <ContextMenuSeparator />
       <!-- The commit row's items, from Cherry-pick on; Remove Tag for a tag is among them. -->
-      <CommitMenuItems v-if="session" :session="session" :oid="target" :row="row" />
+      <CommitMenuItems v-if="session" :session="session" :oid="target" :row="menuRow" />
     </ContextMenuContent>
   </ContextMenu>
 </template>
