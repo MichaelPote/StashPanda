@@ -15,7 +15,7 @@ import { useVirtualRows } from "@/composables/useVirtualRows";
 import { diffRowPx, diffTextStyle, displayLength, resolveDiffFont } from "@/lib/diff/font";
 import { highlightPair, noDiffMessage, parseUnified, type DiffLine, type HighlightedPair, type Segment } from "@/lib/diff/parseUnified";
 import { findInText, glyphClass, markFound, scrollSidewaysTo } from "@/lib/diff/find";
-import { pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
+import { pairBudget, pairByPosition, pairBySimilarity } from "@/lib/diff/pairLines";
 import { BandBuilder, bandEdges, bandPath, GAP_PX, sideEdges, sideFill, sideOffsets, type Band } from "@/lib/diff/sideLayout";
 import { highlightRuns, insertGaps, maxLineLengthFor, mergeSpans, spanRuns, spanStyle, themeFor, type SpanRun } from "@/lib/diff/syntax";
 import type { RawToken } from "@/lib/diff/syntax.worker";
@@ -216,6 +216,8 @@ const built = computed<Built>(() => {
   if (!f) return done();
   const tab = font.value.tabWidth;
   const matchSimilar = settings.settings?.diff?.matchSimilarLines !== false;
+  // What this diff's blocks may spend on matching between them; see `pairBudget`.
+  const budget = pairBudget();
 
   f.hunks.forEach((hunk, h) => {
     unified.push({ kind: "hunk", hunk: h, header: hunk.header });
@@ -236,7 +238,7 @@ const built = computed<Built>(() => {
     let previous: DiffLine["kind"] | null = null;
     const flush = (): void => {
       const matched = matchSimilar
-        ? pairBySimilarity(dels.map((d) => d.text), adds.map((a) => a.text))
+        ? pairBySimilarity(dels.map((d) => d.text), adds.map((a) => a.text), budget)
         : pairByPosition(dels.length, adds.length);
       const delPair: (number | undefined)[] = [];
       const addPair: (number | undefined)[] = [];

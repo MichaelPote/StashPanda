@@ -1031,6 +1031,19 @@ status bar, and each clears the other.
   own lines only, joined across a gap by curved SVG bands (`lib/diff/sideLayout.ts`); an added or
   deleted file is always unified. Stage, Unstage and Discard act on a hunk from its header, or on
   lines picked by clicking their numbers.
+- **Matching removed lines to added lines** (`lib/diff/pairLines.ts`, the Match similar lines
+  setting) runs on the main thread while the diff is laid out, for every block of changed lines,
+  not only the ones on screen: the side-by-side layout depends on it. It compares every removed
+  line of a block with every added line, so it has limits. Two are for one block (40,000 line
+  pairs, 2,000,000 lookups). **They were not enough:** a diff of 188 blocks of 150 changed lines,
+  each under both, froze the window for 3.3 seconds. Two things bound it now. A block with as
+  many added lines as removed ones, where each line is alike the line in the same place (a
+  rename or a reformat over a run of lines), is paired by position after comparing each line
+  with one other line (`alikeInPosition`). And all the blocks of one diff share a budget of
+  6,000,000 lookups (`pairBudget`), between a tenth and a fifth of a second; when it is spent
+  the remaining blocks are paired by position. Measured in the Linux build on diffs of 50,000
+  to 110,000 lines, selecting a commit now blocks the window for 0.05 to 0.3 seconds, most of
+  it parsing the diff and building its rows.
 - **Syntax colours:** Shiki in a Web Worker (`lib/diff/syntax.worker.ts`) with its JavaScript
   regex engine, so no WebAssembly. 62 chosen languages, each grammar loaded the first time it is
   needed. Each hunk's old and new side go to the worker as whole runs, so a comment spanning lines

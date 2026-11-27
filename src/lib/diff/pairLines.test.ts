@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pairByPosition, pairBySimilarity } from "./pairLines";
+import { pairBudget, pairByPosition, pairBySimilarity } from "./pairLines";
 
 describe("pairBySimilarity", () => {
   it("pairs re-indented lines past an added line, where position would pair them wrongly", () => {
@@ -41,5 +41,63 @@ describe("pairBySimilarity", () => {
     const removed = Array.from({ length: 100 }, long);
     const added = [...removed].reverse();
     expect(pairBySimilarity(removed, added)).toEqual(pairByPosition(100, 100));
+  });
+
+  it("pairs by position at once when every line is alike the one in its place", () => {
+    // A rename over a run of lines: as many added as removed, each differing in one word.
+    const removed = Array.from({ length: 150 }, (_, i) => `const value${i} = compute(${i}, "item ${i}"); // line ${i}`);
+    const added = removed.map((l) => l.replace("item", "entry number"));
+    const budget = pairBudget();
+    const before = budget.lookups;
+    expect(pairBySimilarity(removed, added, budget)).toEqual(pairByPosition(150, 150));
+    expect(budget.lookups).toBe(before);
+  });
+
+  it("still matches by similarity when lines of an equal-sized block are not alike in position", () => {
+    // Three removed, three added, but the added ones are the removed ones moved down by one.
+    const removed = ["alpha = load(first);", "beta = load(second);", "gamma = load(third);"];
+    const added = ["zeta: 9000 %% ~~~~", "alpha = load(first, true);", "beta = load(second, true);"];
+    expect(pairBySimilarity(removed, added)).toEqual([
+      [0, 1],
+      [1, 2],
+    ]);
+  });
+
+  it("stops matching by similarity once the diff's budget is spent, for every later block", () => {
+    const removed = ["  return 'transform';", "})();"];
+    const added = ["  {", "    }", "    return 'transform';", "  })();"];
+    const matched = [
+      [0, 2],
+      [1, 3],
+    ];
+    const budget = pairBudget();
+    expect(pairBySimilarity(removed, added, budget)).toEqual(matched);
+    expect(budget.lookups).toBeLessThan(pairBudget().lookups);
+
+    // A budget too small for the block: by position, and nothing left for the blocks after it.
+    const small = { lookups: 3 };
+    expect(pairBySimilarity(removed, added, small)).toEqual(pairByPosition(2, 4));
+    expect(small.lookups).toBe(0);
+    expect(pairBySimilarity(removed, added, small)).toEqual(pairByPosition(2, 4));
+  });
+
+  it("bounds the work for a diff of many blocks that each stay under the per-block limits", () => {
+    // 120 blocks of 100 removed and 110 added lines that are not alike in position.
+    let state = 7;
+    const random = () => (state = (state * 48271) % 2147483647);
+    const line = () => Array.from({ length: 12 }, () => `w${random() % 500}`).join(" ");
+    const budget = pairBudget();
+    const started = performance.now();
+    let byPosition = 0;
+    for (let b = 0; b < 120; b += 1) {
+      const removed = Array.from({ length: 100 }, line);
+      const added = Array.from({ length: 110 }, line);
+      const pairs = pairBySimilarity(removed, added, budget);
+      if (JSON.stringify(pairs) === JSON.stringify(pairByPosition(100, 110))) byPosition += 1;
+    }
+    expect(budget.lookups).toBe(0);
+    expect(byPosition).toBeGreaterThan(100);
+    // Without the budget this takes several seconds; with it, well under one.
+    expect(performance.now() - started).toBeLessThan(1500);
   });
 });
