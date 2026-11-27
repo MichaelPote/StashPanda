@@ -1,7 +1,7 @@
 {
   "name": "stashpanda",
   "private": true,
-  "version": "0.6.11",
+  "version": "0.6.12",
   "author": "Michael Pote",
   "license": "MIT",
   "type": "module",
