@@ -1,14 +1,25 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
 import { LoaderCircleIcon, RotateCcwIcon, Trash2Icon } from "@lucide/vue";
-import { commands, type ConfigChange, type ConfigEntry, type ConfigScope } from "@/lib/bindings";
+import { commands, type ConfigChange, type ConfigEntry, type ConfigScope, type IdentityFile, type SshKeyList } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, unwrap } from "@/lib/ipc";
-import { GIT_SETTINGS, SETTING_GROUPS, describeValue, otherEntries, parseBool, settingValues, sshKeyOf, type GitSetting } from "@/lib/gitSettings";
+import {
+  GIT_SETTINGS,
+  SETTING_GROUPS,
+  describeValue,
+  otherEntries,
+  parseBool,
+  settingValues,
+  sshCommandWithKey,
+  sshKeyOf,
+  sshKeyProblem,
+  type GitSetting,
+} from "@/lib/gitSettings";
 import { opFailureText, runOp } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore } from "@/stores/sessions";
@@ -53,6 +64,52 @@ async function load(): Promise<void> {
   }
 }
 
+// ---- The SSH key list under core.sshCommand ----------------------------------------------------
+
+/**
+ * The private keys in ~/.ssh where Git runs, to choose one for `core.sshCommand`, and where Git's
+ * SSH command comes from there. Null while it is read, and when it could not be: the setting is
+ * then a plain text field, as before.
+ */
+const sshKeys = ref<SshKeyList | null>(null);
+
+async function loadSshKeys(): Promise<void> {
+  const r = request.value;
+  if (!r) return;
+  try {
+    const list = await unwrap(commands.repoSshKeys(r.key));
+    if (request.value === r) sshKeys.value = list;
+  } catch {
+    // No list: the field still works.
+  }
+}
+
+/** A key in the list: its file name, then what kind of key it is and its comment. */
+function sshKeyLabel(k: IdentityFile): string {
+  const name = k.path.split("/").pop() ?? k.path;
+  const about = [k.key?.keyType, k.key?.comment && k.key.comment !== "no comment" ? k.key.comment : ""].filter(Boolean).join(", ");
+  return about ? `${name} (${about})` : name;
+}
+
+/**
+ * Puts the chosen key into the setting: the command there now, or the one it would inherit, with
+ * this key at its end in place of one chosen before. Like any other edit it is saved by Save Changes.
+ */
+function chooseSshKey(setting: GitSetting, event: Event): void {
+  const select = event.target as HTMLSelectElement;
+  const keyFile = select.value;
+  // Back to its prompt: the list is a way to fill the field in, not a value of its own.
+  select.value = "";
+  if (!keyFile || sshKeyProblem(keyFile)) return;
+  choose(setting, sshCommandWithKey(shown(setting) || values(setting).inherited.value || "", keyFile));
+}
+
+/** The environment variable that sets Git's SSH command there, which Git reads before this setting; null when none does. */
+const sshOverruledBy = computed(() => {
+  const source = sshKeys.value?.source ?? "";
+  return source === "GIT_SSH_COMMAND" || source === "GIT_SSH" ? source : null;
+});
+
 watch(request, (r) => {
   if (!r) return;
   scope.value = r.scope ?? "local";
@@ -65,7 +122,9 @@ watch(request, (r) => {
   }
   newKey.value = "";
   newValue.value = "";
+  sshKeys.value = null;
   void load();
+  void loadSshKeys();
 });
 
 /** The machine whose global file the Global tab edits, in words. */
@@ -277,10 +336,29 @@ const selectClass =
                   spellcheck="false"
                   @update:model-value="choose(s, String($event).trim())"
                 />
-                <!-- The SSH command is long; the key it names is what one looks for in it. -->
-                <p v-if="s.key === 'core.sshCommand' && sshKeyOf(shown(s))" class="text-xs break-all" data-ssh-key>
-                  Key: <span class="font-mono select-text">{{ sshKeyOf(shown(s)) }}</span>
-                </p>
+                <template v-if="s.key === 'core.sshCommand'">
+                  <!-- The SSH command is long; the key it names is what one looks for in it. -->
+                  <p v-if="sshKeyOf(shown(s))" class="text-xs break-all" data-ssh-key>
+                    Key: <span class="font-mono select-text">{{ sshKeyOf(shown(s)) }}</span>
+                  </p>
+                  <!-- Fills the field in with a key from ~/.ssh where Git runs, so no path has to be typed. -->
+                  <select
+                    v-if="sshKeys && sshKeys.keys.length > 0"
+                    :class="selectClass"
+                    aria-label="Use a key from ~/.ssh"
+                    data-ssh-key-picker
+                    @change="chooseSshKey(s, $event)"
+                  >
+                    <option value="">Use a key from ~/.ssh…</option>
+                    <option v-for="k in sshKeys.keys" :key="k.path" :value="k.path" :disabled="sshKeyProblem(k.path) !== null" :title="sshKeyProblem(k.path) ?? k.path">
+                      {{ sshKeyLabel(k) }}
+                    </option>
+                  </select>
+                  <p v-if="sshOverruledBy" class="text-xs text-modified-fg" data-ssh-overruled>
+                    Git takes its SSH command from the {{ sshOverruledBy }} environment variable on {{ machine }}, which it reads before this setting, so
+                    this setting is not used there.
+                  </p>
+                </template>
                 <p class="text-xs text-muted-foreground">{{ sourceNote(s) }}</p>
               </div>
               <Tip :content="isSetHere(s) ? 'Remove it from this file, so the setting is inherited again' : null" side="left">

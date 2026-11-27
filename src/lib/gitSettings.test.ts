@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConfigEntry } from "@/lib/bindings";
-import { catalogueSetting, describeValue, otherEntries, parseBool, settingValues, sshKeyOf } from "./gitSettings";
+import { baseSshCommand, catalogueSetting, describeValue, otherEntries, parseBool, settingValues, sshCommandWithKey, sshKeyOf, sshKeyProblem } from "./gitSettings";
 
 const entry = (scope: string, key: string, value: string | null): ConfigEntry => ({ scope, origin: `file:${scope}`, key, value });
 
@@ -70,6 +70,28 @@ describe("the SSH command and its key", () => {
     expect(sshKeyOf("ssh -o IdentitiesOnly=yes -i'/home/me/.ssh/a b'")).toBe("/home/me/.ssh/a b");
     // The last one, which is the one StashPanda adds after whatever was there.
     expect(sshKeyOf('ssh -i /first -F /dev/null -i "/second" -o IdentitiesOnly=yes')).toBe("/second");
+  });
+
+  it("builds the command for a chosen key, on Git's plain ssh or on the command already there", () => {
+    expect(sshCommandWithKey("", "C:/Users/me/.ssh/work")).toBe('ssh -i "C:/Users/me/.ssh/work" -o IdentitiesOnly=yes');
+    expect(sshCommandWithKey("C:/Windows/System32/OpenSSH/ssh.exe", "/home/me/.ssh/a key")).toBe(
+      'C:/Windows/System32/OpenSSH/ssh.exe -i "/home/me/.ssh/a key" -o IdentitiesOnly=yes',
+    );
+  });
+
+  it("replaces a key chosen before, and leaves a command written by hand as it is", () => {
+    const first = sshCommandWithKey("ssh -F /etc/ssh/other_config", "/home/me/.ssh/a");
+    expect(baseSshCommand(first)).toBe("ssh -F /etc/ssh/other_config");
+    expect(sshCommandWithKey(first, "/home/me/.ssh/b")).toBe('ssh -F /etc/ssh/other_config -i "/home/me/.ssh/b" -o IdentitiesOnly=yes');
+    const byHand = "ssh -i ~/.ssh/mine -o IdentitiesOnly=yes";
+    expect(baseSshCommand(byHand)).toBe(byHand);
+    expect(sshKeyOf(sshCommandWithKey(byHand, "/k"))).toBe("/k");
+  });
+
+  it("refuses a key file whose path would break the command", () => {
+    expect(sshKeyProblem("C:/Users/me/.ssh/id (work)")).toBeNull();
+    expect(sshKeyProblem("/home/me/.ssh/id_ed25519")).toBeNull();
+    for (const bad of ['/k"x', "/k$(id)", "/k`id`", "C:\\Users\\me\\.ssh\\id", "/k\nx"]) expect(sshKeyProblem(bad), bad).not.toBeNull();
   });
 
   it("finds none in a command without one", () => {

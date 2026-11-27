@@ -316,6 +316,41 @@ export function sshKeyOf(command: string): string | null {
   return key;
 }
 
+/** What comes before and after the key file in the form StashPanda writes: ` -i "<key>" -o IdentitiesOnly=yes`. */
+const KEY_FLAG = ' -i "';
+const KEY_TAIL = '" -o IdentitiesOnly=yes';
+
+/**
+ * `command` without the key StashPanda put at its end earlier, if it put one there. The same as
+ * `base_ssh_command` in the backend, which Try another key in the SSH Diagnosis dialog uses.
+ */
+export function baseSshCommand(command: string): string {
+  if (!command.endsWith(KEY_TAIL)) return command;
+  const withoutTail = command.slice(0, -KEY_TAIL.length);
+  const at = withoutTail.lastIndexOf(KEY_FLAG);
+  return at >= 0 && !withoutTail.slice(at + KEY_FLAG.length).includes('"') ? command.slice(0, at) : command;
+}
+
+/**
+ * The SSH command that makes Git offer the key file `keyFile` and no other, built on `command`
+ * (the setting as it is, or what it would inherit; empty for Git's plain `ssh`). A key
+ * StashPanda added before is replaced, not added to.
+ */
+export function sshCommandWithKey(command: string, keyFile: string): string {
+  return `${baseSshCommand(command.trim()) || "ssh"}${KEY_FLAG}${keyFile}${KEY_TAIL}`;
+}
+
+/**
+ * Why a key file cannot be named in the SSH command, or null when it can. Git runs the command
+ * through a shell, and the path sits in double quotes there, where a quote, a dollar sign, a
+ * backtick and a backslash all mean something.
+ */
+export function sshKeyProblem(keyFile: string): string | null {
+  return /["$`\\]/.test(keyFile) || /[\u0000-\u001f]/.test(keyFile)
+    ? "Its path has a quote, a dollar sign, a backtick or a backslash in it, which cannot go into an SSH command."
+    : null;
+}
+
 /** The entries in `scope`'s own file that the catalogue does not cover, for "Other settings", in file order. */
 export function otherEntries(entries: ConfigEntry[], scope: ConfigScope): ConfigEntry[] {
   return entries.filter((e) => e.scope === scope && !catalogueSetting(e.key));

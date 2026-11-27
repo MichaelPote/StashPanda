@@ -436,6 +436,38 @@ pub async fn remote_ssh_keys(state: State<'_, AppState>, key: String, dest: Stri
     Ok(parse_keys(&text))
 }
 
+/// The keys to choose from for a repository's `core.sshCommand`, and where Git's SSH command
+/// comes from there.
+#[derive(Debug, Clone, PartialEq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SshKeyList {
+    /// What chose the SSH command: `GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand` or `default`.
+    /// With one of the two environment variables, Git never reads `core.sshCommand`.
+    pub source: String,
+    /// The private key files in `~/.ssh` where Git runs.
+    pub keys: Vec<IdentityFile>,
+}
+
+/// The `keys` mode of the script needs no login to look at; this stands in for one.
+const NO_DESTINATION: &str = "localhost";
+
+/// The private key files in `~/.ssh` where Git runs for this repository, and where Git's SSH
+/// command comes from there, for the key list in Repository Settings. Unlike `remoteSshKeys`
+/// it needs no remote that refused a key.
+#[tauri::command]
+#[specta::specta]
+pub async fn repo_ssh_keys(state: State<'_, AppState>, key: String) -> Result<SshKeyList> {
+    let h = repo(&state, &key).await?;
+    let mut req = check_request("keys", NO_DESTINATION, None, Duration::from_secs(30))?;
+    // Opening Repository Settings reads this, as it reads the settings: not a command the user
+    // ran, so it stays out of the console's own-commands view. The Diagnosis dialog's checks are
+    // asked for, and show there.
+    req.category = crate::transport::Category::Internal;
+    let text = String::from_utf8_lossy(&h.client.exec_allow_failure(req).await?.stdout).into_owned();
+    let (source, _) = parse_command(&text);
+    Ok(SshKeyList { source, keys: parse_keys(&text) })
+}
+
 /// Logs in to `dest` offering only the key file `identity`, with the command `remoteSshUseKey`
 /// would save. Unlike `remoteSshTest` it may ask for the key's passphrase, through StashPanda
 /// as a fetch does; it never offers a password. Fails when an environment variable sets Git's

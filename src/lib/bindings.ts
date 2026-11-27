@@ -108,6 +108,12 @@ export const commands = {
 	 *  Git's SSH command here.
 	 */
 	remoteSshUseKey: (key: string, dest: string, port: number | null, identity: string) => typedError<string, GitError>(__TAURI_INVOKE("remote_ssh_use_key", { key, dest, port, identity })),
+	/**
+	 *  The private key files in `~/.ssh` where Git runs for this repository, and where Git's SSH
+	 *  command comes from there, for the key list in Repository Settings. Unlike `remoteSshKeys`
+	 *  it needs no remote that refused a key.
+	 */
+	repoSshKeys: (key: string) => typedError<SshKeyList, GitError>(__TAURI_INVOKE("repo_ssh_keys", { key })),
 	hostInfo: () => typedError<HostInfo, GitError>(__TAURI_INVOKE("host_info")),
 	/**  Record the host key a server offered, so the next open succeeds. */
 	sshTrustHost: (host: string, port: number) => typedError<null, GitError>(__TAURI_INVOKE("ssh_trust_host", { host, port })),
@@ -2242,6 +2248,20 @@ export type SshAgent = { state: "keys"; keys: KeyLine[] } |
 { state: "empty" } | 
 /**  No agent could be reached; `detail` is what `ssh-add` said. */
 { state: "unavailable" } | { state: "failed"; detail: string };
+
+/**
+ *  The keys to choose from for a repository's `core.sshCommand`, and where Git's SSH command
+ *  comes from there.
+ */
+export type SshKeyList = {
+	/**
+	 *  What chose the SSH command: `GIT_SSH_COMMAND`, `GIT_SSH`, `core.sshCommand` or `default`.
+	 *  With one of the two environment variables, Git never reads `core.sshCommand`.
+	 */
+	source: string,
+	/**  The private key files in `~/.ssh` where Git runs. */
+	keys: IdentityFile[],
+};
 
 /**  How Git reaches `user@host`, read without connecting. */
 export type SshSetup = {

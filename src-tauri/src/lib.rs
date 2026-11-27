@@ -61,6 +61,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             ipc::ssh_check::remote_ssh_keys,
             ipc::ssh_check::remote_ssh_test_key,
             ipc::ssh_check::remote_ssh_use_key,
+            ipc::ssh_check::repo_ssh_keys,
             ipc::repos::host_info,
             ipc::repos::ssh_trust_host,
             ipc::repos::ssh_set_password,

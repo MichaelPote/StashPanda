@@ -664,7 +664,11 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   with forward slashes on Windows too, since Git runs the command through a shell. The setting
   is one of the explained ones in Repository Settings (`core.sshCommand` in `lib/gitSettings.ts`,
   under Credentials), where the key it names is shown under the field (`sshKeyOf`) and it can be
-  changed or removed.
+  changed or removed. A list under the field offers the private keys in `~/.ssh` where Git runs
+  (`repo_ssh_keys`, the script's `keys` mode again); choosing one fills the field in with the
+  same form of command (`sshCommandWithKey`, which mirrors `ssh_command_with_key` in the
+  backend), to be saved with the dialog's other changes. Nothing is tested there: for that, the
+  SSH Diagnosis dialog logs in with the key first.
 - **Sync** is pull, then push, as one operation under the write gate. Nothing is pushed when the
   pull fails or stops on conflicts.
 - **Clone** (`repo/clone.rs`): a missing or empty folder gets a plain `git clone --progress`. A
