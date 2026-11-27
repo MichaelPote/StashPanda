@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, unwrap } from "@/lib/ipc";
-import { GIT_SETTINGS, SETTING_GROUPS, describeValue, otherEntries, parseBool, settingValues, type GitSetting } from "@/lib/gitSettings";
+import { GIT_SETTINGS, SETTING_GROUPS, describeValue, otherEntries, parseBool, settingValues, sshKeyOf, type GitSetting } from "@/lib/gitSettings";
 import { opFailureText, runOp } from "@/lib/repoActions";
 import { useDialogsStore } from "@/stores/dialogs";
 import { useSessionsStore } from "@/stores/sessions";
@@ -277,6 +277,10 @@ const selectClass =
                   spellcheck="false"
                   @update:model-value="choose(s, String($event).trim())"
                 />
+                <!-- The SSH command is long; the key it names is what one looks for in it. -->
+                <p v-if="s.key === 'core.sshCommand' && sshKeyOf(shown(s))" class="text-xs break-all" data-ssh-key>
+                  Key: <span class="font-mono select-text">{{ sshKeyOf(shown(s)) }}</span>
+                </p>
                 <p class="text-xs text-muted-foreground">{{ sourceNote(s) }}</p>
               </div>
               <Tip :content="isSetHere(s) ? 'Remove it from this file, so the setting is inherited again' : null" side="left">

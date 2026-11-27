@@ -243,6 +243,14 @@ export const GIT_SETTINGS: GitSetting[] = [
     description:
       "The program Git asks for usernames and passwords for HTTPS remotes, such as manager (Git Credential Manager) or store. StashPanda cannot ask for them itself, so an HTTPS remote needs one.",
   },
+  {
+    key: "core.sshCommand",
+    group: "Credentials",
+    kind: { type: "text", placeholder: 'ssh -i "~/.ssh/id_ed25519" -o IdentitiesOnly=yes' },
+    gitDefault: "ssh",
+    description:
+      'The SSH command Git runs for SSH remotes. Ending it with -i "<key file>" -o IdentitiesOnly=yes makes Git offer that key and no other; Try another key in the SSH Diagnosis dialog writes it that way. Give the key file with forward slashes, on Windows too. Clear the setting to go back to ssh\'s own choice of keys.',
+  },
 ];
 
 /** The groups in the order the dialog shows them. */
@@ -296,6 +304,16 @@ export function describeValue(setting: GitSetting | undefined, value: string): s
   }
   if (setting?.kind.type === "choice") return setting.kind.choices.find((c) => c.value === value.toLowerCase())?.label ?? value;
   return value;
+}
+
+/**
+ * The key file an SSH command (`core.sshCommand`) tells ssh to use with `-i`, or null when it
+ * names none. With several `-i` the last one, which is the one StashPanda adds.
+ */
+export function sshKeyOf(command: string): string | null {
+  let key: string | null = null;
+  for (const m of command.matchAll(/(?:^|\s)-i\s*(?:"([^"]+)"|'([^']+)'|([^\s"']+))/g)) key = m[1] ?? m[2] ?? m[3] ?? null;
+  return key;
 }
 
 /** The entries in `scope`'s own file that the catalogue does not cover, for "Other settings", in file order. */

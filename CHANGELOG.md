@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Show core.sshCommand in Repository Settings as an explained setting, with the key file it names shown under it, so the SSH key Git uses for a repository can be seen, changed and removed there. It used to be an unexplained row under Other settings
+
 ## 0.6.11 (2026-11-27)
 
 - Add "Try another key" to the SSH Diagnosis dialog: it lists the private keys in ~/.ssh where Git runs, logs in with one at a time, and sets a key that works for the repository (the setting core.sshCommand in the repository's own config), so a remote that refused Git's key can be fixed without editing the SSH config by hand

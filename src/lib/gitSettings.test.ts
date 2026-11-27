@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConfigEntry } from "@/lib/bindings";
-import { catalogueSetting, describeValue, otherEntries, parseBool, settingValues } from "./gitSettings";
+import { catalogueSetting, describeValue, otherEntries, parseBool, settingValues, sshKeyOf } from "./gitSettings";
 
 const entry = (scope: string, key: string, value: string | null): ConfigEntry => ({ scope, origin: `file:${scope}`, key, value });
 
@@ -55,5 +55,27 @@ describe("reading values", () => {
     expect(describeValue(catalogueSetting("pull.rebase"), "merges")).toBe("Rebase, keeping the branch's own merge commits");
     expect(describeValue(catalogueSetting("user.name"), "Ada")).toBe("Ada");
     expect(describeValue(undefined, "x")).toBe("x");
+  });
+});
+
+describe("the SSH command and its key", () => {
+  it("is a setting the dialog explains, not one of the Other settings", () => {
+    expect(catalogueSetting("core.sshcommand")?.key).toBe("core.sshCommand");
+    expect(otherEntries([entry("local", "core.sshcommand", "ssh -i /k")], "local")).toEqual([]);
+  });
+
+  it("finds the key file a command names", () => {
+    expect(sshKeyOf('ssh -i "C:/Users/me/.ssh/work key" -o IdentitiesOnly=yes')).toBe("C:/Users/me/.ssh/work key");
+    expect(sshKeyOf("ssh -i ~/.ssh/id_ed25519")).toBe("~/.ssh/id_ed25519");
+    expect(sshKeyOf("ssh -o IdentitiesOnly=yes -i'/home/me/.ssh/a b'")).toBe("/home/me/.ssh/a b");
+    // The last one, which is the one StashPanda adds after whatever was there.
+    expect(sshKeyOf('ssh -i /first -F /dev/null -i "/second" -o IdentitiesOnly=yes')).toBe("/second");
+  });
+
+  it("finds none in a command without one", () => {
+    expect(sshKeyOf("ssh")).toBeNull();
+    expect(sshKeyOf("C:/Windows/System32/OpenSSH/ssh.exe -o IdentitiesOnly=yes")).toBeNull();
+    expect(sshKeyOf("plink -batch")).toBeNull();
+    expect(sshKeyOf("")).toBeNull();
   });
 });
