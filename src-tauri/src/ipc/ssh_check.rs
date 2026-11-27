@@ -220,6 +220,10 @@ pub fn parse_test(text: &str) -> SshTest {
             exit_code = c.trim().parse::<i32>().ok();
             continue;
         }
+        // `testkey` says where the command came from; that is not part of ssh's output.
+        if line.starts_with("@@source ") {
+            continue;
+        }
         output.push(line);
         let body = line.strip_prefix("debug1: ").unwrap_or(line);
         if let Some(rest) = body.strip_prefix("Will attempt key: ") {
@@ -292,16 +296,29 @@ fn check_destination(dest: &str) -> Result<()> {
     }
 }
 
-/// Runs `ssh_check.sh` in `mode` (`setup` or `test`) through `client`, and returns what it printed.
-async fn run_check(client: &GitClient, mode: &str, dest: &str, port: Option<u16>, timeout: Duration) -> Result<String> {
+/// The Git command that runs `ssh_check.sh` in `mode` for `dest`.
+fn check_request(mode: &str, dest: &str, port: Option<u16>, timeout: Duration) -> Result<GitReq> {
     check_destination(dest)?;
     let port = port.map(|p| p.to_string()).unwrap_or_default();
     // The check logs in with BatchMode, which never asks, so it gets no askpass helper either.
     let mut req = GitReq::new("ssh check", [ALIAS, mode, dest, port.as_str()]).user().own_session().askpass(crate::askpass::AskMode::Never).timeout(Some(timeout));
     // Git appends ` "$@"` to a shell alias, so the script must end on the call to `f`.
     req.config.push((format!("alias.{ALIAS}"), format!("!{}", SCRIPT.trim_end())));
-    let out = client.exec_allow_failure(req).await?;
+    Ok(req)
+}
+
+/// Runs `ssh_check.sh` in `mode` (`setup`, `test` or `keys`) through `client`, and returns what it printed.
+async fn run_check(client: &GitClient, mode: &str, dest: &str, port: Option<u16>, timeout: Duration) -> Result<String> {
+    let out = client.exec_allow_failure(check_request(mode, dest, port, timeout)?).await?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The request for `testkey`: a login with `command` as Git's SSH command for this one run. It
+/// may ask for the key's passphrase, so it gets the askpass helper and two minutes.
+fn test_key_request(dest: &str, port: Option<u16>, command: String) -> Result<GitReq> {
+    let mut req = check_request("testkey", dest, port, Duration::from_secs(120))?.askpass(crate::askpass::AskMode::Ask);
+    req.config.push(("core.sshCommand".into(), command));
+    Ok(req)
 }
 
 async fn run_script(state: &AppState, key: &str, mode: &str, dest: &str, port: Option<u16>, timeout: Duration) -> Result<(String, crate::repo::RepoInfo)> {
@@ -331,6 +348,134 @@ pub async fn remote_ssh_setup(state: State<'_, AppState>, key: String, dest: Str
 pub async fn remote_ssh_test(state: State<'_, AppState>, key: String, dest: String, port: Option<u16>) -> Result<SshTest> {
     let (text, _) = run_script(&state, &key, "test", &dest, port, Duration::from_secs(40)).await?;
     Ok(parse_test(&text))
+}
+
+// ---- Trying another key, and using it for the repository -----------------------------------
+//
+// When the server refuses the keys `ssh` offers, the fix is often to name the right key for the
+// host. StashPanda does that for one repository, in its own config: `core.sshCommand` becomes
+// the SSH command Git already used, followed by `-i "<key>" -o IdentitiesOnly=yes`, so `ssh`
+// offers that key and no other. A key is tried with exactly that command, given to Git for the
+// one test with `-c`, so what was tested is what gets saved.
+
+/// What ends a `core.sshCommand` that StashPanda wrote, after the key's path.
+const KEY_TAIL: &str = "\" -o IdentitiesOnly=yes";
+/// What comes before the key's path in it.
+const KEY_FLAG: &str = " -i \"";
+
+/// `command` without the key StashPanda added to it earlier, if it added one: choosing another
+/// key replaces the first one rather than offering both.
+pub fn base_ssh_command(command: &str) -> &str {
+    let Some(without_tail) = command.strip_suffix(KEY_TAIL) else { return command };
+    match without_tail.rfind(KEY_FLAG) {
+        // The path itself holds no quote (`check_identity`), so this is the flag StashPanda wrote.
+        Some(at) if !without_tail[at + KEY_FLAG.len()..].contains('"') => &command[..at],
+        _ => command,
+    }
+}
+
+/// The SSH command that offers only the key file `identity`, built on `command`.
+pub fn ssh_command_with_key(command: &str, identity: &str) -> String {
+    format!("{}{KEY_FLAG}{identity}{KEY_TAIL}", base_ssh_command(command))
+}
+
+/// A key file's path, refused when it could be read as an option or would not survive the
+/// double quotes it is put in: Git runs `core.sshCommand` through a shell, where `"`, `$`, a
+/// backtick and a backslash all mean something inside them.
+fn check_identity(identity: &str) -> Result<()> {
+    let ok = !identity.is_empty() && !identity.starts_with('-') && !identity.chars().any(|c| c.is_control() || "\"$`\\".contains(c));
+    if ok {
+        Ok(())
+    } else {
+        Err(GitError::Internal { detail: format!("{identity} cannot be named in an SSH command: its path has a quote, a dollar sign, a backtick or a backslash in it") })
+    }
+}
+
+/// `@@source` and `@@sshcommand` from what `ssh_check.sh` printed: where Git's SSH command comes
+/// from, and the command.
+fn parse_command(text: &str) -> (String, String) {
+    let line = |tag: &str| text.lines().find_map(|l| l.trim_end_matches('\r').strip_prefix(tag)).unwrap_or("").trim().to_string();
+    (line("@@source "), line("@@sshcommand "))
+}
+
+/// What `ssh_check.sh` prints for `keys`, read into the key files.
+pub fn parse_keys(text: &str) -> Vec<IdentityFile> {
+    text.lines()
+        .filter_map(|l| l.trim_end_matches('\r').strip_prefix("key "))
+        .map(|v| {
+            let (state, rest) = v.split_once(' ').unwrap_or((v, ""));
+            let (path, key) = rest.split_once('\t').unwrap_or((rest, ""));
+            let state = match state {
+                "present" => IdentityFileState::Present,
+                "encrypted" => IdentityFileState::Encrypted,
+                _ => IdentityFileState::Unreadable,
+            };
+            IdentityFile { path: path.to_string(), state, key: parse_key_line(key) }
+        })
+        .collect()
+}
+
+/// Why a key cannot be set for the repository when Git's SSH command comes from `source`, or
+/// None when it can. An environment variable is read before `core.sshCommand`, so the setting
+/// would never be used.
+fn cannot_set_reason(source: &str) -> Option<String> {
+    match source {
+        "default" | "core.sshCommand" => None,
+        other => Some(format!(
+            "Git takes its SSH command from the {other} environment variable here, which comes before the repository's core.sshCommand setting, so a key set there would not be used. Change or remove {other}, or name the key in your SSH config."
+        )),
+    }
+}
+
+/// The private key files in `~/.ssh` where Git runs for this repository (Windows, a WSL distro,
+/// or the server of a repository opened over SSH), for choosing one to try.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_ssh_keys(state: State<'_, AppState>, key: String, dest: String, port: Option<u16>) -> Result<Vec<IdentityFile>> {
+    let (text, _) = run_script(&state, &key, "keys", &dest, port, Duration::from_secs(30)).await?;
+    Ok(parse_keys(&text))
+}
+
+/// Logs in to `dest` offering only the key file `identity`, with the command `remoteSshUseKey`
+/// would save. Unlike `remoteSshTest` it may ask for the key's passphrase, through StashPanda
+/// as a fetch does; it never offers a password. Fails when an environment variable sets Git's
+/// SSH command here, since the key could then not be saved for the repository either.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_ssh_test_key(state: State<'_, AppState>, key: String, dest: String, port: Option<u16>, identity: String) -> Result<SshTest> {
+    check_identity(&identity)?;
+    let h = repo(&state, &key).await?;
+    let (source, command) = parse_command(&run_check(&h.client, "keys", &dest, port, Duration::from_secs(30)).await?);
+    if let Some(reason) = cannot_set_reason(&source) {
+        return Err(GitError::Internal { detail: reason });
+    }
+    let command = ssh_command_with_key(if command.is_empty() { "ssh" } else { &command }, &identity);
+    let out = h.client.exec_allow_failure(test_key_request(&dest, port, command)?).await?;
+    Ok(parse_test(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Makes Git use the key file `identity`, and only that key, for this repository's SSH remotes:
+/// sets `core.sshCommand` in the repository's own config to the SSH command Git used so far
+/// followed by `-i "<identity>" -o IdentitiesOnly=yes`. A key set this way before is replaced.
+/// Returns the command it saved. Fails, and changes nothing, when an environment variable sets
+/// Git's SSH command here.
+#[tauri::command]
+#[specta::specta]
+pub async fn remote_ssh_use_key(state: State<'_, AppState>, key: String, dest: String, port: Option<u16>, identity: String) -> Result<String> {
+    check_identity(&identity)?;
+    let h = repo(&state, &key).await?;
+    let (source, command) = parse_command(&run_check(&h.client, "keys", &dest, port, Duration::from_secs(30)).await?);
+    if let Some(reason) = cannot_set_reason(&source) {
+        return Err(GitError::Internal { detail: reason });
+    }
+    let command = ssh_command_with_key(if command.is_empty() { "ssh" } else { &command }, &identity);
+    let _gate = h.write_gate.lock().await;
+    let change = crate::git::ops::ConfigChange::Set { key: "core.sshCommand".into(), value: command.clone() };
+    let result = crate::git::ops::config_change(&h.client, crate::git::ops::ConfigScope::Local, &change).await?;
+    if !result.ok {
+        return Err(GitError::CommandFailed { label: "config".into(), argv: vec![], exit_code: result.exit_code, stderr: result.stderr });
+    }
+    Ok(command)
 }
 
 #[cfg(test)]
@@ -397,6 +542,50 @@ mod tests {
 
     /// The script through a real `GitClient`, as the commands run it: the setup from a repository
     /// whose `core.sshCommand` names a key of its own, and a test login to a host that cannot exist.
+    #[test]
+    fn builds_the_command_for_a_key_and_replaces_a_key_set_before() {
+        assert_eq!(ssh_command_with_key("ssh", "C:/Users/me/.ssh/work"), "ssh -i \"C:/Users/me/.ssh/work\" -o IdentitiesOnly=yes");
+        // A path with a space, on a command that names its own program.
+        let first = ssh_command_with_key("C:/Windows/System32/OpenSSH/ssh.exe", "/home/me/.ssh/a key");
+        assert_eq!(first, "C:/Windows/System32/OpenSSH/ssh.exe -i \"/home/me/.ssh/a key\" -o IdentitiesOnly=yes");
+        assert_eq!(base_ssh_command(&first), "C:/Windows/System32/OpenSSH/ssh.exe");
+        assert_eq!(ssh_command_with_key(&first, "/home/me/.ssh/b"), "C:/Windows/System32/OpenSSH/ssh.exe -i \"/home/me/.ssh/b\" -o IdentitiesOnly=yes");
+        // A command somebody wrote by hand keeps its own -i: only StashPanda's own form is replaced.
+        let own = "ssh -i ~/.ssh/mine -o IdentitiesOnly=yes";
+        assert_eq!(base_ssh_command(own), own);
+        assert_eq!(ssh_command_with_key(own, "/k"), "ssh -i ~/.ssh/mine -o IdentitiesOnly=yes -i \"/k\" -o IdentitiesOnly=yes");
+    }
+
+    #[test]
+    fn refuses_a_key_path_that_would_break_the_command() {
+        assert!(check_identity("C:/Users/me/.ssh/id (work)").is_ok());
+        assert!(check_identity("/home/me/.ssh/id_ed25519").is_ok());
+        for bad in ["", "-oProxyCommand=x", "/k\"; rm -rf ~; \"", "/k$(id)", "/k`id`", "C:\\Users\\me\\.ssh\\id", "/k\nx"] {
+            assert!(check_identity(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn says_when_an_environment_variable_would_overrule_the_setting() {
+        assert_eq!(cannot_set_reason("default"), None);
+        assert_eq!(cannot_set_reason("core.sshCommand"), None);
+        assert!(cannot_set_reason("GIT_SSH_COMMAND").is_some_and(|r| r.contains("GIT_SSH_COMMAND environment variable")));
+        assert!(cannot_set_reason("GIT_SSH").is_some());
+    }
+
+    #[test]
+    fn reads_the_key_list() {
+        let text = "@@source default\n@@sshcommand ssh\n@@keys\nkey present C:/Users/me/.ssh/id_ed25519\t256 SHA256:abc me@laptop (ED25519)\r\nkey encrypted C:/Users/me/.ssh/old_rsa\t\nkey unreadable /home/me/.ssh/odd\t\n";
+        let keys = parse_keys(text);
+        assert_eq!(keys.iter().map(|k| (k.path.as_str(), k.state)).collect::<Vec<_>>(), [
+            ("C:/Users/me/.ssh/id_ed25519", IdentityFileState::Present),
+            ("C:/Users/me/.ssh/old_rsa", IdentityFileState::Encrypted),
+            ("/home/me/.ssh/odd", IdentityFileState::Unreadable),
+        ]);
+        assert_eq!(keys[0].key.as_ref().map(|k| k.fingerprint.as_str()), Some("SHA256:abc"));
+        assert_eq!(parse_command(text), ("default".to_string(), "ssh".to_string()));
+    }
+
     #[tokio::test]
     async fn runs_through_git_as_an_alias() {
         use crate::git::console::ConsoleRecorder;
@@ -436,6 +625,34 @@ mod tests {
         let test = parse_test(&run_check(&client, "test", "git@example.invalid", None, Duration::from_secs(30)).await.unwrap());
         assert_eq!(test.outcome, SshTestOutcome::CouldNotConnect, "{}", test.output);
         assert_eq!(test.command, format!("{ssh} -T -v git@example.invalid"));
+
+        // The key files in ~/.ssh where Git runs: private keys only, with a path free of backslashes.
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let other = home.join(".ssh").join("id_other");
+        run(&["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "other@example.com", "-f", other.to_str().unwrap()]);
+        std::fs::write(home.join(".ssh").join("known_hosts"), "example.invalid ssh-ed25519 AAAA\n").unwrap();
+        std::fs::write(home.join(".ssh").join("config"), "Host *\n").unwrap();
+        std::fs::write(home.join(".ssh").join("notes.txt"), "not a key\n").unwrap();
+        let listing = check_request("keys", "git@example.invalid", None, Duration::from_secs(30)).unwrap().env("HOME", home.to_str().unwrap());
+        let listed = String::from_utf8_lossy(&client.exec_allow_failure(listing).await.unwrap().stdout).into_owned();
+        let keys = parse_keys(&listed);
+        assert_eq!(keys.len(), 1, "{listed}");
+        assert_eq!(keys[0].state, IdentityFileState::Present);
+        assert_eq!(keys[0].key.as_ref().map(|k| k.comment.as_str()), Some("other@example.com"));
+        assert!(keys[0].path.ends_with("/.ssh/id_other") && !keys[0].path.contains('\\'), "{}", keys[0].path);
+        assert_eq!(parse_command(&listed), ("core.sshCommand".to_string(), ssh.clone()));
+
+        // Trying that key: Git's SSH command for the one run is the repository's own with the
+        // key added, and the script says it came from core.sshCommand.
+        let command = ssh_command_with_key(&ssh, &keys[0].path);
+        let tried = client.exec_allow_failure(test_key_request("git@example.invalid", None, command.clone()).unwrap()).await.unwrap();
+        let tried = String::from_utf8_lossy(&tried.stdout).into_owned();
+        assert!(tried.contains("@@source core.sshCommand"), "{tried}");
+        let tried = parse_test(&tried);
+        assert_eq!(tried.outcome, SshTestOutcome::CouldNotConnect, "{}", tried.output);
+        assert_eq!(tried.command, format!("{command} -T -v git@example.invalid"));
+        assert!(!tried.output.contains("@@source"), "{}", tried.output);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -647,6 +647,21 @@ write waits 250 ms and tries once more, then the interface offers to remove the 
   (`remoteRenameRefusal` in `lib/remoteBranchRename.ts` turns each refusal into words). Local
   branches that tracked the old name are pointed at the new one afterwards with
   `op_branch_set_upstream`, since Git leaves them tracking a branch that has gone.
+- **A refused SSH key** (`ipc/ssh_check.rs`, `ssh_check.sh`, `SshDiagnoseDialog.vue`). A fetch,
+  pull or push that a server refused gets a Diagnose… button on its notice (`sshDiagnoseAction`):
+  from OpenSSH's own line, which names the login, or for Azure DevOps, whose "Public key
+  authentication failed" names none, with the login taken from the repository's remote URLs.
+  The dialog's checks run as a Git alias through the repository's own transport, so they see
+  the ssh, the `~/.ssh` and the agent that Git sees there. **Try another key** lists the
+  private keys in `~/.ssh` in that place (`keys` mode), logs in with one at a time
+  (`remote_ssh_test_key`), and sets one that works for the repository (`remote_ssh_use_key`):
+  `core.sshCommand` in the repository's own config becomes the SSH command Git used so far,
+  followed by `-i "<key>" -o IdentitiesOnly=yes`. A key is tried with exactly that command,
+  passed to Git for the one run with `-c`, so what was tested is what gets saved; choosing
+  again replaces the key (`base_ssh_command`). The user's SSH config file is never written.
+  An environment variable (`GIT_SSH_COMMAND`, `GIT_SSH`) is read before `core.sshCommand`, so
+  with one set the key is not tried or saved, and the dialog says why. The key's path is given
+  with forward slashes on Windows too, since Git runs the command through a shell.
 - **Sync** is pull, then push, as one operation under the write gate. Nothing is pushed when the
   pull fails or stops on conflicts.
 - **Clone** (`repo/clone.rs`): a missing or empty folder gets a plain `git clone --progress`. A

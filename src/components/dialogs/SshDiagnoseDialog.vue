@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, ref, shallowRef, watch } from "vue";
 import { CopyIcon, LoaderCircleIcon } from "@lucide/vue";
 import { commands, type IdentityFile, type KeyLine, type SshSetup, type SshTest } from "@/lib/bindings";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,10 @@ import { useSessionsStore } from "@/stores/sessions";
  * Shows which Git and which ssh the repository uses, the key files and agent keys ssh has, and
  * runs a login test with the same ssh, all in the place Git runs: Windows, a WSL distro or the
  * server of a repository opened over SSH.
+ *
+ * It also lets another key be tried: each private key in ~/.ssh there can be offered to the
+ * server by itself, and one that logs in can be set for this repository, which writes
+ * core.sshCommand in the repository's own config.
  */
 const dialogs = useDialogsStore();
 const sessions = useSessionsStore();
@@ -35,11 +39,89 @@ watch(request, (r) => {
   setupError.value = null;
   test.value = null;
   testError.value = null;
+  otherKeys.value = null;
+  keysError.value = null;
+  trying.value = null;
+  tried.value = new Map();
+  saving.value = false;
+  saved.value = null;
+  saveError.value = null;
   if (r) {
     void loadSetup();
     void runTest();
+    void loadKeys();
   }
 });
+
+// ---- Trying another key ----------------------------------------------------------------------
+
+/** The private key files in ~/.ssh where Git runs; null while they are being read. */
+const otherKeys = ref<IdentityFile[] | null>(null);
+const keysError = ref<string | null>(null);
+/** The key being tried now, by path. One at a time: each may ask for its passphrase. */
+const trying = ref<string | null>(null);
+/** What trying each key gave, by path: the test, or why it could not run. Replaced, never mutated. */
+const tried = shallowRef(new Map<string, SshTest | string>());
+const saving = ref(false);
+/** The key set for the repository in this dialog, and the command that was saved. */
+const saved = ref<{ path: string; command: string } | null>(null);
+const saveError = ref<string | null>(null);
+
+async function loadKeys(): Promise<void> {
+  const r = request.value;
+  if (!r) return;
+  try {
+    const keys = await unwrap(commands.remoteSshKeys(r.key, r.dest, r.port));
+    if (request.value === r) otherKeys.value = keys;
+  } catch (e) {
+    if (request.value === r) keysError.value = errorMessage(e);
+  }
+}
+
+/** Logs in offering only this key. It may ask for the key's passphrase, as a fetch would. */
+async function tryKey(path: string): Promise<void> {
+  const r = request.value;
+  if (!r || trying.value !== null || saving.value) return;
+  trying.value = path;
+  let result: SshTest | string;
+  try {
+    result = await unwrap(commands.remoteSshTestKey(r.key, r.dest, r.port, path));
+  } catch (e) {
+    result = errorMessage(e);
+  }
+  if (request.value === r) {
+    tried.value = new Map(tried.value).set(path, result);
+    trying.value = null;
+  }
+}
+
+/** Sets the key for this repository, then reads the setup and runs the plain test again with it. */
+async function useKey(path: string): Promise<void> {
+  const r = request.value;
+  if (!r || saving.value || trying.value !== null) return;
+  saving.value = true;
+  saveError.value = null;
+  try {
+    const command = await unwrap(commands.remoteSshUseKey(r.key, r.dest, r.port, path));
+    if (request.value !== r) return;
+    saved.value = { path, command };
+    void loadSetup();
+    void runTest();
+  } catch (e) {
+    if (request.value === r) saveError.value = errorMessage(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
+function triedTest(path: string): SshTest | null {
+  const t = tried.value.get(path);
+  return t !== undefined && typeof t !== "string" ? t : null;
+}
+function triedError(path: string): string | null {
+  const t = tried.value.get(path);
+  return typeof t === "string" ? t : null;
+}
 
 async function loadSetup(): Promise<void> {
   const r = request.value;
@@ -168,8 +250,8 @@ const findings = computed<string[]>(() => {
   return out;
 });
 
-const outcomeText = computed(() => {
-  switch (test.value?.outcome) {
+function outcomeLabel(outcome: SshTest["outcome"] | undefined): string {
+  switch (outcome) {
     case "authenticated":
       return "Logged in";
     case "denied":
@@ -181,7 +263,8 @@ const outcomeText = computed(() => {
     default:
       return "Unclear";
   }
-});
+}
+const outcomeText = computed(() => outcomeLabel(test.value?.outcome));
 
 function onOpenChange(open: boolean): void {
   if (!open) dialogs.resolve("sshDiagnose", null);
@@ -231,6 +314,63 @@ function onOpenChange(open: boolean): void {
               <pre class="mt-1 max-h-60 overflow-auto rounded-md border border-border p-2 font-mono text-xs whitespace-pre-wrap well select-text scrollbar-thin">{{ test.output }}</pre>
             </details>
           </div>
+        </section>
+
+        <!-- Each private key there, to offer to the server by itself and, if it logs in, to set for this repository. -->
+        <section class="grid gap-1.5" data-try-keys>
+          <h3 class="font-semibold">Try another key</h3>
+          <p class="text-muted-foreground">
+            These are the private keys in ~/.ssh {{ where }}. Try logs in to {{ request.dest }} offering only that key, and may ask for its
+            passphrase. A key that logs in can be set for this repository, so that Git offers it and no other here.
+          </p>
+          <p v-if="keysError" class="break-words text-destructive">{{ keysError }}</p>
+          <p v-else-if="otherKeys === null" class="flex items-center gap-2 text-muted-foreground">
+            <LoaderCircleIcon class="size-3.5 animate-spin" />Reading the keys {{ where }}…
+          </p>
+          <p v-else-if="otherKeys.length === 0" class="text-muted-foreground">No private key files were found in ~/.ssh {{ where }}.</p>
+          <ul v-else class="grid gap-1.5">
+            <li v-for="k in otherKeys" :key="k.path" class="grid gap-0.5" data-try-key>
+              <div class="flex min-w-0 items-center gap-2">
+                <span v-if="k.state !== 'present'" :class="cn('shrink-0 rounded-sm px-1.5 text-xs font-semibold', stateClass(k))">{{ STATE_TEXT[k.state] }}</span>
+                <span class="min-w-0 flex-1 truncate select-text" :title="k.path">{{ k.path }}</span>
+                <span
+                  v-if="triedTest(k.path)"
+                  :class="cn('shrink-0 rounded-sm px-1.5 text-xs font-semibold', triedTest(k.path)?.outcome === 'authenticated' ? 'badge-added' : 'badge-deleted')"
+                  data-try-outcome
+                >
+                  {{ outcomeLabel(triedTest(k.path)?.outcome) }}
+                </span>
+                <Button
+                  v-if="triedTest(k.path)?.outcome === 'authenticated'"
+                  type="button"
+                  size="sm"
+                  :disabled="saving || trying !== null || saved?.path === k.path"
+                  data-use-key
+                  @click="useKey(k.path)"
+                >
+                  <LoaderCircleIcon v-if="saving" class="animate-spin" />
+                  {{ saved?.path === k.path ? "In Use for This Repository" : "Use for This Repository" }}
+                </Button>
+                <Button type="button" variant="outline" size="sm" :disabled="trying !== null || saving" data-try @click="tryKey(k.path)">
+                  <LoaderCircleIcon v-if="trying === k.path" class="animate-spin" />
+                  Try
+                </Button>
+              </div>
+              <span v-if="k.key" class="pl-1 font-mono text-xs break-all text-muted-foreground select-text">{{ keyText(k.key) }}</span>
+              <p v-if="triedError(k.path)" class="pl-1 break-words text-destructive">{{ triedError(k.path) }}</p>
+              <details v-else-if="triedTest(k.path) && triedTest(k.path)?.outcome !== 'authenticated'" class="pl-1">
+                <summary class="cursor-default text-muted-foreground select-none">ssh's output for this key</summary>
+                <pre class="mt-1 max-h-48 overflow-auto rounded-md border border-border p-2 font-mono text-xs whitespace-pre-wrap well select-text scrollbar-thin">{{ triedTest(k.path)?.output }}</pre>
+              </details>
+            </li>
+          </ul>
+          <p v-if="saved" class="rounded-md border border-border px-2.5 py-1.5 well" data-key-saved>
+            Git now offers {{ saved.path }}, and only that key, for this repository's SSH remotes. This is the setting
+            <span class="font-mono text-sm">core.sshCommand</span> in the repository's own config:
+            <span class="font-mono text-sm break-all select-text">{{ saved.command }}</span>. Remove it under Repository Settings to go back to ssh's own choice
+            of keys.
+          </p>
+          <p v-if="saveError" class="break-words text-destructive">{{ saveError }}</p>
         </section>
 
         <p v-if="setupError" class="text-destructive">{{ setupError }}</p>

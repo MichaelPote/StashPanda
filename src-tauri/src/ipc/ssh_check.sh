@@ -3,7 +3,12 @@
 # rather than Windows OpenSSH), Git's environment and the repository's config. Every line of
 # output that starts with `@@` names what follows it.
 #
-# Arguments: `setup` or `test`, then `user@host`, then the port or an empty string.
+# Arguments: the mode, then `user@host`, then the port or an empty string. The modes:
+#   setup    what Git and ssh are used, the key files ssh would try and the agent's keys
+#   test     a login that never waits for a passphrase or password
+#   testkey  a login for trying one key, which the caller has put into core.sshCommand with `-c`:
+#            it may ask for the key's passphrase (through StashPanda), but offers no password
+#   keys     the private key files in ~/.ssh here
 f() {
   mode="$1"
   dest="$2"
@@ -27,6 +32,15 @@ f() {
     echo "@@exit $?"
     return 0
   fi
+  if [ "$mode" = testkey ]; then
+    # Says where the command came from: an environment variable would have overruled the
+    # core.sshCommand under test.
+    echo "@@source $src"
+    echo "@@command $sshcmd -T -v $portarg $dest"
+    eval "$sshcmd -T -v -o ConnectTimeout=10 -o PreferredAuthentications=publickey $portarg \"\$dest\"" </dev/null 2>&1
+    echo "@@exit $?"
+    return 0
+  fi
   # A Windows path for a program in Git for Windows' shell, which reports `/usr/bin/ssh`.
   disp() {
     if [ -n "$1" ] && command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s\n' "$1"; fi
@@ -38,6 +52,34 @@ f() {
     */* | *\\*) dir="$(dirname "$(printf '%s' "$prog" | tr '\\' /)")/" ;;
     *) dir= ;;
   esac
+  if [ "$mode" = keys ]; then
+    # Each private key file in ~/.ssh: its state as for `identityfile` below, its path, a tab and
+    # ssh-keygen's line. The path has forward slashes on Windows too (`C:/Users/me/.ssh/id`),
+    # which both Git's own ssh and Windows' OpenSSH take, and which survives the shell that Git
+    # runs core.sshCommand through.
+    echo "@@source $src"
+    echo "@@sshcommand $sshcmd"
+    echo "@@keys"
+    for v in "$HOME"/.ssh/*; do
+      [ -f "$v" ] || continue
+      case "${v##*/}" in *.pub | known_hosts* | authorized_keys* | config | config.* | *.old | *.bak) continue ;; esac
+      # A private key starts with a line such as `-----BEGIN OPENSSH PRIVATE KEY-----`.
+      head -n 1 "$v" 2>/dev/null | grep -q "PRIVATE KEY" || continue
+      fp=
+      kf="$v"
+      [ -f "$v.pub" ] && kf="$v.pub"
+      if fp=$("${dir}ssh-keygen" -lf "$kf" </dev/null 2>/dev/null | head -n 1) && [ -n "$fp" ]; then
+        state=present
+      elif grep -q ENCRYPTED "$v" 2>/dev/null; then
+        state=encrypted
+      else
+        state=unreadable
+      fi
+      if command -v cygpath >/dev/null 2>&1; then shown=$(cygpath -m "$v"); else shown="$v"; fi
+      printf 'key %s %s\t%s\n' "$state" "$shown" "$fp"
+    done
+    return 0
+  fi
   echo "@@git $(disp "$(command -v git)")"
   echo "@@gitversion $(git --version)"
   echo "@@source $src"

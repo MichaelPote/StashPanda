@@ -88,6 +88,26 @@ export const commands = {
 	 *  password or passphrase, and reports which keys were offered and whether one was accepted.
 	 */
 	remoteSshTest: (key: string, dest: string, port: number | null) => typedError<SshTest, GitError>(__TAURI_INVOKE("remote_ssh_test", { key, dest, port })),
+	/**
+	 *  The private key files in `~/.ssh` where Git runs for this repository (Windows, a WSL distro,
+	 *  or the server of a repository opened over SSH), for choosing one to try.
+	 */
+	remoteSshKeys: (key: string, dest: string, port: number | null) => typedError<IdentityFile[], GitError>(__TAURI_INVOKE("remote_ssh_keys", { key, dest, port })),
+	/**
+	 *  Logs in to `dest` offering only the key file `identity`, with the command `remoteSshUseKey`
+	 *  would save. Unlike `remoteSshTest` it may ask for the key's passphrase, through StashPanda
+	 *  as a fetch does; it never offers a password. Fails when an environment variable sets Git's
+	 *  SSH command here, since the key could then not be saved for the repository either.
+	 */
+	remoteSshTestKey: (key: string, dest: string, port: number | null, identity: string) => typedError<SshTest, GitError>(__TAURI_INVOKE("remote_ssh_test_key", { key, dest, port, identity })),
+	/**
+	 *  Makes Git use the key file `identity`, and only that key, for this repository's SSH remotes:
+	 *  sets `core.sshCommand` in the repository's own config to the SSH command Git used so far
+	 *  followed by `-i "<identity>" -o IdentitiesOnly=yes`. A key set this way before is replaced.
+	 *  Returns the command it saved. Fails, and changes nothing, when an environment variable sets
+	 *  Git's SSH command here.
+	 */
+	remoteSshUseKey: (key: string, dest: string, port: number | null, identity: string) => typedError<string, GitError>(__TAURI_INVOKE("remote_ssh_use_key", { key, dest, port, identity })),
 	hostInfo: () => typedError<HostInfo, GitError>(__TAURI_INVOKE("host_info")),
 	/**  Record the host key a server offered, so the next open succeeds. */
 	sshTrustHost: (host: string, port: number) => typedError<null, GitError>(__TAURI_INVOKE("ssh_trust_host", { host, port })),

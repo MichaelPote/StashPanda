@@ -5,6 +5,7 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Add "Try another key" to the SSH Diagnosis dialog: it lists the private keys in ~/.ssh where Git runs, logs in with one at a time, and sets a key that works for the repository (the setting core.sshCommand in the repository's own config), so a remote that refused Git's key can be fixed without editing the SSH config by hand
 - Match removed lines to added lines in the background for a large diff, so every block is matched properly however large the diff is: the diff shows at once, and its changed-word marks and side-by-side curves settle a moment later
 - Offer Diagnose… on a fetch, pull or push that Azure DevOps refused with "Public key authentication failed": the button only appeared for the wording other servers use
 - Stop a repository counting as busy, and its changes waiting, while its commit history is saved for the next start: after the first load of a long history, "Updating the commit graph…" stayed for a moment with the commits already on screen
