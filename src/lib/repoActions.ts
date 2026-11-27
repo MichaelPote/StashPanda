@@ -464,9 +464,13 @@ export function networkFailureText(result: OpResult, what: string): string {
  * A notice's Diagnose… button for a failure where an SSH remote refused every key Git offered
  * (`git@github.com: Permission denied (publickey).`), or null for any other failure. It opens
  * the SSH Diagnosis dialog for that login.
+ *
+ * Azure DevOps words the refusal without naming the login (`KEY_REFUSED_UNNAMED`). The login is
+ * then taken from the repository's remote URLs (`refusedRemoteDestination`).
  */
 export function sshDiagnoseAction(key: string, result: OpResult): NoticeAction | null {
-  const dest = sshDeniedDestination(`${result.stdout}\n${result.stderr}`);
+  const output = `${result.stdout}\n${result.stderr}`;
+  const dest = sshDeniedDestination(output) ?? (KEY_REFUSED_UNNAMED.test(output) ? refusedRemoteDestination(key) : null);
   if (dest === null) return null;
   return { label: "Diagnose…", run: () => void useDialogsStore().open("sshDiagnose", { key, dest, port: remotePort(key, dest) }) };
 }
@@ -474,6 +478,47 @@ export function sshDiagnoseAction(key: string, result: OpResult): NoticeAction |
 /** `git@github.com` from SSH's `git@github.com: Permission denied (publickey).`, or null. */
 export function sshDeniedDestination(output: string): string | null {
   return /^([^\s@:]+@[^\s:]+): Permission denied \([^)]*publickey/m.exec(output)?.[1] ?? null;
+}
+
+/**
+ * What Azure DevOps answers when it knows none of the keys offered: `remote: Public key
+ * authentication failed.`, then Git's `fatal: Could not read from remote repository.` Unlike
+ * OpenSSH's own refusal, it does not say which login was refused.
+ */
+const KEY_REFUSED_UNNAMED = /^remote: Public key authentication failed\b/im;
+
+/**
+ * The login (`git@ssh.dev.azure.com`, or just the host when the URL names no user) that an SSH
+ * remote URL connects to, or null for a URL that is not SSH: `ssh://user@host:port/path`, or
+ * the short form `user@host:path`. A Windows path such as `C:\repos\app` is not the short form.
+ */
+export function sshDestinationOf(url: string | null | undefined): string | null {
+  if (!url) return null;
+  const full = /^ssh:\/\/(?:([^@/]+)@)?([^/:]+)(?::\d+)?(?:\/|$)/i.exec(url);
+  if (full) return full[1] ? `${full[1]}@${full[2]}` : (full[2] as string);
+  if (url.includes("://")) return null;
+  const short = /^(?:([^@/:\s]+)@)?([^@/:\s]{2,}):/.exec(url);
+  if (!short) return null;
+  return short[1] ? `${short[1]}@${short[2]}` : (short[2] as string);
+}
+
+/**
+ * The login to diagnose when the remote refused a key without saying which login it was: the
+ * one Azure DevOps login among the repository's remotes, or else the only SSH login it has.
+ * Null when that does not settle it, and no Diagnose… button is offered.
+ */
+function refusedRemoteDestination(key: string): string | null {
+  const logins = new Set<string>();
+  for (const remote of useSessionsStore().sessions.get(key)?.refs?.remotes ?? []) {
+    for (const url of [remote.url, remote.pushUrl]) {
+      const login = sshDestinationOf(url);
+      if (login) logins.add(login);
+    }
+  }
+  const all = [...logins];
+  const azure = all.filter((login) => /(?:^|[@.])(?:dev\.azure\.com|visualstudio\.com)$/i.test(login));
+  if (azure.length === 1) return azure[0] as string;
+  return all.length === 1 ? (all[0] as string) : null;
 }
 
 /** The port in a remote URL `ssh://user@host:port/…` whose host is `dest`'s, or null for the default. */

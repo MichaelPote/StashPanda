@@ -56,6 +56,7 @@ import {
   renameBranch,
   renameOnRemote,
   sshDeniedDestination,
+  sshDestinationOf,
   sshDiagnoseAction,
   syncCurrentBranch,
   syncOutcome,
@@ -828,6 +829,59 @@ describe("a remote that refused the SSH key", () => {
     sshDiagnoseAction("k", denied(refusedLine))?.run();
     expect(dialogs.open).toHaveBeenLastCalledWith("sshDiagnose", { key: "k", dest: "git@github.com", port: null });
     expect(sshDiagnoseAction("k", denied("! [rejected] main -> main (fetch first)"))).toBeNull();
+    sessionMap.delete("k");
+  });
+
+  it("reads the login out of an SSH remote URL, and none out of any other", () => {
+    expect(sshDestinationOf("git@ssh.dev.azure.com:v3/org/project/repo")).toBe("git@ssh.dev.azure.com");
+    expect(sshDestinationOf("ssh://git@git.example.com:2222/team/app.git")).toBe("git@git.example.com");
+    expect(sshDestinationOf("ssh://git.example.com/team/app.git")).toBe("git.example.com");
+    expect(sshDestinationOf("build.example.com:repos/app.git")).toBe("build.example.com");
+    expect(sshDestinationOf("https://dev.azure.com/org/project/_git/repo")).toBeNull();
+    expect(sshDestinationOf("C:\\repos\\app")).toBeNull();
+    expect(sshDestinationOf("/srv/git/app.git")).toBeNull();
+    expect(sshDestinationOf("../app.git")).toBeNull();
+    expect(sshDestinationOf(null)).toBeNull();
+  });
+
+  // What Azure DevOps prints when it knows none of the keys: no login is named.
+  const azureRefusal = "remote: Public key authentication failed.\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.";
+
+  it("offers Diagnose… for Azure's refusal, with the login from the repository's remote", () => {
+    sessionMap.set("k", {
+      refs: {
+        remotes: [
+          { name: "azure", url: "git@ssh.dev.azure.com:v3/org/project/repo", pushUrl: null },
+          { name: "origin", url: "git@github.com:someone/repo.git", pushUrl: null },
+        ],
+      },
+    });
+    const action = sshDiagnoseAction("k", denied(azureRefusal));
+    expect(action?.label).toBe("Diagnose…");
+    action?.run();
+    expect(dialogs.open).toHaveBeenLastCalledWith("sshDiagnose", { key: "k", dest: "git@ssh.dev.azure.com", port: null });
+    sessionMap.delete("k");
+  });
+
+  it("uses the repository's only SSH login when none of its remotes is an Azure one", () => {
+    sessionMap.set("k", { refs: { remotes: [{ name: "origin", url: "ssh://git@git.example.com:2222/team/app.git", pushUrl: "https://git.example.com/team/app.git" }] } });
+    sshDiagnoseAction("k", denied(azureRefusal))?.run();
+    expect(dialogs.open).toHaveBeenLastCalledWith("sshDiagnose", { key: "k", dest: "git@git.example.com", port: 2222 });
+    sessionMap.delete("k");
+  });
+
+  it("offers nothing for Azure's wording when it cannot tell which login was refused", () => {
+    sessionMap.set("k", {
+      refs: {
+        remotes: [
+          { name: "one", url: "git@git.example.com:a/b.git", pushUrl: null },
+          { name: "two", url: "git@other.example.com:a/b.git", pushUrl: null },
+        ],
+      },
+    });
+    expect(sshDiagnoseAction("k", denied(azureRefusal))).toBeNull();
+    sessionMap.set("k", { refs: { remotes: [{ name: "origin", url: "https://dev.azure.com/org/project/_git/repo", pushUrl: null }] } });
+    expect(sshDiagnoseAction("k", denied(azureRefusal))).toBeNull();
     sessionMap.delete("k");
   });
 
