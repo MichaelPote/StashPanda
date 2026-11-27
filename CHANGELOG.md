@@ -5,6 +5,8 @@ release moves those lines under its version number.
 
 ## Unreleased
 
+- Stop one very long line, such as minified code, slowing the whole window down: a line over 256 characters is now shown without syntax colours in the diff, in Blame and in the merge editor
+
 ## 0.6.10 (2026-11-25)
 
 - Comparing tags with the remotes, which happens when a repository opens and after each fetch, pull and push, uses a remembered passphrase and never opens a dialog: without one, tags are shown as not checked until a fetch, pull or push has asked for the passphrase

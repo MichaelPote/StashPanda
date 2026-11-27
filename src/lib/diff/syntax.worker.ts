@@ -2,7 +2,8 @@
  * Colours diff text off the main thread with Shiki. The main thread sends a file's path and runs
  * of lines (one hunk's old side, or its new side) and gets back, for every line, its tokens as
  * `[text, colour, fontStyle]`. A language or theme is loaded the first time it is asked for;
- * Shiki's JavaScript regular expression engine is used, so no WebAssembly is loaded.
+ * Shiki's JavaScript regular expression engine is used, so no WebAssembly is loaded. A line over
+ * 256 characters is left plain (`tokenizeRun.ts`).
  *
  * Only the languages below are offered. Tauri builds every asset into the program, and all of
  * Shiki's 346 grammars would add about 10 MB to it for languages hardly anyone opens.
@@ -11,8 +12,9 @@ import { createHighlighterCore, type HighlighterCore, type LanguageInput, type T
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 import type { SyntaxTheme } from "@/lib/diff/syntaxThemes";
+import { tokenizeRun, type RawToken } from "@/lib/diff/tokenizeRun";
 
-export type { SyntaxTheme };
+export type { RawToken, SyntaxTheme };
 
 export interface SyntaxRequest {
   id: number;
@@ -21,9 +23,6 @@ export interface SyntaxRequest {
   theme: SyntaxTheme;
   runs: string[][];
 }
-
-/** One token: its text, its colour (`#rrggbb`, or null for the theme's default) and font style bits (1 italic, 2 bold). */
-export type RawToken = [string, string | null, number];
 
 /** `tokens` is null when the file's language is not one of those offered. */
 export type SyntaxResponse = { id: number; tokens: RawToken[][][] | null } | { id: number; error: string };
@@ -186,9 +185,7 @@ self.onmessage = async (event: MessageEvent<SyntaxRequest>) => {
       once(`lang:${lang}`, async () => h.loadLanguage((await (LANGUAGES[lang] as () => Promise<{ default: LanguageInput }>)()).default)),
       once(`theme:${theme}`, async () => h.loadTheme((await THEMES[theme]()).default)),
     ]);
-    const tokens = runs.map((lines) =>
-      h.codeToTokensBase(lines.join("\n"), { lang, theme }).map((line) => line.map((t): RawToken => [t.content, t.color ?? null, t.fontStyle ?? 0])),
-    );
+    const tokens = runs.map((lines) => tokenizeRun(h, lines, lang, theme));
     self.postMessage({ id, tokens } satisfies SyntaxResponse);
   } catch (e) {
     self.postMessage({ id, error: e instanceof Error ? e.message : String(e) } satisfies SyntaxResponse);

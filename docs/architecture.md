@@ -1010,7 +1010,12 @@ status bar, and each clears the other.
 - **Syntax colours:** Shiki in a Web Worker (`lib/diff/syntax.worker.ts`) with its JavaScript
   regex engine, so no WebAssembly. 62 chosen languages, each grammar loaded the first time it is
   needed. Each hunk's old and new side go to the worker as whole runs, so a comment spanning lines
-  colours correctly. Diffs over 20,000 lines stay plain.
+  colours correctly. Diffs over 20,000 lines stay plain. So does any one line over 256 characters
+  (`MAX_SYNTAX_LINE_LENGTH` in `lib/diff/tokenizeRun.ts`, through Shiki's
+  `tokenizeMaxLineLength`): a minified line became thousands of coloured elements in one row
+  (2,388 for a 20,000-character line of minified JavaScript), and laying them out slowed the whole
+  window. The lines after it keep their colours. The Blame dialog and the merge editor use the
+  same worker, so the limit holds there too.
 - **Find** (`composables/useFind.ts`, `FindBox.vue`, `lib/diff/find.ts`): Ctrl+F in a diff, the
   File History dialog or Blame. Past 10,000 matches the rest are neither drawn nor counted.
 
